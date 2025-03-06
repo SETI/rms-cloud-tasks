@@ -1,0 +1,18 @@
+# Cloud provider configuration
+aws:
+  access_key: YOUR_AWS_ACCESS_KEY
+  secret_key: YOUR_AWS_SECRET_KEY
+  region: us-west-2
+
+# Uncomment and configure as needed for your preferred cloud
+# gcp:
+#   project_id: YOUR_GCP_PROJECT_ID
+#   credentials_file: /path/to/credentials.json
+#   zone: us-central1-a
+
+# azure:
+#   subscription_id: YOUR_AZURE_SUBSCRIPTION_ID
+#   tenant_id: YOUR_AZURE_TENANT_ID
+#   client_id: YOUR_AZURE_CLIENT_ID
+#   client_secret: YOUR_AZURE_CLIENT_SECRET
+#   location: eastus

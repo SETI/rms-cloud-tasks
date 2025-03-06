@@ -1,0 +1,57 @@
+[
+  {
+    "id": "task-1",
+    "data": {
+      "input_file": "file1.txt",
+      "output_file": "output1.txt",
+      "parameters": {
+        "batch_size": 100,
+        "learning_rate": 0.01
+      }
+    }
+  },
+  {
+    "id": "task-2",
+    "data": {
+      "input_file": "file2.txt",
+      "output_file": "output2.txt",
+      "parameters": {
+        "batch_size": 200,
+        "learning_rate": 0.005
+      }
+    }
+  },
+  {
+    "id": "task-3",
+    "data": {
+      "input_file": "file3.txt",
+      "output_file": "output3.txt",
+      "parameters": {
+        "batch_size": 150,
+        "learning_rate": 0.02
+      }
+    }
+  },
+  {
+    "id": "task-4",
+    "data": {
+      "input_file": "file4.txt",
+      "output_file": "output4.txt",
+      "parameters": {
+        "batch_size": 120,
+        "learning_rate": 0.015
+      }
+    }
+  },
+  {
+    "id": "task-5",
+    "data": {
+      "input_file": "file5.txt",
+      "output_file": "output5.txt",
+      "parameters": {
+        "batch_size": 180,
+        "learning_rate": 0.008
+      }
+    }
+  }
+]
