@@ -23,6 +23,26 @@ Each task should have the following format:
 }
 ```
 
+## Implementations
+
+This repository contains two worker implementations:
+
+### 1. Simple Worker (worker.py)
+
+A straightforward implementation that relies on the cloud_tasks framework to:
+- Pull code from GitHub
+- Connect to cloud queues
+- Handle scheduling and scaling
+
+### 2. Cloud-Native Worker (worker_cloud.py)
+
+A more advanced implementation that directly integrates with cloud services:
+- Connects directly to cloud provider queues (SQS, Pub/Sub, Service Bus)
+- Handles spot/preemptible instance termination notices
+- Uploads results to cloud storage (S3, GCS, Azure Blob)
+- Includes retry logic and robust error handling
+- Performs graceful shutdown when instances are scheduled for termination
+
 ## Requirements
 
 - Python 3.8+
@@ -30,16 +50,46 @@ Each task should have the following format:
 
 ## Usage
 
-This worker is designed to be used with the cloud_tasks system, which will:
+### Using with the cloud_tasks System
+
+The worker is designed to be used with the cloud_tasks system, which will:
 
 1. Pull this repository on worker startup
 2. Set up a configuration file
 3. Run `worker.py --config=/path/to/config.json`
 4. Handle task polling and completion
 
+### Using the Cloud-Native Worker
+
+The cloud-native worker can be deployed directly to cloud instances:
+
+```bash
+# Deploy to an AWS EC2 instance
+python worker_cloud.py --config=/path/to/cloud_config.json
+```
+
+The cloud configuration should include provider details, credentials, and queue information:
+
+```json
+{
+  "provider": "aws",
+  "job_id": "adder-job-001",
+  "queue_name": "number-adder-queue",
+  "result_bucket": "task-results-bucket",
+  "result_prefix": "additions",
+  "config": {
+    "access_key": "YOUR_AWS_ACCESS_KEY",
+    "secret_key": "YOUR_AWS_SECRET_KEY",
+    "region": "us-west-2"
+  }
+}
+```
+
 ## Local Testing
 
-To test this worker locally:
+### Simple Worker
+
+To test the simple worker locally:
 
 ```bash
 # Create a test config file
@@ -57,6 +107,31 @@ EOF
 
 # Run the worker
 python worker.py --config=test_config.json
+```
+
+### Cloud-Native Worker
+
+To test the cloud-native worker with a sample task:
+
+```bash
+# Create a test config file
+cat > test_cloud_config.json << EOF
+{
+  "provider": "aws",
+  "job_id": "test-job",
+  "queue_name": "test-queue",
+  "sample_task": {
+    "id": "test-task",
+    "data": {
+      "num1": 42,
+      "num2": 58
+    }
+  }
+}
+EOF
+
+# Run the cloud worker
+python worker_cloud.py --config=test_cloud_config.json
 ```
 
 This should create a file `results/test-task.out` containing the result `100`.

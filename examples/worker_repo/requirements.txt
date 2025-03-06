@@ -1,8 +1,15 @@
 # Core dependencies
 pyyaml>=6.0
 aiofiles>=23.1.0
+aiohttp>=3.8.4
+requests>=2.28.2
 
-# For future integrations with cloud services directly
+# Cloud provider SDKs
 boto3>=1.26.0
 google-cloud-pubsub>=2.13.0
+google-cloud-storage>=2.7.0
 azure-servicebus>=7.10.0
+azure-storage-blob>=12.14.0
+
+# Type hints support
+types-requests>=2.28.11.8

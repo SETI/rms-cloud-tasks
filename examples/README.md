@@ -110,7 +110,15 @@ This example demonstrates how to use the multi-cloud task processing system to r
 
 - `addition_tasks.json`: Sample input file containing tasks to add pairs of numbers
 - `cloud_config.yaml`: Sample cloud provider configuration (requires your credentials)
-- `worker_repo/`: Worker implementation that would be pulled from GitHub during job execution
+- `cloud_worker_config.json`: Sample configuration for the standalone cloud worker
+- `worker_repo/`: Worker implementations
+
+## Worker Implementations
+
+The example includes two worker implementations:
+
+1. **Simple Worker** (`worker.py`): Uses the cloud_tasks framework to handle cloud integration
+2. **Cloud-Native Worker** (`worker_cloud.py`): Directly integrates with cloud services and can be deployed to cloud instances without the cloud_tasks framework
 
 ## Expected Results
 
@@ -124,7 +132,7 @@ After running the tasks, the following files will be created in the `results/` d
 
 ## Usage
 
-### Running the Job
+### Running with cloud_tasks
 
 Use the following command to process the tasks using AWS as the cloud provider:
 
@@ -145,6 +153,21 @@ python -m cloud_tasks.cli run \
 **Note**: For this to work in production, you would need to:
 1. Update the `cloud_config.yaml` with your actual cloud credentials
 2. Push the worker code to a GitHub repository (referenced by `--worker-repo`)
+
+### Deploying the Cloud-Native Worker Directly
+
+The cloud-native worker can be deployed directly to cloud instances:
+
+```bash
+# On an AWS EC2 instance
+python worker_cloud.py --config=/path/to/cloud_worker_config.json
+```
+
+This is useful when you want to:
+- Manually deploy workers without using the cloud_tasks orchestration
+- Run on existing infrastructure
+- Have more control over the worker lifecycle
+- Customize cloud resource usage
 
 ### Checking Job Status
 
@@ -189,8 +212,11 @@ EOF
 # Navigate to the worker directory
 cd examples/worker_repo
 
-# Run the worker
+# Run the simple worker
 python worker.py --config=../../test_config.json
+
+# Or run the cloud-native worker
+python worker_cloud.py --config=../../test_config.json
 ```
 
 This should create a file `results/test-task.out` containing the result `100`.
