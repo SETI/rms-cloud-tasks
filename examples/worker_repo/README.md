@@ -25,7 +25,7 @@ Each task should have the following format:
 
 ## Implementations
 
-This repository contains two worker implementations:
+This repository contains three worker implementations:
 
 ### 1. Simple Worker (worker.py)
 
@@ -42,6 +42,14 @@ A more advanced implementation that directly integrates with cloud services:
 - Uploads results to cloud storage (S3, GCS, Azure Blob)
 - Includes retry logic and robust error handling
 - Performs graceful shutdown when instances are scheduled for termination
+
+### 3. Adapted Worker (worker_adapted.py)
+
+A demonstration of how to adapt existing worker code to use the cloud task adapter module:
+- Separates cloud integration code from business logic
+- Uses the `cloud_tasks.worker` module to handle cloud-specific functionality
+- Minimal changes to existing worker code
+- Supports all cloud providers through a unified interface
 
 ## Requirements
 
@@ -132,6 +140,31 @@ EOF
 
 # Run the cloud worker
 python worker_cloud.py --config=test_cloud_config.json
+```
+
+This should create a file `results/test-task.out` containing the result `100`.
+
+### Adapted Worker
+
+To test the adapted worker with a sample task:
+
+```bash
+# Create a test config file
+cat > test_adapted_config.json << EOF
+{
+  "provider": "aws",
+  "job_id": "test-job",
+  "queue_name": "test-queue",
+  "sample_task": {
+    "task_id": "test-task",
+    "num1": 42,
+    "num2": 58
+  }
+}
+EOF
+
+# Run the adapted worker
+python worker_adapted.py --config=test_adapted_config.json
 ```
 
 This should create a file `results/test-task.out` containing the result `100`.

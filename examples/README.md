@@ -115,10 +115,11 @@ This example demonstrates how to use the multi-cloud task processing system to r
 
 ## Worker Implementations
 
-The example includes two worker implementations:
+The example includes three worker implementations:
 
 1. **Simple Worker** (`worker.py`): Uses the cloud_tasks framework to handle cloud integration
 2. **Cloud-Native Worker** (`worker_cloud.py`): Directly integrates with cloud services and can be deployed to cloud instances without the cloud_tasks framework
+3. **Adapted Worker** (`worker_adapted.py`): Demonstrates how to adapt any existing worker code to use the cloud task adapter module
 
 ## Expected Results
 
@@ -191,6 +192,27 @@ python -m cloud_tasks.cli stop \
   --job-id job-1234567890
 ```
 
+### Using the Cloud Task Adapter
+
+The cloud task adapter provides a simple way to adapt any existing worker code to run in a cloud environment:
+
+```bash
+# Run the adapted worker with AWS configuration
+python worker_adapted.py --config=../adapted_worker_config.json
+```
+
+This approach is ideal when:
+- You have existing worker code that you want to run in the cloud
+- You want to minimize changes to your core processing logic
+- You need to integrate with cloud services but want to keep the integration code separate
+
+The adapter handles:
+- Cloud provider connections (AWS, GCP, Azure)
+- Task queue integration
+- Instance termination monitoring
+- Result storage in cloud buckets
+- Error handling and retries
+
 ## Local Testing
 
 To test the worker locally without deploying to cloud:
@@ -217,6 +239,9 @@ python worker.py --config=../../test_config.json
 
 # Or run the cloud-native worker
 python worker_cloud.py --config=../../test_config.json
+
+# Or run the adapted worker
+python worker_adapted.py --config=../../test_config.json
 ```
 
 This should create a file `results/test-task.out` containing the result `100`.

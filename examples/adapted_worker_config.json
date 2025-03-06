@@ -1,0 +1,21 @@
+{
+  "provider": "aws",
+  "job_id": "adder-job-001",
+  "queue_name": "number-adder-queue",
+  "result_bucket": "task-results-bucket",
+  "result_prefix": "additions",
+  "config": {
+    "region": "us-east-1",
+    "access_key": "YOUR_AWS_ACCESS_KEY",
+    "secret_key": "YOUR_AWS_SECRET_KEY"
+  },
+  "worker_options": {
+    "max_retries": 3,
+    "termination_check_interval": 30
+  },
+  "sample_task": {
+    "task_id": "sample-task-001",
+    "num1": 42,
+    "num2": 58
+  }
+}
