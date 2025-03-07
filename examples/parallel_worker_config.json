@@ -1,0 +1,40 @@
+{
+  "provider": "aws",
+  "job_id": "parallel-adder-job",
+  "queue_name": "parallel-adder-queue",
+  "result_bucket": "parallel-results-bucket",
+  "result_prefix": "parallel-additions",
+  "config": {
+    "region": "us-east-1",
+    "access_key": "YOUR_AWS_ACCESS_KEY",
+    "secret_key": "YOUR_AWS_SECRET_KEY"
+  },
+  "worker_options": {
+    "max_retries": 3,
+    "termination_check_interval": 15,
+    "num_workers": 4
+  },
+  "continuous_mode": false,
+  "sample_tasks": [
+    {
+      "task_id": "sample-task-1",
+      "num1": 42,
+      "num2": 58
+    },
+    {
+      "task_id": "sample-task-2",
+      "num1": 100,
+      "num2": 200
+    },
+    {
+      "task_id": "sample-task-3",
+      "num1": 1234,
+      "num2": 5678
+    },
+    {
+      "task_id": "sample-task-4",
+      "num1": 3.14,
+      "num2": 2.71
+    }
+  ]
+}

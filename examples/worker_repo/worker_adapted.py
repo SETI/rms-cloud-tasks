@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """
-Example worker adapted to use the cloud task adapter.
+Example worker adapted to use the cloud task adapter with multiprocessing.
 
 This demonstrates how to use the cloud_tasks module to adapt any
-worker code to run in a cloud environment.
+worker code to run in a cloud environment with true parallel processing.
 """
 import asyncio
 import json
 import logging
 import os
+import multiprocessing
 from typing import Any, Dict, Tuple
 
 # Import the cloud task adapter
@@ -40,6 +41,11 @@ async def process_task(task_id: str, task_data: Dict[str, Any]) -> Tuple[bool, A
         Tuple of (success, result)
     """
     try:
+        # Log the process ID to demonstrate parallel execution
+        process_id = os.getpid()
+        worker_id = multiprocessing.current_process().name
+        logger.info(f"Processing task {task_id} in process {process_id} ({worker_id})")
+
         # Extract the two numbers from the task data
         num1 = task_data.get("num1")
         num2 = task_data.get("num2")
@@ -48,8 +54,14 @@ async def process_task(task_id: str, task_data: Dict[str, Any]) -> Tuple[bool, A
             logger.error(f"Task {task_id}: Missing required parameters num1 or num2")
             return False, "Missing required parameters"
 
-        # Perform the addition
-        result = num1 + num2
+        # Simulate some CPU-intensive work
+        # This will benefit from running in parallel
+        result = 0
+        for i in range(10000000):  # Adjust this number based on your machine's speed
+            if i % 1000000 == 0:
+                logger.info(f"Task {task_id}: Processing iteration {i//1000000}/10...")
+            result = num1 + num2
+
         logger.info(f"Task {task_id}: {num1} + {num2} = {result}")
 
         # Ensure output directory exists
@@ -58,7 +70,7 @@ async def process_task(task_id: str, task_data: Dict[str, Any]) -> Tuple[bool, A
         # Write the result to a file
         output_file = os.path.join(OUTPUT_DIR, f"{task_id}.out")
         with open(output_file, 'w') as f:
-            f.write(str(result))
+            f.write(f"{result} (processed by PID {process_id})")
 
         logger.info(f"Task {task_id}: Result written to {output_file}")
         return True, result
@@ -80,5 +92,8 @@ if __name__ == "__main__":
     5. Processing tasks using the provided function
     6. Handling retries and reporting results
     7. Uploading results to cloud storage (if configured)
+    8. Running tasks in parallel across multiple processes
     """
+    # By default, will use CPU count - 1 processes for parallel execution
+    # You can override with --workers=X command line argument
     asyncio.run(run_cloud_worker(process_task))

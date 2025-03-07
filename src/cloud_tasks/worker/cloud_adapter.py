@@ -5,14 +5,19 @@ This module allows any worker code to be easily integrated with cloud
 task processing by abstracting away cloud provider-specific implementation
 details.
 """
+import argparse
 import asyncio
 import base64
 import json
 import logging
+import multiprocessing
+from multiprocessing import Process, Queue, Event, Value, Manager
 import os
+import signal
 import sys
 import time
-from typing import Any, Dict, List, Optional, Tuple, Callable, Awaitable
+import traceback
+from typing import Any, Dict, List, Optional, Tuple, Callable, Awaitable, Union
 
 # Configure logging
 logging.basicConfig(
@@ -24,6 +29,7 @@ logger = logging.getLogger(__name__)
 # Default values
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_TERMINATION_CHECK_INTERVAL = 5  # in seconds
+DEFAULT_WORKERS = max(1, multiprocessing.cpu_count() - 1)  # Default to CPU count - 1
 
 
 class CloudTaskAdapter:
@@ -636,10 +642,11 @@ class CloudTaskAdapter:
 async def run_cloud_worker(
     task_processor: Callable[[str, Dict[str, Any]], Awaitable[Tuple[bool, Any]]],
     config_file: Optional[str] = None,
-    config: Optional[Dict[str, Any]] = None
+    config: Optional[Dict[str, Any]] = None,
+    num_workers: Optional[int] = None
 ) -> None:
     """
-    Run a worker in the cloud.
+    Run a worker in the cloud with multiprocessing for true parallelism.
 
     This is a convenience function to create and run a CloudTaskAdapter.
 
@@ -647,6 +654,7 @@ async def run_cloud_worker(
         task_processor: Async function to process tasks
         config_file: Path to configuration file (alternative to config)
         config: Configuration dictionary (alternative to config_file)
+        num_workers: Number of worker processes (defaults to CPU count - 1)
     """
     # Get config file from command line if not provided
     if not config_file and not config:
@@ -655,14 +663,438 @@ async def run_cloud_worker(
                 config_file = arg.split("=", 1)[1]
                 break
 
+        # Also check for number of workers
+        for arg in sys.argv:
+            if arg.startswith("--workers="):
+                try:
+                    num_workers = int(arg.split("=", 1)[1])
+                except ValueError:
+                    pass
+
     if not config_file and not config:
         logger.error("No configuration provided. Use --config=path/to/config.json or provide config dict")
         sys.exit(1)
 
-    # Create and start the adapter
+    # Determine number of worker processes
+    if num_workers is None:
+        # Check config for worker count
+        if config and 'worker_options' in config and 'num_workers' in config['worker_options']:
+            num_workers = config['worker_options']['num_workers']
+        elif config_file:
+            try:
+                with open(config_file, 'r') as f:
+                    cfg = json.load(f)
+                    if 'worker_options' in cfg and 'num_workers' in cfg['worker_options']:
+                        num_workers = cfg['worker_options']['num_workers']
+            except Exception:
+                pass
+
+        # Default if not specified
+        if num_workers is None:
+            num_workers = DEFAULT_WORKERS
+
+    logger.info(f"Starting cloud worker with {num_workers} worker processes")
+
+    # For single-process mode, just use the traditional approach
+    if num_workers <= 1:
+        # Create and start the adapter
+        adapter = CloudTaskAdapter(
+            task_processor=task_processor,
+            config_file=config_file if config_file else None,
+            config=config if config else None
+        )
+        await adapter.start()
+    else:
+        # Use multiprocessing mode
+        await run_parallel_cloud_worker(
+            task_processor=task_processor,
+            config_file=config_file,
+            config=config,
+            num_workers=num_workers
+        )
+
+async def run_parallel_cloud_worker(
+    task_processor: Callable[[str, Dict[str, Any]], Awaitable[Tuple[bool, Any]]],
+    config_file: Optional[str] = None,
+    config: Optional[Dict[str, Any]] = None,
+    num_workers: int = DEFAULT_WORKERS
+) -> None:
+    """
+    Run cloud worker with multiple processes for true parallelism.
+
+    Args:
+        task_processor: Async function to process tasks
+        config_file: Path to configuration file (alternative to config)
+        config: Configuration dictionary (alternative to config_file)
+        num_workers: Number of worker processes
+    """
+    # Use config file if provided, otherwise use config dict
+    if config_file:
+        with open(config_file, 'r') as f:
+            config = json.load(f)
+
+    if not config:
+        logger.error("No configuration provided")
+        return
+
+    # Set up multiprocessing components
+    manager = Manager()
+    task_queue = Queue()
+    result_queue = Queue()
+    shutdown_event = Event()
+    termination_event = Event()
+    active_tasks = Value('i', 0)
+
+    # Shared state counters
+    tasks_processed = Value('i', 0)
+    tasks_failed = Value('i', 0)
+
+    # Start worker processes
+    processes = []
+
+    # Register signal handlers
+    def signal_handler(signum, frame):
+        """Handle termination signals."""
+        logger.info(f"Received signal {signal.Signals(signum).name}, initiating shutdown")
+        shutdown_event.set()
+
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
+    # Create adapter for main process
     adapter = CloudTaskAdapter(
         task_processor=task_processor,
         config_file=config_file if config_file else None,
         config=config if config else None
     )
-    await adapter.start()
+
+    # Start worker processes
+    for i in range(num_workers):
+        p = Process(
+            target=worker_process_main,
+            args=(
+                i,
+                task_queue,
+                result_queue,
+                shutdown_event,
+                termination_event,
+                active_tasks,
+                task_processor,
+                config
+            )
+        )
+        p.daemon = True
+        p.start()
+        processes.append(p)
+        logger.info(f"Started worker process {i} (PID: {p.pid})")
+
+    # Main process handles:
+    # 1. Fetching tasks from the cloud queue
+    # 2. Distributing tasks to worker processes
+    # 3. Handling results from worker processes
+    # 4. Checking for termination notices
+
+    try:
+        # Start task feeding
+        asyncio.create_task(feed_tasks_from_cloud(
+            adapter=adapter,
+            task_queue=task_queue,
+            active_tasks=active_tasks,
+            shutdown_event=shutdown_event,
+            termination_event=termination_event,
+            num_workers=num_workers
+        ))
+
+        # Start result handling
+        asyncio.create_task(handle_worker_results(
+            adapter=adapter,
+            result_queue=result_queue,
+            tasks_processed=tasks_processed,
+            tasks_failed=tasks_failed,
+            shutdown_event=shutdown_event
+        ))
+
+        # Start termination checking
+        asyncio.create_task(check_cloud_termination(
+            adapter=adapter,
+            termination_event=termination_event,
+            shutdown_event=shutdown_event
+        ))
+
+        # Wait for shutdown signal
+        while not shutdown_event.is_set():
+            await asyncio.sleep(0.5)
+
+        # Graceful shutdown
+        logger.info("Beginning shutdown process")
+
+        # Wait for ongoing tasks to complete with timeout
+        shutdown_start = time.time()
+        grace_period = 60  # seconds
+
+        while active_tasks.value > 0 and time.time() - shutdown_start < grace_period:
+            logger.info(f"Waiting for {active_tasks.value} active tasks to complete...")
+            await asyncio.sleep(1)
+
+    except asyncio.CancelledError:
+        logger.info("Main process task cancelled")
+
+    except Exception as e:
+        logger.error(f"Error in main process: {e}")
+        traceback.print_exc()
+
+    finally:
+        # Shutdown
+        shutdown_event.set()
+
+        # Terminate all processes
+        for p in processes:
+            if p.is_alive():
+                p.terminate()
+
+        # Wait for processes to exit
+        for p in processes:
+            p.join(timeout=2)
+
+        logger.info(f"Cloud worker shutdown complete. Processed: {tasks_processed.value}, Failed: {tasks_failed.value}")
+
+def worker_process_main(
+    process_id: int,
+    task_queue: Queue,
+    result_queue: Queue,
+    shutdown_event: Event,
+    termination_event: Event,
+    active_tasks: Value,
+    task_processor: Callable[[str, Dict[str, Any]], Awaitable[Tuple[bool, Any]]],
+    config: Dict[str, Any]
+) -> None:
+    """
+    Main function for worker processes.
+
+    Args:
+        process_id: Unique ID for this worker process
+        task_queue: Queue to receive tasks from
+        result_queue: Queue to send results to
+        shutdown_event: Event to signal shutdown
+        termination_event: Event to signal termination
+        active_tasks: Shared counter of active tasks
+        task_processor: Function to process tasks
+        config: Configuration dictionary
+    """
+    # Set up logging for this process
+    logging.basicConfig(
+        level=logging.INFO,
+        format=f'%(asctime)s - Worker-{process_id} - %(levelname)s - %(message)s'
+    )
+    logger = logging.getLogger(f"worker-{process_id}")
+
+    # Initialize asyncio event loop for this process
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    logger.info(f"Worker process {process_id} started")
+
+    # Main processing loop
+    while not shutdown_event.is_set() and not termination_event.is_set():
+        try:
+            # Get task with timeout
+            try:
+                task = task_queue.get(timeout=1)
+            except Exception:
+                # No task available or timeout
+                continue
+
+            # Extract task info
+            task_id = task['task_id']
+            task_data = task['data']
+
+            logger.info(f"Processing task {task_id}")
+
+            # Process the task (run in event loop)
+            try:
+                # Run the task processor in the event loop
+                success, result = loop.run_until_complete(task_processor(task_id, task_data))
+
+                # Send result back to main process
+                result_queue.put((process_id, task_id, success, result))
+
+                logger.info(f"Task {task_id} completed, success: {success}")
+
+            except Exception as e:
+                logger.error(f"Error executing task {task_id}: {e}")
+                # Send failure back to main process
+                result_queue.put((process_id, task_id, False, str(e)))
+
+            finally:
+                # Update active task count
+                with active_tasks.get_lock():
+                    active_tasks.value -= 1
+
+        except Exception as e:
+            logger.error(f"Unhandled error in worker process: {e}")
+            time.sleep(1)
+
+    logger.info(f"Worker process {process_id} shutting down")
+    loop.close()
+
+async def feed_tasks_from_cloud(
+    adapter: CloudTaskAdapter,
+    task_queue: Queue,
+    active_tasks: Value,
+    shutdown_event: Event,
+    termination_event: Event,
+    num_workers: int
+) -> None:
+    """
+    Fetch tasks from the cloud queue and feed them to worker processes.
+
+    Args:
+        adapter: CloudTaskAdapter instance
+        task_queue: Queue to send tasks to worker processes
+        active_tasks: Shared counter of active tasks
+        shutdown_event: Event to signal shutdown
+        termination_event: Event to signal termination
+        num_workers: Number of worker processes
+    """
+    logger.info("Task feeder started")
+
+    while not shutdown_event.is_set() and not termination_event.is_set():
+        try:
+            # Only fetch new tasks if we have capacity
+            if active_tasks.value < num_workers * 2:  # Allow up to 2 tasks per worker in the queue
+                # Get the method appropriate for the provider
+                if adapter.provider == 'aws':
+                    tasks = await adapter.receive_aws_tasks(
+                        max_count=min(10, num_workers * 2 - active_tasks.value)
+                    )
+                elif adapter.provider == 'gcp':
+                    tasks = await adapter.receive_gcp_tasks(
+                        max_count=min(10, num_workers * 2 - active_tasks.value)
+                    )
+                elif adapter.provider == 'azure':
+                    tasks = await adapter.receive_azure_tasks(
+                        max_count=min(10, num_workers * 2 - active_tasks.value)
+                    )
+                else:
+                    # Unsupported provider
+                    logger.error(f"Unsupported provider: {adapter.provider}")
+                    await asyncio.sleep(5)
+                    continue
+
+                if tasks:
+                    for task in tasks:
+                        task_queue.put(task)
+                        with active_tasks.get_lock():
+                            active_tasks.value += 1
+                        logger.debug(f"Queued task {task['task_id']}, active tasks: {active_tasks.value}")
+                else:
+                    # Sleep to avoid hammering the queue
+                    await asyncio.sleep(1)
+            else:
+                # Wait for workers to process tasks
+                await asyncio.sleep(0.1)
+
+        except Exception as e:
+            logger.error(f"Error fetching tasks: {e}")
+            await asyncio.sleep(1)
+
+    logger.info("Task feeder shutting down")
+
+async def handle_worker_results(
+    adapter: CloudTaskAdapter,
+    result_queue: Queue,
+    tasks_processed: Value,
+    tasks_failed: Value,
+    shutdown_event: Event
+) -> None:
+    """
+    Handle results from worker processes.
+
+    Args:
+        adapter: CloudTaskAdapter instance
+        result_queue: Queue to receive results from worker processes
+        tasks_processed: Shared counter of processed tasks
+        tasks_failed: Shared counter of failed tasks
+        shutdown_event: Event to signal shutdown
+    """
+    logger.info("Result handler started")
+
+    while not shutdown_event.is_set():
+        try:
+            # Non-blocking check for results
+            while not result_queue.empty():
+                process_id, task_id, success, result = result_queue.get_nowait()
+
+                # Update counters
+                if success:
+                    with tasks_processed.get_lock():
+                        tasks_processed.value += 1
+                    logger.info(f"Task {task_id} completed successfully by worker {process_id}")
+
+                    # Upload result if configured
+                    if adapter.result_bucket:
+                        await adapter.upload_result(task_id, result)
+
+                else:
+                    with tasks_failed.get_lock():
+                        tasks_failed.value += 1
+                    logger.error(f"Task {task_id} failed in worker {process_id}: {result}")
+
+            # Sleep briefly
+            await asyncio.sleep(0.1)
+
+        except Exception as e:
+            logger.error(f"Error handling results: {e}")
+            await asyncio.sleep(1)
+
+    logger.info("Result handler shutting down")
+
+async def check_cloud_termination(
+    adapter: CloudTaskAdapter,
+    termination_event: Event,
+    shutdown_event: Event
+) -> None:
+    """
+    Check for cloud instance termination notices.
+
+    Args:
+        adapter: CloudTaskAdapter instance
+        termination_event: Event to signal termination
+        shutdown_event: Event to signal shutdown
+    """
+    logger.info("Termination checker started")
+    check_interval = 15  # seconds
+
+    while not shutdown_event.is_set():
+        try:
+            # Check for termination notice
+            is_terminating = await adapter.check_termination()
+
+            if is_terminating and not termination_event.is_set():
+                logger.warning("Instance termination notice received")
+                termination_event.set()
+
+                # Schedule shutdown after grace period
+                asyncio.create_task(delayed_shutdown(shutdown_event, 60))
+
+            # Sleep before next check
+            await asyncio.sleep(check_interval)
+
+        except Exception as e:
+            logger.error(f"Error checking for termination: {e}")
+            await asyncio.sleep(check_interval)
+
+    logger.info("Termination checker shutting down")
+
+async def delayed_shutdown(shutdown_event: Event, delay_seconds: int) -> None:
+    """
+    Trigger shutdown after a delay.
+
+    Args:
+        shutdown_event: Event to signal shutdown
+        delay_seconds: Delay in seconds before shutdown
+    """
+    logger.info(f"Scheduling shutdown in {delay_seconds} seconds")
+    await asyncio.sleep(delay_seconds)
+    logger.info("Grace period expired, initiating shutdown")
+    shutdown_event.set()

@@ -169,17 +169,25 @@ async def test_run_cloud_worker():
     mock_adapter = mock.AsyncMock()
     mock_adapter.start = mock.AsyncMock()
 
-    # Mock the CloudTaskAdapter class to return our mock
-    with mock.patch('cloud_tasks.worker.cloud_adapter.CloudTaskAdapter', return_value=mock_adapter):
-        # Mock sys.argv to provide a config file argument
-        with mock.patch.object(sys, 'argv', ['script.py', '--config=test_config.json']):
-            # Mock sys.exit to prevent test from exiting
-            with mock.patch.object(sys, 'exit'):
+    # Create a temporary config file for testing
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as temp_file:
+        temp_file.write('{"provider": "aws", "job_id": "test", "queue_name": "test"}')
+        config_path = temp_file.name
+
+    try:
+        # Mock the CloudTaskAdapter class to return our mock
+        with mock.patch('cloud_tasks.worker.cloud_adapter.CloudTaskAdapter', return_value=mock_adapter):
+            # Mock the num_workers parameter to use a single process for testing
+            with mock.patch.object(sys, 'argv', ['script.py', f'--config={config_path}', '--workers=1']):
                 # Call run_cloud_worker with a sample task processor
                 await run_cloud_worker(sample_task_processor)
 
                 # Check that the adapter's start method was called
                 mock_adapter.start.assert_called_once()
+    finally:
+        # Clean up the temporary file
+        if os.path.exists(config_path):
+            os.unlink(config_path)
 
 
 @pytest.mark.asyncio

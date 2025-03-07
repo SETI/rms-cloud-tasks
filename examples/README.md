@@ -245,3 +245,43 @@ python worker_adapted.py --config=../../test_config.json
 ```
 
 This should create a file `results/test-task.out` containing the result `100`.
+
+## Parallel Processing
+
+The latest version of the cloud task processing system supports true parallel processing using Python's multiprocessing module. This allows tasks to run in separate processes, bypassing the Global Interpreter Lock (GIL) and utilizing multiple CPU cores.
+
+### Parallel Worker
+
+The `worker_adapted.py` example demonstrates how to use multiprocessing with the cloud task adapter:
+
+```bash
+# Run with parallel processing (default is CPU count - 1 processes)
+python worker_adapted.py --config=../parallel_worker_config.json
+
+# Explicitly specify the number of worker processes
+python worker_adapted.py --config=../parallel_worker_config.json --workers=4
+```
+
+### Configuration
+
+To configure the number of worker processes, add the `num_workers` option to your configuration file:
+
+```json
+{
+  "worker_options": {
+    "num_workers": 4  // Number of parallel processes to use
+  }
+}
+```
+
+### Benefits of Parallel Processing
+
+- **True Parallelism**: Tasks run in separate processes, allowing for parallel execution across multiple CPU cores
+- **Improved Performance**: CPU-bound tasks see significant speedup when distributed across multiple processes
+- **Resource Isolation**: Each process has its own memory space, preventing memory contention
+- **Fault Tolerance**: If one process crashes, other processes continue running
+
+### Example Files
+
+- `parallel_tasks.json`: Sample tasks for testing parallel processing
+- `parallel_worker_config.json`: Configuration specifying 4 worker processes

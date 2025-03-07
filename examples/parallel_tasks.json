@@ -1,0 +1,58 @@
+[
+  {
+    "id": "parallel-task-1",
+    "data": {
+      "num1": 42,
+      "num2": 58
+    }
+  },
+  {
+    "id": "parallel-task-2",
+    "data": {
+      "num1": 100,
+      "num2": 200
+    }
+  },
+  {
+    "id": "parallel-task-3",
+    "data": {
+      "num1": 1234,
+      "num2": 5678
+    }
+  },
+  {
+    "id": "parallel-task-4",
+    "data": {
+      "num1": 3.14,
+      "num2": 2.71
+    }
+  },
+  {
+    "id": "parallel-task-5",
+    "data": {
+      "num1": -10,
+      "num2": 25
+    }
+  },
+  {
+    "id": "parallel-task-6",
+    "data": {
+      "num1": 500,
+      "num2": 500
+    }
+  },
+  {
+    "id": "parallel-task-7",
+    "data": {
+      "num1": 999,
+      "num2": 1
+    }
+  },
+  {
+    "id": "parallel-task-8",
+    "data": {
+      "num1": 123,
+      "num2": 456
+    }
+  }
+]
