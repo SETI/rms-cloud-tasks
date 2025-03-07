@@ -160,7 +160,7 @@ def load_tasks(tasks_file: str) -> List[Dict[str, Any]]:
 
         for i, task in enumerate(tasks):
             if 'id' not in task:
-                task['id'] = f"task-{i}"
+                task['id'] = f"task-{i:06d}"
             if 'data' not in task:
                 raise ValueError(f"Task {i} is missing 'data' field")
 

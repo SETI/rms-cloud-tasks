@@ -38,8 +38,8 @@ class CloudTaskAdapter:
     def __init__(
         self,
         task_processor: Callable[[str, Dict[str, Any]], Awaitable[Tuple[bool, Any]]],
-        config_file: str = None,
-        config: Dict[str, Any] = None
+        config_file: Optional[str] = None,
+        config: Optional[Dict[str, Any]] = None
     ):
         """
         Initialize the cloud task adapter.
@@ -54,7 +54,7 @@ class CloudTaskAdapter:
             raise ValueError("Either config or config_file must be provided")
 
         self.task_processor = task_processor
-        self.config = self._load_config(config_file) if config_file else config
+        self.config = self._load_config(config_file) if config_file else config or {}
 
         # Initialize configuration
         self.provider = self.config.get('provider', '').lower()
@@ -114,7 +114,7 @@ class CloudTaskAdapter:
         """Import AWS-specific modules."""
         try:
             global boto3
-            import boto3
+            import boto3  # type: ignore
         except ImportError:
             raise ImportError(
                 "AWS dependencies not installed. "
@@ -137,8 +137,8 @@ class CloudTaskAdapter:
         """Import Azure-specific modules."""
         try:
             global ServiceBusClient, BlobServiceClient
-            from azure.servicebus.aio import ServiceBusClient
-            from azure.storage.blob.aio import BlobServiceClient
+            from azure.servicebus.aio import ServiceBusClient  # type: ignore
+            from azure.storage.blob.aio import BlobServiceClient  # type: ignore
         except ImportError:
             raise ImportError(
                 "Azure dependencies not installed. "
@@ -185,18 +185,37 @@ class CloudTaskAdapter:
         logger.info(f"Configured AWS worker for queue {self.queue_name}")
 
     def _configure_gcp(self):
-        """Configure GCP-specific clients and settings."""
+        """
+        Configure GCP-specific clients and settings.
+
+        Authentication methods in order of precedence:
+        1. Explicit credentials file in config (if provided)
+        2. Application Default Credentials (ADC):
+           - GOOGLE_APPLICATION_CREDENTIALS environment variable
+           - User's gcloud CLI configuration ($HOME/.config/gcloud/application_default_credentials.json)
+           - GCE/GKE metadata server credentials (when running on Google Cloud)
+        """
         gcp_config = self.config.get('config', {})
         self.project_id = gcp_config.get('project_id')
+        credentials_file = gcp_config.get('credentials_file')
 
         if not self.project_id:
             raise ValueError("GCP project_id is required")
 
-        # Create Pub/Sub client for queue access
-        self.queue_client = pubsub_v1.SubscriberClient()
-
-        # Create Storage client for results
-        self.storage_client = storage.Client(project=self.project_id)
+        # Create clients
+        if credentials_file:
+            # Use explicit credentials file
+            logger.debug(f"Using GCP credentials from file: {credentials_file}")
+            self.queue_client = pubsub_v1.SubscriberClient.from_service_account_file(credentials_file)
+            self.storage_client = storage.Client.from_service_account_file(
+                credentials_file,
+                project=self.project_id
+            )
+        else:
+            # Use Application Default Credentials (ADC)
+            logger.debug("Using GCP Application Default Credentials")
+            self.queue_client = pubsub_v1.SubscriberClient()
+            self.storage_client = storage.Client(project=self.project_id)
 
         # Set subscription path
         self.subscription_path = self.queue_client.subscription_path(
@@ -251,6 +270,9 @@ class CloudTaskAdapter:
 
             if self.provider == 'aws':
                 # Upload to S3
+                if self.storage_client is None:
+                    logger.error("AWS S3 client is not initialized")
+                    return False
                 self.storage_client.put_object(
                     Bucket=self.result_bucket,
                     Key=result_key,
@@ -259,12 +281,18 @@ class CloudTaskAdapter:
 
             elif self.provider == 'gcp':
                 # Upload to GCS
+                if self.storage_client is None:
+                    logger.error("GCP Storage client is not initialized")
+                    return False
                 bucket = self.storage_client.bucket(self.result_bucket)
                 blob = bucket.blob(result_key)
                 blob.upload_from_string(result_str)
 
             elif self.provider == 'azure':
                 # Upload to Azure Blob Storage
+                if self.storage_client is None:
+                    logger.error("Azure Blob Storage client is not initialized")
+                    return False
                 blob_client = self.storage_client.get_blob_client(
                     container=self.result_bucket,
                     blob=result_key
@@ -278,14 +306,17 @@ class CloudTaskAdapter:
             return False
 
     async def receive_aws_tasks(self, max_count: int = 10) -> List[Dict[str, Any]]:
-        """Receive tasks from AWS SQS queue."""
+        """Receive tasks from AWS SQS."""
+        if self.queue_client is None:
+            logger.error("AWS SQS client is not initialized")
+            return []
+
         response = self.queue_client.receive_message(
             QueueUrl=self.queue_url,
-            MaxNumberOfMessages=max_count,
-            VisibilityTimeout=120,  # 2 minutes to process task
-            WaitTimeSeconds=20,  # Long polling
-            AttributeNames=['All'],
-            MessageAttributeNames=['All']
+            MaxNumberOfMessages=min(max_count, 10),
+            WaitTimeSeconds=5,
+            VisibilityTimeout=30,
+            AttributeNames=['All']
         )
 
         tasks = []
@@ -301,12 +332,15 @@ class CloudTaskAdapter:
         return tasks
 
     async def receive_gcp_tasks(self, max_count: int = 10) -> List[Dict[str, Any]]:
-        """Receive tasks from GCP Pub/Sub subscription."""
+        """Receive tasks from GCP Pub/Sub."""
+        if self.queue_client is None:
+            logger.error("GCP Pub/Sub client is not initialized")
+            return []
+
         response = self.queue_client.pull(
-            request={
-                "subscription": self.subscription_path,
-                "max_messages": max_count,
-            }
+            subscription=self.subscription_path,
+            max_messages=min(max_count, 100),
+            return_immediately=False
         )
 
         tasks = []
@@ -321,19 +355,22 @@ class CloudTaskAdapter:
         return tasks
 
     async def receive_azure_tasks(self, max_count: int = 10) -> List[Dict[str, Any]]:
-        """Receive tasks from Azure Service Bus queue."""
-        tasks = []
+        """Receive tasks from Azure Service Bus."""
+        if self.queue_client is None:
+            logger.error("Azure Service Bus client is not initialized")
+            return []
 
-        async with self.queue_client:
-            receiver = self.queue_client.get_queue_receiver(
-                queue_name=self.queue_name
-            )
-            async with receiver:
+        async with self.queue_client as service_bus_client:
+            async with service_bus_client.get_queue_receiver(
+                queue_name=self.queue_name,
+                max_wait_time=5
+            ) as receiver:
                 messages = await receiver.receive_messages(
                     max_message_count=max_count,
                     max_wait_time=20  # Max wait time in seconds
                 )
 
+                tasks = []
                 for message in messages:
                     message_body = json.loads(str(message))
                     tasks.append({
@@ -345,15 +382,13 @@ class CloudTaskAdapter:
         return tasks
 
     async def complete_task(self, task: Dict[str, Any], success: bool = True) -> None:
-        """
-        Mark a task as completed or failed in the queue.
-
-        Args:
-            task: Task details including provider-specific receipt/ack
-            success: Whether the task was successful
-        """
+        """Mark a task as completed."""
         try:
             if self.provider == 'aws':
+                if self.queue_client is None:
+                    logger.error("AWS SQS client is not initialized")
+                    return
+
                 if success:
                     # Delete message from SQS
                     self.queue_client.delete_message(
@@ -361,33 +396,32 @@ class CloudTaskAdapter:
                         ReceiptHandle=task['receipt_handle']
                     )
                 else:
-                    # Make message visible again after a delay
+                    # Return to queue by changing visibility timeout to 0
                     self.queue_client.change_message_visibility(
                         QueueUrl=self.queue_url,
                         ReceiptHandle=task['receipt_handle'],
-                        VisibilityTimeout=30  # Short delay before retry
+                        VisibilityTimeout=0
                     )
 
             elif self.provider == 'gcp':
+                if 'message' not in task or task['message'] is None:
+                    logger.error("GCP task missing message field")
+                    return
+
                 if success:
                     # Acknowledge the message
-                    self.queue_client.acknowledge(
-                        request={
-                            "subscription": self.subscription_path,
-                            "ack_ids": [task['ack_id']]
-                        }
-                    )
+                    if hasattr(task['message'], 'acknowledge'):
+                        await task['message'].acknowledge()
                 else:
-                    # Negative acknowledgment
-                    self.queue_client.modify_ack_deadline(
-                        request={
-                            "subscription": self.subscription_path,
-                            "ack_ids": [task['ack_id']],
-                            "ack_deadline_seconds": 0  # Immediate retry
-                        }
-                    )
+                    # Negative acknowledge to retry
+                    if hasattr(task['message'], 'modify_ack_deadline'):
+                        await task['message'].modify_ack_deadline(0)
 
             elif self.provider == 'azure':
+                if 'message' not in task or task['message'] is None:
+                    logger.error("Azure task missing message field")
+                    return
+
                 if success:
                     # Complete the message
                     await task['message'].complete()
@@ -408,7 +442,7 @@ class CloudTaskAdapter:
         try:
             if self.provider == 'aws':
                 # Check AWS spot termination notice
-                import requests  # Import here to avoid dependency if not using AWS
+                import requests  # type: ignore
                 response = requests.get(
                     "http://169.254.169.254/latest/meta-data/spot/instance-action",
                     timeout=2
@@ -417,7 +451,7 @@ class CloudTaskAdapter:
 
             elif self.provider == 'gcp':
                 # Check GCP preemption notice
-                import requests  # Import here to avoid dependency if not using GCP
+                import requests  # type: ignore
                 response = requests.get(
                     "http://metadata.google.internal/computeMetadata/v1/instance/preempted",
                     headers={"Metadata-Flavor": "Google"},
@@ -434,6 +468,8 @@ class CloudTaskAdapter:
             # Request failed, likely not a spot/preemptible instance
             # or metadata endpoint not available
             return False
+
+        return False  # Default return for unknown providers
 
     async def termination_check_loop(self):
         """Background task to check for instance termination."""
@@ -624,5 +660,9 @@ async def run_cloud_worker(
         sys.exit(1)
 
     # Create and start the adapter
-    adapter = CloudTaskAdapter(task_processor, config_file, config)
+    adapter = CloudTaskAdapter(
+        task_processor=task_processor,
+        config_file=config_file if config_file else None,
+        config=config if config else None
+    )
     await adapter.start()

@@ -40,7 +40,7 @@ aws:
 
 gcp:
   project_id: YOUR_GCP_PROJECT_ID
-  credentials_file: /path/to/credentials.json
+  credentials_file: /path/to/credentials.json  # Optional, uses Application Default Credentials if omitted
 
 azure:
   subscription_id: YOUR_AZURE_SUBSCRIPTION_ID
@@ -48,6 +48,34 @@ azure:
   client_id: YOUR_AZURE_CLIENT_ID
   client_secret: YOUR_AZURE_CLIENT_SECRET
 ```
+
+### Authentication
+
+#### AWS
+AWS authentication requires an access key and secret key, and optionally a region (defaults to us-east-1).
+
+#### Google Cloud
+Google Cloud supports multiple authentication methods:
+
+1. **Explicit credentials file** - Set `credentials_file` in the configuration:
+   ```yaml
+   gcp:
+     project_id: YOUR_GCP_PROJECT_ID
+     credentials_file: /path/to/credentials.json
+   ```
+
+2. **Application Default Credentials (ADC)** - When `credentials_file` is omitted, the system uses ADC in the following order:
+   - `GOOGLE_APPLICATION_CREDENTIALS` environment variable pointing to a credentials file
+   - User's gcloud CLI configuration at `$HOME/.config/gcloud/application_default_credentials.json`
+   - Metadata server credentials when running on Google Cloud
+
+   To set up ADC, run:
+   ```bash
+   gcloud auth application-default login
+   ```
+
+#### Azure
+Azure authentication requires a subscription ID, tenant ID, client ID, and client secret.
 
 ### Running Tasks
 
@@ -77,4 +105,4 @@ pytest
 
 ## License
 
-MIT
+Apache-2.0

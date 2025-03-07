@@ -1,36 +1,57 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=61.0", "setuptools_scm[toml]", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "cloud-tasks"
-version = "0.1.0"
+name = "rms-cloud-run"
+dynamic = ["version"]
 description = "A scalable, multi-cloud task processing system"
-authors = [
-    {name = "Cloud Tasks Team", email = "info@example.com"}
-]
 readme = "README.md"
 requires-python = ">=3.8"
+dependencies = [
+  "cspyce",
+  "numpy"
+]
+license = {text = "Apache-2.0"}
+maintainers = [
+  {name = "Robert S. French", email = "rfrench@seti.org"}
+]
+keywords = ["AWS", "GCP", "Azure"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
-    "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
+  "Development Status :: 3 - Alpha",
+  "Natural Language :: English",
+  "Intended Audience :: Developers",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Topic :: Utilities",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.8",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Operating System :: MacOS :: MacOS X",
+  "Operating System :: POSIX :: Linux",
+  "Operating System :: Microsoft :: Windows"
 ]
 
 [project.urls]
-"Homepage" = "https://github.com/yourusername/cloud-tasks"
-"Bug Tracker" = "https://github.com/yourusername/cloud-tasks/issues"
+Homepage = "https://github.com/SETI/rms-cloud-run"
+Repository = "https://github.com/SETI/rms-cloud-run"
+Source = "https://github.com/SETI/rms-cloud-run"
+Issues = "https://github.com/SETI/rms-cloud-run/issues"
 
 [project.scripts]
-cloud-tasks = "cloud_tasks.cli:main"
+cloud-run = "cloud_tasks.cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
+
+#[tool.setuptools.package-data]
+#"rms-cloud-run" = ["py.typed"]
+
+[tool.setuptools_scm]
+local_scheme = "no-local-version"
+write_to = "src/_version.py"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

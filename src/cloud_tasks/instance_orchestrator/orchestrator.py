@@ -36,21 +36,21 @@ class InstanceOrchestrator:
         job_id: Optional[str] = None,
     ):
         """
-        Initialize the instance orchestrator.
+        Initialize the orchestrator.
 
         Args:
-            instance_manager: InstanceManager implementation
-            task_queue: TaskQueue implementation
-            worker_repo_url: URL to the GitHub repo with worker code
-            max_instances: Maximum number of instances to provision
-            min_instances: Minimum number of instances to keep running
-            cpu_required: Minimum CPU cores required per instance
-            memory_required_gb: Minimum memory required per instance in GB
-            disk_required_gb: Minimum disk space required per instance in GB
-            tasks_per_instance: Number of tasks each instance should handle concurrently
+            instance_manager: Instance manager to use
+            task_queue: Task queue to use
+            worker_repo_url: URL to Git repository containing worker code
+            max_instances: Maximum number of instances to create
+            min_instances: Minimum number of instances to maintain
+            cpu_required: CPU cores required per instance
+            memory_required_gb: Memory required per instance in GB
+            disk_required_gb: Disk space required per instance in GB
+            tasks_per_instance: Number of tasks each instance can handle concurrently
             check_interval_seconds: Interval between scaling checks
-            instance_termination_delay_seconds: Time to wait after queue empty before terminating
-            job_id: Unique ID for this job run (to tag instances)
+            instance_termination_delay_seconds: Time to wait before terminating idle instances
+            job_id: Unique identifier for this job (generated if not provided)
         """
         self.instance_manager = instance_manager
         self.task_queue = task_queue
@@ -65,14 +65,14 @@ class InstanceOrchestrator:
         self.instance_termination_delay_seconds = instance_termination_delay_seconds
         self.job_id = job_id or f"job-{int(time.time())}"
 
-        # State variables
+        # State
         self.running = False
-        self.instances: Dict[str, Dict[str, Any]] = {}  # instance_id -> instance_data
+        self.instance_count = 0
         self.last_scaling_time: float = 0.0
         self.empty_queue_since: Optional[float] = None
 
         # Background task
-        self._scaling_task = None
+        self._scaling_task: Optional[asyncio.Task[Any]] = None
 
     def generate_worker_startup_script(self, provider: str, queue_name: str, config: Dict[str, Any]) -> str:
         """
@@ -118,10 +118,7 @@ python3 worker.py --config=/opt/worker/config.json
 
     async def start(self) -> None:
         """Start the orchestrator."""
-        if self.running:
-            logger.warning("Orchestrator is already running")
-            return
-
+        logger.info("Starting orchestrator")
         self.running = True
 
         # Initial scaling
@@ -168,18 +165,18 @@ python3 worker.py --config=/opt/worker/config.json
         # Check if queue is empty
         if queue_depth == 0:
             if self.empty_queue_since is None:
-                self.empty_queue_since = time.time()
+                self.empty_queue_since = float(time.time())
                 logger.info("Queue is empty, starting termination timer")
 
             # If queue has been empty for a while and we have more than min_instances,
             # terminate excess instances
             if (self.empty_queue_since is not None and
-                time.time() - self.empty_queue_since > self.instance_termination_delay_seconds and
+                float(time.time()) - self.empty_queue_since > self.instance_termination_delay_seconds and
                 total_instances > self.min_instances):
 
                 # Calculate how many instances to terminate
                 instances_to_terminate = total_instances - self.min_instances
-                logger.info(f"Queue has been empty for {time.time() - self.empty_queue_since}s, "
+                logger.info(f"Queue has been empty for {float(time.time()) - self.empty_queue_since}s, "
                            f"terminating {instances_to_terminate} instances")
 
                 # Terminate instances
@@ -207,7 +204,7 @@ python3 worker.py --config=/opt/worker/config.json
                 await self.provision_instances(instances_to_add)
 
         # Update last scaling time
-        self.last_scaling_time = time.time()
+        self.last_scaling_time = float(time.time())
 
     async def _scaling_loop(self) -> None:
         """Background task to periodically check scaling."""

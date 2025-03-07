@@ -4,7 +4,7 @@ Setup script for cloud_tasks package.
 from setuptools import setup, find_namespace_packages
 
 setup(
-    name="cloud-tasks",
+    name="cloud-run",
     version="0.1.0",
     package_dir={"": "src"},
     packages=find_namespace_packages(where="src"),

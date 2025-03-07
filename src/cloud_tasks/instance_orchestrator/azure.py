@@ -47,7 +47,7 @@ class AzureVMInstanceManager(InstanceManager):
 
         # Location and resource group settings
         self.location = config.get('location', 'eastus')
-        self.resource_group = config.get('resource_group', 'cloud-tasks-rg')
+        self.resource_group = config.get('resource_group', 'cloud-run-rg')
 
         # Create credential object
         credential = ClientSecretCredential(
