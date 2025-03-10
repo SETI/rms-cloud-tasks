@@ -16,7 +16,13 @@ import signal
 import sys
 import time
 import traceback
-from typing import Any, Dict, List, Optional, Tuple, Set, Awaitable, Callable
+from typing import Any, Dict, List, Optional, Tuple, Set, Awaitable, Callable, cast, Union
+
+# Type aliases for multiprocessing objects
+# We use Any because MyPy doesn't handle multiprocessing types well
+MP_Queue = Any  # multiprocessing.Queue
+MP_Event = Any  # multiprocessing.Event
+MP_Value = Any  # multiprocessing.Value
 
 # Set up logging
 logging.basicConfig(
@@ -50,25 +56,25 @@ class Worker:
 
         # State tracking
         self.running = False
-        self.task_queue = None
+        self.task_queue: Any = None
 
         # Multiprocessing coordination
         self.manager = Manager()
-        self.shutdown_event = Event()
-        self.termination_event = Event()
+        self.shutdown_event: MP_Event = Event()  # type: ignore
+        self.termination_event: MP_Event = Event()  # type: ignore
 
         # Track processes
-        self.processes = []
-        self.active_tasks = Value('i', 0)
+        self.processes: List[Process] = []
+        self.active_tasks: MP_Value = Value('i', 0)  # type: ignore
 
         # For results from worker processes
         self.task_results = self.manager.dict()
-        self.tasks_processed = Value('i', 0)
-        self.tasks_failed = Value('i', 0)
+        self.tasks_processed: MP_Value = Value('i', 0)  # type: ignore
+        self.tasks_failed: MP_Value = Value('i', 0)  # type: ignore
 
         # Task queue for inter-process communication
-        self.task_queue_mp = Queue()
-        self.result_queue = Queue()
+        self.task_queue_mp: MP_Queue = Queue()  # type: ignore
+        self.result_queue: MP_Queue = Queue()  # type: ignore
 
         # Register signal handlers
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -250,7 +256,9 @@ class Worker:
             True if the instance is scheduled for termination, False otherwise
         """
         try:
-            import requests
+            # Only import requests when needed to avoid dependency issues
+            # using type: ignore to avoid mypy errors for missing stubs
+            import requests  # type: ignore
 
             if self.provider == 'aws':
                 # AWS spot termination check
@@ -315,11 +323,11 @@ class Worker:
     @staticmethod
     def _worker_process_main(
         process_id: int,
-        task_queue: Queue,
-        result_queue: Queue,
-        shutdown_event: Event,
-        termination_event: Event,
-        active_tasks: Value,
+        task_queue: MP_Queue,
+        result_queue: MP_Queue,
+        shutdown_event: MP_Event,
+        termination_event: MP_Event,
+        active_tasks: MP_Value,
         config_file: str
     ) -> None:
         """Main function for worker processes."""

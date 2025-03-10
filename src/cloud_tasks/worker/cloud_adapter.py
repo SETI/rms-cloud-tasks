@@ -17,7 +17,13 @@ import signal
 import sys
 import time
 import traceback
-from typing import Any, Dict, List, Optional, Tuple, Callable, Awaitable, Union
+from typing import Any, Dict, List, Optional, Tuple, Callable, Awaitable, Union, TypeVar, cast
+
+# Type aliases for multiprocessing objects
+# We use Any because MyPy doesn't handle multiprocessing types well
+MP_Queue = Any  # multiprocessing.Queue
+MP_Event = Any  # multiprocessing.Event
+MP_Value = Any  # multiprocessing.Value
 
 # Configure logging
 logging.basicConfig(
@@ -31,6 +37,8 @@ DEFAULT_MAX_RETRIES = 3
 DEFAULT_TERMINATION_CHECK_INTERVAL = 5  # in seconds
 DEFAULT_WORKERS = max(1, multiprocessing.cpu_count() - 1)  # Default to CPU count - 1
 
+# Type for the task processor function
+TaskProcessorType = Callable[[str, Dict[str, Any]], Awaitable[Tuple[bool, Any]]]
 
 class CloudTaskAdapter:
     """
@@ -714,7 +722,7 @@ async def run_cloud_worker(
         )
 
 async def run_parallel_cloud_worker(
-    task_processor: Callable[[str, Dict[str, Any]], Awaitable[Tuple[bool, Any]]],
+    task_processor: TaskProcessorType,
     config_file: Optional[str] = None,
     config: Optional[Dict[str, Any]] = None,
     num_workers: int = DEFAULT_WORKERS
@@ -739,18 +747,18 @@ async def run_parallel_cloud_worker(
 
     # Set up multiprocessing components
     manager = Manager()
-    task_queue = Queue()
-    result_queue = Queue()
-    shutdown_event = Event()
-    termination_event = Event()
-    active_tasks = Value('i', 0)
+    task_queue: MP_Queue = Queue()  # type: ignore
+    result_queue: MP_Queue = Queue()  # type: ignore
+    shutdown_event: MP_Event = Event()  # type: ignore
+    termination_event: MP_Event = Event()  # type: ignore
+    active_tasks: MP_Value = Value('i', 0)  # type: ignore
 
     # Shared state counters
-    tasks_processed = Value('i', 0)
-    tasks_failed = Value('i', 0)
+    tasks_processed: MP_Value = Value('i', 0)  # type: ignore
+    tasks_failed: MP_Value = Value('i', 0)  # type: ignore
 
     # Start worker processes
-    processes = []
+    processes: List[Process] = []
 
     # Register signal handlers
     def signal_handler(signum, frame):
@@ -860,12 +868,12 @@ async def run_parallel_cloud_worker(
 
 def worker_process_main(
     process_id: int,
-    task_queue: Queue,
-    result_queue: Queue,
-    shutdown_event: Event,
-    termination_event: Event,
-    active_tasks: Value,
-    task_processor: Callable[[str, Dict[str, Any]], Awaitable[Tuple[bool, Any]]],
+    task_queue: MP_Queue,
+    result_queue: MP_Queue,
+    shutdown_event: MP_Event,
+    termination_event: MP_Event,
+    active_tasks: MP_Value,
+    task_processor: TaskProcessorType,
     config: Dict[str, Any]
 ) -> None:
     """
@@ -939,10 +947,10 @@ def worker_process_main(
 
 async def feed_tasks_from_cloud(
     adapter: CloudTaskAdapter,
-    task_queue: Queue,
-    active_tasks: Value,
-    shutdown_event: Event,
-    termination_event: Event,
+    task_queue: MP_Queue,
+    active_tasks: MP_Value,
+    shutdown_event: MP_Event,
+    termination_event: MP_Event,
     num_workers: int
 ) -> None:
     """
@@ -1002,10 +1010,10 @@ async def feed_tasks_from_cloud(
 
 async def handle_worker_results(
     adapter: CloudTaskAdapter,
-    result_queue: Queue,
-    tasks_processed: Value,
-    tasks_failed: Value,
-    shutdown_event: Event
+    result_queue: MP_Queue,
+    tasks_processed: MP_Value,
+    tasks_failed: MP_Value,
+    shutdown_event: MP_Event
 ) -> None:
     """
     Handle results from worker processes.
@@ -1051,8 +1059,8 @@ async def handle_worker_results(
 
 async def check_cloud_termination(
     adapter: CloudTaskAdapter,
-    termination_event: Event,
-    shutdown_event: Event
+    termination_event: MP_Event,
+    shutdown_event: MP_Event
 ) -> None:
     """
     Check for cloud instance termination notices.
@@ -1086,7 +1094,7 @@ async def check_cloud_termination(
 
     logger.info("Termination checker shutting down")
 
-async def delayed_shutdown(shutdown_event: Event, delay_seconds: int) -> None:
+async def delayed_shutdown(shutdown_event: MP_Event, delay_seconds: int) -> None:
     """
     Trigger shutdown after a delay.
 
