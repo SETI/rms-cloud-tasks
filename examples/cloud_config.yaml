@@ -1,18 +1,21 @@
-# Cloud provider configuration
+# Cloud Tasks configuration with regions specified
+
 aws:
+  region: us-west-2
   access_key: YOUR_AWS_ACCESS_KEY
   secret_key: YOUR_AWS_SECRET_KEY
-  region: us-west-2
 
-# Uncomment and configure as needed for your preferred cloud
-# gcp:
-#   project_id: YOUR_GCP_PROJECT_ID
-#   credentials_file: /path/to/credentials.json
-#   zone: us-central1-a
+gcp:
+  # project_id: your-gcp-project-id
+  project_id: rfrench
+  region: us-central1
+  zone: us-central1-a
+  # credentials_file: /path/to/gcp-credentials.json
 
-# azure:
-#   subscription_id: YOUR_AZURE_SUBSCRIPTION_ID
-#   tenant_id: YOUR_AZURE_TENANT_ID
-#   client_id: YOUR_AZURE_CLIENT_ID
-#   client_secret: YOUR_AZURE_CLIENT_SECRET
-#   location: eastus
+azure:
+  subscription_id: your-azure-subscription-id
+  resource_group: your-resource-group
+  location: eastus
+  tenant_id: your-tenant-id
+  client_id: your-client-id
+  client_secret: your-client-secret

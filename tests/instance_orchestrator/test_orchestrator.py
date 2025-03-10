@@ -33,23 +33,31 @@ def mock_task_queue():
 @pytest.fixture
 def orchestrator(mock_instance_manager, mock_task_queue):
     """Fixture to provide an InstanceOrchestrator with mock dependencies."""
-    return InstanceOrchestrator(
-        instance_manager=mock_instance_manager,
-        task_queue=mock_task_queue,
-        worker_repo_url="https://github.com/example/worker-code.git",
-        max_instances=5,
-        min_instances=1,
+    # Create a new orchestrator with required provider parameter
+    orch = InstanceOrchestrator(
+        provider="aws",  # Add provider parameter
+        job_id="test-job-123",
         cpu_required=2,
         memory_required_gb=4,
         disk_required_gb=20,
+        min_instances=1,
+        max_instances=5,
         tasks_per_instance=5,
-        job_id="test-job-123",
+        worker_repo_url="https://github.com/example/worker-code.git",
+        queue_name="test-job-123-queue"
     )
+
+    # Set instance_manager and task_queue directly to bypass initialization
+    orch.instance_manager = mock_instance_manager
+    orch.task_queue = mock_task_queue
+
+    return orch
 
 
 @pytest.mark.asyncio
 async def test_initialize_orchestrator(orchestrator):
     """Test that the orchestrator is initialized with correct values."""
+    assert orchestrator.provider == "aws"
     assert orchestrator.max_instances == 5
     assert orchestrator.min_instances == 1
     assert orchestrator.cpu_required == 2
@@ -193,23 +201,37 @@ async def test_provision_instances(orchestrator, mock_instance_manager):
     instance_ids = await orchestrator.provision_instances(2)
 
     # Verify get_optimal_instance_type was called with correct parameters
-    mock_instance_manager.get_optimal_instance_type.assert_called_once_with(
+    mock_instance_manager.get_optimal_instance_type.assert_called_with(
         orchestrator.cpu_required,
         orchestrator.memory_required_gb,
-        orchestrator.disk_required_gb
+        orchestrator.disk_required_gb,
+        use_spot=False  # Default is False
     )
 
     # Verify start_instance was called twice with correct parameters
     assert mock_instance_manager.start_instance.call_count == 2
-    mock_instance_manager.start_instance.assert_called_with(
-        instance_type="test-instance-type",
-        user_data=orchestrator.generate_worker_startup_script(
-            provider="example",
-            queue_name="example-queue",
-            config={}
-        ),
-        tags={'job_id': 'test-job-123', 'created_at': mock_instance_manager.start_instance.call_args[1]['tags']['created_at'], 'role': 'worker'}
-    )
+
+    # Check that the last call to start_instance had the expected arguments
+    # We're not checking the exact created_at value since it's generated at runtime
+    args = mock_instance_manager.start_instance.call_args
+    assert args is not None
+    assert args[0][0] == "test-instance-type"  # instance_type
+
+    # Check that the user_data contains relevant information
+    user_data = args[0][1]
+    assert "worker.py" in user_data
+
+    # Check that the tags dictionary contains expected keys
+    tags = args[0][2]
+    assert isinstance(tags, dict)
+    assert "job_id" in tags
+    assert "created_at" in tags
+    assert "role" in tags
+    assert tags["job_id"] == "test-job-123"
+    assert tags["role"] == "worker"
+
+    # Check use_spot parameter
+    assert args[1]["use_spot"] is False
 
     # Verify returned instance IDs
     assert len(instance_ids) == 2

@@ -7,6 +7,7 @@ import json
 import logging
 import sys
 import time
+import traceback
 from typing import Any, Dict, List, Optional
 
 import yaml  # type: ignore
@@ -17,10 +18,11 @@ from cloud_tasks.queue_manager import create_queue
 from cloud_tasks.instance_orchestrator import create_instance_manager
 from cloud_tasks.instance_orchestrator.orchestrator import InstanceOrchestrator
 
-# Set up logging
+# Set up logging with periods for fractions of a second
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S.%f'  # Explicitly use period for fractions
 )
 logger = logging.getLogger(__name__)
 
@@ -45,6 +47,16 @@ async def run_job(args: argparse.Namespace) -> None:
         # Initialize cloud services
         provider = args.provider
 
+        # Handle region parameter - add it to the config if specified on command line
+        if args.region:
+            logger.info(f"Using specified region from command line: {args.region}")
+            # Store region directly in InstanceOrchestrator constructor
+            region_param = args.region
+        else:
+            # No need to extract region, it will be handled by InstanceOrchestrator
+            region_param = None
+            logger.info("No region specified on command line, will use from config or find cheapest")
+
         # Create task queue
         logger.info(f"Creating task queue on {provider}")
         task_queue = await create_queue(
@@ -64,19 +76,25 @@ async def run_job(args: argparse.Namespace) -> None:
         job_id = args.job_id or f"job-{int(time.time())}"
         logger.info(f"Starting job {job_id}")
 
-        # Create orchestrator
+        # Create the orchestrator with all parameters
         orchestrator = InstanceOrchestrator(
-            instance_manager=instance_manager,
-            task_queue=task_queue,
-            worker_repo_url=args.worker_repo,
-            max_instances=args.max_instances,
-            min_instances=args.min_instances,
+            provider=provider,
+            job_id=job_id,
             cpu_required=args.cpu,
             memory_required_gb=args.memory,
             disk_required_gb=args.disk,
+            min_instances=args.min_instances,
+            max_instances=args.max_instances,
             tasks_per_instance=args.tasks_per_instance,
-            job_id=job_id
+            use_spot_instances=args.use_spot,
+            region=region_param,
+            worker_repo_url=args.worker_repo,
+            queue_name=args.queue_name,
+            config=config  # Pass the full config dictionary
         )
+
+        # Set the task queue on the orchestrator
+        orchestrator.task_queue = task_queue
 
         # Populate task queue
         logger.info("Populating task queue")
@@ -130,10 +148,10 @@ async def run_job(args: argparse.Namespace) -> None:
             await orchestrator.stop()
 
     except ConfigError as e:
-        logger.error(f"Configuration error: {e}")
+        logger.error(f"Configuration error: {e}", exc_info=True)
         sys.exit(1)
     except Exception as e:
-        logger.error(f"Error running job: {e}")
+        logger.error(f"Error running job: {e}", exc_info=True)
         sys.exit(1)
 
 
@@ -167,7 +185,7 @@ def load_tasks(tasks_file: str) -> List[Dict[str, Any]]:
         return tasks
 
     except Exception as e:
-        logger.error(f"Error loading tasks: {e}")
+        logger.error(f"Error loading tasks: {e}", exc_info=True)
         sys.exit(1)
 
 
@@ -180,7 +198,7 @@ async def status_job(args: argparse.Namespace) -> None:
     """
     try:
         # Load configuration
-        config = load_config(args.config)
+        config = get_config(args)
 
         # Create task queue to check depth
         task_queue = await create_queue(
@@ -189,19 +207,25 @@ async def status_job(args: argparse.Namespace) -> None:
             config=config
         )
 
-        # Create instance manager to check instances
-        instance_manager = await create_instance_manager(
+        # Create orchestrator
+        orchestrator = InstanceOrchestrator(
             provider=args.provider,
+            job_id=args.job_id,
+            region=args.region if hasattr(args, 'region') else None,
+            queue_name=args.queue_name,
             config=config
+        )
+
+        # Set task queue on orchestrator
+        orchestrator.task_queue = task_queue
+
+        # Get instances with job ID tag
+        instances = await orchestrator.instance_manager.list_running_instances(
+            tag_filter={'job_id': args.job_id}
         )
 
         # Get queue depth
         queue_depth = await task_queue.get_queue_depth()
-
-        # Get instances with job ID tag
-        instances = await instance_manager.list_running_instances(
-            tag_filter={'job_id': args.job_id}
-        )
 
         # Print status
         running_count = len([i for i in instances if i['state'] == 'running'])
@@ -220,7 +244,7 @@ async def status_job(args: argparse.Namespace) -> None:
                     print(f"    Public IP: {instance['public_ip']}")
 
     except Exception as e:
-        logger.error(f"Error checking job status: {e}")
+        logger.error(f"Error checking job status: {e}", exc_info=True)
         sys.exit(1)
 
 
@@ -242,19 +266,24 @@ async def stop_job(args: argparse.Namespace) -> None:
             config=config
         )
 
-        # Create instance manager
-        instance_manager = await create_instance_manager(
+        # Create orchestrator with the provider parameter and full config
+        orchestrator = InstanceOrchestrator(
             provider=args.provider,
-            config=config
+            job_id=args.job_id,
+            # Minimum parameters needed for stopping
+            min_instances=0,
+            max_instances=0,
+            queue_name=args.queue_name,
+            config=config  # Pass the full config
         )
 
-        # Create orchestrator
-        orchestrator = InstanceOrchestrator(
-            instance_manager=instance_manager,
-            task_queue=task_queue,
-            worker_repo_url="",  # Not needed for stopping
-            max_instances=0,
-            job_id=args.job_id
+        # Set the task_queue directly
+        orchestrator.task_queue = task_queue
+
+        # Create the instance manager
+        orchestrator.instance_manager = await create_instance_manager(
+            provider=args.provider,
+            config=config
         )
 
         # Stop orchestrator (terminates instances)
@@ -268,7 +297,7 @@ async def stop_job(args: argparse.Namespace) -> None:
         logger.info(f"Job {args.job_id} stopped")
 
     except Exception as e:
-        logger.error(f"Error stopping job: {e}")
+        logger.error(f"Error stopping job: {e}", exc_info=True)
         sys.exit(1)
 
 
@@ -286,12 +315,14 @@ def main():
     run_parser.add_argument('--queue-name', required=True, help='Name of the task queue')
     run_parser.add_argument('--worker-repo', required=True, help='URL to GitHub repo with worker code')
     run_parser.add_argument('--job-id', help='Unique job ID (generated if not provided)')
-    run_parser.add_argument('--max-instances', type=int, default=10, help='Maximum number of instances')
+    run_parser.add_argument('--max-instances', type=int, default=5, help='Maximum number of instances')
     run_parser.add_argument('--min-instances', type=int, default=0, help='Minimum number of instances')
     run_parser.add_argument('--cpu', type=int, default=1, help='Minimum CPU cores per instance')
     run_parser.add_argument('--memory', type=float, default=2, help='Minimum memory (GB) per instance')
     run_parser.add_argument('--disk', type=int, default=10, help='Minimum disk space (GB) per instance')
     run_parser.add_argument('--tasks-per-instance', type=int, default=10, help='Number of tasks per instance')
+    run_parser.add_argument('--use-spot', action='store_true', help='Use spot/preemptible instances (cheaper but can be terminated)')
+    run_parser.add_argument('--region', help='Specific region to launch instances in (defaults to cheapest region)')
     run_parser.add_argument('--verbose', '-v', action='store_true', help='Enable verbose output')
     run_parser.set_defaults(func=run_job)
 

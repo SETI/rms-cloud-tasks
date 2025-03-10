@@ -1,98 +1,156 @@
-# Multi-Cloud Task Processing System
+# Cloud Tasks
 
-A scalable, cloud-agnostic task processing system that distributes independent tasks across compute instances, optimizing for cost and reliability with minimal overhead.
+A framework for running distributed tasks on cloud providers with automatic instance management.
 
 ## Features
 
-- Distribute tasks across multiple cloud providers (AWS, GCP, Azure)
-- Automatic scaling based on workload
-- Cost optimization through intelligent instance selection
-- Fault tolerance with automatic retries
-- Spot/preemptible instance support
-- Simple, JSON-based task definition
+- Run tasks on AWS, GCP, or Azure with a unified API
+- Automatically scale worker instances based on queue depth
+- Cost-effective instance selection using cloud provider pricing APIs
+- Support for spot/preemptible instances to reduce costs
+- Intelligent region selection to minimize costs
+- Graceful shutdown handling for spot instance termination
+- Flexible task queueing and processing
+- Simple worker implementation
 
-## Components
+## Instance Selection
 
-The system consists of three main components:
+Cloud Tasks intelligently selects the most cost-effective instance type for your workloads:
 
-1. **Task Queue Manager**: Handles task distribution, visibility timeout, and requeuing of failed tasks
-2. **Instance Orchestrator**: Provisions and terminates instances based on workload
-3. **Worker Module**: Polls for tasks, processes them, and handles graceful termination
+- Uses each cloud provider's pricing API to get accurate, up-to-date pricing
+- Filters instances that meet your minimum CPU, memory, and disk requirements
+- Selects the instance with the lowest hourly cost
+- Supports both standard on-demand instances and discounted spot/preemptible instances
+- Falls back to a cost heuristic if pricing APIs are unavailable
+
+### Region Selection
+
+Cloud Tasks can intelligently choose the most cost-effective region to run your workloads:
+
+- Automatically checks pricing across all available regions when no region is specified
+- Selects the region with the lowest price for your compute requirements
+- Provides warnings when falling back to automatic region selection
+- Allows you to specify a preferred region when you need to control data locality
+- Works seamlessly with spot/preemptible instances for maximum cost savings
+
+### Spot/Preemptible Instances
+
+Spot instances (AWS), preemptible VMs (GCP), and spot VMs (Azure) offer significantly reduced prices (up to 90% cheaper) with the tradeoff that they can be terminated by the cloud provider with little notice. Cloud Tasks supports these instances with:
+
+- Proper configuration for each cloud provider's spot offerings
+- Graceful termination handling when instances are reclaimed
+- Integration with cloud provider termination notice APIs
+- Automatic fallback to on-demand pricing API if spot pricing is unavailable
+
+## Usage
+
+### Basic Example
+
+```python
+from cloud_tasks import InstanceOrchestrator, Worker
+
+# Create an orchestrator that manages AWS EC2 instances
+orchestrator = InstanceOrchestrator(
+    provider="aws",
+    job_id="my-processing-job",
+    cpu_required=2,
+    memory_required_gb=4,
+    disk_required_gb=20,
+    min_instances=1,
+    max_instances=10,
+    use_spot_instances=True,  # Use spot instances for cost savings
+    region="us-west-2",       # Specify region (optional, will use cheapest if omitted)
+    queue_name="my-processing-job-queue",  # Specify queue name
+    access_key="YOUR_ACCESS_KEY",
+    secret_key="YOUR_SECRET_KEY"
+)
+
+# Start the orchestrator
+await orchestrator.start()
+```
+
+### Command Line Interface
+
+```bash
+# Run a job on AWS using spot instances in a specific region
+python -m cloud_tasks run-job \
+  --provider aws \
+  --job-id my-processing-job \
+  --input-file tasks.json \
+  --queue-name my-task-queue \
+  --cpu 2 \
+  --memory 4 \
+  --disk 20 \
+  --min-instances 1 \
+  --max-instances 10 \
+  --use-spot \
+  --region us-west-2 \
+  --provider-config aws_config.yaml \
+  --worker-repo https://github.com/user/worker-repo.git
+
+# Run a job on AWS using spot instances with automatic region selection (cheapest)
+python -m cloud_tasks run-job \
+  --provider aws \
+  --job-id my-processing-job \
+  --input-file tasks.json \
+  --queue-name my-task-queue \
+  --cpu 2 \
+  --memory 4 \
+  --disk 20 \
+  --min-instances 1 \
+  --max-instances 10 \
+  --use-spot \
+  --provider-config aws_config.yaml \
+  --worker-repo https://github.com/user/worker-repo.git
+```
+
+## Configuration
+
+Each cloud provider requires specific configuration:
+
+### AWS
+
+```yaml
+aws:
+  region: us-west-2  # Optional: omit for automatic cheapest region selection
+  access_key: YOUR_ACCESS_KEY
+  secret_key: YOUR_SECRET_KEY
+```
+
+### GCP
+
+```yaml
+gcp:
+  project_id: your-project-id
+  region: us-central1  # Optional: omit for automatic cheapest region selection
+  zone: us-central1-a  # Optional if region is specified
+  credentials_file: /path/to/credentials.json
+```
+
+### Azure
+
+```yaml
+azure:
+  subscription_id: your-subscription-id
+  resource_group: your-resource-group
+  location: eastus  # Optional: omit for automatic cheapest location selection
+  tenant_id: your-tenant-id
+  client_id: your-client-id
+  client_secret: your-client-secret
+```
 
 ## Installation
 
 ```bash
-pip install -r requirements.txt
+pip install cloud-tasks
 ```
 
-## Usage
-
-### Configuration
-
-Create a configuration file with your cloud provider credentials:
-
-```yaml
-# config.yaml
-aws:
-  access_key: YOUR_AWS_ACCESS_KEY
-  secret_key: YOUR_AWS_SECRET_KEY
-  region: us-west-2
-
-gcp:
-  project_id: YOUR_GCP_PROJECT_ID
-  credentials_file: /path/to/credentials.json  # Optional, uses Application Default Credentials if omitted
-
-azure:
-  subscription_id: YOUR_AZURE_SUBSCRIPTION_ID
-  tenant_id: YOUR_AZURE_TENANT_ID
-  client_id: YOUR_AZURE_CLIENT_ID
-  client_secret: YOUR_AZURE_CLIENT_SECRET
-```
-
-### Authentication
-
-#### AWS
-AWS authentication requires an access key and secret key, and optionally a region (defaults to us-east-1).
-
-#### Google Cloud
-Google Cloud supports multiple authentication methods:
-
-1. **Explicit credentials file** - Set `credentials_file` in the configuration:
-   ```yaml
-   gcp:
-     project_id: YOUR_GCP_PROJECT_ID
-     credentials_file: /path/to/credentials.json
-   ```
-
-2. **Application Default Credentials (ADC)** - When `credentials_file` is omitted, the system uses ADC in the following order:
-   - `GOOGLE_APPLICATION_CREDENTIALS` environment variable pointing to a credentials file
-   - User's gcloud CLI configuration at `$HOME/.config/gcloud/application_default_credentials.json`
-   - Metadata server credentials when running on Google Cloud
-
-   To set up ADC, run:
-   ```bash
-   gcloud auth application-default login
-   ```
-
-#### Azure
-Azure authentication requires a subscription ID, tenant ID, client ID, and client secret.
-
-### Running Tasks
-
-1. Define your tasks in a JSON file:
-
-```json
-[
-  {"id": "task-1", "data": {"input": "value1"}},
-  {"id": "task-2", "data": {"input": "value2"}},
-  {"id": "task-3", "data": {"input": "value3"}}
-]
-```
-
-2. Start the processing:
+Or for development:
 
 ```bash
-python -m cloud_tasks.cli run --config config.yaml --tasks tasks.json --worker-repo https://github.com/your-org/worker-code.git --max-instances 10
+git clone https://github.com/username/cloud-tasks.git
+cd cloud-tasks
+pip install -e .
 ```
 
 ## Development

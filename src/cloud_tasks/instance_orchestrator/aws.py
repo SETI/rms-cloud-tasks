@@ -2,13 +2,24 @@
 AWS EC2 implementation of the InstanceManager interface.
 """
 import time
+import json
+import logging
+import traceback
 from typing import Any, Dict, List, Optional
+import datetime
 
 import boto3  # type: ignore
 from botocore.exceptions import ClientError  # type: ignore
 
 from cloud_tasks.common.base import InstanceManager
 
+# Configure logging with periods for fractions of a second
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S.%f'  # Explicitly use period for fractions
+)
+logger = logging.getLogger(__name__)
 
 class AWSEC2InstanceManager(InstanceManager):
     """AWS EC2 implementation of the InstanceManager interface."""
@@ -24,33 +35,111 @@ class AWSEC2InstanceManager(InstanceManager):
     }
 
     def __init__(self):
+        """Initialize without connecting to AWS yet."""
+        self.ec2 = None
         self.ec2_client = None
-        self.ec2_resource = None
+        self.pricing_client = None
         self.region = None
+        self.credentials = {}
+        super().__init__()
 
     async def initialize(self, config: Dict[str, Any]) -> None:
         """
-        Initialize the EC2 instance manager with configuration.
+        Initialize AWS clients with the provided configuration.
 
         Args:
-            config: AWS configuration with access_key, secret_key, and region
+            config: Dictionary with AWS configuration
+
+        Raises:
+            ValueError: If required configuration is missing
         """
-        self.region = config['region']
+        required_keys = ['access_key', 'secret_key']
+        for key in required_keys:
+            if key not in config:
+                raise ValueError(f"Missing required AWS configuration: {key}")
 
-        # Create EC2 client and resource
-        self.ec2_client = boto3.client(
-            'ec2',
-            aws_access_key_id=config['access_key'],
-            aws_secret_access_key=config['secret_key'],
-            region_name=config['region']
-        )
+        self.credentials = {
+            'aws_access_key_id': config['access_key'],
+            'aws_secret_access_key': config['secret_key'],
+        }
 
-        self.ec2_resource = boto3.resource(
-            'ec2',
-            aws_access_key_id=config['access_key'],
-            aws_secret_access_key=config['secret_key'],
-            region_name=config['region']
-        )
+        # Initialize with specified region or default
+        self.region = config.get('region')
+
+        # If no region specified, we'll find the cheapest one later
+        if self.region:
+            self.ec2 = boto3.resource('ec2', region_name=self.region, **self.credentials)
+            self.ec2_client = boto3.client('ec2', region_name=self.region, **self.credentials)
+            self.pricing_client = boto3.client('pricing', region_name='us-east-1', **self.credentials)
+            print(f"Initialized AWS EC2 in region {self.region}")
+        else:
+            # Just create clients with default region for now, will update later when finding cheapest region
+            self.ec2 = boto3.resource('ec2', region_name='us-east-1', **self.credentials)
+            self.ec2_client = boto3.client('ec2', region_name='us-east-1', **self.credentials)
+            self.pricing_client = boto3.client('pricing', region_name='us-east-1', **self.credentials)
+            print("No region specified, will determine cheapest region during instance selection")
+
+    async def find_cheapest_region(self, instance_type: str = 't3.micro') -> str:
+        """
+        Find the cheapest AWS region for the given instance type.
+
+        Args:
+            instance_type: Instance type to check prices for (default: t3.micro)
+
+        Returns:
+            The region code with the lowest price
+        """
+        try:
+            # Create pricing client in us-east-1 (only region that supports the pricing API)
+            pricing_client = boto3.client('pricing', region_name='us-east-1', **self.credentials)
+
+            # Get available regions
+            ec2_client = boto3.client('ec2', region_name='us-east-1', **self.credentials)
+            regions_response = ec2_client.describe_regions()
+            regions = [region['RegionName'] for region in regions_response['Regions']]
+
+            print(f"Checking prices across {len(regions)} regions for {instance_type}")
+
+            region_prices = {}
+            for region in regions:
+                try:
+                    # Get current price for the instance type in this region
+                    response = pricing_client.get_products(
+                        ServiceCode='AmazonEC2',
+                        Filters=[
+                            {'Type': 'TERM_MATCH', 'Field': 'instanceType', 'Value': instance_type},
+                            {'Type': 'TERM_MATCH', 'Field': 'regionCode', 'Value': region},
+                            {'Type': 'TERM_MATCH', 'Field': 'operatingSystem', 'Value': 'Linux'},
+                            {'Type': 'TERM_MATCH', 'Field': 'tenancy', 'Value': 'Shared'},
+                            {'Type': 'TERM_MATCH', 'Field': 'capacitystatus', 'Value': 'Used'},
+                        ],
+                        MaxResults=10
+                    )
+
+                    if response['PriceList']:
+                        price_data = json.loads(response['PriceList'][0])
+                        on_demand = price_data['terms']['OnDemand']
+                        price_dimensions = list(on_demand.values())[0]['priceDimensions']
+                        price = float(list(price_dimensions.values())[0]['pricePerUnit']['USD'])
+                        region_prices[region] = price
+                        print(f"  {region}: ${price:.4f}/hour")
+                except Exception as e:
+                    print(f"  Error getting price for {region}: {e}")
+                    continue
+
+            if not region_prices:
+                print("Could not retrieve prices for any region, using us-east-1 as default")
+                return 'us-east-1'
+
+            # Find the cheapest region
+            cheapest_region = min(region_prices.items(), key=lambda x: x[1])[0]
+            print(f"Cheapest region is {cheapest_region} at ${region_prices[cheapest_region]:.4f}/hour")
+            return cheapest_region
+
+        except Exception as e:
+            print(f"Error finding cheapest region: {e}")
+            print("Using us-east-1 as default region")
+            return 'us-east-1'
 
     async def list_available_instance_types(self) -> List[Dict[str, Any]]:
         """
@@ -83,7 +172,7 @@ class AWSEC2InstanceManager(InstanceManager):
         return instance_types
 
     async def start_instance(
-        self, instance_type: str, user_data: str, tags: Dict[str, str]
+        self, instance_type: str, user_data: str, tags: Dict[str, str], use_spot: bool = False
     ) -> str:
         """
         Start a new EC2 instance and return its ID.
@@ -92,6 +181,7 @@ class AWSEC2InstanceManager(InstanceManager):
             instance_type: EC2 instance type (e.g., 't2.micro')
             user_data: Base64-encoded user data script
             tags: Dictionary of tags to apply to the instance
+            use_spot: Whether to use spot instances (cheaper but can be terminated)
 
         Returns:
             EC2 instance ID
@@ -114,11 +204,29 @@ class AWSEC2InstanceManager(InstanceManager):
             # Add instance profile if needed for permissions
         }
 
-        # Launch instance
-        response = self.ec2_client.run_instances(**run_args)
+        # If using spot instances, add spot-specific parameters
+        if use_spot:
+            logger.info(f"Requesting spot instance of type {instance_type}")
+            # Replace the standard run_args with spot request
+            spot_options = {
+                'SpotInstanceType': 'one-time',
+                'InstanceInterruptionBehavior': 'terminate'
+            }
+            run_args['InstanceMarketOptions'] = {
+                'MarketType': 'spot',
+                'SpotOptions': spot_options
+            }
+            logger.debug(f"Spot request parameters: {spot_options}")
 
-        # Return the instance ID
-        return response['Instances'][0]['InstanceId']
+        # Launch instance
+        try:
+            response = self.ec2_client.run_instances(**run_args)
+            instance_id = response['Instances'][0]['InstanceId']
+            logger.info(f"Started {'spot' if use_spot else 'on-demand'} instance: {instance_id} ({instance_type})")
+            return instance_id
+        except Exception as e:
+            logger.error(f"Failed to launch {'spot' if use_spot else 'on-demand'} instance: {e}")
+            raise
 
     async def terminate_instance(self, instance_id: str) -> None:
         """
@@ -205,42 +313,116 @@ class AWSEC2InstanceManager(InstanceManager):
             raise
 
     async def get_optimal_instance_type(
-        self, cpu_required: int, memory_required_gb: int, disk_required_gb: int
+        self, cpu_required: int, memory_required_gb: int, disk_required_gb: int, use_spot: bool = False
     ) -> str:
         """
         Get the most cost-effective EC2 instance type that meets requirements.
+        If no region was specified during initialization, this method will also
+        find and use the cheapest region.
 
         Args:
             cpu_required: Minimum number of vCPUs
             memory_required_gb: Minimum amount of memory in GB
             disk_required_gb: Minimum amount of disk space in GB
+            use_spot: Whether to use spot instance pricing
 
         Returns:
-            Instance type name (e.g., 't2.micro')
+            EC2 instance type (e.g., 't3.micro')
         """
-        # Get instance types with pricing
+        # If no region was specified, find the cheapest one
+        if not self.region:
+            print("No region specified, searching for cheapest region...")
+            self.region = await self.find_cheapest_region()
+
+            # Reinitialize clients with the new region
+            self.ec2 = boto3.resource('ec2', region_name=self.region, **self.credentials)
+            self.ec2_client = boto3.client('ec2', region_name=self.region, **self.credentials)
+            print(f"Selected region {self.region} for lowest cost")
+
+        # Get available instance types
         instance_types = await self.list_available_instance_types()
 
-        # Filter to instances that meet requirements
+        # Filter to instance types that meet requirements
         eligible_instances = []
         for instance in instance_types:
             if (instance['vcpu'] >= cpu_required and
-                instance['memory_gb'] >= memory_required_gb and
-                instance['storage_gb'] >= disk_required_gb):
+                instance['memory_gb'] >= memory_required_gb):
+                # We don't filter on disk since EBS volumes can be attached
                 eligible_instances.append(instance)
 
         if not eligible_instances:
             raise ValueError(
                 f"No instance type meets requirements: {cpu_required} vCPU, "
-                f"{memory_required_gb} GB memory, {disk_required_gb} GB disk"
+                f"{memory_required_gb} GB memory"
             )
 
-        # Sort by CPU + memory as a simple cost proxy (better would be to use actual pricing API)
-        # This is a simplification - real implementation would use pricing data
-        eligible_instances.sort(key=lambda x: x['vcpu'] + x['memory_gb'])
+        # Use AWS Pricing API to get current prices
+        pricing_data = {}
+        for instance in eligible_instances:
+            instance_type = instance['name']
 
-        # Return the name of the most cost-effective instance
-        return eligible_instances[0]['name']
+            try:
+                if use_spot:
+                    # Get spot price history
+                    current_time = datetime.datetime.now()
+                    start_time = current_time - datetime.timedelta(hours=1)
+
+                    spot_response = self.ec2_client.describe_spot_price_history(
+                        InstanceTypes=[instance_type],
+                        ProductDescriptions=['Linux/UNIX'],
+                        StartTime=start_time,
+                        EndTime=current_time,
+                        MaxResults=10
+                    )
+
+                    if spot_response['SpotPriceHistory']:
+                        # Use the most recent spot price
+                        price = float(spot_response['SpotPriceHistory'][0]['SpotPrice'])
+                        pricing_data[instance_type] = price
+                else:
+                    # Get on-demand price
+                    response = self.pricing_client.get_products(
+                        ServiceCode='AmazonEC2',
+                        Filters=[
+                            {'Type': 'TERM_MATCH', 'Field': 'instanceType', 'Value': instance_type},
+                            {'Type': 'TERM_MATCH', 'Field': 'regionCode', 'Value': self.region},
+                            {'Type': 'TERM_MATCH', 'Field': 'operatingSystem', 'Value': 'Linux'},
+                            {'Type': 'TERM_MATCH', 'Field': 'tenancy', 'Value': 'Shared'},
+                            {'Type': 'TERM_MATCH', 'Field': 'capacitystatus', 'Value': 'Used'},
+                        ],
+                        MaxResults=10
+                    )
+
+                    if response['PriceList']:
+                        price_data = json.loads(response['PriceList'][0])
+                        on_demand = price_data['terms']['OnDemand']
+                        price_dimensions = list(on_demand.values())[0]['priceDimensions']
+                        price = float(list(price_dimensions.values())[0]['pricePerUnit']['USD'])
+                        pricing_data[instance_type] = price
+            except Exception as e:
+                print(f"Error getting pricing for {instance_type}: {e}")
+                continue
+
+        # If we couldn't get pricing from API, fall back to our heuristic
+        if not pricing_data:
+            print("Could not get pricing data from AWS API, falling back to heuristic")
+            # Sort by vCPU + memory as a simple cost heuristic
+            eligible_instances.sort(key=lambda x: x['vcpu'] + x['memory_gb'])
+            return eligible_instances[0]['name']
+
+        # Select instance with the lowest price
+        priced_instances = [(instance_type, price) for instance_type, price in pricing_data.items()]
+        if not priced_instances:
+            print("No pricing data found for eligible instance types, falling back to heuristic")
+            eligible_instances.sort(key=lambda x: x['vcpu'] + x['memory_gb'])
+            return eligible_instances[0]['name']
+
+        priced_instances.sort(key=lambda x: x[1])  # Sort by price
+
+        selected_type = priced_instances[0][0]
+        price = priced_instances[0][1]
+        print(f"Selected {selected_type} at ${price:.4f} per hour in {self.region}{' (spot)' if use_spot else ''}")
+        return selected_type
 
     async def _get_default_ami(self) -> str:
         """

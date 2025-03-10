@@ -22,11 +22,13 @@ from urllib.parse import urlparse
 from google.cloud import pubsub_v1, storage
 from azure.servicebus.aio import ServiceBusClient
 from azure.storage.blob.aio import BlobServiceClient
+import traceback
 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S.%f'  # Explicitly use period for fractions
 )
 logger = logging.getLogger(__name__)
 
@@ -526,36 +528,65 @@ class CloudWorker:
 
 
 async def main():
-    """Main entry point for the worker."""
-    if len(sys.argv) < 2:
-        print("Please provide a config file path (--config=path/to/config.json)")
+    """
+    Main entry point for the cloud worker.
+    Parses arguments, loads config, and starts the worker.
+    """
+    if len(sys.argv) < 2 or not any(arg.startswith("--config=") for arg in sys.argv):
+        logger.error("Please provide a config file path (--config=/path/to/config.json)")
         sys.exit(1)
 
     config_path = None
     for arg in sys.argv:
         if arg.startswith("--config="):
-            config_path = arg.split("=")[1]
+            config_path = arg.split("=", 1)[1]
+            break
 
     if not config_path:
-        print("Please provide a config file path (--config=path/to/config.json)")
+        logger.error("Please provide a config file path (--config=/path/to/config.json)")
         sys.exit(1)
 
     try:
+        # Validate the config file exists
+        if not os.path.exists(config_path):
+            logger.error(f"Config file not found: {config_path}")
+            sys.exit(1)
+
         # Load configuration
-        with open(config_path, 'r') as f:
-            config = json.load(f)
+        try:
+            with open(config_path, 'r') as f:
+                try:
+                    config = json.load(f)
+                except json.JSONDecodeError as e:
+                    logger.error(f"Failed to parse config file {config_path}: {e}")
+                    logger.error(f"Error at line {e.lineno}, column {e.colno}: {e.msg}")
+                    sys.exit(1)
+        except IOError as e:
+            logger.error(f"Error reading config file {config_path}: {e}")
+            sys.exit(1)
 
         logger.info(f"Starting cloud worker with config from {config_path}")
 
-        # Create and start worker
-        worker = CloudWorker(config)
-        await worker.start()
+        try:
+            # Create worker instance
+            worker = CloudWorker(config)
 
-    except KeyboardInterrupt:
-        logger.info("Worker stopped by user")
+            # Start the worker
+            await worker.start()
+        except KeyError as e:
+            logger.error(f"Missing required key in configuration from {config_path}: {e}")
+            sys.exit(1)
+        except ValueError as e:
+            logger.error(f"Invalid configuration value in {config_path}: {e}")
+            sys.exit(1)
+        except Exception as e:
+            logger.error(f"Error initializing worker from config {config_path}: {e}")
+            logger.debug(traceback.format_exc())
+            sys.exit(1)
 
     except Exception as e:
-        logger.error(f"Error starting worker: {e}")
+        logger.error(f"Unexpected error in cloud worker: {e}")
+        logger.debug(traceback.format_exc())
         sys.exit(1)
 
 

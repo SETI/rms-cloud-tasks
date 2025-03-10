@@ -285,3 +285,137 @@ To configure the number of worker processes, add the `num_workers` option to you
 
 - `parallel_tasks.json`: Sample tasks for testing parallel processing
 - `parallel_worker_config.json`: Configuration specifying 4 worker processes
+
+## Using Spot/Preemptible Instances
+
+For cost-effective processing, you can use spot instances (AWS), preemptible VMs (GCP), or spot VMs (Azure) which can save up to 90% on compute costs.
+
+### Running with Spot Instances
+
+```bash
+# Run on AWS with spot instances
+python -m cloud_tasks run-job \
+  --provider aws \
+  --job-id adder-job \
+  --input-file examples/addition_tasks.json \
+  --queue-name addition-queue \
+  --use-spot \
+  --provider-config examples/cloud_config.yaml \
+  --worker-repo https://github.com/user/worker-repo.git
+
+# Run on GCP with preemptible instances
+python -m cloud_tasks run-job \
+  --provider gcp \
+  --job-id adder-job \
+  --input-file examples/addition_tasks.json \
+  --queue-name addition-queue \
+  --use-spot \
+  --provider-config examples/cloud_config.yaml \
+  --worker-repo https://github.com/user/worker-repo.git
+
+# Run on Azure with spot instances
+python -m cloud_tasks run-job \
+  --provider azure \
+  --job-id adder-job \
+  --input-file examples/addition_tasks.json \
+  --queue-name addition-queue \
+  --use-spot \
+  --provider-config examples/cloud_config.yaml \
+  --worker-repo https://github.com/user/worker-repo.git
+```
+
+### Handling Spot Instance Termination
+
+When using spot instances, your code should handle potential termination notices from the cloud provider. The Cloud Tasks framework includes built-in handling for this:
+
+1. It monitors for termination notices from the cloud provider
+2. When a termination notice is received, it stops accepting new tasks
+3. It attempts to complete all in-progress tasks
+4. It uploads any results before the instance is terminated
+
+### Price Comparison
+
+Here's an example of potential cost savings for a computation-intensive job:
+
+| Provider | Instance Type | On-Demand Price | Spot/Preemptible Price | Savings |
+|----------|---------------|-----------------|------------------------|---------|
+| AWS      | c5.xlarge     | $0.17/hour      | $0.05/hour             | 70%     |
+| GCP      | n1-standard-4 | $0.19/hour      | $0.04/hour             | 79%     |
+| Azure    | Standard_D4_v3| $0.19/hour      | $0.06/hour             | 68%     |
+
+*Prices are approximate and will vary by region and availability
+
+## Choosing Regions for Optimal Pricing
+
+Cloud Tasks can automatically select the cheapest region for your workloads or you can specify a particular region:
+
+### Automatic Region Selection
+
+When no region is specified, Cloud Tasks will:
+1. Scan pricing across all available regions for your instance type requirements
+2. Select the region with the lowest hourly price
+3. Log the selected region and price information
+
+```bash
+# AWS with automatic region selection
+python -m cloud_tasks run-job \
+  --provider aws \
+  --job-id region-job \
+  --input-file examples/addition_tasks.json \
+  --queue-name addition-queue \
+  --provider-config examples/cloud_config_no_region.yaml \
+  --worker-repo https://github.com/user/worker-repo.git
+
+# GCP with automatic region selection
+python -m cloud_tasks run-job \
+  --provider gcp \
+  --job-id region-job \
+  --input-file examples/addition_tasks.json \
+  --queue-name addition-queue \
+  --provider-config examples/cloud_config_no_region.yaml \
+  --worker-repo https://github.com/user/worker-repo.git
+
+# Azure with automatic region selection
+python -m cloud_tasks run-job \
+  --provider azure \
+  --job-id region-job \
+  --input-file examples/addition_tasks.json \
+  --queue-name addition-queue \
+  --provider-config examples/cloud_config_no_region.yaml \
+  --worker-repo https://github.com/user/worker-repo.git
+```
+
+### Manual Region Selection
+
+You can specify a region either in the configuration file or via the command line:
+
+```bash
+# Using command line region parameter (overrides config file)
+python -m cloud_tasks run-job \
+  --provider aws \
+  --job-id region-job \
+  --input-file examples/addition_tasks.json \
+  --queue-name addition-queue \
+  --region us-west-2 \
+  --provider-config examples/cloud_config.yaml \
+  --worker-repo https://github.com/user/worker-repo.git
+```
+
+### Regional Price Variations
+
+Instance prices can vary significantly between regions. Here's an example of regional price variations for the same instance type:
+
+| Provider | Instance Type | Region       | Price/Hour |
+|----------|---------------|--------------|------------|
+| AWS      | c5.xlarge     | us-east-1    | $0.17      |
+| AWS      | c5.xlarge     | us-west-2    | $0.19      |
+| AWS      | c5.xlarge     | eu-west-1    | $0.21      |
+| AWS      | c5.xlarge     | ap-southeast-1 | $0.24   |
+| GCP      | n1-standard-4 | us-central1  | $0.19      |
+| GCP      | n1-standard-4 | europe-west1 | $0.22      |
+| GCP      | n1-standard-4 | asia-east1   | $0.23      |
+| Azure    | Standard_D4_v3| eastus       | $0.19      |
+| Azure    | Standard_D4_v3| westeurope   | $0.24      |
+| Azure    | Standard_D4_v3| southeastasia| $0.26      |
+
+*Prices are approximate and subject to change
