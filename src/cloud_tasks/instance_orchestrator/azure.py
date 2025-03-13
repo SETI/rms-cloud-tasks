@@ -47,6 +47,7 @@ class AzureVMInstanceManager(InstanceManager):
         self.resource_group = None
         self.location = None
         self.credentials = None
+        self.instance_types = None
         super().__init__()
 
     async def initialize(self, config: Dict[str, Any]) -> None:
@@ -63,6 +64,14 @@ class AzureVMInstanceManager(InstanceManager):
         for key in required_keys:
             if key not in config:
                 raise ValueError(f"Missing required Azure configuration: {key}")
+
+        # Store instance_types configuration if present
+        self.instance_types = config.get('instance_types')
+        if self.instance_types:
+            if isinstance(self.instance_types, str):
+                # If a single string was provided, convert to a list
+                self.instance_types = [self.instance_types]
+            logger.info(f"Instance types restricted to patterns: {self.instance_types}")
 
         # Create credential
         self.credentials = ClientSecretCredential(
@@ -83,12 +92,10 @@ class AzureVMInstanceManager(InstanceManager):
             credential=self.credentials,
             subscription_id=self.subscription_id
         )
-
         self.network_client = NetworkManagementClient(
             credential=self.credentials,
             subscription_id=self.subscription_id
         )
-
         self.resource_client = ResourceManagementClient(
             credential=self.credentials,
             subscription_id=self.subscription_id
@@ -234,6 +241,28 @@ class AzureVMInstanceManager(InstanceManager):
         logger.debug(f"Found {len(eligible_vms)} VM sizes that meet requirements:")
         for idx, vm in enumerate(eligible_vms):
             logger.debug(f"  [{idx+1}] {vm['name']}: {vm['vcpu']} vCPU, {vm['memory_gb']:.2f} GB memory, {vm.get('storage_gb', 0):.2f} GB storage")
+
+        # Filter by instance_types if specified in configuration
+        if self.instance_types:
+            filtered_vms = []
+            for vm in eligible_vms:
+                vm_name = vm['name']
+                # Check if VM size matches any prefix or exact name
+                for pattern in self.instance_types:
+                    if vm_name.startswith(pattern) or vm_name == pattern:
+                        filtered_vms.append(vm)
+                        break
+
+            # Update eligible VMs with filtered list
+            if filtered_vms:
+                eligible_vms = filtered_vms
+                logger.debug(f"Filtered to {len(eligible_vms)} VM sizes based on instance_types configuration:")
+                for idx, vm in enumerate(eligible_vms):
+                    logger.debug(f"  [{idx+1}] {vm['name']}: {vm['vcpu']} vCPU, {vm['memory_gb']:.2f} GB memory, {vm.get('storage_gb', 0):.2f} GB storage")
+            else:
+                error_msg = f"No VM sizes match the instance_types patterns: {self.instance_types}. Available VM sizes meeting requirements: {[v['name'] for v in eligible_vms]}"
+                logger.error(error_msg)
+                raise ValueError(error_msg)
 
         if not eligible_vms:
             msg = f"No VM size meets requirements: {cpu_required} vCPU, {memory_required_gb} GB memory, {disk_required_gb} GB disk"

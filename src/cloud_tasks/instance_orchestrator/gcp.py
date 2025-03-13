@@ -46,6 +46,7 @@ class GCPComputeInstanceManager(InstanceManager):
         self.region = None
         self.zone = None
         self.credentials = None
+        self.instance_types = None
         super().__init__()
 
     async def initialize(self, config: Dict[str, Any]) -> None:
@@ -64,6 +65,14 @@ class GCPComputeInstanceManager(InstanceManager):
             raise ValueError("Missing required GCP configuration: project_id")
 
         self.project_id = config['project_id']
+
+        # Store instance_types configuration if present
+        self.instance_types = config.get('instance_types')
+        if self.instance_types:
+            if isinstance(self.instance_types, str):
+                # If a single string was provided, convert to a list
+                self.instance_types = [self.instance_types]
+            logger.info(f"Instance types restricted to patterns: {self.instance_types}")
 
         # Handle credentials - use provided service account file or default application credentials
         if 'credentials_file' in config:
@@ -89,33 +98,24 @@ class GCPComputeInstanceManager(InstanceManager):
                                "Please ensure you're authenticated with 'gcloud auth application-default login' "
                                "or provide a credentials_file.")
 
-        # Initialize with specified region or default
+        # Initialize region/zone from config if provided
         self.region = config.get('region')
+        self.zone = config.get('zone')
 
-        # If zone is specified but not region, extract region from zone
-        if not self.region and 'zone' in config:
-            # Zone format is typically 'region-zone', e.g., 'us-central1-a'
-            self.zone = config['zone']
-            zone_parts = self.zone.split('-')
-            if len(zone_parts) >= 2:
-                # For 'us-central1-a', this should get 'us-central1'
-                self.region = '-'.join(zone_parts[:-1])
-        elif self.region and 'zone' in config:
-            self.zone = config['zone']
-        elif self.region:
-            # If region is specified but zone is not, use the first zone in the region
-            self.zone = f"{self.region}-a"
+        # If zone is provided but not region, extract region from zone
+        if self.zone and not self.region:
+            # Extract region from zone (e.g., us-central1-a -> us-central1)
+            self.region = '-'.join(self.zone.split('-')[:-1])
+            logger.info(f"Extracted region {self.region} from zone {self.zone}")
 
-        # Initialize clients
-        # Note: We pass credentials to each client but not the project_id directly.
-        # Instead, we explicitly pass project_id in each API call to ensure we're always
-        # using the correct project and never defaulting to Application Default Credentials project.
+        # Initialize compute client
         self.compute_client = compute_v1.InstancesClient(credentials=self.credentials)
-        self.machine_types_client = compute_v1.MachineTypesClient(credentials=self.credentials)
         self.zones_client = compute_v1.ZonesClient(credentials=self.credentials)
         self.regions_client = compute_v1.RegionsClient(credentials=self.credentials)
+        self.machine_types_client = compute_v1.MachineTypesClient(credentials=self.credentials)
         self.images_client = compute_v1.ImagesClient(credentials=self.credentials)
-        self.operations_client = compute_v1.ZoneOperationsClient(credentials=self.credentials)
+
+        # Initialize billing client for pricing information
         self.billing_client = billing.CloudCatalogClient(credentials=self.credentials)
 
         # Log project and region info
@@ -269,6 +269,28 @@ class GCPComputeInstanceManager(InstanceManager):
         logger.debug(f"Found {len(eligible_types)} machine types that meet requirements:")
         for idx, machine in enumerate(eligible_types):
             logger.debug(f"  [{idx+1}] {machine['name']}: {machine['vcpu']} vCPU, {machine['memory_gb']:.2f} GB memory")
+
+        # Filter by instance_types if specified in configuration
+        if self.instance_types:
+            filtered_types = []
+            for machine in eligible_types:
+                machine_name = machine['name']
+                # Check if machine matches any prefix or exact name
+                for pattern in self.instance_types:
+                    if machine_name.startswith(pattern) or machine_name == pattern:
+                        filtered_types.append(machine)
+                        break
+
+            # Update eligible types with filtered list
+            if filtered_types:
+                eligible_types = filtered_types
+                logger.debug(f"Filtered to {len(eligible_types)} machine types based on instance_types configuration:")
+                for idx, machine in enumerate(eligible_types):
+                    logger.debug(f"  [{idx+1}] {machine['name']}: {machine['vcpu']} vCPU, {machine['memory_gb']:.2f} GB memory")
+            else:
+                error_msg = f"No machines match the instance_types patterns: {self.instance_types}. Available machine types meeting requirements: {[m['name'] for m in eligible_types]}"
+                logger.error(error_msg)
+                raise ValueError(error_msg)
 
         if not eligible_types:
             raise ValueError(

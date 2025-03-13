@@ -82,6 +82,10 @@ async def run_job(args: argparse.Namespace) -> None:
             script_preview = run_config.startup_script[:50].replace('\n', ' ') + ('...' if len(run_config.startup_script) > 50 else '')
             logger.info(f"Using custom startup script: {script_preview}")
 
+        # Log instance types restriction if set
+        if hasattr(run_config, 'instance_types') and run_config.instance_types:
+            logger.info(f"Restricting instance types to: {run_config.instance_types}")
+
         # Handle region parameter - add it to the config if specified on command line
         if args.region:
             logger.info(f"Using specified region from command line: {args.region}")
@@ -328,6 +332,7 @@ def main():
     run_parser.add_argument('--tasks-per-instance', type=int, default=10, help='Number of tasks per instance')
     run_parser.add_argument('--use-spot', action='store_true', help='Use spot/preemptible instances (cheaper but can be terminated)')
     run_parser.add_argument('--region', help='Specific region to launch instances in (defaults to cheapest region)')
+    run_parser.add_argument('--instance-types', nargs='+', help='List of instance type patterns to use (e.g., "t3" for all t3 instances, "t3.micro" for exact match)')
     run_parser.add_argument('--verbose', '-v', action='store_true', help='Enable verbose output')
     run_parser.set_defaults(func=run_job)
 

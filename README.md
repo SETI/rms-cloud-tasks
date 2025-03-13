@@ -137,6 +137,7 @@ aws:
   region: us-west-2        # AWS region
   access_key: YOUR_ACCESS_KEY
   secret_key: YOUR_SECRET_KEY
+  instance_types: ["t3", "m5"] # Optional: Restrict instances to specific types/families
 
   # Optional overrides for this provider
   cpu: 4                   # Override global CPU setting
@@ -157,6 +158,7 @@ gcp:
   region: us-central1      # Optional: omit for automatic cheapest region selection
   zone: us-central1-a      # Optional if region is specified
   credentials_file: /path/to/credentials.json  # Optional: uses default credentials if omitted
+  instance_types: ["n1", "e2"] # Optional: Restrict instances to specific types/families
 
   # Optional overrides for this provider
   cpu: 2                   # Override global CPU setting
@@ -179,6 +181,7 @@ azure:
   tenant_id: your-tenant-id
   client_id: your-client-id
   client_secret: your-client-secret
+  instance_types: ["Standard_B", "Standard_D"] # Optional: Restrict VM sizes to specific types/families
 
   # Optional overrides for this provider
   cpu: 2                  # Override global CPU setting
@@ -206,7 +209,8 @@ python -m cloud_tasks run \
   --image ami-0123456789abcdef0 \  # Override image setting
   --startup-script-file setup.sh \ # Override startup script with file contents
   --use-spot \
-  --job-id my-processing-job
+  --job-id my-processing-job \
+  --instance-types t3 m5          # Restrict to t3 and m5 instance families
 ```
 
 Priority of settings is: Command Line > Provider-Specific Config > Global Run Config > System Defaults

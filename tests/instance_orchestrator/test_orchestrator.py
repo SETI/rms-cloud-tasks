@@ -6,6 +6,7 @@ import pytest
 import time
 import warnings
 from unittest.mock import MagicMock, patch, AsyncMock, call
+import logging
 
 # Filter coroutine warnings for these tests
 warnings.filterwarnings("ignore", message="coroutine .* was never awaited")
@@ -327,3 +328,181 @@ def test_generate_worker_startup_script(orchestrator):
     assert f'"tasks_per_worker": {orchestrator.tasks_per_instance}' in script
     assert '"access_key": "test-key"' in script
     assert '"secret_key": "test-secret"' in script
+
+
+@pytest.mark.asyncio
+async def test_instance_type_filtering_gcp():
+    """Test that GCP instance_types configuration filters available machine types correctly."""
+    # Create a mock GCP instance manager with instance_types configuration
+    from cloud_tasks.instance_orchestrator.gcp import GCPComputeInstanceManager
+
+    manager = GCPComputeInstanceManager()
+
+    # Mock configuration with instance_types
+    config = {
+        'project_id': 'test-project',
+        'region': 'us-central1',
+        'zone': 'us-central1-a',
+        'instance_types': ['n1', 'e2-medium']  # Should only include n1.* instances and e2-medium exactly
+    }
+
+    # Initialize the manager with mocked methods
+    manager.initialize = AsyncMock()
+    await manager.initialize(config)
+
+    # Set instance_types attribute directly since we mocked initialize
+    manager.instance_types = config['instance_types']
+
+    # Mock list_available_instance_types to return test instances
+    manager.list_available_instance_types = AsyncMock(return_value=[
+        {"name": "n1-standard-1", "vcpu": 1, "memory_gb": 3.75},
+        {"name": "n1-standard-2", "vcpu": 2, "memory_gb": 7.5},
+        {"name": "n2-standard-2", "vcpu": 2, "memory_gb": 8},
+        {"name": "e2-medium", "vcpu": 2, "memory_gb": 4},
+        {"name": "e2-standard-2", "vcpu": 2, "memory_gb": 8},
+    ])
+
+    # Mock cloud catalog client
+    manager.billing_client = MagicMock()
+
+    # Create a heuristic-based selection by not mocking pricing API responses
+    # Get optimal instance type with minimal requirements
+    optimal = await manager.get_optimal_instance_type(1, 1, 10)
+
+    # Verify that only instances matching the patterns were considered
+    assert optimal in ['n1-standard-1', 'n1-standard-2', 'e2-medium']
+    assert optimal != 'n2-standard-2'  # This should be filtered out
+    assert optimal != 'e2-standard-2'  # This should be filtered out
+
+
+@pytest.mark.asyncio
+async def test_instance_type_filtering_azure():
+    """Test that Azure instance_types configuration filters available VM sizes correctly."""
+    # Now that the Azure package is installed, we can import directly
+    from cloud_tasks.instance_orchestrator.azure import AzureVMInstanceManager
+
+    manager = AzureVMInstanceManager()
+
+    # Add logger attribute to avoid AttributeError
+    manager.logger = logging.getLogger(__name__)
+
+    # Mock configuration with instance_types
+    config = {
+        'subscription_id': 'test-sub',
+        'tenant_id': 'test-tenant',
+        'client_id': 'test-client',
+        'client_secret': 'test-secret',
+        'resource_group': 'test-rg',
+        'location': 'eastus',
+        'instance_types': ['Standard_B', 'Standard_D4']  # Should only include Standard_B* sizes and Standard_D4 exactly
+    }
+
+    # Set instance_types directly without initializing
+    manager.instance_types = config['instance_types']
+    manager.location = config['location']
+
+    # Mock list_available_vm_sizes to return test instances
+    manager.list_available_vm_sizes = AsyncMock(return_value=[
+        {"name": "Standard_B1s", "vcpu": 1, "memory_gb": 1, "storage_gb": 4},
+        {"name": "Standard_B2s", "vcpu": 2, "memory_gb": 4, "storage_gb": 8},
+        {"name": "Standard_D2_v4", "vcpu": 2, "memory_gb": 8, "storage_gb": 16},
+        {"name": "Standard_D4", "vcpu": 4, "memory_gb": 16, "storage_gb": 32},
+        {"name": "Standard_E4_v3", "vcpu": 4, "memory_gb": 32, "storage_gb": 64},
+    ])
+
+    # Create a heuristic-based selection by not mocking pricing API responses
+    # Get optimal instance type with minimal requirements
+    optimal = await manager.get_optimal_instance_type(1, 1, 4)
+
+    # Verify that only instances matching the patterns were considered
+    assert optimal in ['Standard_B1s', 'Standard_B2s', 'Standard_D4']
+    assert optimal != 'Standard_D2_v4'  # This should be filtered out
+    assert optimal != 'Standard_E4_v3'  # This should be filtered out
+
+
+@pytest.mark.asyncio
+async def test_instance_type_filtering_gcp_error():
+    """Test that specifying non-existent GCP instance types raises an error."""
+    from cloud_tasks.instance_orchestrator.gcp import GCPComputeInstanceManager
+
+    manager = GCPComputeInstanceManager()
+
+    # Mock configuration with non-existent instance_types
+    config = {
+        'project_id': 'test-project',
+        'region': 'us-central1',
+        'zone': 'us-central1-a',
+        'instance_types': ['non_existent_type']  # This pattern won't match any instance
+    }
+
+    # Initialize the manager with mocked methods
+    manager.initialize = AsyncMock()
+    await manager.initialize(config)
+
+    # Set instance_types attribute directly since we mocked initialize
+    manager.instance_types = config['instance_types']
+
+    # Mock list_available_instance_types to return test instances
+    manager.list_available_instance_types = AsyncMock(return_value=[
+        {"name": "n1-standard-1", "vcpu": 1, "memory_gb": 3.75},
+        {"name": "n1-standard-2", "vcpu": 2, "memory_gb": 7.5},
+        {"name": "n2-standard-2", "vcpu": 2, "memory_gb": 8},
+        {"name": "e2-medium", "vcpu": 2, "memory_gb": 4},
+        {"name": "e2-standard-2", "vcpu": 2, "memory_gb": 8},
+    ])
+
+    # Mock cloud catalog client
+    manager.billing_client = MagicMock()
+
+    # Attempt to get optimal instance type with invalid instance type pattern
+    # This should raise a ValueError
+    with pytest.raises(ValueError) as excinfo:
+        await manager.get_optimal_instance_type(1, 1, 10)
+
+    # Verify the error message mentions the non-existent type
+    assert "non_existent_type" in str(excinfo.value)
+    assert "No machines match" in str(excinfo.value)
+
+
+@pytest.mark.asyncio
+async def test_instance_type_filtering_azure_error():
+    """Test that specifying non-existent Azure VM sizes raises an error."""
+    from cloud_tasks.instance_orchestrator.azure import AzureVMInstanceManager
+
+    manager = AzureVMInstanceManager()
+
+    # Add logger attribute to avoid AttributeError
+    manager.logger = logging.getLogger(__name__)
+
+    # Mock configuration with non-existent instance_types
+    config = {
+        'subscription_id': 'test-sub',
+        'tenant_id': 'test-tenant',
+        'client_id': 'test-client',
+        'client_secret': 'test-secret',
+        'resource_group': 'test-rg',
+        'location': 'eastus',
+        'instance_types': ['non_existent_type']  # This pattern won't match any VM size
+    }
+
+    # Set instance_types directly without initializing
+    manager.instance_types = config['instance_types']
+    manager.location = config['location']
+
+    # Mock list_available_vm_sizes to return test instances
+    manager.list_available_vm_sizes = AsyncMock(return_value=[
+        {"name": "Standard_B1s", "vcpu": 1, "memory_gb": 1, "storage_gb": 4},
+        {"name": "Standard_B2s", "vcpu": 2, "memory_gb": 4, "storage_gb": 8},
+        {"name": "Standard_D2_v4", "vcpu": 2, "memory_gb": 8, "storage_gb": 16},
+        {"name": "Standard_D4", "vcpu": 4, "memory_gb": 16, "storage_gb": 32},
+        {"name": "Standard_E4_v3", "vcpu": 4, "memory_gb": 32, "storage_gb": 64},
+    ])
+
+    # Attempt to get optimal instance type with invalid instance type pattern
+    # This should raise a ValueError
+    with pytest.raises(ValueError) as excinfo:
+        await manager.get_optimal_instance_type(1, 1, 4)
+
+    # Verify the error message mentions the non-existent type
+    assert "non_existent_type" in str(excinfo.value)
+    assert "No VM sizes match" in str(excinfo.value)

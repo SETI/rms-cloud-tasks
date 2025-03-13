@@ -264,6 +264,7 @@ def get_run_config(config: Config, provider: str, cli_args: Optional[Dict[str, A
             'disk': 'disk_gb',
             'image': 'image',
             'startup_script_file': 'startup_script',
+            'instance_types': 'instance_types',  # Add support for instance_types CLI parameter
         }
 
         for cli_key, config_key in cli_map.items():

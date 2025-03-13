@@ -24,6 +24,7 @@ azure-identity>=1.10.0
 azure-servicebus>=7.8.1
 azure-mgmt-compute>=29.0.0
 azure-mgmt-network>=21.0.0
+azure-mgmt-resource>=23.3.0
 azure-storage-blob>=12.14.0
 
 # Test dependencies

@@ -67,7 +67,15 @@ class AWSEC2InstanceManager(InstanceManager):
         # Initialize with specified region or default
         self.region = config.get('region')
 
-        # If no region specified, we'll find the cheapest one later
+        # Store instance_types configuration if present
+        self.instance_types = config.get('instance_types')
+        if self.instance_types:
+            if isinstance(self.instance_types, str):
+                # If a single string was provided, convert to a list
+                self.instance_types = [self.instance_types]
+            logger.info(f"Instance types restricted to patterns: {self.instance_types}")
+
+        # If no region specified, we'll find the cheapest one
         if self.region:
             self.ec2 = boto3.resource('ec2', region_name=self.region, **self.credentials)
             self.ec2_client = boto3.client('ec2', region_name=self.region, **self.credentials)
@@ -439,6 +447,28 @@ class AWSEC2InstanceManager(InstanceManager):
         logger.debug(f"Found {len(eligible_instances)} instance types that meet requirements:")
         for idx, instance in enumerate(eligible_instances):
             logger.debug(f"  [{idx+1}] {instance['name']}: {instance['vcpu']} vCPU, {instance['memory_gb']:.2f} GB memory")
+
+        # Filter by instance_types if specified in configuration
+        if self.instance_types:
+            filtered_instances = []
+            for instance in eligible_instances:
+                instance_name = instance['name']
+                # Check if instance matches any prefix or exact name
+                for instance_type_pattern in self.instance_types:
+                    if instance_name.startswith(instance_type_pattern) or instance_name == instance_type_pattern:
+                        filtered_instances.append(instance)
+                        break
+
+            # Update eligible instances with filtered list
+            if filtered_instances:
+                eligible_instances = filtered_instances
+                logger.debug(f"Filtered to {len(eligible_instances)} instance types based on instance_types configuration:")
+                for idx, instance in enumerate(eligible_instances):
+                    logger.debug(f"  [{idx+1}] {instance['name']}: {instance['vcpu']} vCPU, {instance['memory_gb']:.2f} GB memory")
+            else:
+                error_msg = f"No instances match the instance_types patterns: {self.instance_types}. Available instances meeting requirements: {[i['name'] for i in eligible_instances]}"
+                logger.error(error_msg)
+                raise ValueError(error_msg)
 
         if not eligible_instances:
             msg = f"No instance type meets requirements: {cpu_required} vCPU, {memory_required_gb} GB memory"
