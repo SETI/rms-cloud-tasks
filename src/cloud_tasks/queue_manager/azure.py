@@ -63,10 +63,10 @@ class AzureServiceBusQueue(TaskQueue):
         # Create queue if it doesn't exist
         try:
             # Check if queue exists - Azure SDK uses get_queue rather than queue_exists
-            self.admin_client.get_queue(queue_name)
+            await self.admin_client.get_queue(queue_name)
         except Exception:
             # Create the queue if it doesn't exist
-            self.admin_client.create_queue(
+            await self.admin_client.create_queue(
                 queue_name,
                 max_delivery_count=10,  # Number of delivery attempts before dead-letter
                 lock_duration=timedelta(seconds=30),  # Default lock duration in seconds
@@ -173,7 +173,7 @@ class AzureServiceBusQueue(TaskQueue):
             Approximate number of messages in the queue
         """
         # Get queue runtime properties
-        queue_properties = self.admin_client.get_queue_runtime_properties(self.queue_name)
+        queue_properties = await self.admin_client.get_queue_runtime_properties(self.queue_name)
 
         # Return active message count
         return queue_properties.active_message_count
