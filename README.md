@@ -104,6 +104,21 @@ python -m cloud_tasks run-job \
   --use-spot \
   --provider-config aws_config.yaml \
   --worker-repo https://github.com/user/worker-repo.git
+
+# List available VM images for a provider
+python -m cloud_tasks list_images \
+  --config config.yaml \
+  --provider aws
+
+# List available instance types with pricing information
+python -m cloud_tasks list_instances \
+  --config config.yaml \
+  --provider aws \
+  --instance-types "t3 m5" \
+  --size-filter "2:4:10" \
+  --limit 10 \
+  --use-spot \
+  --sort-by "price,vcpu"
 ```
 
 ## Configuration

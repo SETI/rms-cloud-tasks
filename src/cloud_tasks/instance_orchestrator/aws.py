@@ -157,28 +157,167 @@ class AWSEC2InstanceManager(InstanceManager):
         Returns:
             List of dictionaries with instance types and their specifications
         """
-        # Get all instance types that are offered in the region
-        response = self.ec2_client.describe_instance_types()
+        # Ensure we have a region
+        if not hasattr(self, 'region') or not self.region:
+            logger.warning("No region specified for listing instance types, using us-west-2 as default")
+            self.region = 'us-west-2'
+            # Initialize the ec2_client with the default region
+            self.ec2_client = boto3.client('ec2', region_name=self.region,
+                                          aws_access_key_id=self.access_key,
+                                          aws_secret_access_key=self.secret_key)
 
+        # List instance types
+        paginator = self.ec2_client.get_paginator('describe_instance_types')
         instance_types = []
-        for instance_type in response['InstanceTypes']:
-            # Extract relevant information
-            instance_info = {
-                'name': instance_type['InstanceType'],
-                'vcpu': instance_type['VCpuInfo']['DefaultVCpus'],
-                'memory_gb': instance_type['MemoryInfo']['SizeInMiB'] / 1024,
-                'architecture': instance_type.get('ProcessorInfo', {}).get('SupportedArchitectures', ['x86_64'])[0],
-            }
 
-            # Add storage info if available
-            if 'InstanceStorageInfo' in instance_type:
-                instance_info['storage_gb'] = instance_type['InstanceStorageInfo'].get('TotalSizeInGB', 0)
-            else:
-                instance_info['storage_gb'] = 0
+        # Paginate through all instance types
+        for page in paginator.paginate():
+            for instance_type in page['InstanceTypes']:
+                instance_info = {
+                    'name': instance_type['InstanceType'],
+                    'vcpu': instance_type['VCpuInfo']['DefaultVCpus'],
+                    'memory_gb': instance_type['MemoryInfo']['SizeInMiB'] / 1024.0,
+                    'architecture': instance_type['ProcessorInfo']['SupportedArchitectures'][0],
+                }
 
-            instance_types.append(instance_info)
+                # Add storage info if available
+                if 'InstanceStorageInfo' in instance_type:
+                    instance_info['storage_gb'] = instance_type['InstanceStorageInfo'].get('TotalSizeInGB', 0)
+                else:
+                    instance_info['storage_gb'] = 0
+
+                instance_types.append(instance_info)
 
         return instance_types
+
+    async def get_instance_pricing(self, instance_type: str, use_spot: bool = False) -> float:
+        """
+        Get the hourly price for a specific instance type.
+
+        Args:
+            instance_type: The instance type name (e.g., 't3.micro')
+            use_spot: Whether to use spot pricing (cheaper but can be terminated)
+
+        Returns:
+            Hourly price in USD
+        """
+        logger.debug(f"Getting pricing for instance type: {instance_type} (spot: {use_spot})")
+
+        try:
+            if use_spot:
+                # Get spot price history
+                spot_prices = self.ec2_client.describe_spot_price_history(
+                    InstanceTypes=[instance_type],
+                    ProductDescriptions=['Linux/UNIX'],
+                    MaxResults=10
+                )
+
+                # Find the most recent price for the current region
+                region_prices = [
+                    float(price['SpotPrice'])
+                    for price in spot_prices['SpotPriceHistory']
+                    if price['AvailabilityZone'].startswith(self.region)
+                ]
+
+                if region_prices:
+                    # Return the average spot price in the region
+                    avg_price = sum(region_prices) / len(region_prices)
+                    logger.debug(f"Found spot price for {instance_type}: ${avg_price:.4f}/hour")
+                    return avg_price
+                else:
+                    logger.warning(f"No spot price found for {instance_type} in region {self.region}")
+                    return 0.0
+            else:
+                # Get on-demand price
+                pricing_client = boto3.client('pricing', region_name='us-east-1')  # Pricing API is only available in us-east-1
+
+                response = pricing_client.get_products(
+                    ServiceCode='AmazonEC2',
+                    Filters=[
+                        {'Type': 'TERM_MATCH', 'Field': 'instanceType', 'Value': instance_type},
+                        {'Type': 'TERM_MATCH', 'Field': 'operatingSystem', 'Value': 'Linux'},
+                        {'Type': 'TERM_MATCH', 'Field': 'location', 'Value': self._region_to_location(self.region)},
+                        {'Type': 'TERM_MATCH', 'Field': 'tenancy', 'Value': 'Shared'},
+                        {'Type': 'TERM_MATCH', 'Field': 'preInstalledSw', 'Value': 'NA'}
+                    ],
+                    MaxResults=10
+                )
+
+                if not response['PriceList']:
+                    logger.warning(f"No pricing found for {instance_type} in region {self.region}")
+                    return 0.0
+
+                # Find the price in the response
+                for price_item in response['PriceList']:
+                    price_data = json.loads(price_item)
+                    terms = price_data.get('terms', {}).get('OnDemand', {})
+                    for term_id, term in terms.items():
+                        price_dimensions = term.get('priceDimensions', {})
+                        for dim_id, dimension in price_dimensions.items():
+                            price_per_unit = dimension.get('pricePerUnit', {}).get('USD')
+                            if price_per_unit:
+                                price = float(price_per_unit)
+                                logger.debug(f"Found on-demand price for {instance_type}: ${price:.4f}/hour")
+                                return price
+
+                logger.warning(f"Could not parse pricing data for {instance_type}")
+                return 0.0
+
+        except Exception as e:
+            logger.warning(f"Error getting pricing for {instance_type}: {e}")
+            return 0.0
+
+    def _region_to_location(self, region: str) -> str:
+        """
+        Convert an AWS region code to a location name used in the pricing API.
+
+        Args:
+            region: AWS region code (e.g., us-west-2)
+
+        Returns:
+            Location name for pricing API (e.g., US West (Oregon))
+        """
+        # Map of AWS regions to location names used in pricing API
+        region_map = {
+            'us-east-1': 'US East (N. Virginia)',
+            'us-east-2': 'US East (Ohio)',
+            'us-west-1': 'US West (N. California)',
+            'us-west-2': 'US West (Oregon)',
+            'af-south-1': 'Africa (Cape Town)',
+            'ap-east-1': 'Asia Pacific (Hong Kong)',
+            'ap-south-1': 'Asia Pacific (Mumbai)',
+            'ap-northeast-1': 'Asia Pacific (Tokyo)',
+            'ap-northeast-2': 'Asia Pacific (Seoul)',
+            'ap-northeast-3': 'Asia Pacific (Osaka)',
+            'ap-southeast-1': 'Asia Pacific (Singapore)',
+            'ap-southeast-2': 'Asia Pacific (Sydney)',
+            'ca-central-1': 'Canada (Central)',
+            'eu-central-1': 'EU (Frankfurt)',
+            'eu-west-1': 'EU (Ireland)',
+            'eu-west-2': 'EU (London)',
+            'eu-west-3': 'EU (Paris)',
+            'eu-north-1': 'EU (Stockholm)',
+            'eu-south-1': 'EU (Milan)',
+            'me-south-1': 'Middle East (Bahrain)',
+            'sa-east-1': 'South America (Sao Paulo)'
+        }
+
+        if region in region_map:
+            return region_map[region]
+
+        # If not found, try a generic approach based on region name
+        parts = region.split('-')
+        if len(parts) >= 3:
+            if parts[0] == 'us':
+                return f"US {parts[1].capitalize()} ({parts[2].capitalize()})"
+            elif parts[0] == 'eu':
+                return f"EU ({parts[2].capitalize()})"
+            elif parts[0] == 'ap':
+                return f"Asia Pacific ({parts[2].capitalize()})"
+
+        # If all else fails, return the region code itself
+        logger.warning(f"Unknown region mapping for {region}, using as-is for pricing API")
+        return region
 
     async def start_instance(
         self, instance_type: str, user_data: str, tags: Dict[str, str],

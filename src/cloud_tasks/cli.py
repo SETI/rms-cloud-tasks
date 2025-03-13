@@ -602,6 +602,243 @@ async def list_images_cmd(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+async def list_instances_cmd(args: argparse.Namespace) -> None:
+    """
+    List available compute instance types for the specified provider with pricing information.
+
+    Args:
+        args: Command-line arguments
+    """
+    try:
+        # Load configuration
+        config = load_config(args.config)
+
+        # Create instance manager for the provider
+        instance_manager = await create_instance_manager(
+            provider=args.provider,
+            config=config
+        )
+
+        # Get available instance types
+        instances = await instance_manager.list_available_instance_types()
+
+        if not instances:
+            print(f"No instance types found for provider {args.provider}")
+            return
+
+        # Apply source filter if specified
+        if args.size_filter:
+            # Filter instance types by minimum size requirements
+            size_parts = args.size_filter.split(':')
+            if len(size_parts) == 3:
+                try:
+                    min_cpu = int(size_parts[0])
+                    min_memory = float(size_parts[1])
+                    min_disk = int(size_parts[2])
+
+                    # Filter based on minimum requirements
+                    instances = [
+                        inst for inst in instances
+                        if inst['vcpu'] >= min_cpu
+                        and inst['memory_gb'] >= min_memory
+                        and inst.get('storage_gb', 0) >= min_disk
+                    ]
+                except ValueError:
+                    print(f"Invalid size filter format: {args.size_filter}. Should be cpu:memory_gb:disk_gb")
+            else:
+                print(f"Invalid size filter format: {args.size_filter}. Should be cpu:memory_gb:disk_gb")
+
+        # Apply instance type filter if specified
+        if args.instance_types:
+            instance_type_patterns = args.instance_types.split()
+            filtered_instances = []
+            for instance in instances:
+                instance_name = instance['name']
+                # Check if instance matches any prefix or exact name
+                for pattern in instance_type_patterns:
+                    if instance_name.startswith(pattern) or instance_name == pattern:
+                        filtered_instances.append(instance)
+                        break
+            instances = filtered_instances
+
+        # Apply text filter if specified
+        if args.filter:
+            filter_text = args.filter.lower()
+            instances = [
+                inst for inst in instances
+                if any(str(value).lower().find(filter_text) >= 0
+                      for key, value in inst.items() if isinstance(value, (str, int, float)))
+            ]
+
+        # Try to get pricing information where available
+        pricing_data = {}
+        try:
+            # Create a config structure for the get_optimal_instance_type function to use
+            provider_config = config.get_provider(args.provider)
+
+            # For AWS and Azure, we need to set region explicitly for pricing
+            if args.provider == 'aws' and 'region' not in provider_config:
+                print("Note: Pricing information requires a region. Using default us-west-2 for pricing data.")
+                provider_config['region'] = 'us-west-2'
+            elif args.provider == 'azure' and 'location' not in provider_config:
+                print("Note: Pricing information requires a location. Using default eastus for pricing data.")
+                provider_config['location'] = 'eastus'
+
+            # Get pricing data for all eligible instance types
+            if hasattr(instance_manager, 'get_instance_pricing'):
+                # If the provider has a pricing method, use it
+                for instance in instances:
+                    try:
+                        price = await instance_manager.get_instance_pricing(instance['name'], args.use_spot)
+                        pricing_data[instance['name']] = price
+                    except Exception as e:
+                        logger.debug(f"Could not get pricing for {instance['name']}: {e}")
+        except Exception as e:
+            logger.warning(f"Could not retrieve pricing information: {e}")
+
+        # Add price data to instances for sorting
+        for instance in instances:
+            if instance['name'] in pricing_data:
+                instance['price'] = pricing_data[instance['name']]
+            else:
+                instance['price'] = float('inf')  # Use infinity for sorting unknown prices to the end
+
+        # Apply custom sorting if specified
+        if args.sort_by:
+            # Define field mapping for case-insensitive and prefix matching
+            field_mapping = {
+                'type': 'name',
+                't': 'name',
+                'name': 'name',
+                'vcpu': 'vcpu',
+                'v': 'vcpu',
+                'cpu': 'vcpu',
+                'c': 'vcpu',
+                'memory': 'memory_gb',
+                'mem': 'memory_gb',
+                'm': 'memory_gb',
+                'price': 'price',
+                'p': 'price',
+                'cost': 'price'
+            }
+
+            # Parse the sort fields
+            sort_fields = args.sort_by.split(',')
+
+            # Build a sort key function
+            def build_sort_key(instance):
+                result = []
+                for field in sort_fields:
+                    descending = field.startswith('-')
+                    field_name = field[1:] if descending else field
+                    field_name = field_name.lower()  # Case-insensitive matching
+
+                    # Find the matching field using prefix matching
+                    matched_field = None
+                    for key, value in field_mapping.items():
+                        if field_name == key or field_name.startswith(key):
+                            matched_field = value
+                            break
+
+                    if matched_field:
+                        value = instance.get(matched_field)
+                        # Handle different types appropriately for sorting
+                        if isinstance(value, (int, float)):
+                            # For numbers, negate if descending
+                            result.append(-value if descending else value)
+                        elif value is None:
+                            # None values come first in ascending, last in descending
+                            result.append(float('inf') if descending else float('-inf'))
+                        else:
+                            # For strings, use lowercase for case-insensitive comparison
+                            # In descending order, we'd ideally sort from Z-A
+                            str_val = str(value).lower()
+                            if descending:
+                                # Create a tuple with a negation flag for descending string sort
+                                result.append((1, str_val))  # 1 indicates descending
+                            else:
+                                result.append((0, str_val))  # 0 indicates ascending
+
+                return tuple(result)
+
+            # Apply sorting if we have valid fields
+            if sort_fields:
+                try:
+                    instances.sort(key=build_sort_key)
+                except Exception as e:
+                    logger.warning(f"Error during sorting: {e}, using default sort")
+                    # Fall back to default sort
+                    instances.sort(key=lambda x: (x['vcpu'], x['memory_gb']))
+            else:
+                # Default sort if no fields specified
+                instances.sort(key=lambda x: (x['vcpu'], x['memory_gb']))
+        else:
+            # Default sort by vCPU, then memory if no sort-by specified
+            instances.sort(key=lambda x: (x['vcpu'], x['memory_gb']))
+
+        # Limit results if specified - applied after sorting
+        if args.limit and len(instances) > args.limit:
+            instances = instances[:args.limit]
+
+        # Display results with pricing if available
+        print(f"Found {len(instances)} {'filtered ' if args.filter or args.instance_types or args.size_filter else ''}instance types for {args.provider}:")
+        print()
+
+        has_pricing = bool(pricing_data)
+
+        # Format output based on provider
+        if args.provider == 'aws':
+            print(f"{'Instance Type':<20} {'vCPU':>6} {'Memory (GB)':>12} {'Storage (GB)':>12} {'Architecture':>12} {'Price/Hour':>17}")
+            print('-' * 80)
+            for inst in instances:
+                price_str = "N/A"
+                if inst['name'] in pricing_data:
+                    price_str = f"${pricing_data[inst['name']]:.4f}"
+                print(f"{inst['name']:<20} {inst['vcpu']:>6} {inst['memory_gb']:>12.1f} {inst.get('storage_gb', 0):>12} {inst.get('architecture', 'x86_64'):>12} {price_str:>17}")
+
+        elif args.provider == 'gcp':
+            print(f"{'Machine Type':<20} {'vCPU':>6} {'Memory (GB)':>12} {'Price/Hour':>17}")
+            print('-' * 60)
+            for inst in instances:
+                price_str = "N/A"
+                if inst['name'] in pricing_data:
+                    price_str = f"${pricing_data[inst['name']]:.4f}"
+                print(f"{inst['name']:<20} {inst['vcpu']:>6} {inst['memory_gb']:>12.1f} {price_str:>17}")
+
+        elif args.provider == 'azure':
+            print(f"{'VM Size':<20} {'vCPU':>6} {'Memory (GB)':>12} {'Storage (GB)':>12} {'Price/Hour':>17}")
+            print('-' * 70)
+            for inst in instances:
+                price_str = "N/A"
+                if inst['name'] in pricing_data:
+                    price_str = f"${pricing_data[inst['name']]:.4f}"
+                print(f"{inst['name']:<20} {inst['vcpu']:>6} {inst['memory_gb']:>12.1f} {inst.get('storage_gb', 0):>12} {price_str:>17}")
+
+        # Show no pricing data info if we couldn't get pricing
+        if not has_pricing:
+            print("\nNote: To show pricing information, configure credentials with pricing API access.")
+            print("      Pricing varies by region and can change over time.")
+        elif args.use_spot:
+            print("\nNote: Showing spot/preemptible instance pricing which is variable and subject to change.")
+            print("      These instances can be terminated by the cloud provider at any time.")
+        else:
+            print("\nNote: On-demand pricing shown. Use --use-spot to see spot/preemptible pricing.")
+
+        if args.provider == 'aws':
+            print("\nTo filter instance types with the 'run' or 'manage_pool' commands, use the --instance-types parameter:")
+            print("  --instance-types 't3 m5' (will include all t3.* and m5.* instances)")
+        elif args.provider == 'gcp':
+            print("\nTo filter instance types with the 'run' or 'manage_pool' commands, use the --instance-types parameter:")
+            print("  --instance-types 'n1 n2 e2' (will include all n1-*, n2-* and e2-* machine types)")
+        elif args.provider == 'azure':
+            print("\nTo filter instance types with the 'run' or 'manage_pool' commands, use the --instance-types parameter:")
+            print("  --instance-types 'Standard_B Standard_D' (will include all Standard_B* and Standard_D* VM sizes)")
+
+    except Exception as e:
+        logger.error(f"Error listing instance types: {e}", exc_info=True)
+        sys.exit(1)
+
+
 def main():
     """Main entry point for the CLI."""
     parser = argparse.ArgumentParser(description='Multi-Cloud Task Processing System')
@@ -655,6 +892,26 @@ def main():
     list_images_parser.add_argument('--filter', help='Filter images containing this text in any field')
     list_images_parser.add_argument('--limit', type=int, help='Limit the number of images displayed')
     list_images_parser.set_defaults(func=list_images_cmd)
+
+    # List instances command
+    list_instances_parser = subparsers.add_parser('list_instances', help='List available compute instance types for the specified provider with pricing information')
+    add_common_args(list_instances_parser)
+    # Override queue-name to make it optional since we don't need it for this command
+    for action in list_instances_parser._actions:
+        if action.dest == 'queue_name':
+            action.required = False
+            action.help = 'Name of the task queue (not used for this command)'
+    list_instances_parser.add_argument('--size-filter', help='Filter instance types by minimum size requirements (format: cpu:memory_gb:disk_gb)')
+    list_instances_parser.add_argument('--instance-types', help='Space-separated list of instance type patterns to filter by (e.g., "t3 m5" for AWS)')
+    list_instances_parser.add_argument('--filter', help='Filter instance types containing this text in any field')
+    list_instances_parser.add_argument('--limit', type=int, help='Limit the number of instance types displayed')
+    list_instances_parser.add_argument('--use-spot', action='store_true', help='Show spot/preemptible instance pricing instead of on-demand')
+    list_instances_parser.add_argument('--sort-by',
+                                     help='Sort results by comma-separated fields (e.g., "price,vcpu" or "type,-memory"). '
+                                          'Available fields: type/name, vcpu, memory, price. '
+                                          'Prefix with "-" for descending order. '
+                                          'Partial field names like "mem" for "memory" or "v" for "vcpu" are supported.')
+    list_instances_parser.set_defaults(func=list_instances_cmd)
 
     args = parser.parse_args()
 

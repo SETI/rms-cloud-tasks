@@ -42,6 +42,7 @@ class GCPComputeInstanceManager(InstanceManager):
         """Initialize the GCP Compute Engine instance manager."""
         self.compute_client = None
         self.billing_client = None
+        self.billing_compute_skus = None
         self.project_id = None
         self.region = None
         self.zone = None
@@ -419,6 +420,13 @@ class GCPComputeInstanceManager(InstanceManager):
         Returns:
             List of dictionaries with machine types and their specifications
         """
+        # Ensure we have a zone
+        if not hasattr(self, 'zone') or not self.zone:
+            logger.warning("No zone specified for listing instance types, using us-central1-a as default")
+            self.zone = 'us-central1-a'
+            if not self.region:
+                self.region = 'us-central1'
+
         # List machine types in the zone
         request = compute_v1.ListMachineTypesRequest(
             project=self.project_id,
@@ -440,6 +448,84 @@ class GCPComputeInstanceManager(InstanceManager):
             instance_types.append(instance_info)
 
         return instance_types
+
+    async def get_instance_pricing(self, machine_type: str, use_spot: bool = False) -> float:
+        """
+        Get the hourly price for a specific machine type.
+
+        Args:
+            machine_type: The machine type name (e.g., 'n1-standard-1')
+            use_spot: Whether to use preemptible pricing (cheaper but can be terminated)
+
+        Returns:
+            Hourly price in USD
+        """
+        logger.debug(f"Getting pricing for machine type: {machine_type} (spot/preemptible: {use_spot})")
+
+        try:
+            if self.billing_compute_skus is None:
+                # Get pricing from Cloud Billing Catalog API
+                service_name = "Compute Engine"
+
+                # Make pricing request
+                request = billing.ListServicesRequest()
+                services = self.billing_client.list_services(request=request)
+
+                # Find compute service
+                compute_service = None
+                for service in services:
+                    if service.display_name == service_name:
+                        compute_service = service
+                        break
+
+                if not compute_service:
+                    logger.warning("Could not find compute service in billing catalog")
+                    return 0.0
+
+                logger.debug(f"Found compute service: {compute_service.display_name}")
+
+                # Get SKUs for the service
+                sku_request = billing.ListSkusRequest(
+                    parent=compute_service.name
+                )
+                self.billing_compute_skus = list(self.billing_client.list_skus(request=sku_request))
+
+            # Extract the machine family from the machine type name
+            machine_name_parts = machine_type.split('-')
+            machine_family = machine_name_parts[0]
+
+            # Find matching SKU for the machine type in this region
+            for sku in self.billing_compute_skus:
+                sku_description = sku.description.lower()
+
+                # Check if this SKU matches our machine type and region
+                sku_match = (
+                    machine_family in sku_description
+                    and (
+                        ("core" in sku_description and not use_spot) or
+                        ("preemptible" in sku_description and use_spot)
+                    )
+                    and self.region in sku.service_regions
+                )
+
+                if sku_match:
+                    logger.debug(f"Matching SKU found: {sku.description} in region {self.region}")
+
+                    # Extract price info
+                    for pricing_info in sku.pricing_info:
+                        for tier in pricing_info.pricing_expression.tiered_rates:
+                            unit_price = tier.unit_price
+                            # Convert to USD dollars
+                            price = unit_price.units + (unit_price.nanos / 1e9)
+                            logger.debug(f"  Price: ${price:.6f} per {pricing_info.pricing_expression.usage_unit}")
+                            return price
+
+            logger.warning(f"No pricing information found for {machine_type} in region {self.region}")
+            return 0.0
+
+        except Exception as e:
+            logger.warning(f"Error getting pricing for {machine_type}: {e}")
+            return 0.0
 
     async def start_instance(
         self, instance_type: str, startup_script: str, labels: Dict[str, str],

@@ -14,6 +14,7 @@ from azure.mgmt.compute import ComputeManagementClient  # type: ignore
 from azure.mgmt.network import NetworkManagementClient  # type: ignore
 from azure.core.exceptions import ResourceNotFoundError  # type: ignore
 from azure.mgmt.resource import ResourceManagementClient  # type: ignore
+from azure.mgmt.commerce import UsageManagementClient  # type: ignore
 
 from cloud_tasks.common.base import InstanceManager
 
@@ -48,6 +49,7 @@ class AzureVMInstanceManager(InstanceManager):
         self.location = None
         self.credentials = None
         self.instance_types = None
+        self.retail_client = None
         super().__init__()
 
     async def initialize(self, config: Dict[str, Any]) -> None:
@@ -377,27 +379,101 @@ class AzureVMInstanceManager(InstanceManager):
 
     async def list_available_instance_types(self) -> List[Dict[str, Any]]:
         """
-        List available VM sizes with their specifications.
+        List available Azure VM sizes with their specifications.
 
         Returns:
             List of dictionaries with VM sizes and their specifications
         """
-        # Get VM sizes for the location
+        # Ensure we have a location
+        if not hasattr(self, 'location') or not self.location:
+            logger.warning("No location specified for listing instance types, using eastus as default")
+            self.location = 'eastus'
+
+        # List available VM sizes
         vm_sizes = self.compute_client.virtual_machine_sizes.list(location=self.location)
 
         instance_types = []
-        for size in vm_sizes:
+        for vm_size in vm_sizes:
             instance_info = {
-                'name': size.name,
-                'vcpu': size.number_of_cores,
-                'memory_gb': size.memory_in_mb / 1024.0,
-                'storage_gb': size.resource_disk_size_in_mb / 1024.0,
-                'architecture': 'x86_64',  # Assuming x86_64 for simplicity
+                'name': vm_size.name,
+                'vcpu': vm_size.number_of_cores,
+                'memory_gb': vm_size.memory_in_mb / 1024.0,
+                'storage_gb': vm_size.max_data_disk_count * 1024  # Rough estimate, 1TB per data disk
             }
 
             instance_types.append(instance_info)
 
         return instance_types
+
+    async def get_instance_pricing(self, vm_size: str, use_spot: bool = False) -> float:
+        """
+        Get the hourly price for a specific VM size.
+
+        Args:
+            vm_size: The VM size name (e.g., 'Standard_B1s')
+            use_spot: Whether to use spot pricing (cheaper but can be terminated)
+
+        Returns:
+            Hourly price in USD
+        """
+        logger.debug(f"Getting pricing for VM size: {vm_size} (spot: {use_spot})")
+
+        try:
+            # Create retail prices client
+            if not hasattr(self, 'retail_client'):
+                self.retail_client = UsageManagementClient(
+                    credentials=self.credentials,
+                    subscription_id=self.subscription_id
+                )
+
+            # Use the retail API to get pricing
+            # Filter for the specific VM size in the current location
+            rate_filter = f"OfferDurableId eq 'MS-AZR-0003p' and Currency eq 'USD' and Locale eq 'en-US' and RegionInfo eq '{self.location}' and ServiceInfo eq 'Virtual Machines' and skuName eq '{vm_size}'"
+            if use_spot:
+                rate_filter += " and meterName eq 'Spot'"
+
+            # Get rate card info
+            rate_info = self.retail_client.rate_card.get(
+                filter=rate_filter
+            )
+
+            # Find the VM price in the response
+            for meter in rate_info.meters.values():
+                if vm_size in meter.meter_name and 'Windows' not in meter.meter_name:
+                    # Found our VM size, get the price
+                    rates = meter.meter_rates
+                    # Generally, the first rate is the primary one
+                    if rates and 0 in rates:
+                        price = float(rates[0])
+                        logger.debug(f"Found {'spot' if use_spot else 'on-demand'} price for {vm_size}: ${price:.4f}/hour")
+                        return price
+
+            # If retail API fails, fall back to a direct REST API call
+            logger.debug("Retail API failed, trying direct REST API call")
+            import requests
+
+            # Use the subscriptions/resources REST API
+            url = f"https://prices.azure.com/api/retail/prices?$filter=serviceName eq 'Virtual Machines' and armRegionName eq '{self.location}' and priceType eq 'Consumption' and skuName eq '{vm_size}'"
+
+            if use_spot:
+                url += " and productName eq 'Virtual Machines Spot'"
+
+            response = requests.get(url)
+            if response.status_code == 200:
+                data = response.json()
+                items = data.get('Items', [])
+                for item in items:
+                    if 'Windows' not in item.get('productName', '') and item.get('unitOfMeasure') == '1 Hour':
+                        price = float(item.get('retailPrice', 0))
+                        logger.debug(f"Found {'spot' if use_spot else 'on-demand'} price for {vm_size}: ${price:.4f}/hour")
+                        return price
+
+            logger.warning(f"No pricing found for {vm_size} in location {self.location}")
+            return 0.0
+
+        except Exception as e:
+            logger.warning(f"Error getting pricing for {vm_size}: {e}")
+            return 0.0
 
     async def start_instance(
         self, vm_size: str, startup_script: str, tags: Dict[str, str],
