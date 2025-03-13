@@ -108,7 +108,8 @@ python -m cloud_tasks run-job \
 # List available VM images for a provider
 python -m cloud_tasks list_images \
   --config config.yaml \
-  --provider aws
+  --provider aws \
+  --sort-by "name,source"
 
 # List available instance types with pricing information
 python -m cloud_tasks list_instances \

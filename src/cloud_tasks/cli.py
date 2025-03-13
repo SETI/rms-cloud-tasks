@@ -8,7 +8,7 @@ import logging
 import sys
 import time
 import traceback
-from typing import Any, Dict, List, Optional, Union, Callable
+from typing import Any, Dict, List, Optional, Union, Callable, Tuple
 
 import yaml  # type: ignore
 from tqdm import tqdm  # type: ignore
@@ -509,6 +509,53 @@ async def stop_job(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+# First, let's define a reusable build_sort_key function at the module level
+def build_sort_key(instance: Dict[str, Any], sort_fields: List[str], field_mapping: Dict[str, str]) -> Tuple[Any, ...]:
+    """
+    Build a sort key function for sorting objects by multiple fields.
+
+    Args:
+        instance: Object to sort
+        sort_fields: List of field names to sort by, prefixed with '-' for descending
+        field_mapping: Dictionary mapping input field names to actual object keys
+
+    Returns:
+        A tuple that can be used for sorting
+    """
+    result = []
+    for field in sort_fields:
+        descending = field.startswith('-')
+        field_name = field[1:] if descending else field
+        field_name = field_name.lower()  # Case-insensitive matching
+
+        # Find the matching field using prefix matching
+        matched_field = None
+        for key, value in field_mapping.items():
+            if field_name == key or field_name.startswith(key):
+                matched_field = value
+                break
+
+        if matched_field:
+            value = instance.get(matched_field)
+            # Handle different types appropriately for sorting
+            if isinstance(value, (int, float)):
+                # For numbers, negate if descending
+                result.append(-value if descending else value)
+            elif value is None:
+                # None values come first in ascending, last in descending
+                result.append(float('inf') if descending else float('-inf'))
+            else:
+                # For strings, use lowercase for case-insensitive comparison
+                str_val = str(value).lower()
+                if descending:
+                    # Create a tuple with a negation flag for descending string sort
+                    result.append((1, str_val))  # 1 indicates descending
+                else:
+                    result.append((0, str_val))  # 0 indicates ascending
+
+    return tuple(result)
+
+
 async def list_images_cmd(args: argparse.Namespace) -> None:
     """
     List available VM images for the specified provider.
@@ -550,7 +597,54 @@ async def list_images_cmd(args: argparse.Namespace) -> None:
                         break
             images = filtered_images
 
-        # Limit results if specified
+        # Apply custom sorting if specified
+        if args.sort_by:
+            # Define field mapping specific to images
+            field_mapping = {
+                'family': 'family',
+                'fam': 'family',
+                'f': 'family',
+                'name': 'name',
+                'n': 'name',
+                'project': 'project',
+                'proj': 'project',
+                'p': 'project',
+                'source': 'source',
+                's': 'source',
+                'publisher': 'publisher',
+                'pub': 'publisher',
+                'offer': 'offer',
+                'o': 'offer',
+                'sku': 'sku',
+                'version': 'version',
+                'v': 'version',
+                'id': 'id',
+                'creation_date': 'creation_date',
+                'date': 'creation_date',
+                'd': 'creation_date',
+                'os_type': 'os_type',
+                'os': 'os_type',
+                'location': 'location',
+                'loc': 'location',
+                'l': 'location',
+                'resource_group': 'resource_group',
+                'rg': 'resource_group',
+                'r': 'resource_group'
+            }
+
+            # Parse the sort fields
+            sort_fields = args.sort_by.split(',')
+
+            # Apply sorting if we have valid fields
+            if sort_fields:
+                try:
+                    # Use the refactored build_sort_key function
+                    images.sort(key=lambda x: build_sort_key(x, sort_fields, field_mapping))
+                except Exception as e:
+                    logger.warning(f"Error during sorting: {e}, using default sort")
+                    # No default sort for images
+
+        # Limit results if specified - applied after sorting
         if args.limit and len(images) > args.limit:
             images = images[:args.limit]
 
@@ -566,10 +660,10 @@ async def list_images_cmd(args: argparse.Namespace) -> None:
                 print(f"{img.get('id', 'N/A'):<20} {img.get('name', 'N/A')[:38]:<40} {img.get('creation_date', 'N/A')[:22]:<24} {img.get('source', 'N/A'):<6}")
 
         elif args.provider == 'gcp':
-            print(f"{'Family':<16} {'Name':<40} {'Project':<20} {'Source':<6}")
-            print('-' * 85)
+            print(f"{'Family':<35} {'Name':<50} {'Project':<20} {'Source':<6}")
+            print('-' * 114)
             for img in images:
-                print(f"{img.get('family', 'N/A')[:14]:<16} {img.get('name', 'N/A')[:38]:<40} {img.get('project', 'N/A')[:18]:<20} {img.get('source', 'N/A'):<6}")
+                print(f"{img.get('family', 'N/A')[:33]:<35} {img.get('name', 'N/A')[:48]:<50} {img.get('project', 'N/A')[:18]:<20} {img.get('source', 'N/A'):<6}")
 
         elif args.provider == 'azure':
             if any(img.get('source') == 'Azure' for img in images):
@@ -725,46 +819,11 @@ async def list_instances_cmd(args: argparse.Namespace) -> None:
             # Parse the sort fields
             sort_fields = args.sort_by.split(',')
 
-            # Build a sort key function
-            def build_sort_key(instance):
-                result = []
-                for field in sort_fields:
-                    descending = field.startswith('-')
-                    field_name = field[1:] if descending else field
-                    field_name = field_name.lower()  # Case-insensitive matching
-
-                    # Find the matching field using prefix matching
-                    matched_field = None
-                    for key, value in field_mapping.items():
-                        if field_name == key or field_name.startswith(key):
-                            matched_field = value
-                            break
-
-                    if matched_field:
-                        value = instance.get(matched_field)
-                        # Handle different types appropriately for sorting
-                        if isinstance(value, (int, float)):
-                            # For numbers, negate if descending
-                            result.append(-value if descending else value)
-                        elif value is None:
-                            # None values come first in ascending, last in descending
-                            result.append(float('inf') if descending else float('-inf'))
-                        else:
-                            # For strings, use lowercase for case-insensitive comparison
-                            # In descending order, we'd ideally sort from Z-A
-                            str_val = str(value).lower()
-                            if descending:
-                                # Create a tuple with a negation flag for descending string sort
-                                result.append((1, str_val))  # 1 indicates descending
-                            else:
-                                result.append((0, str_val))  # 0 indicates ascending
-
-                return tuple(result)
-
             # Apply sorting if we have valid fields
             if sort_fields:
                 try:
-                    instances.sort(key=build_sort_key)
+                    # Use the refactored build_sort_key function
+                    instances.sort(key=lambda x: build_sort_key(x, sort_fields, field_mapping))
                 except Exception as e:
                     logger.warning(f"Error during sorting: {e}, using default sort")
                     # Fall back to default sort
@@ -788,31 +847,31 @@ async def list_instances_cmd(args: argparse.Namespace) -> None:
 
         # Format output based on provider
         if args.provider == 'aws':
-            print(f"{'Instance Type':<20} {'vCPU':>6} {'Memory (GB)':>12} {'Storage (GB)':>12} {'Architecture':>12} {'Price/Hour':>17}")
+            print(f"{'Instance Type':<24} {'vCPU':>6} {'Memory (GB)':>12} {'Storage (GB)':>12} {'Architecture':>12} {'Price/Hour':>17}")
             print('-' * 80)
             for inst in instances:
                 price_str = "N/A"
                 if inst['name'] in pricing_data:
                     price_str = f"${pricing_data[inst['name']]:.4f}"
-                print(f"{inst['name']:<20} {inst['vcpu']:>6} {inst['memory_gb']:>12.1f} {inst.get('storage_gb', 0):>12} {inst.get('architecture', 'x86_64'):>12} {price_str:>17}")
+                print(f"{inst['name']:<24} {inst['vcpu']:>6} {inst['memory_gb']:>12.1f} {inst.get('storage_gb', 0):>12} {inst.get('architecture', 'x86_64'):>12} {price_str:>17}")
 
         elif args.provider == 'gcp':
-            print(f"{'Machine Type':<20} {'vCPU':>6} {'Memory (GB)':>12} {'Price/Hour':>17}")
+            print(f"{'Machine Type':<24} {'vCPU':>6} {'Memory (GB)':>12} {'Price/Hour':>17}")
             print('-' * 60)
             for inst in instances:
                 price_str = "N/A"
                 if inst['name'] in pricing_data:
                     price_str = f"${pricing_data[inst['name']]:.4f}"
-                print(f"{inst['name']:<20} {inst['vcpu']:>6} {inst['memory_gb']:>12.1f} {price_str:>17}")
+                print(f"{inst['name']:<24} {inst['vcpu']:>6} {inst['memory_gb']:>12.1f} {price_str:>17}")
 
         elif args.provider == 'azure':
-            print(f"{'VM Size':<20} {'vCPU':>6} {'Memory (GB)':>12} {'Storage (GB)':>12} {'Price/Hour':>17}")
+            print(f"{'VM Size':<24} {'vCPU':>6} {'Memory (GB)':>12} {'Storage (GB)':>12} {'Price/Hour':>17}")
             print('-' * 70)
             for inst in instances:
                 price_str = "N/A"
                 if inst['name'] in pricing_data:
                     price_str = f"${pricing_data[inst['name']]:.4f}"
-                print(f"{inst['name']:<20} {inst['vcpu']:>6} {inst['memory_gb']:>12.1f} {inst.get('storage_gb', 0):>12} {price_str:>17}")
+                print(f"{inst['name']:<24} {inst['vcpu']:>6} {inst['memory_gb']:>12.1f} {inst.get('storage_gb', 0):>12} {price_str:>17}")
 
         # Show no pricing data info if we couldn't get pricing
         if not has_pricing:
@@ -891,6 +950,11 @@ def main():
     list_images_parser.add_argument('--source', choices=['aws', 'gcp', 'azure', 'user'], help='Filter by image source (standard cloud images or user-created)')
     list_images_parser.add_argument('--filter', help='Filter images containing this text in any field')
     list_images_parser.add_argument('--limit', type=int, help='Limit the number of images displayed')
+    list_images_parser.add_argument('--sort-by',
+                                     help='Sort results by comma-separated fields (e.g., "family,name" or "-source,project"). '
+                                          'Available fields: family, name, project, source. '
+                                          'Prefix with "-" for descending order. '
+                                          'Partial field names like "fam" for "family" or "proj" for "project" are supported.')
     list_images_parser.set_defaults(func=list_images_cmd)
 
     # List instances command
