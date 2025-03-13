@@ -688,12 +688,15 @@ class AzureVMInstanceManager(InstanceManager):
         Check if VM tags match the filter tags.
 
         Args:
-            vm_tags: Tags on the VM
+            vm_tags: Tags of the VM
             filter_tags: Tags to filter by
 
         Returns:
-            True if all filter tags are present with matching values in VM tags
+            True if all filter tags are in VM tags with matching values
         """
+        if not filter_tags:
+            return True
+
         if not vm_tags:
             return False
 
@@ -702,3 +705,104 @@ class AzureVMInstanceManager(InstanceManager):
                 return False
 
         return True
+
+    async def list_available_images(self) -> List[Dict[str, Any]]:
+        """
+        List available VM images in Azure.
+        Returns standard marketplace images from common publishers and user's own images.
+
+        Returns:
+            List of dictionaries with image information
+        """
+        logger.info("Listing available VM images in Azure")
+        all_images = []
+
+        # List of common OS publishers
+        publishers = [
+            'Canonical',     # Ubuntu
+            'MicrosoftWindowsServer',  # Windows Server
+            'RedHat',        # RHEL
+            'OpenLogic',     # CentOS
+            'SUSE',          # SUSE Linux
+            'Debian',        # Debian
+            'MicrosoftCBLMariner', # Microsoft CBL-Mariner Linux
+            'microsoftwindowsdesktop', # Windows desktop
+        ]
+
+        # Get marketplace images for common publishers
+        logger.info(f"Fetching marketplace images from {len(publishers)} publishers")
+        for publisher in publishers:
+            try:
+                # Get offers for this publisher
+                offers = self.compute_client.virtual_machine_images.list_offers(
+                    location=self.location,
+                    publisher_name=publisher
+                )
+
+                for offer in offers:
+                    try:
+                        # Get SKUs for this offer
+                        skus = self.compute_client.virtual_machine_images.list_skus(
+                            location=self.location,
+                            publisher_name=publisher,
+                            offer=offer.name
+                        )
+
+                        for sku in skus:
+                            try:
+                                # Get latest version for this SKU
+                                versions = list(self.compute_client.virtual_machine_images.list(
+                                    location=self.location,
+                                    publisher_name=publisher,
+                                    offer=offer.name,
+                                    skus=sku.name
+                                ))
+
+                                if versions:
+                                    # Sort by version (descending) and get the latest
+                                    versions.sort(key=lambda x: x.name, reverse=True)
+                                    latest_version = versions[0]
+
+                                    # Use get_latest to get detailed image info for newest version
+                                    image_info = {
+                                        'id': f"{publisher}:{offer.name}:{sku.name}:{latest_version.name}",
+                                        'name': f"{publisher} {offer.name} {sku.name}",
+                                        'publisher': publisher,
+                                        'offer': offer.name,
+                                        'sku': sku.name,
+                                        'version': latest_version.name,
+                                        'location': self.location,
+                                        'source': 'Azure',
+                                    }
+                                    all_images.append(image_info)
+                            except Exception as e:
+                                logger.debug(f"Error getting versions for {publisher}:{offer.name}:{sku.name}: {e}")
+                                continue
+                    except Exception as e:
+                        logger.debug(f"Error getting SKUs for {publisher}:{offer.name}: {e}")
+                        continue
+            except Exception as e:
+                logger.warning(f"Error getting offers for publisher {publisher}: {e}")
+                continue
+
+        # Get user's custom images
+        try:
+            logger.info("Fetching custom images")
+            custom_images = self.compute_client.images.list()
+
+            for image in custom_images:
+                image_info = {
+                    'id': image.id,
+                    'name': image.name,
+                    'location': image.location,
+                    'source': 'User',
+                    'resource_group': image.id.split('/')[4] if image.id else 'Unknown',
+                    'hyper_v_generation': image.hyper_vgeneration.value if image.hyper_vgeneration else 'Unknown',
+                    'os_type': image.storage_profile.os_disk.os_type.value if image.storage_profile and image.storage_profile.os_disk else 'Unknown',
+                }
+                all_images.append(image_info)
+        except Exception as e:
+            logger.warning(f"Error fetching custom images: {e}")
+
+        logger.info(f"Found {len(all_images)} available images")
+        return all_images

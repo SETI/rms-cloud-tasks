@@ -610,3 +610,59 @@ class AWSEC2InstanceManager(InstanceManager):
             raise ValueError(f"No Ubuntu 24.04 LTS AMI found in region {self.region}")
 
         return amis[0]['ImageId']
+
+    async def list_available_images(self) -> List[Dict[str, Any]]:
+        """
+        List available AMIs in the current region.
+        Returns only standard AWS images and user's own images, excludes third-party Marketplace images.
+
+        Returns:
+            List of dictionaries with AMI information including id, name, description, and platform
+        """
+        logger.info(f"Listing available AMIs in region {self.region}")
+
+        # List standard AWS images
+        aws_images_response = self.ec2_client.describe_images(
+            Owners=['amazon'],  # Standard AWS-owned images
+            Filters=[
+                {'Name': 'state', 'Values': ['available']},
+                # Limit to common operating systems to avoid an excessive number of results
+                {'Name': 'name', 'Values': [
+                    'amzn2-ami-hvm-*',  # Amazon Linux 2
+                    'al2023-ami-*',      # Amazon Linux 2023
+                    'ubuntu/images/hvm-ssd/ubuntu-*',  # Ubuntu
+                    'RHEL-*',            # Red Hat Enterprise Linux
+                    'debian-*',          # Debian
+                    'fedora-*',          # Fedora
+                    'suse-*',            # SUSE Linux
+                ]}
+            ]
+        )
+
+        # List user's own images
+        user_images_response = self.ec2_client.describe_images(
+            Owners=['self'],  # Images owned by the user
+        )
+
+        # Combine results
+        all_images = aws_images_response['Images'] + user_images_response['Images']
+
+        # Sort by creation date
+        all_images = sorted(all_images, key=lambda x: x.get('CreationDate', ''), reverse=True)
+
+        # Format for return
+        formatted_images = []
+        for image in all_images:
+            image_info = {
+                'id': image['ImageId'],
+                'name': image.get('Name', 'No Name'),
+                'description': image.get('Description', 'No Description'),
+                'creation_date': image.get('CreationDate', 'Unknown'),
+                'source': 'AWS' if image.get('OwnerId') == 'amazon' else 'User',
+                'platform': image.get('Platform', 'Linux/UNIX'),
+                'state': image.get('State', 'unknown'),
+            }
+            formatted_images.append(image_info)
+
+        logger.info(f"Found {len(formatted_images)} available AMIs")
+        return formatted_images

@@ -3,6 +3,7 @@ Configuration handling for the multi-cloud task processing system.
 """
 import os
 from typing import Any, Dict, Optional, List, Union
+import yaml
 
 
 class AttrDict(dict[str, Any]):
@@ -132,7 +133,6 @@ def load_config(config_file: str) -> Config:
             raise ConfigError(f"Configuration file not found: {config_file}")
 
         with open(config_file, 'r') as f:
-            import yaml
             config_dict = yaml.safe_load(f)
 
         if not isinstance(config_dict, dict):

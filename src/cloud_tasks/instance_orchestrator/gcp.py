@@ -712,6 +712,114 @@ class GCPComputeInstanceManager(InstanceManager):
         logger.debug(f"Found image: {newest_image.name}, created on {newest_image.creation_timestamp}")
         return newest_image.self_link
 
+    async def list_available_images(self) -> List[Dict[str, Any]]:
+        """
+        List available VM images in GCP.
+        Returns common public OS images and the user's own custom images.
+
+        Returns:
+            List of dictionaries with image information
+        """
+        logger.info("Listing available Compute Engine images")
+
+        # List of common public OS image projects
+        public_projects = [
+            'ubuntu-os-cloud',       # Ubuntu images
+            'debian-cloud',          # Debian images
+            'centos-cloud',          # CentOS images
+            'rhel-cloud',            # Red Hat Enterprise Linux images
+            'fedora-cloud',          # Fedora images
+            'suse-cloud',            # SUSE Linux images
+            'rocky-linux-cloud',     # Rocky Linux images
+            'cos-cloud',             # Container-Optimized OS images
+            'windows-cloud',         # Windows Server images
+        ]
+
+        # Dictionary to store all images
+        all_images = []
+
+        # Get public images from standard projects
+        for project in public_projects:
+            try:
+                # Don't use a filter in the API request, as it's causing issues
+                # We'll filter the results programmatically instead
+                request = compute_v1.ListImagesRequest(
+                    project=project
+                )
+
+                logger.debug(f"Fetching images from {project}")
+                images = list(self.images_client.list(request=request))
+
+                # Filter out deprecated images in the code instead of in the API query
+                filtered_images = []
+                for image in images:
+                    # Include image if it's not deprecated or obsolete
+                    if not hasattr(image, 'deprecated') or not image.deprecated or \
+                       (image.deprecated.state != "DEPRECATED" and image.deprecated.state != "OBSOLETE"):
+                        filtered_images.append(image)
+
+                # Group filtered images by family
+                family_images = {}
+                for image in filtered_images:
+                    if image.family:
+                        if image.family not in family_images:
+                            family_images[image.family] = []
+                        family_images[image.family].append(image)
+
+                # Get the newest image from each family
+                for family, family_imgs in family_images.items():
+                    # Sort by creation timestamp (newest first)
+                    family_imgs.sort(key=lambda x: x.creation_timestamp, reverse=True)
+                    newest_image = family_imgs[0]
+
+                    all_images.append({
+                        'id': newest_image.id,
+                        'name': newest_image.name,
+                        'description': newest_image.description,
+                        'family': newest_image.family,
+                        'creation_date': newest_image.creation_timestamp,
+                        'source': 'GCP',
+                        'project': project,
+                        'self_link': newest_image.self_link,
+                        'status': newest_image.status,
+                    })
+
+            except Exception as e:
+                logger.warning(f"Error fetching images from {project}: {e}")
+                continue
+
+        # Get user's own custom images
+        try:
+            request = compute_v1.ListImagesRequest(
+                project=self.project_id,
+            )
+
+            logger.debug(f"Fetching custom images from project {self.project_id}")
+            image_list = self.images_client.list(request=request)
+
+            # Process each image
+            for image in image_list:
+                all_images.append({
+                    'id': image.id,
+                    'name': image.name,
+                    'description': image.description,
+                    'family': image.family,
+                    'creation_date': image.creation_timestamp,
+                    'source': 'User',
+                    'project': self.project_id,
+                    'self_link': image.self_link,
+                    'status': image.status,
+                })
+
+        except Exception as e:
+            logger.warning(f"Error fetching custom images from project {self.project_id}: {e}")
+
+        # Sort by creation date
+        all_images.sort(key=lambda x: x.get('creation_date', ''), reverse=True)
+
+        logger.info(f"Found {len(all_images)} available images")
+        return all_images
+
     async def _wait_for_operation(self, operation_name: str) -> None:
         """
         Wait for a Compute Engine operation to complete.

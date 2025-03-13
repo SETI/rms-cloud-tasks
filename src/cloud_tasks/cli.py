@@ -509,6 +509,99 @@ async def stop_job(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+async def list_images_cmd(args: argparse.Namespace) -> None:
+    """
+    List available VM images for the specified provider.
+    Shows only standard images and user-owned images, not third-party images.
+
+    Args:
+        args: Command-line arguments
+    """
+    try:
+        # Load configuration
+        config = load_config(args.config)
+
+        # Create instance manager for the provider
+        instance_manager = await create_instance_manager(
+            provider=args.provider,
+            config=config
+        )
+
+        # Get images
+        images = await instance_manager.list_available_images()
+
+        if not images:
+            print(f"No images found for provider {args.provider}")
+            return
+
+        # Apply filters if specified
+        if args.source:
+            images = [img for img in images if img.get('source', '').lower() == args.source.lower()]
+
+        if args.filter:
+            # Filter by any field containing the filter string
+            filter_text = args.filter.lower()
+            filtered_images = []
+            for img in images:
+                # Check if any field contains the filter string
+                for key, value in img.items():
+                    if isinstance(value, str) and filter_text in value.lower():
+                        filtered_images.append(img)
+                        break
+            images = filtered_images
+
+        # Limit results if specified
+        if args.limit and len(images) > args.limit:
+            images = images[:args.limit]
+
+        # Display results
+        print(f"Found {len(images)} {'filtered ' if args.filter or args.source else ''}images for {args.provider}:")
+        print()
+
+        # Format output based on provider
+        if args.provider == 'aws':
+            print(f"{'ID':<20} {'Name':<40} {'Creation Date':<24} {'Source':<6}")
+            print('-' * 90)
+            for img in images:
+                print(f"{img.get('id', 'N/A'):<20} {img.get('name', 'N/A')[:38]:<40} {img.get('creation_date', 'N/A')[:22]:<24} {img.get('source', 'N/A'):<6}")
+
+        elif args.provider == 'gcp':
+            print(f"{'Family':<16} {'Name':<40} {'Project':<20} {'Source':<6}")
+            print('-' * 85)
+            for img in images:
+                print(f"{img.get('family', 'N/A')[:14]:<16} {img.get('name', 'N/A')[:38]:<40} {img.get('project', 'N/A')[:18]:<20} {img.get('source', 'N/A'):<6}")
+
+        elif args.provider == 'azure':
+            if any(img.get('source') == 'Azure' for img in images):
+                print("MARKETPLACE IMAGES (Reference format: publisher:offer:sku:version)")
+                print(f"{'Publisher':<24} {'Offer':<24} {'SKU':<24} {'Latest Version':<16}")
+                print('-' * 90)
+                for img in images:
+                    if img.get('source') == 'Azure':
+                        print(f"{img.get('publisher', 'N/A')[:22]:<24} {img.get('offer', 'N/A')[:22]:<24} {img.get('sku', 'N/A')[:22]:<24} {img.get('version', 'N/A')[:14]:<16}")
+
+            if any(img.get('source') == 'User' for img in images):
+                if any(img.get('source') == 'Azure' for img in images):
+                    print("\nCUSTOM IMAGES")
+                print(f"{'Name':<30} {'Resource Group':<30} {'OS Type':<10} {'Location':<16}")
+                print('-' * 90)
+                for img in images:
+                    if img.get('source') == 'User':
+                        print(f"{img.get('name', 'N/A')[:28]:<30} {img.get('resource_group', 'N/A')[:28]:<30} {img.get('os_type', 'N/A')[:8]:<10} {img.get('location', 'N/A')[:14]:<16}")
+
+        print(f"\nTo use a custom image with the 'run' or 'manage_pool' commands, use the --image parameter.")
+        if args.provider == 'aws':
+            print("For AWS, specify the AMI ID: --image ami-12345678")
+        elif args.provider == 'gcp':
+            print("For GCP, specify the image family or full URI: --image ubuntu-2404-lts or --image https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-2404-lts-amd64-v20240416")
+        elif args.provider == 'azure':
+            print("For Azure, specify as publisher:offer:sku:version or full resource ID: --image Canonical:UbuntuServer:24_04-lts:latest")
+
+    except Exception as e:
+        logger.error(f"Error listing images: {e}", exc_info=True)
+        sys.exit(1)
+
+
 def main():
     """Main entry point for the CLI."""
     parser = argparse.ArgumentParser(description='Multi-Cloud Task Processing System')
@@ -547,6 +640,21 @@ def main():
     stop_parser.add_argument('--job-id', required=True, help='Job ID to stop')
     stop_parser.add_argument('--purge-queue', action='store_true', help='Purge the queue after stopping')
     stop_parser.set_defaults(func=stop_job)
+
+    # List images command
+    list_images_parser = subparsers.add_parser('list_images', help='List available VM images for the specified provider')
+    # Use common args helper but we'll need to override queue-name since we don't need it
+    add_common_args(list_images_parser)
+    # Override queue-name to make it optional since we don't need it for this command
+    for action in list_images_parser._actions:
+        if action.dest == 'queue_name':
+            action.required = False
+            action.help = 'Name of the task queue (not used for this command)'
+    # Additional filtering options
+    list_images_parser.add_argument('--source', choices=['aws', 'gcp', 'azure', 'user'], help='Filter by image source (standard cloud images or user-created)')
+    list_images_parser.add_argument('--filter', help='Filter images containing this text in any field')
+    list_images_parser.add_argument('--limit', type=int, help='Limit the number of images displayed')
+    list_images_parser.set_defaults(func=list_images_cmd)
 
     args = parser.parse_args()
 
