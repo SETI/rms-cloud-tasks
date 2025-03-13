@@ -7,6 +7,7 @@ import logging
 import traceback
 from typing import Any, Dict, List, Optional
 import datetime
+import base64
 
 import boto3  # type: ignore
 from botocore.exceptions import ClientError  # type: ignore
@@ -172,60 +173,141 @@ class AWSEC2InstanceManager(InstanceManager):
         return instance_types
 
     async def start_instance(
-        self, instance_type: str, user_data: str, tags: Dict[str, str], use_spot: bool = False
+        self, instance_type: str, user_data: str, tags: Dict[str, str],
+        use_spot: bool = False, custom_image: Optional[str] = None
     ) -> str:
         """
-        Start a new EC2 instance and return its ID.
+        Start a new EC2 instance.
 
         Args:
-            instance_type: EC2 instance type (e.g., 't2.micro')
-            user_data: Base64-encoded user data script
+            instance_type: EC2 instance type (e.g., 't3.micro')
+            user_data: User data script to run at instance startup
             tags: Dictionary of tags to apply to the instance
             use_spot: Whether to use spot instances (cheaper but can be terminated)
+            custom_image: Custom AMI ID or name to use
 
         Returns:
             EC2 instance ID
         """
-        # Convert tags to AWS format
-        aws_tags = [{'Key': key, 'Value': value} for key, value in tags.items()]
+        logger.info(f"Creating {'spot' if use_spot else 'on-demand'} instance of type {instance_type}")
 
-        # Create instance run request
-        run_args = {
-            'ImageId': await self._get_default_ami(),
+        # Get a default AMI or use custom image
+        if custom_image:
+            # If it looks like an AMI ID, use it directly
+            if custom_image.startswith('ami-'):
+                ami_id = custom_image
+                logger.info(f"Using custom AMI: {ami_id}")
+            else:
+                # Otherwise, search for an AMI by name
+                try:
+                    response = self.ec2_client.describe_images(
+                        Filters=[
+                            {'Name': 'name', 'Values': [custom_image]},
+                            {'Name': 'state', 'Values': ['available']}
+                        ]
+                    )
+                    if response['Images']:
+                        # Sort by creation date to get the newest
+                        images = sorted(response['Images'],
+                                      key=lambda x: x.get('CreationDate', ''),
+                                      reverse=True)
+                        ami_id = images[0]['ImageId']
+                        logger.info(f"Found AMI {ami_id} for name: {custom_image}")
+                    else:
+                        logger.warning(f"No AMI found for name: {custom_image}, using default")
+                        ami_id = await self._get_default_ami()
+                except Exception as e:
+                    logger.error(f"Error finding AMI by name: {e}")
+                    ami_id = await self._get_default_ami()
+        else:
+            ami_id = await self._get_default_ami()
+
+        # Convert tags dictionary to AWS format
+        aws_tags = [
+            {'Key': key, 'Value': value}
+            for key, value in tags.items()
+        ]
+
+        # Prepare instance run parameters
+        run_params = {
+            'ImageId': ami_id,
             'InstanceType': instance_type,
             'MinCount': 1,
             'MaxCount': 1,
             'UserData': user_data,
-            'TagSpecifications': [{
-                'ResourceType': 'instance',
-                'Tags': aws_tags
-            }],
-            # Use default security group
-            # Add instance profile if needed for permissions
+            'TagSpecifications': [
+                {
+                    'ResourceType': 'instance',
+                    'Tags': aws_tags
+                }
+            ],
+            'NetworkInterfaces': [
+                {
+                    'DeviceIndex': 0,
+                    'AssociatePublicIpAddress': True,
+                    'DeleteOnTermination': True
+                }
+            ]
         }
 
-        # If using spot instances, add spot-specific parameters
+        # Use spot instances if requested
         if use_spot:
-            logger.info(f"Requesting spot instance of type {instance_type}")
-            # Replace the standard run_args with spot request
-            spot_options = {
-                'SpotInstanceType': 'one-time',
-                'InstanceInterruptionBehavior': 'terminate'
+            # Create spot instance request
+            spot_params = {
+                'InstanceCount': 1,
+                'Type': 'one-time',
+                'LaunchSpecification': {
+                    'ImageId': ami_id,
+                    'InstanceType': instance_type,
+                    'UserData': base64.b64encode(user_data.encode()).decode('utf-8'),
+                    'NetworkInterfaces': [
+                        {
+                            'DeviceIndex': 0,
+                            'AssociatePublicIpAddress': True,
+                            'DeleteOnTermination': True
+                        }
+                    ]
+                }
             }
-            run_args['InstanceMarketOptions'] = {
-                'MarketType': 'spot',
-                'SpotOptions': spot_options
-            }
-            logger.debug(f"Spot request parameters: {spot_options}")
 
-        # Launch instance
+            try:
+                response = self.ec2_client.request_spot_instances(**spot_params)
+                request_id = response['SpotInstanceRequests'][0]['SpotInstanceRequestId']
+
+                logger.info(f"Waiting for spot instance request {request_id} to be fulfilled")
+
+                # Wait for the spot request to be fulfilled
+                waiter = self.ec2_client.get_waiter('spot_instance_request_fulfilled')
+                waiter.wait(SpotInstanceRequestIds=[request_id])
+
+                # Get the instance ID from the spot request
+                response = self.ec2_client.describe_spot_instance_requests(
+                    SpotInstanceRequestIds=[request_id]
+                )
+                instance_id = response['SpotInstanceRequests'][0]['InstanceId']
+
+                # Apply tags to the instance
+                self.ec2_client.create_tags(
+                    Resources=[instance_id],
+                    Tags=aws_tags
+                )
+
+                logger.info(f"Created spot instance: {instance_id}")
+                return instance_id
+
+            except Exception as e:
+                logger.error(f"Failed to create spot instance: {e}")
+                logger.info("Falling back to on-demand instance")
+                # Fall back to on-demand if spot request fails
+
+        # Create on-demand instance
         try:
-            response = self.ec2_client.run_instances(**run_args)
+            response = self.ec2_client.run_instances(**run_params)
             instance_id = response['Instances'][0]['InstanceId']
-            logger.info(f"Started {'spot' if use_spot else 'on-demand'} instance: {instance_id} ({instance_type})")
+            logger.info(f"Created on-demand instance: {instance_id}")
             return instance_id
         except Exception as e:
-            logger.error(f"Failed to launch {'spot' if use_spot else 'on-demand'} instance: {e}")
+            logger.error(f"Failed to create instance: {e}")
             raise
 
     async def terminate_instance(self, instance_id: str) -> None:

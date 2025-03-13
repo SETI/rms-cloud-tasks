@@ -1,16 +1,50 @@
 # Multi-Cloud Task Processing System Configuration
 
+# Global run settings (defaults for all providers)
+run:
+  cpu: 2
+  memory_gb: 4
+  disk_gb: 20
+  image: ubuntu-2404-lts
+  # Default startup script - will be used if no provider-specific script is provided
+  startup_script: |
+    #!/bin/bash
+    # Default startup script
+    apt-get update -y
+    apt-get install -y python3 python3-pip git
+    echo "Default worker initialization complete" > /var/log/worker-init.log
+
 # AWS Configuration
 aws:
   access_key: YOUR_AWS_ACCESS_KEY
   secret_key: YOUR_AWS_SECRET_KEY
   region: us-west-2
+  # Provider-specific overrides (optional)
+  cpu: 4  # Override the global CPU setting
+  memory_gb: 8  # Override the global memory setting
+  image: ami-0123456789abcdef0  # Custom AMI ID
+  # AWS-specific startup script
+  startup_script: |
+    #!/bin/bash
+    # AWS-specific startup script
+    apt-get update -y
+    apt-get install -y python3 python3-pip git aws-cli
+    echo "AWS worker initialization complete" > /var/log/worker-init.log
 
 # GCP Configuration
 gcp:
   project_id: YOUR_GCP_PROJECT_ID
   credentials_file: /path/to/your-gcp-credentials.json
   zone: us-central1-a
+  # Provider-specific overrides (optional)
+  disk_gb: 30  # Override the global disk setting
+  # GCP-specific startup script
+  startup_script: |
+    #!/bin/bash
+    # GCP-specific startup script
+    apt-get update -y
+    apt-get install -y python3 python3-pip git google-cloud-sdk
+    echo "GCP worker initialization complete" > /var/log/worker-init.log
 
 # Azure Configuration
 azure:
@@ -20,3 +54,12 @@ azure:
   client_secret: YOUR_AZURE_CLIENT_SECRET
   location: eastus
   resource_group: cloud-run-rg
+  # Provider-specific overrides (optional)
+  image: Canonical:UbuntuServer:24_04-lts:latest
+  # Azure-specific startup script
+  startup_script: |
+    #!/bin/bash
+    # Azure-specific startup script
+    apt-get update -y
+    apt-get install -y python3 python3-pip git azure-cli
+    echo "Azure worker initialization complete" > /var/log/worker-init.log

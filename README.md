@@ -107,38 +107,108 @@ python -m cloud_tasks run-job \
 
 ## Configuration
 
-Each cloud provider requires specific configuration:
+The configuration file supports both global defaults and provider-specific settings:
 
-### AWS
+### Global Run Configuration
+
+The global `run` section defines default values for all cloud providers:
+
+```yaml
+run:
+  cpu: 2                 # Default CPU cores per instance
+  memory_gb: 4           # Default memory in GB per instance
+  disk_gb: 20            # Default disk space in GB per instance
+  image: ubuntu-2404-lts # Default VM image to use
+  startup_script: |      # Default startup script
+    #!/bin/bash
+    apt-get update -y
+    apt-get install -y python3 python3-pip git
+```
+
+### Provider-Specific Configuration
+
+Each cloud provider requires specific configuration and can override the global defaults:
+
+#### AWS
 
 ```yaml
 aws:
-  region: us-west-2  # Optional: omit for automatic cheapest region selection
+  region: us-west-2        # AWS region
   access_key: YOUR_ACCESS_KEY
   secret_key: YOUR_SECRET_KEY
+
+  # Optional overrides for this provider
+  cpu: 4                   # Override global CPU setting
+  memory_gb: 8             # Override global memory setting
+  disk_gb: 30              # Override global disk setting
+  image: ami-0123456789abcdef0  # Custom AMI ID or name
+  startup_script: |        # AWS-specific startup script
+    #!/bin/bash
+    apt-get update -y
+    apt-get install -y aws-cli
 ```
 
-### GCP
+#### GCP
 
 ```yaml
 gcp:
   project_id: your-project-id
-  region: us-central1  # Optional: omit for automatic cheapest region selection
-  zone: us-central1-a  # Optional if region is specified
-  credentials_file: /path/to/credentials.json
+  region: us-central1      # Optional: omit for automatic cheapest region selection
+  zone: us-central1-a      # Optional if region is specified
+  credentials_file: /path/to/credentials.json  # Optional: uses default credentials if omitted
+
+  # Optional overrides for this provider
+  cpu: 2                   # Override global CPU setting
+  memory_gb: 4             # Override global memory setting
+  disk_gb: 20              # Override global disk setting
+  image: ubuntu-2404-lts   # Image family or full resource path
+  startup_script: |        # GCP-specific startup script
+    #!/bin/bash
+    apt-get update -y
+    apt-get install -y google-cloud-sdk
 ```
 
-### Azure
+#### Azure
 
 ```yaml
 azure:
   subscription_id: your-subscription-id
   resource_group: your-resource-group
-  location: eastus  # Optional: omit for automatic cheapest location selection
+  location: eastus        # Optional: omit for automatic cheapest location selection
   tenant_id: your-tenant-id
   client_id: your-client-id
   client_secret: your-client-secret
+
+  # Optional overrides for this provider
+  cpu: 2                  # Override global CPU setting
+  memory_gb: 4            # Override global memory setting
+  disk_gb: 20             # Override global disk setting
+  image: Canonical:UbuntuServer:24_04-lts:latest  # URN format or resource ID
+  startup_script: |       # Azure-specific startup script
+    #!/bin/bash
+    apt-get update -y
+    apt-get install -y azure-cli
 ```
+
+### Command Line Overrides
+
+You can override any configuration value from the command line:
+
+```bash
+python -m cloud_tasks run \
+  --config config.yaml \
+  --tasks tasks.json \
+  --provider aws \
+  --cpu 8 \                        # Override CPU setting
+  --memory 16 \                    # Override memory setting
+  --disk 100 \                     # Override disk setting
+  --image ami-0123456789abcdef0 \  # Override image setting
+  --startup-script-file setup.sh \ # Override startup script with file contents
+  --use-spot \
+  --job-id my-processing-job
+```
+
+Priority of settings is: Command Line > Provider-Specific Config > Global Run Config > System Defaults
 
 ## Installation
 

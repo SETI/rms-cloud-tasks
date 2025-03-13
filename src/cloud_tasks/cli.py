@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 import yaml  # type: ignore
 from tqdm import tqdm  # type: ignore
 
-from cloud_tasks.common.config import load_config, ConfigError
+from cloud_tasks.common.config import load_config, ConfigError, get_run_config
 from cloud_tasks.queue_manager import create_queue
 from cloud_tasks.instance_orchestrator import create_instance_manager
 from cloud_tasks.instance_orchestrator.orchestrator import InstanceOrchestrator
@@ -44,6 +44,16 @@ async def run_job(args: argparse.Namespace) -> None:
         # Initialize cloud services
         provider = args.provider
 
+        # Get the run configuration with proper overrides
+        cli_args = vars(args)
+        run_config = get_run_config(config, provider, cli_args)
+
+        logger.info(f"Using CPU: {run_config['cpu']}, Memory: {run_config['memory_gb']} GB, Disk: {run_config['disk_gb']} GB")
+        logger.info(f"Using image: {run_config['image']}")
+        if run_config['startup_script']:
+            script_preview = run_config['startup_script'][:50].replace('\n', ' ') + ('...' if len(run_config['startup_script']) > 50 else '')
+            logger.info(f"Using custom startup script: {script_preview}")
+
         # Handle region parameter - add it to the config if specified on command line
         if args.region:
             logger.info(f"Using specified region from command line: {args.region}")
@@ -73,13 +83,13 @@ async def run_job(args: argparse.Namespace) -> None:
         job_id = args.job_id or f"job-{int(time.time())}"
         logger.info(f"Starting job {job_id}")
 
-        # Create the orchestrator with all parameters
+        # Create the orchestrator with parameters from run_config
         orchestrator = InstanceOrchestrator(
             provider=provider,
             job_id=job_id,
-            cpu_required=args.cpu,
-            memory_required_gb=args.memory,
-            disk_required_gb=args.disk,
+            cpu_required=run_config['cpu'],
+            memory_required_gb=run_config['memory_gb'],
+            disk_required_gb=run_config['disk_gb'],
             min_instances=args.min_instances,
             max_instances=args.max_instances,
             tasks_per_instance=args.tasks_per_instance,
@@ -87,7 +97,9 @@ async def run_job(args: argparse.Namespace) -> None:
             region=region_param,
             worker_repo_url=args.worker_repo,
             queue_name=args.queue_name,
-            config=config  # Pass the full config dictionary
+            config=config,  # Pass the full config dictionary
+            custom_image=run_config['image'],
+            startup_script=run_config['startup_script']
         )
 
         # Set the task queue on the orchestrator
@@ -314,9 +326,11 @@ def main():
     run_parser.add_argument('--job-id', help='Unique job ID (generated if not provided)')
     run_parser.add_argument('--max-instances', type=int, default=5, help='Maximum number of instances')
     run_parser.add_argument('--min-instances', type=int, default=0, help='Minimum number of instances')
-    run_parser.add_argument('--cpu', type=int, default=1, help='Minimum CPU cores per instance')
-    run_parser.add_argument('--memory', type=float, default=2, help='Minimum memory (GB) per instance')
-    run_parser.add_argument('--disk', type=int, default=10, help='Minimum disk space (GB) per instance')
+    run_parser.add_argument('--cpu', type=int, help='Minimum CPU cores per instance (overrides config)')
+    run_parser.add_argument('--memory', type=float, help='Minimum memory (GB) per instance (overrides config)')
+    run_parser.add_argument('--disk', type=int, help='Minimum disk space (GB) per instance (overrides config)')
+    run_parser.add_argument('--image', help='Custom VM image to use (overrides config)')
+    run_parser.add_argument('--startup-script-file', help='Path to custom startup script file (overrides config)')
     run_parser.add_argument('--tasks-per-instance', type=int, default=10, help='Number of tasks per instance')
     run_parser.add_argument('--use-spot', action='store_true', help='Use spot/preemptible instances (cheaper but can be terminated)')
     run_parser.add_argument('--region', help='Specific region to launch instances in (defaults to cheapest region)')

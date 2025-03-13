@@ -49,35 +49,44 @@ class InstanceOrchestrator:
         worker_repo_url: Optional[str] = None,
         queue_name: Optional[str] = None,
         config: Optional[Dict[str, Any]] = None,
+        custom_image: Optional[str] = None,
+        startup_script: str = "",
         **kwargs
     ):
         """
-        Initialize the orchestrator.
+        Initialize the instance orchestrator.
 
         Args:
-            provider: Cloud provider ('aws', 'gcp', or 'azure')
-            job_id: Unique identifier for this job
-            cpu_required: Minimum number of vCPUs for instances
-            memory_required_gb: Minimum amount of memory in GB
-            disk_required_gb: Minimum amount of disk space in GB
-            min_instances: Minimum number of worker instances to maintain
-            max_instances: Maximum number of worker instances to allow
-            scale_up_threshold: Tasks per instance that triggers scale up
-            scale_down_threshold: Tasks per instance that triggers scale down
+            provider: Cloud provider name ('aws', 'gcp', or 'azure')
+            job_id: Unique job ID for tracking instances
+            cpu_required: Minimum CPU cores per instance
+            memory_required_gb: Minimum memory in GB per instance
+            disk_required_gb: Minimum disk space in GB per instance
+            min_instances: Minimum number of instances to maintain
+            max_instances: Maximum number of instances to spawn
+            scale_up_threshold: Queue depth per instance that triggers scale up
+            scale_down_threshold: Queue depth per instance that triggers scale down
             use_spot_instances: Whether to use spot/preemptible instances
-            region: Specific region to launch instances in (defaults to cheapest)
-            tasks_per_instance: Number of tasks each worker instance can process
-            worker_repo_url: URL to Git repository with worker code
-            queue_name: Name of the task queue (defaults to {job_id}-queue)
-            config: Full configuration dictionary with all provider settings
-            **kwargs: Additional provider-specific configuration that will be merged
-                     with config[provider] if config is provided
+            region: Specific region to use (if None, cheapest region is used)
+            tasks_per_instance: Number of tasks each instance can process concurrently
+            worker_repo_url: URL to GitHub repo with worker code
+            queue_name: Name of the task queue to process
+            config: Full configuration dictionary
+            custom_image: Custom VM image to use (overrides provider defaults)
+            startup_script: Custom startup script to run on instances
+            **kwargs: Additional keyword arguments
         """
         self.provider = provider
         self.job_id = job_id
+        self.config = config or {}
+
+        # Instance requirements
         self.cpu_required = cpu_required
         self.memory_required_gb = memory_required_gb
         self.disk_required_gb = disk_required_gb
+        self.custom_image = custom_image
+        self.startup_script = startup_script
+
         self.min_instances = min_instances
         self.max_instances = max_instances
         self.scale_up_threshold = scale_up_threshold
@@ -87,9 +96,6 @@ class InstanceOrchestrator:
         self.tasks_per_instance = tasks_per_instance
         self.worker_repo_url = worker_repo_url
         self.queue_name = queue_name or f"{job_id}-queue"
-
-        # Store the full configuration dictionary
-        self.config = config or {}
 
         # Get or create the provider-specific configuration
         if provider in self.config:
@@ -153,9 +159,13 @@ class InstanceOrchestrator:
             config: Cloud provider configuration
 
         Returns:
-            Base64-encoded startup script
+            Shell script for instance startup
         """
-        # Create a simple script to set up the worker
+        # If a custom startup script is provided, use it
+        if self.startup_script:
+            return self.startup_script
+
+        # Otherwise create the default script to set up the worker
         script = f"""#!/bin/bash
 # Update system and install dependencies
 apt-get update -y
@@ -375,12 +385,11 @@ python3 worker.py --config=/opt/worker/config.json
             )
             logger.info(f"Selected instance type: {instance_type}")
 
-            # Generate startup script - for testing purposes use example values
-            # In production, these would be real queue name and configuration
+            # Generate startup script
             startup_script = self.generate_worker_startup_script(
                 provider=self.provider,
-                queue_name="example-queue",
-                config={}
+                queue_name=self.queue_name,  # Use the actual queue name
+                config=self.config.get(self.provider, {})  # Pass provider-specific config
             )
 
             # Define tags
@@ -399,7 +408,8 @@ python3 worker.py --config=/opt/worker/config.json
                         instance_type,
                         startup_script,
                         tags,
-                        use_spot=self.use_spot_instances
+                        use_spot=self.use_spot_instances,
+                        custom_image=self.custom_image
                     )
                     instance_ids.append(instance_id)
                     # Store instance with creation time

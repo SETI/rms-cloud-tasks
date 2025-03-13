@@ -73,7 +73,8 @@ class InstanceManager(ABC):
 
     @abstractmethod
     async def start_instance(
-        self, instance_type: str, user_data: str, tags: Dict[str, str], use_spot: bool = False
+        self, instance_type: str, user_data: str, tags: Dict[str, str],
+        use_spot: bool = False, custom_image: Optional[str] = None
     ) -> str:
         """
         Start a new instance and return its ID.
@@ -83,6 +84,7 @@ class InstanceManager(ABC):
             user_data: Startup script or user data to pass to the instance
             tags: Dictionary of tags to apply to the instance
             use_spot: Whether to use spot/preemptible instances (cheaper but can be terminated)
+            custom_image: Custom image to use instead of default Ubuntu 24.04 LTS
 
         Returns:
             ID of the started instance

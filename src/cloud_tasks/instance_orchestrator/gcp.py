@@ -421,7 +421,7 @@ class GCPComputeInstanceManager(InstanceManager):
 
     async def start_instance(
         self, instance_type: str, startup_script: str, labels: Dict[str, str],
-        use_spot: bool = False
+        use_spot: bool = False, custom_image: Optional[str] = None
     ) -> str:
         """
         Start a new GCP Compute Engine instance.
@@ -431,6 +431,7 @@ class GCPComputeInstanceManager(InstanceManager):
             startup_script: Base64-encoded startup script
             labels: Dictionary of labels to apply to the instance
             use_spot: Whether to use a preemptible VM (cheaper but can be terminated)
+            custom_image: Custom image to use (if provided)
 
         Returns:
             ID of the started instance
@@ -453,8 +454,18 @@ class GCPComputeInstanceManager(InstanceManager):
             ]
         }
 
-        # Get default image
-        source_image = await self._get_default_image()
+        # Get image - either custom or default
+        if custom_image:
+            logger.info(f"Using custom image: {custom_image}")
+            # If it's a full URI, use it directly
+            if custom_image.startswith('https://') or '/' in custom_image:
+                source_image = custom_image
+            else:
+                # Assuming it's a family name in ubuntu-os-cloud
+                source_image = await self._get_image_from_family(custom_image)
+        else:
+            # Get default Ubuntu 24.04 LTS image
+            source_image = await self._get_default_image()
 
         # Prepare the disk configuration
         disk_config = {
@@ -620,6 +631,32 @@ class GCPComputeInstanceManager(InstanceManager):
 
         except NotFound:
             return 'not_found'
+
+    async def _get_image_from_family(self, family_name: str, project: str = 'ubuntu-os-cloud') -> str:
+        """
+        Get the latest image from a specific family.
+
+        Args:
+            family_name: Image family name
+            project: Project that contains the image family (default: ubuntu-os-cloud)
+
+        Returns:
+            Image URI
+        """
+        logger.debug(f"Retrieving latest image from family {family_name} in project {project}")
+
+        request = compute_v1.GetFromFamilyImageRequest(
+            project=project,
+            family=family_name
+        )
+
+        try:
+            image = self.images_client.get_from_family(request=request)
+            logger.debug(f"Found image: {image.name}, created on {image.creation_timestamp}")
+            return image.self_link
+        except Exception as e:
+            logger.error(f"Error getting image from family {family_name}: {e}")
+            raise ValueError(f"Could not find image in family {family_name} in project {project}: {e}")
 
     async def _get_default_image(self) -> str:
         """

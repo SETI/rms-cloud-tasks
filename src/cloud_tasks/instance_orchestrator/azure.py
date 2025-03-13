@@ -371,7 +371,8 @@ class AzureVMInstanceManager(InstanceManager):
         return instance_types
 
     async def start_instance(
-        self, vm_size: str, startup_script: str, tags: Dict[str, str], use_spot: bool = False
+        self, vm_size: str, startup_script: str, tags: Dict[str, str],
+        use_spot: bool = False, custom_image: Optional[str] = None
     ) -> str:
         """
         Start a new Azure VM instance.
@@ -381,6 +382,7 @@ class AzureVMInstanceManager(InstanceManager):
             startup_script: Startup script for the instance
             tags: Dictionary of tags to apply to the instance
             use_spot: Whether to use spot instances (cheaper but can be terminated)
+            custom_image: Custom image to use instead of default Ubuntu 24.04 LTS
 
         Returns:
             VM instance ID
@@ -388,85 +390,145 @@ class AzureVMInstanceManager(InstanceManager):
         # Generate unique names
         instance_name = f"worker-{int(time.time())}"
         nic_name = f"{instance_name}-nic"
+        ip_name = f"{instance_name}-ip"
+        disk_name = f"{instance_name}-disk"
 
-        # Create a NIC for the VM
-        nic_params = {
-            'location': self.location,
-            'ip_configurations': [{
-                'name': 'ipconfig1',
-                'subnet': {
-                    'id': self.subnet_id
-                }
-            }]
-        }
-
-        nic = await asyncio.to_thread(
-            self.network_client.network_interfaces.begin_create_or_update,
+        # Create network interface
+        async_nic_creation = self.network_client.network_interfaces.begin_create_or_update(
             self.resource_group,
             nic_name,
-            nic_params
+            {
+                'location': self.location,
+                'ip_configurations': [{
+                    'name': ip_name,
+                    'public_ip_address': {
+                        'location': self.location,
+                        'name': ip_name,
+                        'public_ip_allocation_method': 'Dynamic'
+                    },
+                    'subnet': {'id': self.subnet_id}
+                }]
+            }
         )
-        nic_result = nic.result()
+        nic = await asyncio.to_thread(lambda: async_nic_creation.result())
 
-        # Define the VM parameters
+        # Prepare VM parameters
         vm_parameters = {
             'location': self.location,
             'os_profile': {
                 'computer_name': instance_name,
                 'admin_username': 'azureuser',
-                'custom_data': base64.b64encode(startup_script.encode()).decode()
+                'custom_data': base64.b64encode(startup_script.encode()).decode(),
+                'linux_configuration': {
+                    'disable_password_authentication': True,
+                    'ssh': {
+                        'public_keys': [{
+                            'path': '/home/azureuser/.ssh/authorized_keys',
+                            'key_data': self.ssh_key
+                        }]
+                    }
+                }
+            },
+            'network_profile': {
+                'network_interfaces': [{
+                    'id': nic.id
+                }]
             },
             'hardware_profile': {
                 'vm_size': vm_size
             },
-            'storage_profile': {
+            'tags': tags
+        }
+
+        # Configure image
+        if custom_image:
+            # Check if it's a full resource ID
+            if custom_image.startswith('/subscriptions/'):
+                vm_parameters['storage_profile'] = {
+                    'image_reference': {
+                        'id': custom_image
+                    },
+                    'os_disk': {
+                        'name': disk_name,
+                        'caching': 'ReadWrite',
+                        'create_option': 'FromImage'
+                    }
+                }
+                logger.info(f"Using custom image by ID: {custom_image}")
+            else:
+                # Check if it's in URN format: publisher:offer:sku:version
+                parts = custom_image.split(':')
+                if len(parts) >= 3:
+                    publisher, offer, sku = parts[0:3]
+                    version = parts[3] if len(parts) > 3 else 'latest'
+
+                    vm_parameters['storage_profile'] = {
+                        'image_reference': {
+                            'publisher': publisher,
+                            'offer': offer,
+                            'sku': sku,
+                            'version': version
+                        },
+                        'os_disk': {
+                            'name': disk_name,
+                            'caching': 'ReadWrite',
+                            'create_option': 'FromImage'
+                        }
+                    }
+                    logger.info(f"Using custom image: {publisher}:{offer}:{sku}:{version}")
+                else:
+                    # Use default Ubuntu 24.04 with warning
+                    logger.warning(f"Invalid custom image format: {custom_image}, using default Ubuntu 24.04 LTS")
+                    vm_parameters['storage_profile'] = {
+                        'image_reference': {
+                            'publisher': 'Canonical',
+                            'offer': 'UbuntuServer',
+                            'sku': '24_04-lts',
+                            'version': 'latest'
+                        },
+                        'os_disk': {
+                            'name': disk_name,
+                            'caching': 'ReadWrite',
+                            'create_option': 'FromImage'
+                        }
+                    }
+        else:
+            # Use default Ubuntu 24.04 LTS
+            vm_parameters['storage_profile'] = {
                 'image_reference': {
                     'publisher': 'Canonical',
                     'offer': 'UbuntuServer',
                     'sku': '24_04-lts',
                     'version': 'latest'
+                },
+                'os_disk': {
+                    'name': disk_name,
+                    'caching': 'ReadWrite',
+                    'create_option': 'FromImage'
                 }
-            },
-            'network_profile': {
-                'network_interfaces': [{
-                    'id': nic_result.id
-                }]
-            },
-            'tags': tags
-        }
+            }
+            logger.info("Using default Ubuntu 24.04 LTS image")
 
-        # If spot instance is requested
+        # Configure spot instance if requested
         if use_spot:
             vm_parameters['priority'] = 'Spot'
             vm_parameters['eviction_policy'] = 'Deallocate'
-            # Set max price to standard on-demand price (this means we only pay spot price)
-            vm_parameters['billing_profile'] = {
-                'max_price': -1
-            }
+            vm_parameters['billing_profile'] = {'max_price': -1}  # -1 means pay the current spot price
+            logger.info("Using spot instance (pay-as-you-go pricing)")
 
+        # Create the VM
         try:
-            # Create the VM
-            logger.info(f"Creating {'spot' if use_spot else 'on-demand'} VM: {instance_name} ({vm_size})")
-            poller = await asyncio.to_thread(
-                self.compute_client.virtual_machines.begin_create_or_update,
+            logger.info(f"Creating VM {instance_name} with size {vm_size}")
+            async_vm_creation = self.compute_client.virtual_machines.begin_create_or_update(
                 self.resource_group,
                 instance_name,
                 vm_parameters
             )
-            vm_result = poller.result()
-            logger.info(f"VM {instance_name} created successfully")
-            return vm_result.id
+            vm = await asyncio.to_thread(lambda: async_vm_creation.result())
+            logger.info(f"Created VM: {instance_name}, ID: {vm.id}")
+            return vm.id
         except Exception as e:
-            logger.error(f"Failed to create {'spot' if use_spot else 'on-demand'} VM: {e}")
-            # Try to clean up the network interface if VM creation fails
-            try:
-                await asyncio.to_thread(
-                    self.network_client.network_interfaces.begin_delete,
-                    self.resource_group,
-                    nic_name
-                )
-            except Exception as cleanup_err:
-                logger.warning(f"Failed to clean up network interface: {cleanup_err}")
+            logger.error(f"Error creating VM: {e}")
             raise
 
     async def terminate_instance(self, instance_id: str) -> None:
