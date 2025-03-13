@@ -7,12 +7,13 @@ import json
 import logging
 import time
 import traceback
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Union
 import datetime
 
 from cloud_tasks.common.base import InstanceManager, TaskQueue
 from cloud_tasks.instance_orchestrator import create_instance_manager
 from cloud_tasks.common.logging_config import configure_logging
+from cloud_tasks.common.config import Config, ProviderConfig
 
 # Configure logging with proper microsecond support
 configure_logging(level=logging.INFO)
@@ -48,7 +49,7 @@ class InstanceOrchestrator:
         tasks_per_instance: int = 5,
         worker_repo_url: Optional[str] = None,
         queue_name: Optional[str] = None,
-        config: Optional[Dict[str, Any]] = None,
+        config: Optional[Config] = None,
         custom_image: Optional[str] = None,
         startup_script: str = "",
         **kwargs
@@ -71,14 +72,19 @@ class InstanceOrchestrator:
             tasks_per_instance: Number of tasks each instance can process concurrently
             worker_repo_url: URL to GitHub repo with worker code
             queue_name: Name of the task queue to process
-            config: Full configuration dictionary
+            config: Full configuration object
             custom_image: Custom VM image to use (overrides provider defaults)
             startup_script: Custom startup script to run on instances
             **kwargs: Additional keyword arguments
         """
         self.provider = provider
         self.job_id = job_id
-        self.config = config or {}
+
+        # Initialize configuration
+        if config is None:
+            self.config = Config()
+        else:
+            self.config = config
 
         # Instance requirements
         self.cpu_required = cpu_required
@@ -99,30 +105,35 @@ class InstanceOrchestrator:
 
         # Get or create the provider-specific configuration
         if provider in self.config:
-            # Use existing provider config and update with any kwargs
-            provider_config = self.config[provider]
+            # Use existing provider config, ensuring it's a ProviderConfig
+            provider_config = self.config.get_provider(provider)
+            # Update with any kwargs
             provider_config.update(kwargs)
         else:
             # Create a new provider config from kwargs
-            self.config[provider] = kwargs
-            provider_config = kwargs
+            self.config[provider] = ProviderConfig(provider, kwargs)
 
         # Handle region parameter properly
         if self.region:
             # If region is specified in constructor, it takes precedence
             logger.info(f"Using specified region: {self.region}")
+            provider_config = self.config.get_provider(provider)
             if provider == 'azure':
-                self.config[provider]['location'] = self.region
+                provider_config['location'] = self.region
             else:
-                self.config[provider]['region'] = self.region
-        elif 'region' in provider_config and provider != 'azure':
-            # Use region from provider config if available
-            self.region = provider_config['region']
-            logger.info(f"Using region from config: {self.region}")
-        elif 'location' in provider_config and provider == 'azure':
-            # Azure uses 'location' instead of 'region'
-            self.region = provider_config['location']
-            logger.info(f"Using location from config: {self.region}")
+                provider_config['region'] = self.region
+        elif provider in self.config:
+            provider_config = self.config.get_provider(provider)
+            if 'region' in provider_config and provider != 'azure':
+                # Use region from provider config if available
+                self.region = provider_config.region
+                logger.info(f"Using region from config: {self.region}")
+            elif 'location' in provider_config and provider == 'azure':
+                # Azure uses 'location' instead of 'region'
+                self.region = provider_config.location
+                logger.info(f"Using location from config: {self.region}")
+            else:
+                logger.warning("No region specified, will identify and use cheapest region")
         else:
             logger.warning("No region specified, will identify and use cheapest region")
 
@@ -131,6 +142,7 @@ class InstanceOrchestrator:
         self.task_queue = None
         self.running_instances: Set[str] = set()
         self.optimal_instance_type = None
+        self.instances = {}  # Dictionary to track instance status
 
         # Empty queue tracking for scale-down
         self.empty_queue_since = None
@@ -385,11 +397,14 @@ python3 worker.py --config=/opt/worker/config.json
             )
             logger.info(f"Selected instance type: {instance_type}")
 
+            # Get provider configuration
+            provider_config = self.config.get_provider(self.provider)
+
             # Generate startup script
             startup_script = self.generate_worker_startup_script(
                 provider=self.provider,
                 queue_name=self.queue_name,  # Use the actual queue name
-                config=self.config.get(self.provider, {})  # Pass provider-specific config
+                config=dict(provider_config)  # Pass provider-specific config as a dict
             )
 
             # Define tags

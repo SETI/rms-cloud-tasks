@@ -8,12 +8,12 @@ import logging
 import sys
 import time
 import traceback
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import yaml  # type: ignore
 from tqdm import tqdm  # type: ignore
 
-from cloud_tasks.common.config import load_config, ConfigError, get_run_config
+from cloud_tasks.common.config import load_config, ConfigError, get_run_config, Config, ProviderConfig
 from cloud_tasks.queue_manager import create_queue
 from cloud_tasks.instance_orchestrator import create_instance_manager
 from cloud_tasks.instance_orchestrator.orchestrator import InstanceOrchestrator
@@ -22,6 +22,33 @@ from cloud_tasks.common.logging_config import configure_logging
 # Use custom logging configuration with proper microsecond support
 configure_logging(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def load_tasks(tasks_file: str) -> List[Dict[str, Any]]:
+    """
+    Load tasks from a JSON or YAML file.
+
+    Args:
+        tasks_file: Path to the tasks file
+
+    Returns:
+        List of task dictionaries
+
+    Raises:
+        Exception: If the file cannot be loaded
+    """
+    with open(tasks_file, 'r') as f:
+        if tasks_file.endswith('.json'):
+            tasks = json.load(f)
+        elif tasks_file.endswith(('.yaml', '.yml')):
+            tasks = yaml.safe_load(f)
+        else:
+            raise ValueError(f"Unsupported file format for tasks: {tasks_file}")
+
+    if not isinstance(tasks, list):
+        raise ValueError("Tasks file must contain a list of task dictionaries")
+
+    return tasks
 
 
 async def run_job(args: argparse.Namespace) -> None:
@@ -48,10 +75,11 @@ async def run_job(args: argparse.Namespace) -> None:
         cli_args = vars(args)
         run_config = get_run_config(config, provider, cli_args)
 
-        logger.info(f"Using CPU: {run_config['cpu']}, Memory: {run_config['memory_gb']} GB, Disk: {run_config['disk_gb']} GB")
-        logger.info(f"Using image: {run_config['image']}")
-        if run_config['startup_script']:
-            script_preview = run_config['startup_script'][:50].replace('\n', ' ') + ('...' if len(run_config['startup_script']) > 50 else '')
+        # Now we can use attribute access thanks to Config
+        logger.info(f"Using CPU: {run_config.cpu}, Memory: {run_config.memory_gb} GB, Disk: {run_config.disk_gb} GB")
+        logger.info(f"Using image: {run_config.image}")
+        if run_config.startup_script:
+            script_preview = run_config.startup_script[:50].replace('\n', ' ') + ('...' if len(run_config.startup_script) > 50 else '')
             logger.info(f"Using custom startup script: {script_preview}")
 
         # Handle region parameter - add it to the config if specified on command line
@@ -87,9 +115,9 @@ async def run_job(args: argparse.Namespace) -> None:
         orchestrator = InstanceOrchestrator(
             provider=provider,
             job_id=job_id,
-            cpu_required=run_config['cpu'],
-            memory_required_gb=run_config['memory_gb'],
-            disk_required_gb=run_config['disk_gb'],
+            cpu_required=run_config.cpu,
+            memory_required_gb=run_config.memory_gb,
+            disk_required_gb=run_config.disk_gb,
             min_instances=args.min_instances,
             max_instances=args.max_instances,
             tasks_per_instance=args.tasks_per_instance,
@@ -97,9 +125,9 @@ async def run_job(args: argparse.Namespace) -> None:
             region=region_param,
             worker_repo_url=args.worker_repo,
             queue_name=args.queue_name,
-            config=config,  # Pass the full config dictionary
-            custom_image=run_config['image'],
-            startup_script=run_config['startup_script']
+            config=config,  # Pass the full config dictionary (already a Config)
+            custom_image=run_config.image,
+            startup_script=run_config.startup_script
         )
 
         # Set the task queue on the orchestrator
@@ -164,40 +192,6 @@ async def run_job(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
-def load_tasks(tasks_file: str) -> List[Dict[str, Any]]:
-    """
-    Load tasks from a JSON or YAML file.
-
-    Args:
-        tasks_file: Path to tasks file
-
-    Returns:
-        List of task dictionaries
-    """
-    try:
-        with open(tasks_file, 'r') as f:
-            if tasks_file.endswith('.yaml') or tasks_file.endswith('.yml'):
-                tasks = yaml.safe_load(f)
-            else:
-                tasks = json.load(f)
-
-        # Validate tasks
-        if not isinstance(tasks, list):
-            raise ValueError("Tasks file must contain a list of tasks")
-
-        for i, task in enumerate(tasks):
-            if 'id' not in task:
-                task['id'] = f"task-{i:06d}"
-            if 'data' not in task:
-                raise ValueError(f"Task {i} is missing 'data' field")
-
-        return tasks
-
-    except Exception as e:
-        logger.error(f"Error loading tasks: {e}", exc_info=True)
-        sys.exit(1)
-
-
 async def status_job(args: argparse.Namespace) -> None:
     """
     Check the status of a running job.
@@ -207,7 +201,7 @@ async def status_job(args: argparse.Namespace) -> None:
     """
     try:
         # Load configuration
-        config = get_config(args)
+        config = load_config(args.config)
 
         # Create task queue to check depth
         task_queue = await create_queue(

@@ -13,6 +13,7 @@ A framework for running distributed tasks on cloud providers with automatic inst
 - Flexible task queueing and processing
 - Simple worker implementation
 - Consistent logging with microsecond precision
+- Intuitive attribute-style configuration access
 
 ## Instance Selection
 
@@ -107,7 +108,7 @@ python -m cloud_tasks run-job \
 
 ## Configuration
 
-The configuration file supports both global defaults and provider-specific settings:
+The configuration file supports both global defaults and provider-specific settings.
 
 ### Global Run Configuration
 
