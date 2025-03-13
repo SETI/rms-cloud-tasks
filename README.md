@@ -12,6 +12,7 @@ A framework for running distributed tasks on cloud providers with automatic inst
 - Graceful shutdown handling for spot instance termination
 - Flexible task queueing and processing
 - Simple worker implementation
+- Consistent logging with microsecond precision
 
 ## Instance Selection
 
@@ -164,3 +165,33 @@ pytest
 ## License
 
 Apache-2.0
+
+## Logging System
+
+Cloud Tasks includes a custom logging system that provides:
+
+- Consistent timestamp format across all components
+- Millisecond precision in log timestamps (3 digits)
+- Configurable log levels
+- Structured logging that works well with log aggregation systems
+
+To use the logging system in your own code:
+
+```python
+from cloud_tasks.common.logging_config import configure_logging
+import logging
+
+# Configure the root logger with millisecond support
+configure_logging(level=logging.INFO)
+
+# Get a logger for your module
+logger = logging.getLogger(__name__)
+
+# Use the logger as normal
+logger.info("Processing task %s", task_id)
+```
+
+This produces log entries with millisecond precision:
+```
+2025-03-12 21:28:49.123 - module_name - INFO - Processing task abc-123
+```

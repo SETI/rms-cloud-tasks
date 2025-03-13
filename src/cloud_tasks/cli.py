@@ -17,13 +17,10 @@ from cloud_tasks.common.config import load_config, ConfigError
 from cloud_tasks.queue_manager import create_queue
 from cloud_tasks.instance_orchestrator import create_instance_manager
 from cloud_tasks.instance_orchestrator.orchestrator import InstanceOrchestrator
+from cloud_tasks.common.logging_config import configure_logging
 
-# Set up logging with periods for fractions of a second
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S.%f'  # Explicitly use period for fractions
-)
+# Use custom logging configuration with proper microsecond support
+configure_logging(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 

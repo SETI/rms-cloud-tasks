@@ -18,17 +18,22 @@ import time
 import traceback
 from typing import Any, Dict, List, Optional, Tuple, Set, Awaitable, Callable, cast, Union
 
+from cloud_tasks.common.logging_config import configure_logging
+
 # Type aliases for multiprocessing objects
 # We use Any because MyPy doesn't handle multiprocessing types well
 MP_Queue = Any  # multiprocessing.Queue
 MP_Event = Any  # multiprocessing.Event
 MP_Value = Any  # multiprocessing.Value
 
-# Set up logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+# Set up logging with proper microsecond support
+configure_logging(level=logging.INFO)
+
+# Remove old logging configuration
+# logging.basicConfig(
+#     level=logging.INFO,
+#     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+# )
 logger = logging.getLogger(__name__)
 
 

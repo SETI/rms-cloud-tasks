@@ -107,6 +107,9 @@ class GCPComputeInstanceManager(InstanceManager):
             self.zone = f"{self.region}-a"
 
         # Initialize clients
+        # Note: We pass credentials to each client but not the project_id directly.
+        # Instead, we explicitly pass project_id in each API call to ensure we're always
+        # using the correct project and never defaulting to Application Default Credentials project.
         self.compute_client = compute_v1.InstancesClient(credentials=self.credentials)
         self.machine_types_client = compute_v1.MachineTypesClient(credentials=self.credentials)
         self.zones_client = compute_v1.ZonesClient(credentials=self.credentials)
@@ -115,8 +118,10 @@ class GCPComputeInstanceManager(InstanceManager):
         self.operations_client = compute_v1.ZoneOperationsClient(credentials=self.credentials)
         self.billing_client = billing.CloudCatalogClient(credentials=self.credentials)
 
+        # Log project and region info
+        logger.info(f"Initialized GCP Compute Engine with project ID: {self.project_id}")
         if self.region:
-            logger.info(f"Initialized GCP Compute Engine in region {self.region}, zone {self.zone}")
+            logger.info(f"Using region {self.region}, zone {self.zone}")
         else:
             logger.warning("No region specified, will determine cheapest region during instance selection")
 
@@ -222,7 +227,7 @@ class GCPComputeInstanceManager(InstanceManager):
             return {'region': 'us-central1', 'zone': 'us-central1-a'}
 
     async def get_optimal_instance_type(
-        self, cpu_required: int, memory_required_gb: int, disk_required_gb: int, use_preemptible: bool = False
+        self, cpu_required: int, memory_required_gb: int, disk_required_gb: int, use_spot: bool = False
     ) -> str:
         """
         Get the most cost-effective GCP machine type that meets requirements.
@@ -231,13 +236,16 @@ class GCPComputeInstanceManager(InstanceManager):
 
         Args:
             cpu_required: Minimum number of vCPUs
-            memory_required_gb: Minimum amount of memory in GB
-            disk_required_gb: Minimum amount of disk space in GB
-            use_preemptible: Whether to use preemptible instance pricing
+            memory_required_gb: Minimum memory in GB
+            disk_required_gb: Minimum disk space in GB
+            use_spot: Whether to use preemptible instances (GCP equivalent of spot)
 
         Returns:
-            GCP machine type (e.g., 'n1-standard-1')
+            GCP machine type name (e.g., 'n1-standard-2')
         """
+        logger.info(f"Finding optimal instance type with: CPU={cpu_required}, Memory={memory_required_gb}GB, "
+                   f"Disk={disk_required_gb}GB, Spot/Preemptible={use_spot}")
+
         # If no region/zone was specified, find the cheapest one
         if not self.region or not self.zone:
             logger.info("No region specified, searching for cheapest region...")
@@ -247,7 +255,8 @@ class GCPComputeInstanceManager(InstanceManager):
             logger.info(f"Selected region {self.region}, zone {self.zone} for lowest cost")
 
         # Get available machine types
-        machine_types = await self.list_available_machine_types()
+        machine_types = await self.list_available_instance_types()
+        logger.debug(f"Found {len(machine_types)} available machine types in zone {self.zone}")
 
         # Filter to machine types that meet requirements
         eligible_types = []
@@ -257,6 +266,10 @@ class GCPComputeInstanceManager(InstanceManager):
                 # We don't filter on disk since persistent disks can be attached
                 eligible_types.append(machine)
 
+        logger.debug(f"Found {len(eligible_types)} machine types that meet requirements:")
+        for idx, machine in enumerate(eligible_types):
+            logger.debug(f"  [{idx+1}] {machine['name']}: {machine['vcpu']} vCPU, {machine['memory_gb']:.2f} GB memory")
+
         if not eligible_types:
             raise ValueError(
                 f"No machine type meets requirements: {cpu_required} vCPU, "
@@ -265,8 +278,11 @@ class GCPComputeInstanceManager(InstanceManager):
 
         # Use GCP Cloud Catalog API to get current prices
         pricing_data = {}
+        logger.debug(f"Retrieving pricing data for {len(eligible_types)} eligible machine types...")
+
         for machine in eligible_types:
             machine_type = machine['name']
+            logger.debug(f"Getting pricing for machine type: {machine_type}")
 
             try:
                 # Get pricing from Cloud Billing Catalog API
@@ -284,6 +300,7 @@ class GCPComputeInstanceManager(InstanceManager):
                         break
 
                 if compute_service:
+                    logger.debug(f"Found compute service: {compute_service.display_name}")
                     # Get SKUs for the service
                     sku_request = billing.ListSkusRequest(
                         parent=compute_service.name
@@ -298,21 +315,29 @@ class GCPComputeInstanceManager(InstanceManager):
                         machine_name_parts = machine_type.split('-')
                         machine_family = machine_name_parts[0]
 
-                        # Check if this SKU matches our machine type and region
-                        if (
+                        # Debug log for SKU matching
+                        sku_match = (
                             machine_family in sku_description
                             and (
-                                ("core" in sku_description and not use_preemptible) or
-                                ("preemptible" in sku_description and use_preemptible)
+                                ("core" in sku_description and not use_spot) or
+                                ("preemptible" in sku_description and use_spot)
                             )
                             and self.region in sku.service_regions
-                        ):
+                        )
+
+                        if sku_match:
+                            logger.debug(f"Matching SKU found: {sku.description} in region {self.region}")
+
+                        # Check if this SKU matches our machine type and region
+                        if sku_match:
                             # Extract price info
                             for pricing_info in sku.pricing_info:
                                 for tier in pricing_info.pricing_expression.tiered_rates:
                                     unit_price = tier.unit_price
                                     # Convert to USD dollars
                                     price = unit_price.units + (unit_price.nanos / 1e9)
+
+                                    logger.debug(f"  Price: ${price:.6f} per {pricing_info.pricing_expression.usage_unit}")
 
                                     # Store price for this machine type
                                     if machine_type not in pricing_data or price < pricing_data[machine_type]:
@@ -327,25 +352,42 @@ class GCPComputeInstanceManager(InstanceManager):
                 logger.warning(f"Error getting pricing for {machine_type}: {e}")
                 continue
 
+        # Log the complete pricing data found
+        if pricing_data:
+            logger.debug("Retrieved pricing data for the following machine types:")
+            for machine_type, price in pricing_data.items():
+                logger.debug(f"  {machine_type}: ${price:.6f} per hour")
+        else:
+            logger.warning("Could not retrieve any pricing data from GCP API")
+
         # If we couldn't get pricing from API, fall back to our heuristic
         if not pricing_data:
             logger.warning("Could not get pricing data from GCP API, falling back to heuristic")
             # Sort by vCPU + memory as a simple cost heuristic
             eligible_types.sort(key=lambda x: x['vcpu'] + x['memory_gb'])
-            return eligible_types[0]['name']
+            selected_type = eligible_types[0]['name']
+            logger.info(f"Selected {selected_type} based on heuristic (lowest vCPU + memory)")
+            return selected_type
 
         # Select instance with the lowest price
         priced_instances = [(machine_type, price) for machine_type, price in pricing_data.items()]
         if not priced_instances:
             logger.warning("No pricing data found for eligible machine types, falling back to heuristic")
             eligible_types.sort(key=lambda x: x['vcpu'] + x['memory_gb'])
-            return eligible_types[0]['name']
+            selected_type = eligible_types[0]['name']
+            logger.info(f"Selected {selected_type} based on heuristic (lowest vCPU + memory)")
+            return selected_type
 
         priced_instances.sort(key=lambda x: x[1])  # Sort by price
 
+        # Debug log for all priced instances in order
+        logger.debug("Machine types sorted by price (cheapest first):")
+        for i, (machine_type, price) in enumerate(priced_instances):
+            logger.debug(f"  {i+1}. {machine_type}: ${price:.6f}/hour")
+
         selected_type = priced_instances[0][0]
         price = priced_instances[0][1]
-        logger.info(f"Selected {selected_type} at ${price:.6f} per hour in {self.region} ({self.zone}){' (preemptible)' if use_preemptible else ''}")
+        logger.info(f"Selected {selected_type} at ${price:.6f} per hour in {self.region} ({self.zone}){' (spot/preemptible)' if use_spot else ''}")
         return selected_type
 
     async def list_available_instance_types(self) -> List[Dict[str, Any]]:
@@ -378,20 +420,26 @@ class GCPComputeInstanceManager(InstanceManager):
         return instance_types
 
     async def start_instance(
-        self, instance_type: str, startup_script: str, labels: Dict[str, str], use_preemptible: bool = False
+        self, instance_type: str, startup_script: str, labels: Dict[str, str],
+        use_spot: bool = False
     ) -> str:
         """
         Start a new GCP Compute Engine instance.
 
         Args:
-            instance_type: Machine type for the instance
-            startup_script: Startup script to run on instance boot
-            labels: Key-value pairs for instance labels
-            use_preemptible: Whether to use preemptible instance
+            instance_type: GCP machine type (e.g., 'n1-standard-1')
+            startup_script: Base64-encoded startup script
+            labels: Dictionary of labels to apply to the instance
+            use_spot: Whether to use a preemptible VM (cheaper but can be terminated)
 
         Returns:
-            Instance name
+            ID of the started instance
         """
+        if not self.compute_client:
+            raise RuntimeError("GCP Compute Engine client not initialized")
+
+        logger.info(f"Starting new instance with type: {instance_type}, spot/preemptible: {use_spot}")
+
         # Generate a unique name for the instance
         instance_id = f"{labels.get('job_id', 'job')}-{str(uuid.uuid4())[:8]}"
 
@@ -431,7 +479,7 @@ class GCPComputeInstanceManager(InstanceManager):
 
         # Prepare scheduling configuration for preemptible instances
         scheduling = {}
-        if use_preemptible:
+        if use_spot:
             scheduling = {
                 'preemptible': True,
                 'automatic_restart': False,
@@ -459,12 +507,12 @@ class GCPComputeInstanceManager(InstanceManager):
             )
 
             # Wait for the create operation to complete
-            logger.info(f"Creating {'preemptible' if use_preemptible else 'standard'} instance {config['name']} ({instance_type})")
+            logger.info(f"Creating {'spot/preemptible' if use_spot else 'standard'} instance {config['name']} ({instance_type})")
             await self._wait_for_operation(operation['name'])
             logger.info(f"Instance {config['name']} created successfully")
             return config['name']
         except Exception as e:
-            logger.error(f"Failed to create {'preemptible' if use_preemptible else 'standard'} instance: {e}")
+            logger.error(f"Failed to create {'spot/preemptible' if use_spot else 'standard'} instance: {e}")
             raise
 
     async def terminate_instance(self, instance_id: str) -> None:
@@ -474,15 +522,23 @@ class GCPComputeInstanceManager(InstanceManager):
         Args:
             instance_id: Instance name
         """
-        operation = self.compute_client.delete(
-            project=self.project_id,
-            zone=self.zone,
-            instance=instance_id
-        )
+        logger.info(f"Terminating instance {instance_id} in project {self.project_id}, zone {self.zone}")
 
-        # Wait for the operation to complete
-        # In a real implementation, you might want to make this asynchronous
-        operation.result()
+        try:
+            operation = self.compute_client.delete(
+                project=self.project_id,
+                zone=self.zone,
+                instance=instance_id
+            )
+
+            # Wait for the operation to complete asynchronously
+            await self._wait_for_operation(operation.name)
+            logger.info(f"Instance {instance_id} terminated successfully")
+        except NotFound:
+            logger.warning(f"Instance {instance_id} not found in project {self.project_id}, zone {self.zone}")
+        except Exception as e:
+            logger.error(f"Error terminating instance {instance_id} in project {self.project_id}: {e}")
+            raise
 
     async def list_running_instances(self, tag_filter: Optional[Dict[str, str]] = None) -> List[Dict[str, Any]]:
         """
@@ -567,15 +623,21 @@ class GCPComputeInstanceManager(InstanceManager):
 
     async def _get_default_image(self) -> str:
         """
-        Get the latest Debian image for Compute Engine.
+        Get the latest Ubuntu 24.04 LTS image for Compute Engine.
 
         Returns:
             Image URI
         """
-        # Get the latest Debian 11 image
+        # Note: For public images, we use the 'ubuntu-os-cloud' project, not our project ID
+        # This is an intentional exception to our rule of always using self.project_id
+        image_project = 'ubuntu-os-cloud'
+
+        logger.debug(f"Retrieving latest Ubuntu 24.04 LTS image from {image_project} project")
+
+        # Get the latest Ubuntu 24.04 LTS image
         request = compute_v1.ListImagesRequest(
-            project='debian-cloud',
-            filter="family = 'debian-11'"
+            project=image_project,  # This is intentionally using the public image project
+            filter="family = 'ubuntu-2404-lts'"
         )
 
         images = self.images_client.list(request=request)
@@ -586,8 +648,9 @@ class GCPComputeInstanceManager(InstanceManager):
                 newest_image = image
 
         if newest_image is None:
-            raise ValueError("No Debian 11 image found")
+            raise ValueError(f"No Ubuntu 24.04 LTS image found in {image_project} project")
 
+        logger.debug(f"Found image: {newest_image.name}, created on {newest_image.creation_timestamp}")
         return newest_image.self_link
 
     async def _wait_for_operation(self, operation_name: str) -> None:
@@ -597,6 +660,8 @@ class GCPComputeInstanceManager(InstanceManager):
         Args:
             operation_name: Name of the operation
         """
+        logger.debug(f"Waiting for operation {operation_name} to complete in project {self.project_id}")
+
         operation = self.compute_client.get(
             project=self.project_id,
             zone=self.zone,
@@ -612,4 +677,8 @@ class GCPComputeInstanceManager(InstanceManager):
             )
 
         if operation.error:
-            raise Exception(f"Operation failed: {operation.error}")
+            error_msg = f"Operation {operation_name} failed in project {self.project_id}: {operation.error}"
+            logger.error(error_msg)
+            raise Exception(error_msg)
+
+        logger.debug(f"Operation {operation_name} completed successfully in project {self.project_id}")

@@ -205,19 +205,23 @@ class AzureVMInstanceManager(InstanceManager):
         Returns:
             Azure VM size (e.g., 'Standard_B1s')
         """
+        logger.info(f"Finding optimal instance type with: CPU={cpu_required}, Memory={memory_required_gb}GB, "
+                   f"Disk={disk_required_gb}GB, Spot={use_spot}")
+
         # If no location was specified, find the cheapest one
         if not self.location:
-            print("No location specified, searching for cheapest location...")
+            logger.info("No location specified, searching for cheapest location...")
             self.location = await self.find_cheapest_location()
-            print(f"Selected location {self.location} for lowest cost")
+            logger.info(f"Selected location {self.location} for lowest cost")
 
             # Create resource group if it doesn't exist
             if not self.resource_group_exists():
-                print(f"Creating resource group {self.resource_group} in location {self.location}")
+                logger.info(f"Creating resource group {self.resource_group} in location {self.location}")
                 self.create_resource_group()
 
         # Get available VM sizes
         vm_sizes = await self.list_available_vm_sizes()
+        logger.debug(f"Found {len(vm_sizes)} available VM sizes in location {self.location}")
 
         # Filter to VM sizes that meet requirements
         eligible_vms = []
@@ -227,20 +231,28 @@ class AzureVMInstanceManager(InstanceManager):
                 vm.get('storage_gb', 10) >= disk_required_gb):
                 eligible_vms.append(vm)
 
+        logger.debug(f"Found {len(eligible_vms)} VM sizes that meet requirements:")
+        for idx, vm in enumerate(eligible_vms):
+            logger.debug(f"  [{idx+1}] {vm['name']}: {vm['vcpu']} vCPU, {vm['memory_gb']:.2f} GB memory, {vm.get('storage_gb', 0):.2f} GB storage")
+
         if not eligible_vms:
-            raise ValueError(
-                f"No VM size meets requirements: {cpu_required} vCPU, "
-                f"{memory_required_gb} GB memory, {disk_required_gb} GB disk"
-            )
+            msg = f"No VM size meets requirements: {cpu_required} vCPU, {memory_required_gb} GB memory, {disk_required_gb} GB disk"
+            logger.error(msg)
+            raise ValueError(msg)
 
         # Use Azure Retail Prices API to get current prices
         pricing_data = {}
+        logger.debug(f"Retrieving pricing data for {len(eligible_vms)} eligible VM sizes...")
+
         for vm in eligible_vms:
             vm_size = vm['name']
+            logger.debug(f"Getting pricing for VM size: {vm_size}")
 
             try:
                 # Get pricing using Azure Retail Pricing API
                 url = "https://prices.azure.com/api/retail/prices"
+
+                # Build filter for the API
                 filters = [
                     f"serviceName eq 'Virtual Machines'",
                     f"armRegionName eq '{self.location}'",
@@ -252,43 +264,86 @@ class AzureVMInstanceManager(InstanceManager):
                 else:
                     filters.append("priceType eq 'Consumption'")
 
+                filter_string = " and ".join(filters)
+                logger.debug(f"Azure Retail Pricing API filter: {filter_string}")
+
                 params = {
                     'api-version': '2021-10-01-preview',
-                    '$filter': " and ".join(filters)
+                    '$filter': filter_string
                 }
 
+                logger.debug(f"Calling Azure Retail Pricing API for {vm_size}...")
                 async with aiohttp.ClientSession() as session:
                     async with session.get(url, params=params) as response:
-                        if response.status == 200:
+                        status = response.status
+                        logger.debug(f"API response status: {status}")
+
+                        if status == 200:
                             data = await response.json()
+                            item_count = len(data.get('Items', []))
+                            logger.debug(f"API returned {item_count} price items for {vm_size}")
+
                             if 'Items' in data and data['Items']:
+                                # Log all returned price items
+                                for idx, item in enumerate(data['Items']):
+                                    logger.debug(f"  Price item {idx+1}: ${item.get('unitPrice', 0):.6f} per {item.get('unitOfMeasure', 'hour')}")
+                                    logger.debug(f"    - Product name: {item.get('productName', 'Unknown')}")
+                                    logger.debug(f"    - Sku name: {item.get('skuName', 'Unknown')}")
+                                    logger.debug(f"    - Meter name: {item.get('meterName', 'Unknown')}")
+                                    logger.debug(f"    - Price type: {item.get('priceType', 'Unknown')}")
+
                                 # Find the lowest price for this VM size
                                 prices = [item['unitPrice'] for item in data['Items'] if item['unitPrice'] > 0]
                                 if prices:
-                                    pricing_data[vm_size] = min(prices)
+                                    min_price = min(prices)
+                                    pricing_data[vm_size] = min_price
+                                    logger.debug(f"Selected lowest price for {vm_size}: ${min_price:.6f} per hour")
+                                else:
+                                    logger.debug(f"No valid prices found for {vm_size}")
+                            else:
+                                logger.debug(f"No price items found for {vm_size}")
+                        else:
+                            logger.debug(f"API call failed with status {status} for {vm_size}")
             except Exception as e:
-                print(f"Error getting pricing for {vm_size}: {e}")
+                logger.warning(f"Error getting pricing for {vm_size}: {e}")
                 continue
+
+        # Log the complete pricing data found
+        if pricing_data:
+            logger.debug("Retrieved pricing data for the following VM sizes:")
+            for vm_size, price in pricing_data.items():
+                logger.debug(f"  {vm_size}: ${price:.6f} per hour")
+        else:
+            logger.warning("Could not retrieve any pricing data from Azure API")
 
         # If we couldn't get pricing from API, fall back to our heuristic
         if not pricing_data:
-            print("Could not get pricing data from Azure API, falling back to heuristic")
+            logger.warning("Could not get pricing data from Azure API, falling back to heuristic")
             # Sort by vCPU + memory as a simple cost heuristic
             eligible_vms.sort(key=lambda x: x['vcpu'] + x['memory_gb'])
-            return eligible_vms[0]['name']
+            selected_type = eligible_vms[0]['name']
+            logger.info(f"Selected {selected_type} based on heuristic (lowest vCPU + memory)")
+            return selected_type
 
         # Select VM size with the lowest price
         priced_vms = [(vm_size, price) for vm_size, price in pricing_data.items()]
         if not priced_vms:
-            print("No pricing data found for eligible VM sizes, falling back to heuristic")
+            logger.warning("No pricing data found for eligible VM sizes, falling back to heuristic")
             eligible_vms.sort(key=lambda x: x['vcpu'] + x['memory_gb'])
-            return eligible_vms[0]['name']
+            selected_type = eligible_vms[0]['name']
+            logger.info(f"Selected {selected_type} based on heuristic (lowest vCPU + memory)")
+            return selected_type
 
         priced_vms.sort(key=lambda x: x[1])  # Sort by price
 
+        # Debug log for all priced VMs in order
+        logger.debug("VM sizes sorted by price (cheapest first):")
+        for i, (vm_size, price) in enumerate(priced_vms):
+            logger.debug(f"  {i+1}. {vm_size}: ${price:.6f}/hour")
+
         selected_type = priced_vms[0][0]
         price = priced_vms[0][1]
-        print(f"Selected {selected_type} at ${price:.6f} per hour in {self.location}{' (spot)' if use_spot else ''}")
+        logger.info(f"Selected {selected_type} at ${price:.6f} per hour in {self.location}{' (spot)' if use_spot else ''}")
         return selected_type
 
     async def list_available_instance_types(self) -> List[Dict[str, Any]]:
@@ -368,7 +423,7 @@ class AzureVMInstanceManager(InstanceManager):
                 'image_reference': {
                     'publisher': 'Canonical',
                     'offer': 'UbuntuServer',
-                    'sku': '18.04-LTS',
+                    'sku': '24_04-lts',
                     'version': 'latest'
                 }
             },

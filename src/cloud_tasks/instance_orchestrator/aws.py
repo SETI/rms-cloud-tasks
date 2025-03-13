@@ -329,18 +329,22 @@ class AWSEC2InstanceManager(InstanceManager):
         Returns:
             EC2 instance type (e.g., 't3.micro')
         """
+        logger.info(f"Finding optimal instance type with: CPU={cpu_required}, Memory={memory_required_gb}GB, "
+                   f"Disk={disk_required_gb}GB, Spot={use_spot}")
+
         # If no region was specified, find the cheapest one
         if not self.region:
-            print("No region specified, searching for cheapest region...")
+            logger.info("No region specified, searching for cheapest region...")
             self.region = await self.find_cheapest_region()
 
             # Reinitialize clients with the new region
             self.ec2 = boto3.resource('ec2', region_name=self.region, **self.credentials)
             self.ec2_client = boto3.client('ec2', region_name=self.region, **self.credentials)
-            print(f"Selected region {self.region} for lowest cost")
+            logger.info(f"Selected region {self.region} for lowest cost")
 
         # Get available instance types
         instance_types = await self.list_available_instance_types()
+        logger.debug(f"Found {len(instance_types)} available instance types in region {self.region}")
 
         # Filter to instance types that meet requirements
         eligible_instances = []
@@ -350,22 +354,30 @@ class AWSEC2InstanceManager(InstanceManager):
                 # We don't filter on disk since EBS volumes can be attached
                 eligible_instances.append(instance)
 
+        logger.debug(f"Found {len(eligible_instances)} instance types that meet requirements:")
+        for idx, instance in enumerate(eligible_instances):
+            logger.debug(f"  [{idx+1}] {instance['name']}: {instance['vcpu']} vCPU, {instance['memory_gb']:.2f} GB memory")
+
         if not eligible_instances:
-            raise ValueError(
-                f"No instance type meets requirements: {cpu_required} vCPU, "
-                f"{memory_required_gb} GB memory"
-            )
+            msg = f"No instance type meets requirements: {cpu_required} vCPU, {memory_required_gb} GB memory"
+            logger.error(msg)
+            raise ValueError(msg)
 
         # Use AWS Pricing API to get current prices
         pricing_data = {}
+        logger.debug(f"Retrieving pricing data for {len(eligible_instances)} eligible instance types...")
+
         for instance in eligible_instances:
             instance_type = instance['name']
+            logger.debug(f"Getting pricing for instance type: {instance_type}")
 
             try:
                 if use_spot:
                     # Get spot price history
                     current_time = datetime.datetime.now()
                     start_time = current_time - datetime.timedelta(hours=1)
+
+                    logger.debug(f"Retrieving spot price history for {instance_type} from {start_time} to {current_time}")
 
                     spot_response = self.ec2_client.describe_spot_price_history(
                         InstanceTypes=[instance_type],
@@ -376,11 +388,22 @@ class AWSEC2InstanceManager(InstanceManager):
                     )
 
                     if spot_response['SpotPriceHistory']:
+                        logger.debug(f"Found {len(spot_response['SpotPriceHistory'])} spot price records for {instance_type}")
+
+                        # Log all spot prices found
+                        for spot_price in spot_response['SpotPriceHistory']:
+                            logger.debug(f"  Spot price: ${float(spot_price['SpotPrice']):.6f} in {spot_price['AvailabilityZone']} at {spot_price['Timestamp']}")
+
                         # Use the most recent spot price
                         price = float(spot_response['SpotPriceHistory'][0]['SpotPrice'])
                         pricing_data[instance_type] = price
+                        logger.debug(f"  Selected spot price for {instance_type}: ${price:.6f}")
+                    else:
+                        logger.debug(f"No spot price history found for {instance_type}")
                 else:
                     # Get on-demand price
+                    logger.debug(f"Retrieving on-demand price for {instance_type} in region {self.region}")
+
                     response = self.pricing_client.get_products(
                         ServiceCode='AmazonEC2',
                         Filters=[
@@ -394,48 +417,76 @@ class AWSEC2InstanceManager(InstanceManager):
                     )
 
                     if response['PriceList']:
+                        logger.debug(f"Found pricing data for {instance_type}")
                         price_data = json.loads(response['PriceList'][0])
+
+                        # Log the product details
+                        product = price_data.get('product', {})
+                        attributes = product.get('attributes', {})
+                        logger.debug(f"  Product: {attributes.get('instanceType')} - {attributes.get('instanceFamily')}")
+
+                        # Extract actual price
                         on_demand = price_data['terms']['OnDemand']
                         price_dimensions = list(on_demand.values())[0]['priceDimensions']
                         price = float(list(price_dimensions.values())[0]['pricePerUnit']['USD'])
                         pricing_data[instance_type] = price
+                        logger.debug(f"  On-demand price for {instance_type}: ${price:.6f}")
+                    else:
+                        logger.debug(f"No pricing data found for {instance_type}")
             except Exception as e:
-                print(f"Error getting pricing for {instance_type}: {e}")
+                logger.warning(f"Error getting pricing for {instance_type}: {e}")
                 continue
+
+        # Log the complete pricing data found
+        if pricing_data:
+            logger.debug("Retrieved pricing data for the following instance types:")
+            for instance_type, price in pricing_data.items():
+                logger.debug(f"  {instance_type}: ${price:.6f} per hour")
+        else:
+            logger.warning("Could not retrieve any pricing data from AWS API")
 
         # If we couldn't get pricing from API, fall back to our heuristic
         if not pricing_data:
-            print("Could not get pricing data from AWS API, falling back to heuristic")
+            logger.warning("Could not get pricing data from AWS API, falling back to heuristic")
             # Sort by vCPU + memory as a simple cost heuristic
             eligible_instances.sort(key=lambda x: x['vcpu'] + x['memory_gb'])
-            return eligible_instances[0]['name']
+            selected_type = eligible_instances[0]['name']
+            logger.info(f"Selected {selected_type} based on heuristic (lowest vCPU + memory)")
+            return selected_type
 
         # Select instance with the lowest price
         priced_instances = [(instance_type, price) for instance_type, price in pricing_data.items()]
         if not priced_instances:
-            print("No pricing data found for eligible instance types, falling back to heuristic")
+            logger.warning("No pricing data found for eligible instance types, falling back to heuristic")
             eligible_instances.sort(key=lambda x: x['vcpu'] + x['memory_gb'])
-            return eligible_instances[0]['name']
+            selected_type = eligible_instances[0]['name']
+            logger.info(f"Selected {selected_type} based on heuristic (lowest vCPU + memory)")
+            return selected_type
 
         priced_instances.sort(key=lambda x: x[1])  # Sort by price
 
+        # Debug log for all priced instances in order
+        logger.debug("Instance types sorted by price (cheapest first):")
+        for i, (instance_type, price) in enumerate(priced_instances):
+            logger.debug(f"  {i+1}. {instance_type}: ${price:.6f}/hour")
+
         selected_type = priced_instances[0][0]
         price = priced_instances[0][1]
-        print(f"Selected {selected_type} at ${price:.4f} per hour in {self.region}{' (spot)' if use_spot else ''}")
+        logger.info(f"Selected {selected_type} at ${price:.4f} per hour in {self.region}{' (spot)' if use_spot else ''}")
         return selected_type
 
     async def _get_default_ami(self) -> str:
         """
-        Get the latest Amazon Linux 2 AMI ID for the current region.
+        Get the latest Ubuntu 24.04 LTS AMI ID for the current region.
 
         Returns:
             AMI ID
         """
-        # Get the latest Amazon Linux 2 AMI
+        # Get the latest Ubuntu 24.04 LTS AMI (Canonical's AMIs)
         response = self.ec2_client.describe_images(
-            Owners=['amazon'],
+            Owners=['099720109477'],  # Canonical's AWS account ID
             Filters=[
-                {'Name': 'name', 'Values': ['amzn2-ami-hvm-*-x86_64-gp2']},
+                {'Name': 'name', 'Values': ['ubuntu/images/hvm-ssd/ubuntu-noble-24.04-amd64-server-*']},
                 {'Name': 'state', 'Values': ['available']}
             ]
         )
@@ -444,6 +495,6 @@ class AWSEC2InstanceManager(InstanceManager):
         amis = sorted(response['Images'], key=lambda x: x['CreationDate'], reverse=True)
 
         if not amis:
-            raise ValueError(f"No Amazon Linux 2 AMI found in region {self.region}")
+            raise ValueError(f"No Ubuntu 24.04 LTS AMI found in region {self.region}")
 
         return amis[0]['ImageId']

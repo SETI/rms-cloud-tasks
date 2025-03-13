@@ -12,13 +12,17 @@ import datetime
 
 from cloud_tasks.common.base import InstanceManager, TaskQueue
 from cloud_tasks.instance_orchestrator import create_instance_manager
+from cloud_tasks.common.logging_config import configure_logging
 
-# Configure logging with periods for fractions of a second
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S.%f'  # Explicitly use period for fractions
-)
+# Configure logging with proper microsecond support
+configure_logging(level=logging.INFO)
+
+# Remove the old logging configuration
+# logging.basicConfig(
+#     level=logging.INFO,
+#     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+#     datefmt='%Y-%m-%d %H:%M:%S.%f'  # Explicitly use period for fractions
+# )
 logger = logging.getLogger(__name__)
 
 
@@ -127,6 +131,18 @@ class InstanceOrchestrator:
         self.instance_termination_delay_seconds = 300  # 5 minutes
         self._scaling_task = None
 
+        # Initialize lock for instance creation
+        self.instance_creation_lock = asyncio.Lock()
+
+        # Initialize running state
+        self.running = False
+
+        # Initialize last scaling time
+        self.last_scaling_time = None
+
+        # Set check interval for scaling loop
+        self.check_interval_seconds = 60  # Check scaling every minute
+
     def generate_worker_startup_script(self, provider: str, queue_name: str, config: Dict[str, Any]) -> str:
         """
         Generate a startup script for worker instances.
@@ -225,23 +241,36 @@ python3 worker.py --config=/opt/worker/config.json
         logger.info("Checking if scaling is needed")
 
         # Get current queue depth
-        queue_depth = await self.task_queue.get_queue_depth()
-        logger.info(f"Current queue depth: {queue_depth}")
+        try:
+            queue_depth = await self.task_queue.get_queue_depth()
+            logger.info(f"Current queue depth: {queue_depth}")
+        except Exception as e:
+            logger.error(f"Failed to get queue depth: {e}")
+            logger.error("Cannot make scaling decisions without queue depth information")
+            return
 
         # Get current instances
-        current_instances = await self.list_job_instances()
-        running_count = len([i for i in current_instances if i['state'] == 'running'])
-        starting_count = len([i for i in current_instances if i['state'] == 'starting'])
+        try:
+            current_instances = await self.list_job_instances()
+            running_count = len([i for i in current_instances if i['state'] == 'running'])
+            starting_count = len([i for i in current_instances if i['state'] == 'starting'])
 
-        logger.info(f"Current instances: {running_count} running, {starting_count} starting")
+            logger.info(f"Current instances: {running_count} running, {starting_count} starting")
 
-        total_instances = running_count + starting_count
+            total_instances = running_count + starting_count
+        except Exception as e:
+            logger.error(f"Failed to get current instances: {e}")
+            logger.error("Cannot make scaling decisions without instance information")
+            return
 
         # Check if queue is empty
         if queue_depth == 0:
             if self.empty_queue_since is None:
                 self.empty_queue_since = float(time.time())
                 logger.info("Queue is empty, starting termination timer")
+            else:
+                empty_duration = float(time.time()) - self.empty_queue_since
+                logger.info(f"Queue has been empty for {empty_duration:.1f} seconds")
 
             # If queue has been empty for a while and we have more than min_instances,
             # terminate excess instances
@@ -263,6 +292,8 @@ python3 worker.py --config=/opt/worker/config.json
                         terminate_count += 1
         else:
             # Queue is not empty, reset timer
+            if self.empty_queue_since is not None:
+                logger.info("Queue is no longer empty, resetting termination timer")
             self.empty_queue_since = None
 
             # Calculate desired number of instances based on queue depth and tasks per instance
@@ -271,12 +302,23 @@ python3 worker.py --config=/opt/worker/config.json
                 max(self.min_instances, (queue_depth + self.tasks_per_instance - 1) // self.tasks_per_instance)
             )
 
+            logger.info(f"Calculated desired instances: {desired_instances} based on queue_depth={queue_depth} and tasks_per_instance={self.tasks_per_instance}")
+
             # Scale up if needed
             if total_instances < desired_instances:
                 instances_to_add = desired_instances - total_instances
-                logger.info(f"Scaling up: Adding {instances_to_add} instances")
+                logger.info(f"Scaling up: Adding {instances_to_add} instances (from {total_instances} to {desired_instances})")
 
-                await self.provision_instances(instances_to_add)
+                try:
+                    new_instance_ids = await self.provision_instances(instances_to_add)
+                    if new_instance_ids:
+                        logger.info(f"Successfully provisioned {len(new_instance_ids)} new instances: {new_instance_ids}")
+                    else:
+                        logger.warning("No instances were provisioned despite scaling request")
+                except Exception as e:
+                    logger.error(f"Failed to provision instances: {e}")
+            else:
+                logger.info(f"No scaling needed. Current: {total_instances}, Desired: {desired_instances}")
 
         # Update last scaling time
         self.last_scaling_time = float(time.time())

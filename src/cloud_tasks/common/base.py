@@ -73,9 +73,20 @@ class InstanceManager(ABC):
 
     @abstractmethod
     async def start_instance(
-        self, instance_type: str, user_data: str, tags: Dict[str, str]
+        self, instance_type: str, user_data: str, tags: Dict[str, str], use_spot: bool = False
     ) -> str:
-        """Start a new instance and return its ID."""
+        """
+        Start a new instance and return its ID.
+
+        Args:
+            instance_type: Type of instance to start
+            user_data: Startup script or user data to pass to the instance
+            tags: Dictionary of tags to apply to the instance
+            use_spot: Whether to use spot/preemptible instances (cheaper but can be terminated)
+
+        Returns:
+            ID of the started instance
+        """
         pass
 
     @abstractmethod
@@ -95,7 +106,18 @@ class InstanceManager(ABC):
 
     @abstractmethod
     async def get_optimal_instance_type(
-        self, cpu_required: int, memory_required_gb: int, disk_required_gb: int
+        self, cpu_required: int, memory_required_gb: int, disk_required_gb: int, use_spot: bool = False
     ) -> str:
-        """Get the most cost-effective instance type that meets requirements."""
+        """
+        Get the most cost-effective instance type that meets requirements.
+
+        Args:
+            cpu_required: Minimum number of vCPUs
+            memory_required_gb: Minimum memory in GB
+            disk_required_gb: Minimum disk space in GB
+            use_spot: Whether to use spot/preemptible instances (cheaper but can be terminated)
+
+        Returns:
+            Instance type identifier for the most cost-effective option
+        """
         pass
