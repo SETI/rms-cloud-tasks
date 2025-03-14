@@ -44,8 +44,8 @@ def orchestrator(mock_instance_manager, mock_task_queue):
         min_instances=1,
         max_instances=5,
         tasks_per_instance=5,
-        worker_repo_url="https://github.com/example/worker-code.git",
-        queue_name="test-job-123-queue"
+        queue_name="test-job-123-queue",
+        startup_script="test-startup-script"
     )
 
     # Set instance_manager and task_queue directly to bypass initialization
@@ -66,7 +66,6 @@ async def test_initialize_orchestrator(orchestrator):
     assert orchestrator.disk_required_gb == 20
     assert orchestrator.tasks_per_instance == 5
     assert orchestrator.job_id == "test-job-123"
-    assert orchestrator.worker_repo_url == "https://github.com/example/worker-code.git"
     assert not orchestrator.running
     assert orchestrator._scaling_task is None
 
@@ -220,7 +219,7 @@ async def test_provision_instances(orchestrator, mock_instance_manager):
 
     # Check that the user_data contains relevant information
     user_data = args[0][1]
-    assert "worker.py" in user_data
+    assert user_data == "test-startup-script"
 
     # Check that the tags dictionary contains expected keys
     tags = args[0][2]
@@ -306,7 +305,6 @@ async def test_get_job_status(orchestrator, mock_task_queue):
     assert status['settings']['max_instances'] == 5
     assert status['settings']['min_instances'] == 1
     assert status['settings']['tasks_per_instance'] == 5
-    assert status['settings']['worker_repo_url'] == 'https://github.com/example/worker-code.git'
     assert status['is_running'] is True
 
 
@@ -316,18 +314,12 @@ def test_generate_worker_startup_script(orchestrator):
     script = orchestrator.generate_worker_startup_script(
         provider="aws",
         queue_name="test-queue",
-        config={"access_key": "test-key", "secret_key": "test-secret"}
+        config={"access_key": "test-key",
+                "secret_key": "test-secret"}
     )
 
     # Verify script contains expected values
-    assert "#!/bin/bash" in script
-    assert f"git clone {orchestrator.worker_repo_url}" in script
-    assert '"provider": "aws"' in script
-    assert '"queue_name": "test-queue"' in script
-    assert '"job_id": "test-job-123"' in script
-    assert f'"tasks_per_worker": {orchestrator.tasks_per_instance}' in script
-    assert '"access_key": "test-key"' in script
-    assert '"secret_key": "test-secret"' in script
+    assert script == "test-startup-script"
 
 
 @pytest.mark.asyncio

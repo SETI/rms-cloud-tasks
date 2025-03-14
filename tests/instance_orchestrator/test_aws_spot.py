@@ -184,8 +184,8 @@ async def test_orchestrator_with_spot_instances():
             use_spot_instances=True,
             region="us-west-2",
             tasks_per_instance=5,
-            worker_repo_url="https://github.com/example/worker-repo.git",
-            queue_name="test-job-queue"
+            queue_name="test-job-queue",
+            startup_script="test-startup-script"
         )
 
         # Set the instance_manager directly to bypass initialization

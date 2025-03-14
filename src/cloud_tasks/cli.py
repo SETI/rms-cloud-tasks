@@ -71,7 +71,6 @@ def add_instance_pool_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument('--job-id', help='Unique job ID (generated if not provided)')
     parser.add_argument('--max-instances', type=int, default=5, help='Maximum number of instances')
     parser.add_argument('--min-instances', type=int, default=0, help='Minimum number of instances')
-    parser.add_argument('--worker-repo', required=True, help='URL to GitHub repo with worker code')
     parser.add_argument('--cpu', type=int, help='Minimum CPU cores per instance (overrides config)')
     parser.add_argument('--memory', type=float, help='Minimum memory (GB) per instance (overrides config)')
     parser.add_argument('--disk', type=int, help='Minimum disk space (GB) per instance (overrides config)')
@@ -192,7 +191,6 @@ async def manage_pool_cmd(args: argparse.Namespace) -> None:
             tasks_per_instance=args.tasks_per_instance,
             use_spot_instances=args.use_spot,
             region=region_param,
-            worker_repo_url=args.worker_repo,
             queue_name=args.queue_name,
             config=config,
             custom_image=run_config.image,
@@ -328,7 +326,6 @@ async def run_job(args: argparse.Namespace) -> None:
             tasks_per_instance=args.tasks_per_instance,
             use_spot_instances=args.use_spot,
             region=region_param,
-            worker_repo_url=args.worker_repo,
             queue_name=args.queue_name,
             config=config,
             custom_image=run_config.image,
@@ -744,13 +741,18 @@ async def list_instances_cmd(args: argparse.Namespace) -> None:
 
         # Apply instance type filter if specified
         if args.instance_types:
-            instance_type_patterns = args.instance_types.split()
+            new_instance_types = []
+            for str1 in args.instance_types:
+                for str2 in str1.split(','):
+                    for str3 in str2.split(' '):
+                        if str3.strip():
+                            new_instance_types.append(str3.strip())
             filtered_instances = []
             for instance in instances:
                 instance_name = instance['name']
                 # Check if instance matches any prefix or exact name
-                for pattern in instance_type_patterns:
-                    if instance_name.startswith(pattern) or instance_name == pattern:
+                for pattern in new_instance_types:
+                    if instance_name.startswith(pattern):
                         filtered_instances.append(instance)
                         break
             instances = filtered_instances
@@ -885,13 +887,13 @@ async def list_instances_cmd(args: argparse.Namespace) -> None:
 
         if args.provider == 'aws':
             print("\nTo filter instance types with the 'run' or 'manage_pool' commands, use the --instance-types parameter:")
-            print("  --instance-types 't3 m5' (will include all t3.* and m5.* instances)")
+            print("  --instance-types t3 m5 (will include all t3.* and m5.* instances)")
         elif args.provider == 'gcp':
             print("\nTo filter instance types with the 'run' or 'manage_pool' commands, use the --instance-types parameter:")
-            print("  --instance-types 'n1 n2 e2' (will include all n1-*, n2-* and e2-* machine types)")
+            print("  --instance-types n1 n2 e2 (will include all n1-*, n2-* and e2-* machine types)")
         elif args.provider == 'azure':
             print("\nTo filter instance types with the 'run' or 'manage_pool' commands, use the --instance-types parameter:")
-            print("  --instance-types 'Standard_B Standard_D' (will include all Standard_B* and Standard_D* VM sizes)")
+            print("  --instance-types Standard_B Standard_D (will include all Standard_B* and Standard_D* VM sizes)")
 
     except Exception as e:
         logger.error(f"Error listing instance types: {e}", exc_info=True)
@@ -966,7 +968,7 @@ def main():
             action.required = False
             action.help = 'Name of the task queue (not used for this command)'
     list_instances_parser.add_argument('--size-filter', help='Filter instance types by minimum size requirements (format: cpu:memory_gb:disk_gb)')
-    list_instances_parser.add_argument('--instance-types', help='Space-separated list of instance type patterns to filter by (e.g., "t3 m5" for AWS)')
+    list_instances_parser.add_argument('--instance-types', nargs='+', help='List of instance type patterns to filter by (e.g., "t3 m5" for AWS)')
     list_instances_parser.add_argument('--filter', help='Filter instance types containing this text in any field')
     list_instances_parser.add_argument('--limit', type=int, help='Limit the number of instance types displayed')
     list_instances_parser.add_argument('--use-spot', action='store_true', help='Show spot/preemptible instance pricing instead of on-demand')

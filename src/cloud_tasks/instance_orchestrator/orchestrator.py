@@ -47,7 +47,6 @@ class InstanceOrchestrator:
         use_spot_instances: bool = False,
         region: Optional[str] = None,
         tasks_per_instance: int = 5,
-        worker_repo_url: Optional[str] = None,
         queue_name: Optional[str] = None,
         config: Optional[Config] = None,
         custom_image: Optional[str] = None,
@@ -70,7 +69,6 @@ class InstanceOrchestrator:
             use_spot_instances: Whether to use spot/preemptible instances
             region: Specific region to use (if None, cheapest region is used)
             tasks_per_instance: Number of tasks each instance can process concurrently
-            worker_repo_url: URL to GitHub repo with worker code
             queue_name: Name of the task queue to process
             config: Full configuration object
             custom_image: Custom VM image to use (overrides provider defaults)
@@ -100,7 +98,6 @@ class InstanceOrchestrator:
         self.use_spot_instances = use_spot_instances
         self.region = region
         self.tasks_per_instance = tasks_per_instance
-        self.worker_repo_url = worker_repo_url
         self.queue_name = queue_name or f"{job_id}-queue"
 
         # Get or create the provider-specific configuration
@@ -177,35 +174,8 @@ class InstanceOrchestrator:
         if self.startup_script:
             return self.startup_script
 
-        # Otherwise create the default script to set up the worker
-        script = f"""#!/bin/bash
-# Update system and install dependencies
-apt-get update -y
-apt-get install -y git python3 python3-pip
-
-# Clone worker code
-git clone {self.worker_repo_url} /opt/worker
-
-# Set up virtual environment
-cd /opt/worker
-python3 -m pip install -r requirements.txt
-
-# Create configuration file
-cat > /opt/worker/config.json << EOF
-{{
-    "provider": "{provider}",
-    "queue_name": "{queue_name}",
-    "job_id": "{self.job_id}",
-    "tasks_per_worker": {self.tasks_per_instance},
-    "config": {json.dumps(config)}
-}}
-EOF
-
-# Start worker process
-cd /opt/worker
-python3 worker.py --config=/opt/worker/config.json
-"""
-        return script
+        logger.error("No startup script provided")
+        raise RuntimeError("No startup script provided")
 
     async def start(self) -> None:
         """
@@ -478,8 +448,7 @@ python3 worker.py --config=/opt/worker/config.json
             'settings': {
                 'max_instances': self.max_instances,
                 'min_instances': self.min_instances,
-                'tasks_per_instance': self.tasks_per_instance,
-                'worker_repo_url': self.worker_repo_url
+                'tasks_per_instance': self.tasks_per_instance
             },
             'is_running': self.running
         }

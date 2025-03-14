@@ -22,6 +22,7 @@ google-cloud-billing>=1.7.3
 # Azure Support
 azure-identity>=1.10.0
 azure-servicebus>=7.8.1
+azure-mgmt-commerce>=6.0.0
 azure-mgmt-compute>=29.0.0
 azure-mgmt-network>=21.0.0
 azure-mgmt-resource>=23.3.0

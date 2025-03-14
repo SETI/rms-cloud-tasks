@@ -264,7 +264,7 @@ def get_run_config(config: Config, provider: str, cli_args: Optional[Dict[str, A
             'disk': 'disk_gb',
             'image': 'image',
             'startup_script_file': 'startup_script',
-            'instance_types': 'instance_types',  # Add support for instance_types CLI parameter
+            'instance_types': 'instance_types',
         }
 
         for cli_key, config_key in cli_map.items():
@@ -278,6 +278,13 @@ def get_run_config(config: Config, provider: str, cli_args: Optional[Dict[str, A
                             run_config[config_key] = f.read()
                     except Exception as e:
                         raise ConfigError(f"Error reading startup script file {value}: {e}")
+                elif cli_key == 'instance_types' and value:
+                    new_instance_types = []
+                    for str1 in value:
+                        for str2 in str1.split(','):
+                            for str3 in str2.split(' '):
+                                new_instance_types.append(str3.strip())
+                    run_config[config_key] = new_instance_types
                 else:
                     run_config[config_key] = value
 
