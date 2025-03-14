@@ -10,6 +10,29 @@ The `config.yaml` file contains example configurations for all supported cloud p
 
 The `tasks.json` file shows how to define tasks for processing. Each task must include an `id` and a `data` object with parameters specific to your workload.
 
+## Queue Reader Example
+
+The `queue_reader.py` script provides a simple way to read and display all messages from a cloud queue:
+
+```bash
+# Read messages from an AWS SQS queue without deleting them
+python -m examples.queue_reader --config examples/config.yaml --provider aws --queue-name my-task-queue
+
+# Read and delete messages from a GCP Pub/Sub queue
+python -m examples.queue_reader --config examples/config.yaml --provider gcp --queue-name my-task-queue --delete
+
+# Read messages from an Azure Service Bus queue with verbose logging
+python -m examples.queue_reader --config examples/config.yaml --provider azure --queue-name my-task-queue --verbose
+```
+
+This is useful for:
+- Debugging task processing issues
+- Monitoring queue contents
+- Testing queue connections
+- Manually inspecting task data
+
+See `queue_reader_README.md` for more detailed instructions on using this example.
+
 ## Running a Job
 
 Here are some example commands for running jobs:
