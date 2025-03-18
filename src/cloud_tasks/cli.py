@@ -1,146 +1,290 @@
 """
 Command-line interface for the multi-cloud task processing system.
 """
+
 import argparse
 import asyncio
 import json
+import json_stream
 import logging
+import math
 import sys
 import time
-import traceback
-from typing import Any, Dict, List, Optional, Union, Callable, Tuple
-
-import yaml  # type: ignore
 from tqdm import tqdm  # type: ignore
+from typing import Any, Dict, Iterable
+import yaml  # type: ignore
 
-from cloud_tasks.common.config import load_config, ConfigError, get_run_config, Config, ProviderConfig
+from cloud_tasks.common.config import Config, ConfigError, get_run_config, load_config
 from cloud_tasks.queue_manager import create_queue
 from cloud_tasks.instance_orchestrator import create_instance_manager
 from cloud_tasks.instance_orchestrator.orchestrator import InstanceOrchestrator
 from cloud_tasks.common.logging_config import configure_logging
 
-# Use custom logging configuration with proper microsecond support
-configure_logging(level=logging.INFO)
+# Use custom logging configuration
+configure_logging(level=logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
-def load_tasks_from_file(tasks_file: str) -> List[Dict[str, Any]]:
+def yield_tasks_from_file(tasks_file: str) -> Iterable[Dict[str, Any]]:
     """
-    Load tasks from a JSON or YAML file.
+    Yield tasks from a JSON or YAML file as an iterator.
 
-    Args:
+    This function uses streaming to read tasks files so that very large files can be
+    processed without using a lot of memory or running slowly.
+
+    Parameters:
         tasks_file: Path to the tasks file
 
-    Returns:
-        List of task dictionaries
+    Yields:
+        Task dictionaries (expected to have "id" and "data" keys)
 
     Raises:
-        Exception: If the file cannot be loaded
+        ValueError: If the file cannot be read
     """
-    with open(tasks_file, 'r') as f:
-        if tasks_file.endswith('.json'):
-            tasks = json.load(f)
-        elif tasks_file.endswith(('.yaml', '.yml')):
-            tasks = yaml.safe_load(f)
+
+    if not tasks_file.endswith((".json", ".yaml", ".yml")):
+        raise ValueError(
+            f"Unsupported file format for tasks: {tasks_file}; must be .json, .yml, or .yaml"
+        )
+    with open(tasks_file, "r") as fp:
+        if tasks_file.endswith(".json"):
+            for task in json_stream.load(fp):
+                yield json_stream.to_standard_types(task)  # Convert to a dict
         else:
-            raise ValueError(f"Unsupported file format for tasks: {tasks_file}")
-
-    if not isinstance(tasks, list):
-        raise ValueError("Tasks file must contain a list of task dictionaries")
-
-    return tasks
-
-
-# Helper functions for argument parsing
-
-def add_common_args(parser: argparse.ArgumentParser) -> None:
-    """Add common arguments to all command parsers."""
-    parser.add_argument('--config', required=True, help='Path to configuration file')
-    parser.add_argument('--provider', choices=['aws', 'gcp', 'azure'], required=True, help='Cloud provider')
-    parser.add_argument('--queue-name', required=True, help='Name of the task queue')
-    parser.add_argument('--verbose', '-v', action='store_true', help='Enable verbose output')
+            # See https://stackoverflow.com/questions/429162/how-to-process-a-yaml-stream-in-python
+            y = fp.readline()
+            cont = True
+            while cont:
+                l = fp.readline()
+                if len(l) == 0:
+                    cont = False
+                elif l.startswith((" ", "-")):
+                    y = y + l
+                elif len(y) > 0:
+                    yield yaml.load(y)
+                    y = l
 
 
-def add_tasks_args(parser: argparse.ArgumentParser) -> None:
-    """Add task-loading specific arguments."""
-    parser.add_argument('--tasks', required=True, help='Path to tasks file (JSON or YAML)')
-
-
-def add_instance_pool_args(parser: argparse.ArgumentParser) -> None:
-    """Add instance pool management specific arguments."""
-    parser.add_argument('--job-id', help='Unique job ID (generated if not provided)')
-    parser.add_argument('--max-instances', type=int, default=5, help='Maximum number of instances')
-    parser.add_argument('--min-instances', type=int, default=0, help='Minimum number of instances')
-    parser.add_argument('--cpu', type=int, help='Minimum CPU cores per instance (overrides config)')
-    parser.add_argument('--memory', type=float, help='Minimum memory (GB) per instance (overrides config)')
-    parser.add_argument('--disk', type=int, help='Minimum disk space (GB) per instance (overrides config)')
-    parser.add_argument('--image', help='Custom VM image to use (overrides config)')
-    parser.add_argument('--startup-script-file', help='Path to custom startup script file (overrides config)')
-    parser.add_argument('--tasks-per-instance', type=int, default=10, help='Number of tasks per instance')
-    parser.add_argument('--use-spot', action='store_true', help='Use spot/preemptible instances (cheaper but can be terminated)')
-    parser.add_argument('--region', help='Specific region to launch instances in (defaults to cheapest region)')
-    parser.add_argument('--instance-types', nargs='+', help='List of instance type patterns to use (e.g., "t3" for all t3 instances, "t3.micro" for exact match)')
-
-
-async def load_tasks_cmd(args: argparse.Namespace) -> None:
+async def load_tasks_cmd(args: argparse.Namespace, config: Config) -> None:
     """
     Load tasks into a queue without starting instances.
 
-    Args:
+    Parameters:
         args: Command-line arguments
+        config: Configuration
     """
+
     try:
-        # Load configuration
-        logger.info(f"Loading configuration from {args.config}")
-        config = load_config(args.config)
+        queue_name = config.queue_name
+        if queue_name is None:
+            logger.fatal("Queue name must be specified")
+            sys.exit(1)
 
-        # Load tasks
         logger.info(f"Loading tasks from {args.tasks}")
-        tasks = load_tasks_from_file(args.tasks)
-        logger.info(f"Loaded {len(tasks)} tasks")
 
-        # Initialize cloud services
-        provider = args.provider
+        provider = config.provider
 
-        # Create task queue
-        logger.info(f"Creating task queue on {provider}")
+        logger.info(f"Creating task queue {args.queue_name} on {provider}")
         task_queue = await create_queue(
-            provider=provider,
-            queue_name=args.queue_name,
-            config=config
+            provider=provider, queue_name=args.queue_name, config=config
         )
 
-        # Populate task queue
         logger.info("Populating task queue")
-        with tqdm(total=len(tasks), desc="Enqueueing tasks") as pbar:
-            for task in tasks:
-                await task_queue.send_task(task['id'], task['data'])
+        num_tasks = 0
+        with tqdm(desc="Enqueueing tasks") as pbar:
+            for task in yield_tasks_from_file(args.tasks):
+                logger.info(task)
+                await task_queue.send_task(task["id"], task["data"])
                 pbar.update(1)
+                num_tasks += 1
 
-        # Get final queue depth to confirm
+        logger.info(f"Loaded {num_tasks} tasks")
+
         queue_depth = await task_queue.get_queue_depth()
-        logger.info(f"Tasks loaded successfully. Queue depth: {queue_depth}")
+        logger.info(f"Tasks loaded successfully. Queue depth (may be approximate): {queue_depth}")
 
     except ConfigError as e:
-        logger.error(f"Configuration error: {e}", exc_info=True)
+        logger.fatal(f"Configuration error: {e}", exc_info=True)
         sys.exit(1)
     except Exception as e:
-        logger.error(f"Error loading tasks: {e}", exc_info=True)
+        logger.fatal(f"Error loading tasks: {e}", exc_info=True)
         sys.exit(1)
 
 
-async def manage_pool_cmd(args: argparse.Namespace) -> None:
+async def show_queue_depth_cmd(args: argparse.Namespace, config: Config) -> None:
+    """Show the current depth of a task queue.
+
+    Parameters:
+        args: Command-line arguments
+        config: Configuration
     """
+
+    try:
+        print(f"Checking queue depth for {args.queue_name} on {args.provider}...")
+
+        try:
+            task_queue = await create_queue(
+                provider=args.provider, queue_name=args.queue_name, config=config
+            )
+        except Exception as e:
+            logger.error(f"Error connecting to queue: {e}")
+            print(f"\nError connecting to queue: {e}")
+            print("\nPlease check your configuration and ensure the queue exists.")
+            sys.exit(1)
+
+        # Get queue depth
+        try:
+            queue_depth = await task_queue.get_queue_depth()
+        except Exception as e:
+            logger.error(f"Error getting queue depth: {e}")
+            print(f"\nError retrieving queue depth: {e}")
+            print("\nThe queue may exist but you might not have permission to access it.")
+            sys.exit(1)
+
+        # Display queue depth with some formatting
+        print("\n" + "=" * 50)
+        print("QUEUE INFORMATION")
+        print("=" * 50)
+        print(f"Queue name:     {args.queue_name}")
+        print(f"Provider:       {args.provider}")
+        print(f"Current depth:  {queue_depth} message(s)")
+
+        if queue_depth == 0:
+            print("\nQueue is empty. No messages available.")
+        else:
+            # If verbose, try to get a sample message without removing it
+            if args.detail:
+                print("\nAttempting to peek at first message...")
+                try:
+                    messages = await task_queue.receive_tasks(
+                        max_count=1, visibility_timeout_seconds=10
+                    )
+
+                    if messages:
+                        message = messages[0]
+                        task_id = message.get("task_id", "unknown")
+
+                        print("\n" + "-" * 50)
+                        print("SAMPLE MESSAGE")
+                        print("-" * 50)
+                        print(f"Task ID: {task_id}")
+
+                        # Get receipt handle info based on provider
+                        receipt_info = ""
+                        if "receipt_handle" in message:  # AWS
+                            receipt_info = (
+                                f"Receipt Handle: {message['receipt_handle'][:50]}..."
+                                if len(message.get("receipt_handle", "")) > 50
+                                else f"Receipt Handle: {message.get('receipt_handle', '')}"
+                            )
+                        elif "ack_id" in message:  # GCP
+                            receipt_info = (
+                                f"Ack ID: {message['ack_id'][:50]}..."
+                                if len(message.get("ack_id", "")) > 50
+                                else f"Ack ID: {message.get('ack_id', '')}"
+                            )
+                        elif "lock_token" in message:  # Azure
+                            receipt_info = (
+                                f"Lock Token: {message['lock_token'][:50]}..."
+                                if len(message.get("lock_token", "")) > 50
+                                else f"Lock Token: {message.get('lock_token', '')}"
+                            )
+
+                        if receipt_info:
+                            print(f"{receipt_info}")
+
+                        try:
+                            data = message.get("data", {})
+                            print("\nData:")
+                            if isinstance(data, dict):
+                                print(json.dumps(data, indent=2))
+                            else:
+                                print(data)
+                        except Exception as e:
+                            print(f"Error displaying data: {e}")
+                            print(f"Raw data: {message.get('data', {})}")
+
+                        print("\nNote: Message was not removed from the queue.")
+                    else:
+                        print("\nCould not retrieve a sample message. This might happen if:")
+                        print("  - Another consumer received the message")
+                        print("  - The message is not available for immediate delivery")
+                        print("  - There's an issue with queue visibility settings")
+                except Exception as e:
+                    logger.error(f"Error peeking at message: {e}")
+                    print(f"\nError retrieving sample message: {e}")
+
+    except ConfigError as e:
+        logger.error(f"Configuration error: {e}")
+        print(f"\nConfiguration error: {e}")
+        sys.exit(1)
+    except Exception as e:
+        logger.error(f"Error showing queue depth: {e}", exc_info=True)
+        print(f"\nError: {e}")
+        sys.exit(1)
+
+
+async def empty_queue_cmd(args: argparse.Namespace, config: Config) -> None:
+    """Empty a task queue by removing all messages from it.
+
+    Parameters:
+        args: Command-line arguments
+        config: Configuration
+    """
+
+    try:
+        task_queue = await create_queue(
+            provider=args.provider, queue_name=args.queue_name, config=config
+        )
+
+        queue_depth = await task_queue.get_queue_depth()
+
+        if queue_depth == 0:
+            print(f"Queue '{args.queue_name}' is already empty (0 messages).")
+            return
+
+        # Confirm with the user if not using --force
+        if not args.force:
+            confirm = input(
+                f"\nWARNING: This will permanently delete all {queue_depth} messages from queue "
+                f"'{args.queue_name}'."
+                f"\nType 'EMPTY {args.queue_name}' to confirm: "
+            )
+            if confirm != f"EMPTY {args.queue_name}":
+                print("Operation cancelled.")
+                return
+
+        print(f"Emptying queue '{args.queue_name}'...")
+        await task_queue.purge_queue()
+
+        # Verify the queue is now empty
+        new_depth = await task_queue.get_queue_depth()
+        if new_depth == 0:
+            print(
+                f"SUCCESS: Queue '{args.queue_name}' has been emptied. Removed "
+                f"{queue_depth} message(s)."
+            )
+        else:
+            print(
+                f"WARNING: Queue purge operation completed but {new_depth} messages still remain."
+            )
+            print("Some messages may be in flight or locked by consumers.")
+
+    except Exception as e:
+        logger.error(f"Error emptying queue: {e}")
+        print(f"Error: {e}")
+        sys.exit(1)
+
+
+async def manage_pool_cmd(args: argparse.Namespace, config: Config) -> None:
+    """TODO
     Manage an instance pool for processing tasks without loading tasks.
 
-    Args:
+    Parameters:
         args: Command-line arguments
+        config: Configuration
     """
     try:
-        # Load configuration
-        logger.info(f"Loading configuration from {args.config}")
-        config = load_config(args.config)
-
         # Initialize cloud services
         provider = args.provider
 
@@ -148,31 +292,34 @@ async def manage_pool_cmd(args: argparse.Namespace) -> None:
         cli_args = vars(args)
         run_config = get_run_config(config, provider, cli_args)
 
-        # Now we can use attribute access thanks to Config
-        logger.info(f"Using CPU: {run_config.cpu}, Memory: {run_config.memory_gb} GB, Disk: {run_config.disk_gb} GB")
+        if not run_config.startup_script:
+            logger.fatal("No startup script specified")
+            sys.exit(1)
+
+        logger.info(
+            f"Using #CPU: {run_config.cpu}, Memory: {run_config.memory_gb} GB, "
+            f"Disk: {run_config.disk_gb} GB"
+        )
         logger.info(f"Using image: {run_config.image}")
-        if run_config.startup_script:
-            script_preview = run_config.startup_script[:50].replace('\n', ' ') + ('...' if len(run_config.startup_script) > 50 else '')
-            logger.info(f"Using custom startup script: {script_preview}")
+        script_preview = run_config.startup_script[:50].replace("\n", " ") + (
+            "..." if len(run_config.startup_script) > 50 else ""
+        )
+        logger.info(f"Using startup script: {script_preview}")
 
         # Log instance types restriction if set
-        if hasattr(run_config, 'instance_types') and run_config.instance_types:
-            logger.info(f"Restricting instance types to: {run_config.instance_types}")
+        if hasattr(run_config, "instance_types") and run_config.instance_types:
+            logger.info(f"Restricting instance types to: {' '.join(run_config.instance_types)}")
 
         # Handle region parameter
-        if args.region:
-            logger.info(f"Using specified region from command line: {args.region}")
-            region_param = args.region
+        if run_config.region:
+            logger.info(f"Using specified region: {run_config.region}")
         else:
-            region_param = None
-            logger.info("No region specified on command line, will use from config or find cheapest")
+            logger.info("No region specified, will find cheapest")
 
         # Create task queue to monitor progress
-        logger.info(f"Creating task queue on {provider}")
+        logger.info(f"Creating task queue {args.queue_name} on {provider}")
         task_queue = await create_queue(
-            provider=provider,
-            queue_name=args.queue_name,
-            config=config
+            provider=provider, queue_name=args.queue_name, config=config
         )
 
         # Create job ID
@@ -190,11 +337,11 @@ async def manage_pool_cmd(args: argparse.Namespace) -> None:
             max_instances=args.max_instances,
             tasks_per_instance=args.tasks_per_instance,
             use_spot_instances=args.use_spot,
-            region=region_param,
+            region=run_config.region,
             queue_name=args.queue_name,
-            config=config,
             custom_image=run_config.image,
-            startup_script=run_config.startup_script
+            startup_script=run_config.startup_script,
+            config=config,
         )
 
         # Set the task queue on the orchestrator
@@ -258,19 +405,149 @@ async def manage_pool_cmd(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
-async def run_job(args: argparse.Namespace) -> None:
+async def list_running_instances_cmd(args: argparse.Namespace, config: Config) -> None:
     """
-    Run a job with the specified configuration.
-    This is a combination of loading tasks and managing an instance pool.
+    List all running instances for the specified provider.
 
-    Args:
+    Parameters:
         args: Command-line arguments
     """
     try:
-        # Load configuration
-        logger.info(f"Loading configuration from {args.config}")
-        config = load_config(args.config)
+        # Create instance manager
+        instance_manager = await create_instance_manager(provider=args.provider, config=config)
 
+        # Get list of running instances
+        tag_filter = {}
+        if args.job_id:
+            tag_filter["job_id"] = args.job_id
+            print(f"\nListing instances for {args.provider} with job_id: {args.job_id}")
+        else:
+            print(f"\nListing all instances for {args.provider}")
+
+        try:
+            # For GCP, pass the region parameter explicitly
+            if args.provider == "gcp" and args.region and not instance_manager.zone:
+                # List instances with specific region filter
+                instances = await instance_manager.list_running_instances(
+                    tag_filter=tag_filter, region=args.region
+                )
+            else:
+                instances = await instance_manager.list_running_instances(tag_filter=tag_filter)
+        except Exception as e:
+            logger.error(f"Error listing instances: {e}")
+            error_message = str(e)
+
+            if args.provider == "gcp" and (
+                "zone" in error_message or "no region" in error_message.lower()
+            ):
+                print("\nError: Zone/region information is required for GCP.")
+                print("You have two options:")
+                print("  1. Specify a region with --region (e.g., --region us-central1)")
+                print("  2. Add 'zone' to your config file in the GCP section")
+            else:
+                print(f"\nError listing instances: {error_message}")
+            sys.exit(1)
+
+        # Display instances
+        if instances:
+            print(f"\nFound {len(instances)} instances for provider: {args.provider}")
+
+            # Headers
+            if args.provider == "gcp":
+                print(
+                    f"{'ID':<20} {'Type':<15} {'State':<10} {'Zone':<15} {'Created':<26} {'Tags'}"
+                )
+                print("-" * 95)
+            else:
+                print(f"{'ID':<20} {'Type':<15} {'State':<10} {'Created':<26} {'Tags'}")
+                print("-" * 80)
+
+            for instance in instances:
+                # Extract common fields with safe defaults
+                instance_id = instance.get("id", "N/A")
+                instance_type = instance.get("type", "N/A")
+                state = instance.get("state", "N/A")
+                created_at = instance.get("creation_time", instance.get("created_at", "N/A"))
+                zone = instance.get("zone", "")
+
+                # Format tags as a comma-separated string of key=value pairs
+                tags = instance.get("tags", {})
+                tags_str = ", ".join([f"{k}={v}" for k, v in tags.items()]) if tags else "No tags"
+
+                # Truncate tags if verbose mode is not enabled
+                if not args.verbose and len(tags_str) > 40:
+                    tags_str = tags_str[:37] + "..."
+
+                if args.verbose:
+                    # More detailed output in verbose mode
+                    print(f"\nInstance ID: {instance_id}")
+                    print(f"Type: {instance_type}")
+                    print(f"State: {state}")
+
+                    if zone:
+                        print(f"Zone: {zone}")
+
+                    print(f"Created: {created_at}")
+
+                    if "private_ip" in instance:
+                        print(f"Private IP: {instance['private_ip']}")
+                    if "public_ip" in instance:
+                        print(f"Public IP: {instance['public_ip']}")
+
+                    print("Tags:")
+                    if tags:
+                        for k, v in tags.items():
+                            print(f"  {k}: {v}")
+                    else:
+                        print("  No tags")
+                    print("-" * 40)
+                else:
+                    if args.provider == "gcp" and zone:
+                        print(
+                            f"{instance_id:<20} {instance_type:<15} {state:<10} {zone:<15} "
+                            f"{created_at:<26} {tags_str}"
+                        )
+                    else:
+                        print(
+                            f"{instance_id:<20} {instance_type:<15} {state:<10} {created_at:<26} "
+                            f"{tags_str}"
+                        )
+
+            # Print count summary
+            running_count = len([i for i in instances if i["state"] == "running"])
+            starting_count = len([i for i in instances if i["state"] == "starting"])
+            other_count = len(instances) - running_count - starting_count
+
+            print(f"\nSummary: {len(instances)} total instances")
+            print(f"  {running_count} running")
+            print(f"  {starting_count} starting")
+            if other_count > 0:
+                print(f"  {other_count} in other states")
+        else:
+            if args.job_id:
+                print(f"\nNo instances found for job ID: {args.job_id}")
+            else:
+                print(f"\nNo instances found for provider: {args.provider}")
+
+    except ConfigError as e:
+        logger.error(f"Configuration error: {e}")
+        print(f"Error: {e}")
+        sys.exit(1)
+    except Exception as e:
+        logger.error(f"Error listing running instances: {e}", exc_info=True)
+        print(f"Error listing running instances: {e}")
+        sys.exit(1)
+
+
+async def run_job(args: argparse.Namespace, config: Config) -> None:
+    """TODO
+    Run a job with the specified configuration.
+    This is a combination of loading tasks and managing an instance pool.
+
+    Parameters:
+        args: Command-line arguments
+    """
+    try:
         # Load tasks
         logger.info(f"Loading tasks from {args.tasks}")
         tasks = load_tasks_from_file(args.tasks)
@@ -284,14 +561,19 @@ async def run_job(args: argparse.Namespace) -> None:
         run_config = get_run_config(config, provider, cli_args)
 
         # Now we can use attribute access thanks to Config
-        logger.info(f"Using CPU: {run_config.cpu}, Memory: {run_config.memory_gb} GB, Disk: {run_config.disk_gb} GB")
+        logger.info(
+            f"Using CPU: {run_config.cpu}, Memory: {run_config.memory_gb} GB, "
+            f"Disk: {run_config.disk_gb} GB"
+        )
         logger.info(f"Using image: {run_config.image}")
         if run_config.startup_script:
-            script_preview = run_config.startup_script[:50].replace('\n', ' ') + ('...' if len(run_config.startup_script) > 50 else '')
+            script_preview = run_config.startup_script[:50].replace("\n", " ") + (
+                "..." if len(run_config.startup_script) > 50 else ""
+            )
             logger.info(f"Using custom startup script: {script_preview}")
 
         # Log instance types restriction if set
-        if hasattr(run_config, 'instance_types') and run_config.instance_types:
+        if hasattr(run_config, "instance_types") and run_config.instance_types:
             logger.info(f"Restricting instance types to: {run_config.instance_types}")
 
         # Handle region parameter
@@ -300,14 +582,14 @@ async def run_job(args: argparse.Namespace) -> None:
             region_param = args.region
         else:
             region_param = None
-            logger.info("No region specified on command line, will use from config or find cheapest")
+            logger.info(
+                "No region specified on command line, will use from config or find cheapest"
+            )
 
         # Create task queue
         logger.info(f"Creating task queue on {provider}")
         task_queue = await create_queue(
-            provider=provider,
-            queue_name=args.queue_name,
-            config=config
+            provider=provider, queue_name=args.queue_name, config=config
         )
 
         # Create job ID
@@ -329,7 +611,7 @@ async def run_job(args: argparse.Namespace) -> None:
             queue_name=args.queue_name,
             config=config,
             custom_image=run_config.image,
-            startup_script=run_config.startup_script
+            startup_script=run_config.startup_script,
         )
 
         # Set the task queue on the orchestrator
@@ -339,7 +621,7 @@ async def run_job(args: argparse.Namespace) -> None:
         logger.info("Populating task queue")
         with tqdm(total=len(tasks), desc="Enqueueing tasks") as pbar:
             for task in tasks:
-                await task_queue.send_task(task['id'], task['data'])
+                await task_queue.send_task(task["id"], task["data"])
                 pbar.update(1)
 
         # Start orchestrator
@@ -394,31 +676,26 @@ async def run_job(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
-async def status_job(args: argparse.Namespace) -> None:
-    """
+async def status_job(args: argparse.Namespace, config: Config) -> None:
+    """TODO
     Check the status of a running job.
 
-    Args:
+    Parameters:
         args: Command-line arguments
     """
     try:
-        # Load configuration
-        config = load_config(args.config)
-
         # Create task queue to check depth
         task_queue = await create_queue(
-            provider=args.provider,
-            queue_name=args.queue_name,
-            config=config
+            provider=args.provider, queue_name=args.queue_name, config=config
         )
 
         # Create orchestrator
         orchestrator = InstanceOrchestrator(
             provider=args.provider,
             job_id=args.job_id,
-            region=args.region if hasattr(args, 'region') else None,
+            region=args.region if hasattr(args, "region") else None,
             queue_name=args.queue_name,
-            config=config
+            config=config,
         )
 
         # Set task queue on orchestrator
@@ -426,26 +703,29 @@ async def status_job(args: argparse.Namespace) -> None:
 
         # Get instances with job ID tag
         instances = await orchestrator.instance_manager.list_running_instances(
-            tag_filter={'job_id': args.job_id}
+            tag_filter={"job_id": args.job_id}
         )
 
         # Get queue depth
         queue_depth = await task_queue.get_queue_depth()
 
         # Print status
-        running_count = len([i for i in instances if i['state'] == 'running'])
-        starting_count = len([i for i in instances if i['state'] == 'starting'])
+        running_count = len([i for i in instances if i["state"] == "running"])
+        starting_count = len([i for i in instances if i["state"] == "starting"])
 
         print(f"Job: {args.job_id}")
         print(f"Queue: {args.queue_name}")
         print(f"Queue depth: {queue_depth}")
-        print(f"Instances: {len(instances)} total ({running_count} running, {starting_count} starting)")
+        print(
+            f"Instances: {len(instances)} total ({running_count} running, "
+            f"{starting_count} starting)"
+        )
 
         if args.verbose:
             print("\nInstances:")
             for instance in instances:
                 print(f"  {instance['id']}: {instance['type']} - {instance['state']}")
-                if 'public_ip' in instance and instance['public_ip']:
+                if "public_ip" in instance and instance["public_ip"]:
                     print(f"    Public IP: {instance['public_ip']}")
 
     except Exception as e:
@@ -453,22 +733,17 @@ async def status_job(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
-async def stop_job(args: argparse.Namespace) -> None:
-    """
+async def stop_job(args: argparse.Namespace, config: Config) -> None:
+    """TODO
     Stop a running job and terminate its instances.
 
-    Args:
+    Parameters:
         args: Command-line arguments
     """
     try:
-        # Load configuration
-        config = load_config(args.config)
-
         # Create task queue
         task_queue = await create_queue(
-            provider=args.provider,
-            queue_name=args.queue_name,
-            config=config
+            provider=args.provider, queue_name=args.queue_name, config=config
         )
 
         # Create orchestrator with the provider parameter and full config
@@ -479,7 +754,7 @@ async def stop_job(args: argparse.Namespace) -> None:
             min_instances=0,
             max_instances=0,
             queue_name=args.queue_name,
-            config=config  # Pass the full config
+            config=config,  # Pass the full config
         )
 
         # Set the task_queue directly
@@ -487,8 +762,7 @@ async def stop_job(args: argparse.Namespace) -> None:
 
         # Create the instance manager
         orchestrator.instance_manager = await create_instance_manager(
-            provider=args.provider,
-            config=config
+            provider=args.provider, config=config
         )
 
         # Stop orchestrator (terminates instances)
@@ -506,70 +780,19 @@ async def stop_job(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
-# First, let's define a reusable build_sort_key function at the module level
-def build_sort_key(instance: Dict[str, Any], sort_fields: List[str], field_mapping: Dict[str, str]) -> Tuple[Any, ...]:
-    """
-    Build a sort key function for sorting objects by multiple fields.
-
-    Args:
-        instance: Object to sort
-        sort_fields: List of field names to sort by, prefixed with '-' for descending
-        field_mapping: Dictionary mapping input field names to actual object keys
-
-    Returns:
-        A tuple that can be used for sorting
-    """
-    result = []
-    for field in sort_fields:
-        descending = field.startswith('-')
-        field_name = field[1:] if descending else field
-        field_name = field_name.lower()  # Case-insensitive matching
-
-        # Find the matching field using prefix matching
-        matched_field = None
-        for key, value in field_mapping.items():
-            if field_name == key or field_name.startswith(key):
-                matched_field = value
-                break
-
-        if matched_field:
-            value = instance.get(matched_field)
-            # Handle different types appropriately for sorting
-            if isinstance(value, (int, float)):
-                # For numbers, negate if descending
-                result.append(-value if descending else value)
-            elif value is None:
-                # None values come first in ascending, last in descending
-                result.append(float('inf') if descending else float('-inf'))
-            else:
-                # For strings, use lowercase for case-insensitive comparison
-                str_val = str(value).lower()
-                if descending:
-                    # Create a tuple with a negation flag for descending string sort
-                    result.append((1, str_val))  # 1 indicates descending
-                else:
-                    result.append((0, str_val))  # 0 indicates ascending
-
-    return tuple(result)
-
-
-async def list_images_cmd(args: argparse.Namespace) -> None:
+async def list_images_cmd(args: argparse.Namespace, config: Config) -> None:
     """
     List available VM images for the specified provider.
     Shows only standard images and user-owned images, not third-party images.
 
-    Args:
+    Parameters:
         args: Command-line arguments
+        config: Configuration
     """
-    try:
-        # Load configuration
-        config = load_config(args.config)
 
+    try:
         # Create instance manager for the provider
-        instance_manager = await create_instance_manager(
-            provider=args.provider,
-            config=config
-        )
+        instance_manager = await create_instance_manager(provider=args.provider, config=config)
 
         # Get images
         images = await instance_manager.list_available_images()
@@ -580,7 +803,7 @@ async def list_images_cmd(args: argparse.Namespace) -> None:
 
         # Apply filters if specified
         if args.source:
-            images = [img for img in images if img.get('source', '').lower() == args.source.lower()]
+            images = [img for img in images if img.get("source", "").lower() == args.source.lower()]
 
         if args.filter:
             # Filter by any field containing the filter string
@@ -589,7 +812,7 @@ async def list_images_cmd(args: argparse.Namespace) -> None:
             for img in images:
                 # Check if any field contains the filter string
                 for key, value in img.items():
-                    if isinstance(value, str) and filter_text in value.lower():
+                    if isinstance(value, (str, int, float)) and filter_text in str(value).lower():
                         filtered_images.append(img)
                         break
             images = filtered_images
@@ -598,117 +821,159 @@ async def list_images_cmd(args: argparse.Namespace) -> None:
         if args.sort_by:
             # Define field mapping specific to images
             field_mapping = {
-                'family': 'family',
-                'fam': 'family',
-                'f': 'family',
-                'name': 'name',
-                'n': 'name',
-                'project': 'project',
-                'proj': 'project',
-                'p': 'project',
-                'source': 'source',
-                's': 'source',
-                'publisher': 'publisher',
-                'pub': 'publisher',
-                'offer': 'offer',
-                'o': 'offer',
-                'sku': 'sku',
-                'version': 'version',
-                'v': 'version',
-                'id': 'id',
-                'creation_date': 'creation_date',
-                'date': 'creation_date',
-                'd': 'creation_date',
-                'os_type': 'os_type',
-                'os': 'os_type',
-                'location': 'location',
-                'loc': 'location',
-                'l': 'location',
-                'resource_group': 'resource_group',
-                'rg': 'resource_group',
-                'r': 'resource_group'
+                "family": "family",  # GCP
+                "fam": "family",
+                "f": "family",
+                "name": "name",  # AWS, Azure, GCP
+                "n": "name",
+                "project": "project",  # GCP
+                "proj": "project",
+                "p": "project",
+                "source": "source",  # AWS, Azure, GCP
+                "s": "source",
+                "id": "id",  # AWS, Azure, GCP
+                "description": "description",  # AWS, GCP
+                "descr": "description",
+                "desc": "description",
+                "creation_date": "creation_date",  # AWS, GCP
+                "date": "creation_date",
+                "self_link": "self_link",  # GCP
+                "link": "self_link",
+                "url": "self_link",
+                "status": "status",  # AWS, GCP
+                "platform": "platform",  # AWS
+                "publisher": "publisher",  # Azure
+                "pub": "publisher",
+                "offer": "offer",  # Azure
+                "o": "offer",
+                "sku": "sku",  # Azure
+                "version": "version",  # Azure
+                "v": "version",
+                "location": "location",  # Azure
+                "loc": "location",
             }
 
-            # Parse the sort fields
-            sort_fields = args.sort_by.split(',')
+            sort_fields = args.sort_by.split(",")
 
-            # Apply sorting if we have valid fields
             if sort_fields:
-                try:
-                    # Use the refactored build_sort_key function
-                    images.sort(key=lambda x: build_sort_key(x, sort_fields, field_mapping))
-                except Exception as e:
-                    logger.warning(f"Error during sorting: {e}, using default sort")
-                    # No default sort for images
+                for sort_field in sort_fields[::-1]:
+                    if sort_field.startswith("-"):
+                        descending = True
+                        sort_field = sort_field[1:]
+                    else:
+                        descending = False
+                    field_name = field_mapping.get(sort_field)
+                    if field_name is None:
+                        logger.warning(f"Invalid sort field: {sort_field}")
+                        continue
+                    images.sort(key=lambda x: x[field_name], reverse=descending)
+            else:
+                # Default sort if no fields specified
+                images.sort(key=lambda x: x["name"])
+        else:
+            # Default sort by name if no sort-by specified
+            images.sort(key=lambda x: x["name"])
 
         # Limit results if specified - applied after sorting
-        if args.limit and len(images) > args.limit:
-            images = images[:args.limit]
+        if args.limit:
+            images = images[: args.limit]
 
         # Display results
-        print(f"Found {len(images)} {'filtered ' if args.filter or args.source else ''}images for {args.provider}:")
+        print(
+            f"Found {len(images)} {'filtered ' if args.filter or args.source else ''}images for "
+            f"{args.provider}:"
+        )
         print()
 
         # Format output based on provider
-        if args.provider == 'aws':
+        if args.provider == "aws":
             print(f"{'ID':<20} {'Name':<40} {'Creation Date':<24} {'Source':<6}")
-            print('-' * 90)
+            print("-" * 90)
             for img in images:
-                print(f"{img.get('id', 'N/A'):<20} {img.get('name', 'N/A')[:38]:<40} {img.get('creation_date', 'N/A')[:22]:<24} {img.get('source', 'N/A'):<6}")
+                print(
+                    f"{img.get('id', 'N/A'):<20} {img.get('name', 'N/A')[:38]:<40} "
+                    f"{img.get('creation_date', 'N/A')[:22]:<24} {img.get('source', 'N/A'):<6}"
+                )
+                # TODO Update for --detail
 
-        elif args.provider == 'gcp':
+        elif args.provider == "gcp":
             print(f"{'Family':<35} {'Name':<50} {'Project':<20} {'Source':<6}")
-            print('-' * 114)
+            print("-" * 114)
             for img in images:
-                print(f"{img.get('family', 'N/A')[:33]:<35} {img.get('name', 'N/A')[:48]:<50} {img.get('project', 'N/A')[:18]:<20} {img.get('source', 'N/A'):<6}")
-
-        elif args.provider == 'azure':
-            if any(img.get('source') == 'Azure' for img in images):
+                print(
+                    f"{img.get('family', 'N/A')[:33]:<35} {img.get('name', 'N/A')[:48]:<50} "
+                    f"{img.get('project', 'N/A')[:18]:<20} {img.get('source', 'N/A'):<6}"
+                )
+                if args.detail:
+                    print(f"{img.get('description', 'N/A')}")
+                    print(f"{img.get('self_link', 'N/A')}")
+                    print(
+                        f"ID: {img.get('id', 'N/A'):<24}  CREATION DATE: "
+                        f"{img.get('creation_date', 'N/A')[:32]:<34}  STATUS: "
+                        f"{img.get('status', 'N/A'):<20}"
+                    )
+                    print()
+        elif args.provider == "azure":
+            if any(img.get("source") == "Azure" for img in images):
                 print("MARKETPLACE IMAGES (Reference format: publisher:offer:sku:version)")
                 print(f"{'Publisher':<24} {'Offer':<24} {'SKU':<24} {'Latest Version':<16}")
-                print('-' * 90)
+                print("-" * 90)
                 for img in images:
-                    if img.get('source') == 'Azure':
-                        print(f"{img.get('publisher', 'N/A')[:22]:<24} {img.get('offer', 'N/A')[:22]:<24} {img.get('sku', 'N/A')[:22]:<24} {img.get('version', 'N/A')[:14]:<16}")
-
-            if any(img.get('source') == 'User' for img in images):
-                if any(img.get('source') == 'Azure' for img in images):
+                    if img.get("source") == "Azure":
+                        print(
+                            f"{img.get('publisher', 'N/A')[:22]:<24} "
+                            f"{img.get('offer', 'N/A')[:22]:<24} {img.get('sku', 'N/A')[:22]:<24} "
+                            f"{img.get('version', 'N/A')[:14]:<16}"
+                        )
+                        # TODO Update for --detail
+            if any(img.get("source") == "User" for img in images):
+                if any(img.get("source") == "Azure" for img in images):
                     print("\nCUSTOM IMAGES")
                 print(f"{'Name':<30} {'Resource Group':<30} {'OS Type':<10} {'Location':<16}")
-                print('-' * 90)
+                print("-" * 90)
                 for img in images:
-                    if img.get('source') == 'User':
-                        print(f"{img.get('name', 'N/A')[:28]:<30} {img.get('resource_group', 'N/A')[:28]:<30} {img.get('os_type', 'N/A')[:8]:<10} {img.get('location', 'N/A')[:14]:<16}")
+                    if img.get("source") == "User":
+                        print(
+                            f"{img.get('name', 'N/A')[:28]:<30} "
+                            f"{img.get('resource_group', 'N/A')[:28]:<30} "
+                            f"{img.get('os_type', 'N/A')[:8]:<10} "
+                            f"{img.get('location', 'N/A')[:14]:<16}"
+                        )
+                        # TODO Update for --detail
 
-        print(f"\nTo use a custom image with the 'run' or 'manage_pool' commands, use the --image parameter.")
-        if args.provider == 'aws':
+        print(
+            "\nTo use a custom image with the 'run' or 'manage_pool' commands, use the "
+            "--image parameter."
+        )
+        if args.provider == "aws":
             print("For AWS, specify the AMI ID: --image ami-12345678")
-        elif args.provider == 'gcp':
-            print("For GCP, specify the image family or full URI: --image ubuntu-2404-lts or --image https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-2404-lts-amd64-v20240416")
-        elif args.provider == 'azure':
-            print("For Azure, specify as publisher:offer:sku:version or full resource ID: --image Canonical:UbuntuServer:24_04-lts:latest")
+        elif args.provider == "gcp":
+            print(
+                "For GCP, specify the image family or full URI: --image ubuntu-2404-lts or "
+                "--image https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/"
+                "global/images/ubuntu-2404-lts-amd64-v20240416"
+            )
+        elif args.provider == "azure":
+            print(
+                "For Azure, specify as publisher:offer:sku:version or full resource ID: "
+                "--image Canonical:UbuntuServer:24_04-lts:latest"
+            )
 
     except Exception as e:
         logger.error(f"Error listing images: {e}", exc_info=True)
         sys.exit(1)
 
 
-async def list_instances_cmd(args: argparse.Namespace) -> None:
+async def list_instances_cmd(args: argparse.Namespace, config: Config) -> None:
     """
     List available compute instance types for the specified provider with pricing information.
 
-    Args:
+    Parameters:
         args: Command-line arguments
     """
     try:
-        # Load configuration
-        config = load_config(args.config)
-
         # Create instance manager for the provider
-        instance_manager = await create_instance_manager(
-            provider=args.provider,
-            config=config
-        )
+        instance_manager = await create_instance_manager(provider=args.provider, config=config)
 
         # Get available instance types
         instances = await instance_manager.list_available_instance_types()
@@ -717,39 +982,35 @@ async def list_instances_cmd(args: argparse.Namespace) -> None:
             print(f"No instance types found for provider {args.provider}")
             return
 
-        # Apply source filter if specified
-        if args.size_filter:
-            # Filter instance types by minimum size requirements
-            size_parts = args.size_filter.split(':')
-            if len(size_parts) == 3:
-                try:
-                    min_cpu = int(size_parts[0])
-                    min_memory = float(size_parts[1])
-                    min_disk = int(size_parts[2])
-
-                    # Filter based on minimum requirements
-                    instances = [
-                        inst for inst in instances
-                        if inst['vcpu'] >= min_cpu
-                        and inst['memory_gb'] >= min_memory
-                        and inst.get('storage_gb', 0) >= min_disk
-                    ]
-                except ValueError:
-                    print(f"Invalid size filter format: {args.size_filter}. Should be cpu:memory_gb:disk_gb")
-            else:
-                print(f"Invalid size filter format: {args.size_filter}. Should be cpu:memory_gb:disk_gb")
+        # Filter based on minimum requirements
+        instances = [
+            inst
+            for inst in instances
+            if (args.min_cpu is None or inst["vcpu"] >= args.min_cpu)
+            and (args.max_cpu is None or inst["vcpu"] <= args.max_cpu)
+            and (args.min_memory is None or inst["memory_gb"] >= args.min_memory)
+            and (args.max_memory is None or inst["memory_gb"] <= args.max_memory)
+            and (
+                args.min_memory_ratio is None
+                or inst["memory_gb"] / inst["vcpu"] >= args.min_memory_ratio
+            )
+            and (
+                args.max_memory_ratio is None
+                or inst["memory_gb"] / inst["vcpu"] <= args.max_memory_ratio
+            )
+        ]
 
         # Apply instance type filter if specified
         if args.instance_types:
             new_instance_types = []
             for str1 in args.instance_types:
-                for str2 in str1.split(','):
-                    for str3 in str2.split(' '):
+                for str2 in str1.split(","):
+                    for str3 in str2.split(" "):
                         if str3.strip():
                             new_instance_types.append(str3.strip())
             filtered_instances = []
             for instance in instances:
-                instance_name = instance['name']
+                instance_name = instance["name"]
                 # Check if instance matches any prefix or exact name
                 for pattern in new_instance_types:
                     if instance_name.startswith(pattern):
@@ -760,11 +1021,14 @@ async def list_instances_cmd(args: argparse.Namespace) -> None:
         # Apply text filter if specified
         if args.filter:
             filter_text = args.filter.lower()
-            instances = [
-                inst for inst in instances
-                if any(str(value).lower().find(filter_text) >= 0
-                      for key, value in inst.items() if isinstance(value, (str, int, float)))
-            ]
+            filtered_instances = []
+            for instance in instances:
+                # Check if any field contains the filter string
+                for key, value in instance.items():
+                    if isinstance(value, (str, int, float)) and filter_text in str(value).lower():
+                        filtered_instances.append(instance)
+                        break
+            instances = filtered_instances
 
         # Try to get pricing information where available
         pricing_data = {}
@@ -773,221 +1037,447 @@ async def list_instances_cmd(args: argparse.Namespace) -> None:
             provider_config = config.get_provider(args.provider)
 
             # For AWS and Azure, we need to set region explicitly for pricing
-            if args.provider == 'aws' and 'region' not in provider_config:
-                print("Note: Pricing information requires a region. Using default us-west-2 for pricing data.")
-                provider_config['region'] = 'us-west-2'
-            elif args.provider == 'azure' and 'location' not in provider_config:
-                print("Note: Pricing information requires a location. Using default eastus for pricing data.")
-                provider_config['location'] = 'eastus'
+            if args.provider == "aws" and "region" not in provider_config:
+                print(
+                    "Note: Pricing information requires a region. Using default us-west-2 for "
+                    "pricing data."
+                )
+                provider_config["region"] = "us-west-2"  # TODO Default region
+            elif args.provider == "azure" and "location" not in provider_config:
+                print(
+                    "Note: Pricing information requires a location. Using default eastus for "
+                    "pricing data."
+                )
+                provider_config["location"] = "eastus"  # TODO Default region
 
             # Get pricing data for all eligible instance types
-            if hasattr(instance_manager, 'get_instance_pricing'):
-                # If the provider has a pricing method, use it
-                for instance in instances:
-                    try:
-                        price = await instance_manager.get_instance_pricing(instance['name'], args.use_spot)
-                        pricing_data[instance['name']] = price
-                    except Exception as e:
-                        logger.debug(f"Could not get pricing for {instance['name']}: {e}")
+            for instance in instances:
+                try:
+                    price = await instance_manager.get_instance_pricing(
+                        instance["name"], args.use_spot
+                    )
+                    if price is not None:
+                        pricing_data[instance["name"]] = price
+                except Exception as e:
+                    logger.warning(f"Could not get pricing for {instance['name']}: {e}")
         except Exception as e:
             logger.warning(f"Could not retrieve pricing information: {e}")
 
         # Add price data to instances for sorting
         for instance in instances:
-            if instance['name'] in pricing_data:
-                instance['price'] = pricing_data[instance['name']]
+            if instance["name"] in pricing_data:
+                cpu_price, ram_price = pricing_data[instance["name"]]
+                instance["cpu_price"] = cpu_price
+                instance["ram_price"] = ram_price
+                instance["total_price"] = (
+                    cpu_price * instance["vcpu"] + ram_price * instance["memory_gb"]
+                )
             else:
-                instance['price'] = float('inf')  # Use infinity for sorting unknown prices to the end
+                instance["cpu_price"] = math.inf
+                instance["ram_price"] = math.inf
+                instance["total_price"] = math.inf
 
         # Apply custom sorting if specified
         if args.sort_by:
             # Define field mapping for case-insensitive and prefix matching
             field_mapping = {
-                'type': 'name',
-                't': 'name',
-                'name': 'name',
-                'vcpu': 'vcpu',
-                'v': 'vcpu',
-                'cpu': 'vcpu',
-                'c': 'vcpu',
-                'memory': 'memory_gb',
-                'mem': 'memory_gb',
-                'm': 'memory_gb',
-                'price': 'price',
-                'p': 'price',
-                'cost': 'price'
+                "type": "name",
+                "t": "name",
+                "name": "name",
+                "vcpu": "vcpu",
+                "v": "vcpu",
+                "cpu": "vcpu",
+                "c": "vcpu",
+                "memory": "memory_gb",
+                "mem": "memory_gb",
+                "m": "memory_gb",
+                "ram": "memory_gb",
+                "cpu_price": "cpu_price",
+                "cp": "cpu_price",
+                "mem_price": "ram_price",
+                "mp": "ram_price",
+                "total_price": "total_price",
+                "p": "total_price",
+                "tp": "total_price",
+                "cost": "total_price",
             }
 
             # Parse the sort fields
-            sort_fields = args.sort_by.split(',')
+            sort_fields = args.sort_by.split(",")
 
-            # Apply sorting if we have valid fields
             if sort_fields:
-                try:
-                    # Use the refactored build_sort_key function
-                    instances.sort(key=lambda x: build_sort_key(x, sort_fields, field_mapping))
-                except Exception as e:
-                    logger.warning(f"Error during sorting: {e}, using default sort")
-                    # Fall back to default sort
-                    instances.sort(key=lambda x: (x['vcpu'], x['memory_gb']))
+                for sort_field in sort_fields[::-1]:
+                    if sort_field.startswith("-"):
+                        descending = True
+                        sort_field = sort_field[1:]
+                    else:
+                        descending = False
+                    field_name = field_mapping.get(sort_field)
+                    if field_name is None:
+                        logger.warning(f"Invalid sort field: {sort_field}")
+                        continue
+                    instances.sort(key=lambda x: x[field_name], reverse=descending)
             else:
                 # Default sort if no fields specified
-                instances.sort(key=lambda x: (x['vcpu'], x['memory_gb']))
+                instances.sort(key=lambda x: (x["vcpu"], x["memory_gb"]))
         else:
             # Default sort by vCPU, then memory if no sort-by specified
-            instances.sort(key=lambda x: (x['vcpu'], x['memory_gb']))
+            instances.sort(key=lambda x: (x["vcpu"], x["memory_gb"]))
 
         # Limit results if specified - applied after sorting
         if args.limit and len(instances) > args.limit:
-            instances = instances[:args.limit]
+            instances = instances[: args.limit]
 
         # Display results with pricing if available
-        print(f"Found {len(instances)} {'filtered ' if args.filter or args.instance_types or args.size_filter else ''}instance types for {args.provider}:")
+        print(
+            f"Found {len(instances)} {'filtered ' if args.filter or args.instance_types or
+                                                     args.size_filter else ''}"
+            f"instance types for {args.provider}:"
+        )
         print()
 
         has_pricing = bool(pricing_data)
 
         # Format output based on provider
-        if args.provider == 'aws':
-            print(f"{'Instance Type':<24} {'vCPU':>6} {'Memory (GB)':>12} {'Storage (GB)':>12} {'Architecture':>12} {'Price/Hour':>17}")
-            print('-' * 80)
+        if args.provider == "aws":
+            print(
+                f"{'Instance Type':<24} {'vCPU':>6} {'Memory (GB)':>12} {'Storage (GB)':>12} "
+                f"{'Architecture':>12} {'Price/vCPU/Hour':>17}"
+            )
+            print("-" * 80)
             for inst in instances:
                 price_str = "N/A"
-                if inst['name'] in pricing_data:
+                if inst["name"] in pricing_data:
                     price_str = f"${pricing_data[inst['name']]:.4f}"
-                print(f"{inst['name']:<24} {inst['vcpu']:>6} {inst['memory_gb']:>12.1f} {inst.get('storage_gb', 0):>12} {inst.get('architecture', 'x86_64'):>12} {price_str:>17}")
+                print(
+                    f"{inst['name']:<24} {inst['vcpu']:>6} {inst['memory_gb']:>12.1f} "
+                    f"{inst.get('storage_gb', 0):>12} {inst.get('architecture', 'x86_64'):>12} "
+                    f"{price_str:>17}"
+                )
 
-        elif args.provider == 'gcp':
-            print(f"{'Machine Type':<24} {'vCPU':>6} {'Memory (GB)':>12} {'Price/Hour':>17}")
-            print('-' * 60)
+        elif args.provider == "gcp":
+            print(
+                f"{'Machine Type':<24} {'vCPU':>4} {'Mem (GB)':>9} {'$/vCPU/Hr':>10} "
+                f"{'$/GB/Hr':>8} {'Total $/Hr':>11}"
+            )
+            print("-" * 90)
             for inst in instances:
-                price_str = "N/A"
-                if inst['name'] in pricing_data:
-                    price_str = f"${pricing_data[inst['name']]:.4f}"
-                print(f"{inst['name']:<24} {inst['vcpu']:>6} {inst['memory_gb']:>12.1f} {price_str:>17}")
+                if math.isinf(inst["cpu_price"]):
+                    cpu_price_str = "N/A"
+                else:
+                    cpu_price_str = f"${inst['cpu_price']:.4f}"
+                if math.isinf(inst["ram_price"]):
+                    ram_price_str = "N/A"
+                else:
+                    ram_price_str = f"${inst['ram_price']:.4f}"
+                if math.isinf(inst["total_price"]):
+                    total_price_str = "N/A"
+                else:
+                    total_price_str = f"${inst['total_price']:.4f}"
+                print(
+                    f"{inst['name']:<24} {inst['vcpu']:>4} {inst['memory_gb']:>9.1f} "
+                    f"{cpu_price_str:>10} {ram_price_str:>8} {total_price_str:>11}"
+                )
 
-        elif args.provider == 'azure':
-            print(f"{'VM Size':<24} {'vCPU':>6} {'Memory (GB)':>12} {'Storage (GB)':>12} {'Price/Hour':>17}")
-            print('-' * 70)
+        elif args.provider == "azure":
+            print(
+                f"{'VM Size':<24} {'vCPU':>6} {'Memory (GB)':>12} {'Storage (GB)':>12} "
+                f"{'Price/Hour':>17}"
+            )
+            print("-" * 70)
             for inst in instances:
                 price_str = "N/A"
-                if inst['name'] in pricing_data:
+                if inst["name"] in pricing_data:
                     price_str = f"${pricing_data[inst['name']]:.4f}"
-                print(f"{inst['name']:<24} {inst['vcpu']:>6} {inst['memory_gb']:>12.1f} {inst.get('storage_gb', 0):>12} {price_str:>17}")
+                print(
+                    f"{inst['name']:<24} {inst['vcpu']:>6} {inst['memory_gb']:>12.1f} "
+                    f"{inst.get('storage_gb', 0):>12} {price_str:>17}"
+                )
 
         # Show no pricing data info if we couldn't get pricing
         if not has_pricing:
-            print("\nNote: To show pricing information, configure credentials with pricing API access.")
+            print(
+                "\nNote: To show pricing information, configure credentials with pricing "
+                "API access."
+            )
             print("      Pricing varies by region and can change over time.")
         elif args.use_spot:
-            print("\nNote: Showing spot/preemptible instance pricing which is variable and subject to change.")
+            print(
+                "\nNote: Showing spot/preemptible instance pricing which is variable and "
+                "subject to change."
+            )
             print("      These instances can be terminated by the cloud provider at any time.")
         else:
-            print("\nNote: On-demand pricing shown. Use --use-spot to see spot/preemptible pricing.")
+            print(
+                "\nNote: On-demand pricing shown. Use --use-spot to see spot/preemptible pricing."
+            )
 
-        if args.provider == 'aws':
-            print("\nTo filter instance types with the 'run' or 'manage_pool' commands, use the --instance-types parameter:")
+        if args.provider == "aws":
+            print(
+                "\nTo filter instance types with the 'run' or 'manage_pool' commands, use the "
+                "--instance-types parameter:"
+            )
             print("  --instance-types t3 m5 (will include all t3.* and m5.* instances)")
-        elif args.provider == 'gcp':
-            print("\nTo filter instance types with the 'run' or 'manage_pool' commands, use the --instance-types parameter:")
-            print("  --instance-types n1 n2 e2 (will include all n1-*, n2-* and e2-* machine types)")
-        elif args.provider == 'azure':
-            print("\nTo filter instance types with the 'run' or 'manage_pool' commands, use the --instance-types parameter:")
-            print("  --instance-types Standard_B Standard_D (will include all Standard_B* and Standard_D* VM sizes)")
+        elif args.provider == "gcp":
+            print(
+                "\nTo filter instance types with the 'run' or 'manage_pool' commands, use the "
+                "--instance-types parameter:"
+            )
+            print(
+                "  --instance-types n1 n2 e2 (will include all n1-*, n2-* and e2-* machine types)"
+            )
+        elif args.provider == "azure":
+            print(
+                "\nTo filter instance types with the 'run' or 'manage_pool' commands, use the "
+                "--instance-types parameter:"
+            )
+            print(
+                "  --instance-types Standard_B Standard_D (will include all Standard_B* and "
+                "Standard_D* VM sizes)"
+            )
 
     except Exception as e:
         logger.error(f"Error listing instance types: {e}", exc_info=True)
         sys.exit(1)
 
 
+# Helper functions for argument parsing
+
+
+def add_common_args(parser: argparse.ArgumentParser, include_queue_name: bool = True) -> None:
+    """Add common arguments to all command parsers."""
+    parser.add_argument(
+        "--config", default="cloud_run_config.yaml", help="Path to configuration file"
+    )
+    parser.add_argument("--provider", choices=["aws", "gcp", "azure"], help="Cloud provider")
+    if include_queue_name:
+        parser.add_argument("--queue-name", help="Name of the task queue")
+    parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose output")
+
+
+def add_tasks_args(parser: argparse.ArgumentParser) -> None:
+    """Add task-loading specific arguments."""
+    parser.add_argument("--tasks", required=True, help="Path to tasks file (JSON or YAML)")
+
+
+def add_instance_pool_args(parser: argparse.ArgumentParser) -> None:
+    """Add instance pool management specific arguments."""
+    parser.add_argument("--job-id", help="Unique job ID (generated if not provided)")
+    parser.add_argument("--max-instances", type=int, default=5, help="Maximum number of instances")
+    parser.add_argument("--min-instances", type=int, default=0, help="Minimum number of instances")
+    parser.add_argument("--cpu", type=int, help="Minimum CPU cores per instance (overrides config)")
+    parser.add_argument(
+        "--memory", type=float, help="Minimum memory (GB) per instance (overrides config)"
+    )
+    parser.add_argument(
+        "--disk", type=int, help="Minimum disk space (GB) per instance (overrides config)"
+    )
+    parser.add_argument("--image", help="Custom VM image to use (overrides config)")
+    parser.add_argument(
+        "--startup-script-file", help="Path to custom startup script file (overrides config)"
+    )
+    parser.add_argument(
+        "--tasks-per-instance", type=int, default=10, help="Number of tasks per instance"
+    )
+    parser.add_argument(
+        "--use-spot",
+        action="store_true",
+        help="Use spot/preemptible instances (cheaper but can be terminated)",
+    )
+    parser.add_argument(
+        "--region", help="Specific region to launch instances in (defaults to cheapest region)"
+    )
+    parser.add_argument(
+        "--instance-types",
+        nargs="+",
+        help='List of instance type patterns to use (e.g., "t3" for all t3 instances, "t3.micro" '
+        "for exact match)",
+    )
+
+
 def main():
     """Main entry point for the CLI."""
-    parser = argparse.ArgumentParser(description='Multi-Cloud Task Processing System')
-    subparsers = parser.add_subparsers(dest='command', help='Command to run')
+    parser = argparse.ArgumentParser(description="Multi-Cloud Task Processing System")
+    subparsers = parser.add_subparsers(dest="command", help="Command to run")
     subparsers.required = True
 
+    # Load tasks command
+    load_tasks_parser = subparsers.add_parser(
+        "load_tasks", help="Load tasks into a queue without starting instances"
+    )
+    add_common_args(load_tasks_parser)
+    add_tasks_args(load_tasks_parser)
+    load_tasks_parser.set_defaults(func=load_tasks_cmd)
+
+    # Show queue depth command
+    show_queue_depth_parser = subparsers.add_parser(
+        "show_queue_depth",
+        help="Show the current depth of a task queue; use --verbose to show sample message "
+        "contents",
+    )
+    add_common_args(show_queue_depth_parser)
+    show_queue_depth_parser.add_argument(
+        "--detail", action="store_true", help="Attempt to show a sample message"
+    )
+    show_queue_depth_parser.set_defaults(func=show_queue_depth_cmd)
+
+    # Command: empty_queue
+    empty_queue_parser = subparsers.add_parser(
+        "empty_queue", help="Empty a task queue by removing all messages"
+    )
+    add_common_args(empty_queue_parser)
+    empty_queue_parser.add_argument(
+        "--force", "-f", action="store_true", help="Empty the queue without confirmation prompt"
+    )
+    empty_queue_parser.set_defaults(func=empty_queue_cmd)
+
     # Run command (combines load_tasks and manage_pool)
-    run_parser = subparsers.add_parser('run', help='Run a job (load tasks and manage instance pool)')
+    run_parser = subparsers.add_parser(
+        "run", help="Run a job (load tasks and manage instance pool)"
+    )
     add_common_args(run_parser)
     add_tasks_args(run_parser)
     add_instance_pool_args(run_parser)
     run_parser.set_defaults(func=run_job)
 
-    # Load tasks command
-    load_tasks_parser = subparsers.add_parser('load_tasks', help='Load tasks into a queue without starting instances')
-    add_common_args(load_tasks_parser)
-    add_tasks_args(load_tasks_parser)
-    load_tasks_parser.set_defaults(func=load_tasks_cmd)
-
     # Manage pool command
-    manage_pool_parser = subparsers.add_parser('manage_pool', help='Manage an instance pool for processing tasks')
+    manage_pool_parser = subparsers.add_parser(
+        "manage_pool", help="Manage an instance pool for processing tasks"
+    )
     add_common_args(manage_pool_parser)
     add_instance_pool_args(manage_pool_parser)
     manage_pool_parser.set_defaults(func=manage_pool_cmd)
 
     # Status command
-    status_parser = subparsers.add_parser('status', help='Check job status')
+    status_parser = subparsers.add_parser("status", help="Check job status")
     add_common_args(status_parser)
-    status_parser.add_argument('--job-id', required=True, help='Job ID to check')
-    status_parser.add_argument('--region', help='Specific region to look for instances in')
+    status_parser.add_argument("--job-id", required=True, help="Job ID to check")
+    status_parser.add_argument("--region", help="Specific region to look for instances in")
     status_parser.set_defaults(func=status_job)
 
     # Stop command
-    stop_parser = subparsers.add_parser('stop', help='Stop a running job')
+    stop_parser = subparsers.add_parser("stop", help="Stop a running job")
     add_common_args(stop_parser)
-    stop_parser.add_argument('--job-id', required=True, help='Job ID to stop')
-    stop_parser.add_argument('--purge-queue', action='store_true', help='Purge the queue after stopping')
+    stop_parser.add_argument("--job-id", required=True, help="Job ID to stop")
+    stop_parser.add_argument(
+        "--purge-queue", action="store_true", help="Purge the queue after stopping"
+    )
     stop_parser.set_defaults(func=stop_job)
 
+    # List running instances command
+    list_running_instances_parser = subparsers.add_parser(
+        "list_running_instances", help="List currently running instances for the specified provider"
+    )
+    add_common_args(list_running_instances_parser, include_queue_name=False)
+    list_running_instances_parser.add_argument("--job-id", help="Filter instances by job ID")
+    list_running_instances_parser.add_argument("--region", help="Filter instances by region")
+    list_running_instances_parser.set_defaults(func=list_running_instances_cmd)
+
     # List images command
-    list_images_parser = subparsers.add_parser('list_images', help='List available VM images for the specified provider')
-    # Use common args helper but we'll need to override queue-name since we don't need it
-    add_common_args(list_images_parser)
-    # Override queue-name to make it optional since we don't need it for this command
-    for action in list_images_parser._actions:
-        if action.dest == 'queue_name':
-            action.required = False
-            action.help = 'Name of the task queue (not used for this command)'
+    list_images_parser = subparsers.add_parser(
+        "list_available_images", help="List available VM images for the specified provider"
+    )
+    add_common_args(list_images_parser, include_queue_name=False)
     # Additional filtering options
-    list_images_parser.add_argument('--source', choices=['aws', 'gcp', 'azure', 'user'], help='Filter by image source (standard cloud images or user-created)')
-    list_images_parser.add_argument('--filter', help='Filter images containing this text in any field')
-    list_images_parser.add_argument('--limit', type=int, help='Limit the number of images displayed')
-    list_images_parser.add_argument('--sort-by',
-                                     help='Sort results by comma-separated fields (e.g., "family,name" or "-source,project"). '
-                                          'Available fields: family, name, project, source. '
-                                          'Prefix with "-" for descending order. '
-                                          'Partial field names like "fam" for "family" or "proj" for "project" are supported.')
+    list_images_parser.add_argument(
+        "--source",
+        choices=["aws", "gcp", "azure", "user"],
+        help="Filter by image source (standard cloud images or user-created)",
+    )
+    list_images_parser.add_argument(
+        "--filter", help="Filter images containing this text in any field"
+    )
+    list_images_parser.add_argument(
+        "--limit", type=int, help="Limit the number of images displayed"
+    )
+    list_images_parser.add_argument(
+        "--sort-by",
+        help='Sort results by comma-separated fields (e.g., "family,name" or "-source,project"). '
+        "Available fields: family, name, project, source. "
+        'Prefix with "-" for descending order. '
+        'Partial field names like "fam" for "family" or "proj" for "project" are supported.',
+    )
+    # TODO Update --sort-by to be specific to each provider which have different fields
+    list_images_parser.add_argument(
+        "--detail", action="store_true", help="Show detailed information about each image"
+    )
     list_images_parser.set_defaults(func=list_images_cmd)
 
     # List instances command
-    list_instances_parser = subparsers.add_parser('list_instances', help='List available compute instance types for the specified provider with pricing information')
-    add_common_args(list_instances_parser)
-    # Override queue-name to make it optional since we don't need it for this command
-    for action in list_instances_parser._actions:
-        if action.dest == 'queue_name':
-            action.required = False
-            action.help = 'Name of the task queue (not used for this command)'
-    list_instances_parser.add_argument('--size-filter', help='Filter instance types by minimum size requirements (format: cpu:memory_gb:disk_gb)')
-    list_instances_parser.add_argument('--instance-types', nargs='+', help='List of instance type patterns to filter by (e.g., "t3 m5" for AWS)')
-    list_instances_parser.add_argument('--filter', help='Filter instance types containing this text in any field')
-    list_instances_parser.add_argument('--limit', type=int, help='Limit the number of instance types displayed')
-    list_instances_parser.add_argument('--use-spot', action='store_true', help='Show spot/preemptible instance pricing instead of on-demand')
-    list_instances_parser.add_argument('--sort-by',
-                                     help='Sort results by comma-separated fields (e.g., "price,vcpu" or "type,-memory"). '
-                                          'Available fields: type/name, vcpu, memory, price. '
-                                          'Prefix with "-" for descending order. '
-                                          'Partial field names like "mem" for "memory" or "v" for "vcpu" are supported.')
+    list_instances_parser = subparsers.add_parser(
+        "list_available_instances",
+        help="List available compute instance types for the specified provider with pricing "
+        "information",
+    )
+    add_common_args(list_instances_parser, include_queue_name=False)
+    list_instances_parser.add_argument(
+        "--min-cpu", type=int, help="Filter instance types by minimum number of vCPUs"
+    )
+    list_instances_parser.add_argument(
+        "--max-cpu", type=int, help="Filter instance types by maximum number of vCPUs"
+    )
+    list_instances_parser.add_argument(
+        "--min-memory", type=int, help="Filter instance types by minimum amount of memory (GB)"
+    )
+    list_instances_parser.add_argument(
+        "--max-memory", type=int, help="Filter instance types by maximum amount of memory (GB)"
+    )
+    list_instances_parser.add_argument(
+        "--min-memory-ratio", type=int, help="Filter instance types by minimum memory:vCPU ratio"
+    )
+    list_instances_parser.add_argument(
+        "--max-memory-ratio", type=int, help="Filter instance types by maximum memory:vCPU ratio"
+    )
+    list_instances_parser.add_argument(
+        "--instance-types",
+        nargs="+",
+        help='List of instance type patterns to filter by (e.g., "t3 m5" for AWS)',
+    )
+    list_instances_parser.add_argument(
+        "--filter", help="Filter instance types containing this text in any field"
+    )
+    list_instances_parser.add_argument(
+        "--limit", type=int, help="Limit the number of instance types displayed"
+    )
+    list_instances_parser.add_argument(
+        "--use-spot",
+        action="store_true",
+        help="Show spot/preemptible instance pricing instead of on-demand",
+    )
+    list_instances_parser.add_argument(
+        "--sort-by",
+        help='Sort results by comma-separated fields (e.g., "price,vcpu" or "type,-memory"). '
+        "Available fields: type/name, vcpu, memory, cpu_price, mem_price, total_price. "
+        'Prefix with "-" for descending order. '
+        'Partial field names like "mem" for "memory" or "v" for "vcpu" are supported.',
+    )
     list_instances_parser.set_defaults(func=list_instances_cmd)
 
+    # Parse arguments
     args = parser.parse_args()
 
     # Set up logging level based on verbosity
-    if hasattr(args, 'verbose') and args.verbose:
+    if hasattr(args, "verbose") and args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
 
+    # Load configuration
+    logger.info(f"Loading configuration from {args.config}")
+    try:
+        config = load_config(args.config)
+    except ConfigError as e:
+        logger.fatal(f"Configuration error: {e}")
+        sys.exit(1)
+
+    if args.provider is None:
+        args.provider = config.get("provider")
+
+    if args.provider is None:
+        logger.fatal("Provider must be specified")
+        sys.exit(1)
+
     # Run the appropriate command
-    asyncio.run(args.func(args))
+    asyncio.run(args.func(args, config))
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

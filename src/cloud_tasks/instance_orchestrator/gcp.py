@@ -1,13 +1,12 @@
 """
 Google Cloud Compute Engine implementation of the InstanceManager interface.
 """
-import base64
+
 import time
 import asyncio
 import uuid
 import logging
-import traceback
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from google.cloud import compute_v1  # type: ignore
 from google.api_core.exceptions import NotFound  # type: ignore
@@ -43,6 +42,7 @@ class GCPComputeInstanceManager(InstanceManager):
         self.compute_client = None
         self.billing_client = None
         self.billing_compute_skus = None
+        self.instance_pricing_cache = {}
         self.project_id = None
         self.region = None
         self.zone = None
@@ -254,6 +254,8 @@ class GCPComputeInstanceManager(InstanceManager):
             self.region = region_info['region']
             self.zone = region_info['zone']
             logger.info(f"Selected region {self.region}, zone {self.zone} for lowest cost")
+        else:
+            logger.info(f"Using specified region {self.region}, zone {self.zone}")
 
         # Get available machine types
         machine_types = await self.list_available_instance_types()
@@ -422,7 +424,7 @@ class GCPComputeInstanceManager(InstanceManager):
         """
         # Ensure we have a zone
         if not hasattr(self, 'zone') or not self.zone:
-            logger.warning("No zone specified for listing instance types, using us-central1-a as default")
+            logger.debug("No zone specified for listing instance types, using us-central1-a as default")
             self.zone = 'us-central1-a'
             if not self.region:
                 self.region = 'us-central1'
@@ -449,7 +451,7 @@ class GCPComputeInstanceManager(InstanceManager):
 
         return instance_types
 
-    async def get_instance_pricing(self, machine_type: str, use_spot: bool = False) -> float:
+    async def get_instance_pricing(self, machine_type: str, use_spot: bool = False) -> Tuple[float, float] | None:
         """
         Get the hourly price for a specific machine type.
 
@@ -460,6 +462,7 @@ class GCPComputeInstanceManager(InstanceManager):
         Returns:
             Hourly price in USD
         """
+
         logger.debug(f"Getting pricing for machine type: {machine_type} (spot/preemptible: {use_spot})")
 
         try:
@@ -480,52 +483,88 @@ class GCPComputeInstanceManager(InstanceManager):
 
                 if not compute_service:
                     logger.warning("Could not find compute service in billing catalog")
-                    return 0.0
+                    return None
 
                 logger.debug(f"Found compute service: {compute_service.display_name}")
 
                 # Get SKUs for the service
-                sku_request = billing.ListSkusRequest(
-                    parent=compute_service.name
-                )
+                sku_request = billing.ListSkusRequest(parent=compute_service.name)
                 self.billing_compute_skus = list(self.billing_client.list_skus(request=sku_request))
 
             # Extract the machine family from the machine type name
             machine_name_parts = machine_type.split('-')
             machine_family = machine_name_parts[0]
 
+            if (machine_family, use_spot) in self.instance_pricing_cache:
+                return self.instance_pricing_cache[(machine_family, use_spot)]
+
+            core_sku = None
+            ram_sku = None
+            self.instance_pricing_cache[(machine_family, use_spot)] = None
+
             # Find matching SKU for the machine type in this region
             for sku in self.billing_compute_skus:
                 sku_description = sku.description.lower()
-
                 # Check if this SKU matches our machine type and region
-                sku_match = (
-                    machine_family in sku_description
-                    and (
-                        ("core" in sku_description and not use_spot) or
-                        ("preemptible" in sku_description and use_spot)
-                    )
-                    and self.region in sku.service_regions
-                )
+                if (f"{machine_family} " in sku_description
+                    and (("preemptible" not in sku_description and not use_spot) or
+                         ("preemptible" in sku_description and use_spot))
+                    and "custom" not in sku_description
+                    and self.region in sku.service_regions):
+                    if "instance core" in sku_description:
+                        core_sku = sku
+                    elif "instance ram" in sku_description:
+                        ram_sku = sku
 
-                if sku_match:
-                    logger.debug(f"Matching SKU found: {sku.description} in region {self.region}")
+            if core_sku is None:
+                logger.warning(f"No core SKU found for {machine_family} in region {self.region}")
+                return None
+            if ram_sku is None:
+                logger.warning(f"No ram SKU found for {machine_family} in region {self.region}")
+                return None
 
-                    # Extract price info
-                    for pricing_info in sku.pricing_info:
-                        for tier in pricing_info.pricing_expression.tiered_rates:
-                            unit_price = tier.unit_price
-                            # Convert to USD dollars
-                            price = unit_price.units + (unit_price.nanos / 1e9)
-                            logger.debug(f"  Price: ${price:.6f} per {pricing_info.pricing_expression.usage_unit}")
-                            return price
+            logger.debug(f'Matching core SKU found: "{core_sku.description}" in region {self.region}')
+            logger.debug(f'Matching  ram SKU found: "{ram_sku.description}" in region {self.region}')
 
-            logger.warning(f"No pricing information found for {machine_type} in region {self.region}")
-            return 0.0
+            # Extract price info - we do it this weird way because the pricing info isn't subscriptable
+            core_pricing_info = list(core_sku.pricing_info)
+            if len(core_pricing_info) == 0:
+                logger.warning(f'No pricing info found for core SKU "{core_sku.description}"')
+                return None
+            core_pricing_tier = list(core_pricing_info[0].pricing_expression.tiered_rates)
+            if len(core_pricing_tier) == 0:
+                logger.warning(f'No tiered rates found for core SKU "{core_sku.description}"')
+                return None
+            if len(core_pricing_tier) > 1:
+                logger.warning(f'Multiple tiered rates found for core SKU "{core_sku.description}"')
+                return None
+            ram_pricing_info = list(ram_sku.pricing_info)
+            if len(ram_pricing_info) == 0:
+                logger.warning(f'No pricing info found for ram SKU "{ram_sku.description}"')
+                return None
+            ram_pricing_tier = list(ram_pricing_info[0].pricing_expression.tiered_rates)
+            if len(ram_pricing_tier) == 0:
+                logger.warning(f'No tiered rates found for ram SKU "{ram_sku.description}"')
+                return None
+            if len(ram_pricing_tier) > 1:
+                logger.warning(f'Multiple tiered rates found for ram SKU "{ram_sku.description}"')
+                return None
+
+            core_pricing_info = core_pricing_tier[0]
+            ram_pricing_info = ram_pricing_tier[0]
+
+            core_price = core_pricing_info.unit_price.nanos / 1e9
+            ram_price = ram_pricing_info.unit_price.nanos / 1e9
+
+            logger.debug(f'Core price: ${core_price:.6f}/vCPU/hour')
+            logger.debug(f'Ram price:  ${ram_price:.6f}/GB/hour')
+
+            self.instance_pricing_cache[(machine_family, use_spot)] = (core_price, ram_price)
+            return core_price, ram_price
 
         except Exception as e:
             logger.warning(f"Error getting pricing for {machine_type}: {e}")
-            return 0.0
+            return None
 
     async def start_instance(
         self, instance_type: str, startup_script: str, labels: Dict[str, str],
@@ -659,15 +698,19 @@ class GCPComputeInstanceManager(InstanceManager):
             logger.error(f"Error terminating instance {instance_id} in project {self.project_id}: {e}")
             raise
 
-    async def list_running_instances(self, tag_filter: Optional[Dict[str, str]] = None) -> List[Dict[str, Any]]:
+    async def list_running_instances(self, tag_filter: Optional[Dict[str, str]] = None, region: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         List currently running Compute Engine instances, optionally filtered by labels.
 
         Args:
             tag_filter: Dictionary of labels to filter instances
+            region: Optional region to filter instances by
 
         Returns:
             List of instance dictionaries with id, type, state, and creation_time
+
+        Raises:
+            ValueError: If no zone or region is specified and listing all zones fails
         """
         # Build filter string if tags are provided
         filter_str = ''
@@ -677,15 +720,98 @@ class GCPComputeInstanceManager(InstanceManager):
                 filters.append(f"labels.{key}={value}")
             filter_str = ' AND '.join(filters)
 
-        # List instances
-        request = compute_v1.ListInstancesRequest(
-            project=self.project_id,
-            zone=self.zone,
-            filter=filter_str
-        )
+        instances = []
 
-        instances_list = self.compute_client.list(request=request)
+        # If zone is specified, only query that zone
+        if self.zone:
+            # List instances in the specified zone
+            logger.info(f"Listing instances in zone {self.zone}")
+            request = compute_v1.ListInstancesRequest(
+                project=self.project_id,
+                zone=self.zone,
+                filter=filter_str
+            )
 
+            try:
+                instances_list = self.compute_client.list(request=request)
+                instances.extend(self._process_instances(instances_list))
+            except Exception as e:
+                logger.error(f"Error listing instances in zone {self.zone}: {e}")
+                raise
+        else:
+            # Use region parameter if provided
+            target_region = region or self.region
+
+            if target_region:
+                logger.info(f"Listing instances in all zones of region {target_region}")
+            else:
+                logger.warning("No zone or region specified. Attempting to list instances across all regions.")
+                logger.warning("This may fail if you don't have permissions or if the project has many zones.")
+                logger.warning("Consider specifying --region or adding a zone in your config file.")
+
+            # List all zones in the project
+            try:
+                zones_request = compute_v1.ListZonesRequest(project=self.project_id)
+                zones_client = compute_v1.ZonesClient(credentials=self.credentials)
+                zones = zones_client.list(request=zones_request)
+
+                # Filter zones by region if specified
+                filtered_zones = []
+                for zone in zones:
+                    # Extract region from zone name (e.g., us-central1-a -> us-central1)
+                    zone_region = '-'.join(zone.name.split('-')[:-1])
+
+                    # Add to filtered list if in target region or no region filter
+                    if not target_region or zone_region == target_region:
+                        filtered_zones.append(zone)
+
+                if target_region and not filtered_zones:
+                    logger.warning(f"No zones found in region {target_region}")
+                    return []  # Return empty list if no zones match the region filter
+
+                if not filtered_zones:
+                    logger.error("No zones found in the project")
+                    raise ValueError("No zones found in the project. Please check your permissions or specify a region/zone.")
+
+                # For each zone, list instances
+                for zone in filtered_zones:
+                    logger.debug(f"Listing instances in zone {zone.name}")
+                    request = compute_v1.ListInstancesRequest(
+                        project=self.project_id,
+                        zone=zone.name,
+                        filter=filter_str
+                    )
+
+                    try:
+                        instances_list = self.compute_client.list(request=request)
+                        instances.extend(self._process_instances(instances_list))
+                    except Exception as e:
+                        logger.warning(f"Error listing instances in zone {zone.name}: {e}")
+                        # Continue to next zone instead of failing
+                        continue
+            except Exception as e:
+                error_msg = f"Error listing zones in project {self.project_id}: {e}"
+                if "permission" in str(e).lower():
+                    error_msg += "\nYou may not have sufficient permissions to list zones."
+
+                if not target_region:
+                    error_msg += "\nPlease specify a region using the --region parameter or add a zone in your config file."
+
+                logger.error(error_msg)
+                raise ValueError(error_msg)
+
+        return instances
+
+    def _process_instances(self, instances_list) -> List[Dict[str, Any]]:
+        """
+        Process the list of GCP instances into a standardized format.
+
+        Args:
+            instances_list: List of GCP instance objects
+
+        Returns:
+            List of instance dictionaries with standardized fields
+        """
         instances = []
         for instance in instances_list:
             # Extract machine type from URL (e.g., ".../machineTypes/n1-standard-1")
@@ -696,6 +822,7 @@ class GCPComputeInstanceManager(InstanceManager):
                 'type': machine_type,
                 'state': self.STATUS_MAP.get(instance.status, 'unknown'),
                 'creation_time': instance.creation_timestamp,
+                'zone': instance.zone.split('/')[-1]  # Extract zone name from URL
             }
 
             # Add IP addresses if available

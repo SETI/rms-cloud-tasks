@@ -570,6 +570,8 @@ class AWSEC2InstanceManager(InstanceManager):
             self.ec2 = boto3.resource('ec2', region_name=self.region, **self.credentials)
             self.ec2_client = boto3.client('ec2', region_name=self.region, **self.credentials)
             logger.info(f"Selected region {self.region} for lowest cost")
+        else:
+            logger.info(f"Using specified region {self.region}")
 
         # Get available instance types
         instance_types = await self.list_available_instance_types()
@@ -799,7 +801,7 @@ class AWSEC2InstanceManager(InstanceManager):
                 'creation_date': image.get('CreationDate', 'Unknown'),
                 'source': 'AWS' if image.get('OwnerId') == 'amazon' else 'User',
                 'platform': image.get('Platform', 'Linux/UNIX'),
-                'state': image.get('State', 'unknown'),
+                'status': image.get('State', 'unknown'),  # status for consistency with other providers
             }
             formatted_images.append(image_info)
 

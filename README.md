@@ -75,7 +75,7 @@ await orchestrator.start()
 
 ```bash
 # Run a job on AWS using spot instances in a specific region
-python -m cloud_tasks run-job \
+python -m src.cloud_tasks.cli run \
   --provider aws \
   --job-id my-processing-job \
   --input-file tasks.json \
@@ -86,12 +86,10 @@ python -m cloud_tasks run-job \
   --min-instances 1 \
   --max-instances 10 \
   --use-spot \
-  --region us-west-2 \
-  --provider-config aws_config.yaml \
-  --worker-repo https://github.com/user/worker-repo.git
+  --region us-west-2
 
 # Run a job on AWS using spot instances with automatic region selection (cheapest)
-python -m cloud_tasks run-job \
+python -m src.cloud_tasks.cli run \
   --provider aws \
   --job-id my-processing-job \
   --input-file tasks.json \
@@ -101,18 +99,16 @@ python -m cloud_tasks run-job \
   --disk 20 \
   --min-instances 1 \
   --max-instances 10 \
-  --use-spot \
-  --provider-config aws_config.yaml \
-  --worker-repo https://github.com/user/worker-repo.git
+  --use-spot
 
 # List available VM images for a provider
-python -m cloud_tasks list_images \
+python -m src.cloud_tasks.cli list_images \
   --config config.yaml \
   --provider aws \
   --sort-by "name,source"
 
 # List available instance types with pricing information
-python -m cloud_tasks list_instances \
+python -m src.cloud_tasks.cli list_instances \
   --config config.yaml \
   --provider aws \
   --instance-types "t3 m5" \
@@ -120,7 +116,82 @@ python -m cloud_tasks list_instances \
   --limit 10 \
   --use-spot \
   --sort-by "price,vcpu"
+
+# List currently running instances for a provider
+python -m src.cloud_tasks.cli list_running_instances \
+  --config config.yaml \
+  --provider aws \
+  --job-id optional-job-id-filter
+
+# Show the current depth of a queue
+python -m src.cloud_tasks.cli show_queue_depth \
+  --config config.yaml \
+  --provider aws \
+  --queue-name my-task-queue \
+  --verbose  # Optional: peek at the first message in the queue
+
+# Empty a queue by removing all messages
+python -m src.cloud_tasks.cli empty_queue \
+  --config config.yaml \
+  --provider aws \
+  --queue-name my-task-queue
 ```
+
+## Monitoring and Management Commands
+
+The Cloud Tasks CLI provides several commands for monitoring and managing your cloud resources:
+
+### Running Instance Management
+
+The `list_running_instances` command allows you to view all running instances for a provider, optionally filtered by job ID:
+
+```bash
+python -m src.cloud_tasks.cli list_running_instances \
+  --config config.yaml \
+  --provider aws \
+  --job-id my-job-id  # Optional: filter by job ID
+```
+
+This command displays:
+- Instance IDs, types, and states
+- Creation timestamps
+- Associated tags (like job ID and role)
+- Summary information (total instances, running vs. starting)
+- Detailed information in verbose mode (`--verbose`)
+
+### Queue Monitoring
+
+The `show_queue_depth` command displays the current depth of a task queue:
+
+```bash
+python -m src.cloud_tasks.cli show_queue_depth \
+  --config config.yaml \
+  --provider aws \
+  --queue-name my-task-queue
+```
+
+With the `--verbose` flag, the command will also attempt to peek at the first message in the queue without removing it, displaying its contents.
+
+### Queue Management
+
+The `empty_queue` command allows you to remove all messages from a queue:
+
+```bash
+python -m src.cloud_tasks.cli empty_queue \
+  --config config.yaml \
+  --provider aws \
+  --queue-name my-task-queue \
+  --force  # Optional: skip confirmation prompt
+```
+
+This command:
+- Shows the current queue depth before emptying
+- Prompts for confirmation (unless `--force` is used)
+- Purges all messages from the queue
+- Verifies the queue is empty after the operation
+- Provides a warning if messages remain after purging (e.g., in-flight messages)
+
+Use this command with caution as it permanently deletes all messages in the queue.
 
 ## Configuration
 

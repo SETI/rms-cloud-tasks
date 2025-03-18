@@ -227,6 +227,8 @@ class AzureVMInstanceManager(InstanceManager):
             if not self.resource_group_exists():
                 logger.info(f"Creating resource group {self.resource_group} in location {self.location}")
                 self.create_resource_group()
+        else:
+            logger.info(f"Using specified location {self.location}")
 
         # Get available VM sizes
         vm_sizes = await self.list_available_vm_sizes()

@@ -6,6 +6,11 @@ from typing import Any, Dict, Optional, List, Union
 import yaml
 
 
+class ConfigError(Exception):
+    """Exception raised for configuration errors."""
+    pass
+
+
 class AttrDict(dict[str, Any]):
     """Implements a dictionary that allows attribute-style access to its key-value pairs.
 
@@ -110,11 +115,6 @@ class Config(AttrDict):
         return provider_config
 
 
-class ConfigError(Exception):
-    """Exception raised for configuration errors."""
-    pass
-
-
 def load_config(config_file: str) -> Config:
     """
     Load configuration from a YAML file.
@@ -150,16 +150,14 @@ def load_config(config_file: str) -> Config:
                 provider_config = ProviderConfig(provider, provider_data)
 
                 try:
-                    # Validate the provider config
                     provider_config.validate()
                 except ConfigError as e:
-                    # Add context to the error message
                     raise ConfigError(f"Error in {provider} configuration: {str(e)}")
 
-                # Replace with validated ProviderConfig
                 config[provider] = provider_config
 
         return config
+
     except yaml.YAMLError as e:
         raise ConfigError(f"Error parsing configuration file: {e}")
     except Exception as e:
@@ -232,6 +230,7 @@ def get_run_config(config: Config, provider: str, cli_args: Optional[Dict[str, A
         'disk_gb': 10,
         'image': 'ubuntu-2404-lts',
         'startup_script': '',
+        'region': None,
     }
 
     # Override with global run config if present
@@ -265,6 +264,7 @@ def get_run_config(config: Config, provider: str, cli_args: Optional[Dict[str, A
             'image': 'image',
             'startup_script_file': 'startup_script',
             'instance_types': 'instance_types',
+            'region': 'region',
         }
 
         for cli_key, config_key in cli_map.items():
