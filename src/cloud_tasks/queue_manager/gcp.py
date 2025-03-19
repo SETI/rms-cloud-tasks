@@ -8,39 +8,41 @@ import time
 from typing import Any, Dict, List
 
 from google.cloud import pubsub_v1  # type: ignore
+from google.api_core import exceptions as gcp_exceptions
+
+from cloud_tasks.common.config import GCPConfig
 
 from .taskqueue import TaskQueue
-from cloud_tasks.common.config import ProviderConfig
 
 
 class GCPPubSubQueue(TaskQueue):
     """Google Cloud Pub/Sub implementation of the TaskQueue interface."""
 
-    def __init__(self, queue_name: str, config: ProviderConfig) -> None:
+    def __init__(self, gcp_config: GCPConfig) -> None:
         """
         Initialize the Pub/Sub queue with configuration.
 
         Args:
-            queue_name: Base name for topic and subscription
-            config: GCP configuration with project_id and optionally credentials_file
+            config: GCP configuration
         """
-        self._publisher = None
-        self._subscriber = None
-        self._project_id = None
-        self._topic_name = None
-        self._subscription_name = None
-        self._topic_path = None
-        self._subscription_path = None
+        queue_name = gcp_config.queue_name
+        if queue_name is None:
+            raise ValueError("Queue name is required")
+
+        self._queue_name = queue_name
         self._logger = logging.getLogger(__name__)
 
-        self._project_id = config.project_id
-        self._logger.info(f"Initializing GCP Pub/Sub queue with project ID: {self._project_id}")
+        self._project_id = gcp_config.project_id
+        self._logger.info(
+            f"Initializing GCP Pub/Sub queue '{self._queue_name}' with project ID "
+            f"'{self._project_id}'"
+        )
 
-        credentials_file = config.get("credentials_file")
+        credentials_file = gcp_config.credentials_file
 
         # If credentials file provided, use it
         if credentials_file:
-            self._logger.info(f"Using credentials from file: {credentials_file}")
+            self._logger.info(f"Using credentials from '{credentials_file}'")
             self._publisher = pubsub_v1.PublisherClient.from_service_account_file(credentials_file)
             self._subscriber = pubsub_v1.SubscriberClient.from_service_account_file(
                 credentials_file
@@ -67,21 +69,32 @@ class GCPPubSubQueue(TaskQueue):
         # Create topic if it doesn't exist
         try:
             self._publisher.get_topic(request={"topic": self._topic_path})
-            self._logger.info(f"Topic {self._topic_name} already exists")
-        except Exception as e:
-            self._logger.info(f"Topic {self._topic_name} doesn't exist, creating it: {str(e)}")
+            self._logger.info(f"Topic '{self._topic_name}' already exists")
+        except gcp_exceptions.NotFound as e:
+            self._logger.info(f"Topic '{self._topic_name}' doesn't exist, creating it: {str(e)}")
             try:
                 self._publisher.create_topic(request={"name": self._topic_path})
-                self._logger.info(f"Topic {self._topic_name} created successfully")
+                self._logger.info(f"Topic '{self._topic_name}' created successfully")
             except Exception as e:
-                self._logger.error(f"Failed to create topic {self._topic_name}: {str(e)}")
-                raise RuntimeError(f"Failed to create Pub/Sub topic: {str(e)}")
+                self._logger.error(
+                    f"Failed to create topic '{self._topic_name}' for Pub/Sub queue "
+                    f"'{self._queue_name}': {str(e)}",
+                    exc_info=True,
+                )
+                raise
+        except Exception as e:
+            self._logger.error(
+                f"Failed to access topic '{self._topic_name}' for Pub/Sub queue "
+                f"'{self._queue_name}': {str(e)}",
+                exc_info=True,
+            )
+            raise
 
         # Create subscription if it doesn't exist
         try:
             self._subscriber.get_subscription(request={"subscription": self._subscription_path})
             self._logger.info(f"Subscription {self._subscription_name} already exists")
-        except Exception as e:
+        except gcp_exceptions.NotFound as e:
             self._logger.info(
                 f"Subscription {self._subscription_name} doesn't exist, creating it: {str(e)}"
             )
@@ -96,12 +109,21 @@ class GCPPubSubQueue(TaskQueue):
                         "ack_deadline_seconds": 30,  # TODO Default ack deadline in seconds
                     }
                 )
-                self._logger.info(f"Subscription {self._subscription_name} created successfully")
+                self._logger.info(f"Subscription '{self._subscription_name}' created successfully")
             except Exception as e:
                 self._logger.error(
-                    f"Failed to create subscription {self._subscription_name}: {str(e)}"
+                    f"Failed to create subscription '{self._subscription_name}' for Pub/Sub "
+                    f"queue '{self._queue_name}': {str(e)}",
+                    exc_info=True,
                 )
-                raise RuntimeError(f"Failed to create Pub/Sub subscription: {str(e)}")
+                raise
+        except Exception as e:
+            self._logger.error(
+                f"Failed to access subscription '{self._subscription_name}' for Pub/Sub "
+                f"queue '{self._queue_name}': {str(e)}",
+                exc_info=True,
+            )
+            raise
 
     async def send_task(self, task_id: str, task_data: Dict[str, Any]) -> None:
         """
@@ -109,28 +131,34 @@ class GCPPubSubQueue(TaskQueue):
 
         Args:
             task_id: Unique identifier for the task
-            task_data: Task data to be processed
+            task_data: Task data to be sent
         """
         message = {"task_id": task_id, "data": task_data}
 
         # Convert message to JSON string and encode as bytes
         data = json.dumps(message).encode("utf-8")
 
-        # Add task_id as an attribute
         try:
             future = self._publisher.publish(self._topic_path, data=data, task_id=task_id)
 
             # Wait for message to be published with timeout
             message_id = future.result(timeout=30)  # TODO Default timeout in seconds
-            self._logger.debug(f"Published message {message_id} for task {task_id}")
+            self._logger.debug(
+                f"Published message '{message_id}' for task '{task_id}' on queue "
+                f"'{self._queue_name}'"
+            )
         except Exception as e:
-            self._logger.error(f"Failed to publish message for task {task_id}: {str(e)}")
-            raise RuntimeError(f"Failed to publish task to Pub/Sub: {str(e)}")
+            self._logger.error(
+                f"Failed to publish task '{task_id}' to Pub/Sub on queue "
+                f"'{self._queue_name}': {str(e)}",
+                exc_info=True,
+            )
+            raise
 
     async def receive_tasks(
         self,
         max_count: int = 1,
-        visibility_timeout_seconds: int = 30,  # TODO Default visibility timeout in seconds
+        visibility_timeout_seconds: int = 30,
     ) -> List[Dict[str, Any]]:
         """
         Receive tasks from the Pub/Sub subscription.
@@ -140,7 +168,10 @@ class GCPPubSubQueue(TaskQueue):
             visibility_timeout_seconds: Duration in seconds for ack deadline
 
         Returns:
-            List of task dictionaries with task_id, data, and ack_id
+            List of task dictionaries, each containing:
+                - 'task_id' (str): Unique identifier for the task
+                - 'data' (Dict[str, Any]): Task payload/parameters
+                - 'ack_id' (str): Pub/Sub acknowledgment ID used for completing or failing the task
         """
         try:
             # Pull messages from the subscription
@@ -176,8 +207,11 @@ class GCPPubSubQueue(TaskQueue):
             self._logger.debug(f"Received {len(tasks)} tasks from subscription")
             return tasks
         except Exception as e:
-            self._logger.error(f"Error receiving tasks: {str(e)}")
-            return []
+            self._logger.error(
+                f"Error receiving tasks from Pub/Sub queue '{self._queue_name}': {str(e)}",
+                exc_info=True,
+            )
+            raise
 
     async def complete_task(self, task_handle: Any) -> None:
         """
@@ -196,7 +230,11 @@ class GCPPubSubQueue(TaskQueue):
             )
             self._logger.debug(f"Completed task with ack_id: {task_handle}")
         except Exception as e:
-            self._logger.error(f"Error completing task: {str(e)}")
+            self._logger.error(
+                f"Error completing task with ack_id '{task_handle}' on Pub/Subqueue "
+                f"'{self._queue_name}': {str(e)}",
+                exc_info=True,
+            )
             raise
 
     async def fail_task(self, task_handle: Any) -> None:
@@ -217,7 +255,11 @@ class GCPPubSubQueue(TaskQueue):
             )
             self._logger.debug(f"Failed task with ack_id: {task_handle}")
         except Exception as e:
-            self._logger.error(f"Error failing task: {str(e)}")
+            self._logger.error(
+                f"Error failing task with ack_id '{task_handle}' on Pub/Sub queue "
+                f"'{self._queue_name}': {str(e)}",
+                exc_info=True,
+            )
             raise
 
     async def get_queue_depth(self) -> int:
@@ -256,43 +298,76 @@ class GCPPubSubQueue(TaskQueue):
                 return message_count
 
             # If we didn't receive any messages, the queue might be empty
-            self._logger.debug("Queue appears to be empty")
+            self._logger.debug(f"Queue '{self._queue_name}' appears to be empty")
             return 0
 
         except Exception as e:
             # Log error and return 0 as fallback
-            self._logger.error(f"Error getting queue depth: {str(e)}")
-            return 0
+            self._logger.error(
+                f"Error getting queue depth for Pub/Sub queue '{self._queue_name}': {str(e)}",
+                exc_info=True,
+            )
+            raise
 
     async def purge_queue(self) -> None:
         """Remove all messages from the queue by recreating the subscription."""
+        self._logger.info(f"Purging queue {self._subscription_name} by recreating subscription")
+        # Delete and recreate the subscription
         try:
-            self._logger.info(f"Purging queue {self._subscription_name} by recreating subscription")
-            # Delete and recreate the subscription
-            try:
-                self._subscriber.delete_subscription(
-                    request={"subscription": self._subscription_path}
-                )
-                self._logger.info(f"Deleted subscription {self._subscription_name}")
-            except Exception as e:
-                self._logger.warning(f"Failed to delete subscription, it might not exist: {str(e)}")
-                pass  # Subscription might not exist
+            self._subscriber.delete_subscription(request={"subscription": self._subscription_path})
+            self._logger.info(f"Deleted subscription {self._subscription_name}")
+        except Exception as e:
+            self._logger.error(
+                f"Failed to delete subscription '{self._subscription_name}' for Pub/Sub "
+                f"queue '{self._queue_name}': {str(e)}"
+            )
+            raise
 
-            # Wait a moment for deletion to complete
-            time.sleep(2)
+        # Wait a moment for deletion to complete
+        time.sleep(2)
 
+        try:
             # Recreate subscription
             self._subscriber.create_subscription(
                 request={
                     "name": self._subscription_path,
                     "topic": self._topic_path,
                     "message_retention_duration": {"seconds": 7 * 24 * 60 * 60},
-                    "ack_deadline_seconds": 30,
+                    "ack_deadline_seconds": 30,  # TODO Default ack deadline in seconds
                 }
             )
             self._logger.info(
-                f"Recreated subscription {self._subscription_name}, queue is now empty"
+                f"Recreated subscription '{self._subscription_name}' for Pub/Sub queue "
+                f"'{self._queue_name}', queue is now empty"
             )
         except Exception as e:
-            self._logger.error(f"Error purging queue: {str(e)}")
+            self._logger.error(
+                f"Error recreating subscription '{self._subscription_name}' for Pub/Sub "
+                f"queue '{self._queue_name}': {str(e)}",
+                exc_info=True,
+            )
+            raise
+
+    async def delete_queue(self) -> None:
+        """Delete both the Pub/Sub subscription and topic entirely."""
+        # Delete subscription first
+        try:
+            self._subscriber.delete_subscription(request={"subscription": self._subscription_path})
+            self._logger.info(f"Successfully deleted subscription {self._subscription_name}")
+        except Exception as e:
+            self._logger.error(
+                f"Error deleting subscription '{self._subscription_name}' for Pub/Sub "
+                f"queue '{self._queue_name}': {str(e)}"
+            )
+            raise
+
+        # Then delete the topic
+        try:
+            self._publisher.delete_topic(request={"topic": self._topic_path})
+            self._logger.info(f"Successfully deleted topic {self._topic_name}")
+        except Exception as e:
+            self._logger.error(
+                f"Error deleting topic '{self._topic_name}' for Pub/Sub queue "
+                f"'{self._queue_name}': {str(e)}"
+            )
             raise

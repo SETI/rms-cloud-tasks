@@ -1,23 +1,20 @@
 """
-Task Queue Manager factory module.
+Task Queue Manager
 """
+from typing import cast
 
-from .aws import AWSSQSQueue
-from .azure import AzureServiceBusQueue
-from .gcp import GCPPubSubQueue
+
 from .taskqueue import TaskQueue
 
-from cloud_tasks.common.config import Config, ProviderConfig, get_provider_config
+from cloud_tasks.common.config import Config, AWSConfig, GCPConfig, AzureConfig
 
 
-async def create_queue(queue_name: str, config: Config) -> TaskQueue:
+async def create_queue(config: Config) -> TaskQueue:
     """
     Create a TaskQueue implementation for the specified cloud provider.
 
     Args:
-        provider: Cloud provider name ('aws', 'gcp', or 'azure')
-        queue_name: Name of the queue to create/connect to
-        config: Configuration dictionary
+        config: Configuration
 
     Returns:
         A TaskQueue implementation for the specified provider
@@ -26,15 +23,19 @@ async def create_queue(queue_name: str, config: Config) -> TaskQueue:
         ValueError: If the provider is not supported
     """
     provider = config.provider
-    provider_config = get_provider_config(config, provider)
+    provider_config = config.get_provider_config(provider)
 
     match provider:
         case "aws":
-            queue: TaskQueue = AWSSQSQueue(queue_name, provider_config)
+            # We import these here to avoid requiring the dependencies for unused providers
+            from .aws import AWSSQSQueue
+            queue: TaskQueue = AWSSQSQueue(cast(AWSConfig, provider_config))
         case "gcp":
-            queue: TaskQueue = GCPPubSubQueue(queue_name, provider_config)
+            from .gcp import GCPPubSubQueue
+            queue = GCPPubSubQueue(cast(GCPConfig, provider_config))
         case "azure":
-            queue: TaskQueue = AzureServiceBusQueue(queue_name, provider_config)
+            from .azure import AzureServiceBusQueue
+            queue = AzureServiceBusQueue(cast(AzureConfig, provider_config))
         case _:
             raise ValueError(f"Unsupported queue provider: {provider}")
 

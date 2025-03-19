@@ -10,13 +10,13 @@ import boto3  # type: ignore
 from botocore.exceptions import ClientError  # type: ignore
 
 from .taskqueue import TaskQueue
-from cloud_tasks.common.config import ProviderConfig
+from cloud_tasks.common.config import AWSConfig
 
 
 class AWSSQSQueue(TaskQueue):
     """AWS SQS implementation of the TaskQueue interface."""
 
-    def __init__(self, queue_name: str, config: ProviderConfig) -> None:
+    def __init__(self, aws_config: AWSConfig) -> None:
         """
         Initialize the SQS queue with configuration.
 
@@ -30,20 +30,20 @@ class AWSSQSQueue(TaskQueue):
         self._logger = logging.getLogger(__name__)
 
         try:
-            self._queue_name = queue_name
+            self._queue_name = aws_config.queue_name
             self._logger.info(f"Initializing AWS SQS queue with queue name: {self._queue_name}")
             # Create SQS client
             self._sqs = boto3.client(
                 "sqs",
-                aws_access_key_id=config.access_key,
-                aws_secret_access_key=config.secret_key,
-                region_name=config.region,
+                aws_access_key_id=aws_config.access_key,
+                aws_secret_access_key=aws_config.secret_key,
+                region_name=aws_config.region,
             )
 
             # Create queue if it doesn't exist
             try:
                 response = self._sqs.create_queue(
-                    QueueName=queue_name,
+                    QueueName=self._queue_name,
                     Attributes={
                         "VisibilityTimeout": "30",  # TODO Default visibility timeout in seconds
                         "MessageRetentionPeriod": "1209600",  # 14 days (maximum)
@@ -53,7 +53,7 @@ class AWSSQSQueue(TaskQueue):
             except ClientError as e:
                 # If queue already exists, get its URL
                 if e.response["Error"]["Code"] == "QueueAlreadyExists":
-                    response = self._sqs.get_queue_url(QueueName=queue_name)
+                    response = self._sqs.get_queue_url(QueueName=self._queue_name)
                     self._queue_url = response["QueueUrl"]
                 else:
                     raise
@@ -187,4 +187,13 @@ class AWSSQSQueue(TaskQueue):
             self._logger.debug(f"Purged queue {self._queue_name}")
         except Exception as e:
             self._logger.error(f"Error purging queue: {str(e)}")
+            raise
+
+    async def delete_queue(self) -> None:
+        """Delete the SQS queue entirely."""
+        try:
+            self._sqs.delete_queue(QueueUrl=self._queue_url)
+            self._logger.info(f"Successfully deleted queue {self._queue_name}")
+        except Exception as e:
+            self._logger.error(f"Error deleting queue: {str(e)}")
             raise

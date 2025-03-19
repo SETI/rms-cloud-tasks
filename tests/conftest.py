@@ -1,6 +1,7 @@
 """
 Configuration for pytest.
 """
+
 import os
 import sys
 import asyncio
@@ -16,27 +17,33 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 # pytest-asyncio already provides one, and redefining it
 # causes deprecation warnings
 
+
 @pytest.fixture
 def config_file():
     """Create a temporary config file for tests."""
     # Create a temporary config file with valid provider configurations
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as tmp:
-        tmp.write("""
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as tmp:
+        tmp.write(
+            """
         # Test configuration
         aws:
+          queue_name: test-queue
           access_key: test-access-key
           secret_key: test-secret-key
           region: us-west-2
 
         gcp:
+          queue_name: test-queue
           project_id: test-project-id
 
         azure:
+          queue_name: test-queue
           subscription_id: test-subscription-id
           tenant_id: test-tenant-id
           client_id: test-client-id
           client_secret: test-client-secret
-        """)
+        """
+        )
         tmp_path = tmp.name
 
     # Return the path to the config file
@@ -47,10 +54,12 @@ def config_file():
         if os.path.exists(tmp_path):
             os.unlink(tmp_path)
 
-@pytest.fixture(params=['aws', 'gcp', 'azure'])
+
+@pytest.fixture(params=["aws", "gcp", "azure"])
 def provider(request):
     """Provide cloud provider name for tests."""
     return request.param
+
 
 @pytest.fixture
 def queue_name():

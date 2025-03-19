@@ -1,97 +1,67 @@
 """
 Configuration handling for the multi-cloud task processing system.
 """
+
 import os
 from typing import Any, Dict, Optional, List, Union
 import yaml
 
+from pydantic import BaseModel
 
-class ConfigError(Exception):
-    """Exception raised for configuration errors."""
+
+class ProviderConfig(BaseModel):
     pass
 
 
-class AttrDict(dict[str, Any]):
-    """Implements a dictionary that allows attribute-style access to its key-value pairs.
+class AWSConfig(ProviderConfig):
+    queue_name: Optional[str] = None
+    instance_types: Optional[List[str]] = None
+    startup_script: Optional[str] = None
+    image: Optional[str] = None
+    cpu: Optional[int] = None
+    memory_gb: Optional[float] = None
+    disk_gb: Optional[float] = None
 
-    A dictionary subclass that exposes its keys as attributes, allowing dict items to be
-    accessed using attribute notation (dict.key) in addition to the normal dictionary
-    lookup (dict[key]).
-
-    Nested dictionaries are also converted to AttrDict objects automatically.
-
-    Parameters:
-        *args: Variable length argument list passed to dict constructor.
-        **kwargs: Arbitrary keyword arguments passed to dict constructor.
-    """
-
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        super(AttrDict, self).__init__(*args, **kwargs)
-
-        # Recursively convert nested dictionaries to AttrDict
-        for key, value in self.items():
-            if isinstance(value, dict) and not isinstance(value, AttrDict):
-                self[key] = AttrDict(value)
-
-        # Set up attribute access
-        self.__dict__ = self
-
-    def __setitem__(self, key: str, value: Any) -> None:
-        """Override to handle nested dictionaries when setting items."""
-        if isinstance(value, dict) and not isinstance(value, AttrDict):
-            value = AttrDict(value)
-        super(AttrDict, self).__setitem__(key, value)
-
-        # Update __dict__ since self[key] may have been modified
-        self.__dict__ = self
+    access_key: Optional[str] = None
+    secret_key: Optional[str] = None
+    region: Optional[str] = None
 
 
-class ProviderConfig(AttrDict):
-    """Provider-specific configuration with attribute-style access.
+class GCPConfig(ProviderConfig):
+    queue_name: Optional[str] = None
+    instance_types: Optional[List[str]] = None
+    startup_script: Optional[str] = None
+    image: Optional[str] = None
+    cpu: Optional[int] = None
+    memory_gb: Optional[float] = None
+    disk_gb: Optional[float] = None
 
-    A specialized subclass of AttrDict specifically for cloud provider configuration data.
-    Contains provider-specific settings and credentials.
-    """
-
-    def __init__(self, provider_name: str, *args: Any, **kwargs: Any) -> None:
-        """Initialize a provider configuration.
-
-        Args:
-            provider_name: The name of the cloud provider ('aws', 'gcp', or 'azure')
-            *args: Variable length argument list passed to AttrDict constructor
-            **kwargs: Arbitrary keyword arguments passed to AttrDict constructor
-        """
-        super(ProviderConfig, self).__init__(*args, **kwargs)
-        self.provider_name = provider_name
-
-    def validate(self) -> None:
-        """Validate that the provider configuration has all required fields.
-
-        Raises:
-            ConfigError: If required fields are missing
-        """
-        if self.provider_name == 'aws':
-            required_fields = ['access_key', 'secret_key', 'region']
-        elif self.provider_name == 'gcp':
-            required_fields = ['project_id']
-        elif self.provider_name == 'azure':
-            required_fields = ['subscription_id', 'tenant_id', 'client_id', 'client_secret']
-        else:
-            raise ConfigError(f"Unsupported cloud provider: {self.provider_name}")
-
-        for field in required_fields:
-            if field not in self:
-                raise ConfigError(f"Missing required configuration field for {self.provider_name}: {field}")
+    project_id: Optional[str] = None
+    credentials_file: Optional[str] = None
 
 
-class Config(AttrDict):
-    """Configuration container with attribute-style access.
+class AzureConfig(ProviderConfig):
+    queue_name: Optional[str] = None
+    instance_types: Optional[List[str]] = None
+    startup_script: Optional[str] = None
+    image: Optional[str] = None
+    cpu: Optional[int] = None
+    memory_gb: Optional[float] = None
+    disk_gb: Optional[float] = None
 
-    A specialized subclass of AttrDict specifically for configuration data.
-    Provides methods to access provider-specific configurations.
-    """
+    subscription_id: Optional[str] = None
+    tenant_id: Optional[str] = None
+    client_id: Optional[str] = None
+    client_secret: Optional[str] = None
 
-    def get_provider(self, provider_name: str) -> ProviderConfig:
+
+class Config(BaseModel):
+    provider: Optional[str] = None
+    aws: Optional[AWSConfig] = None
+    gcp: Optional[GCPConfig] = None
+    azure: Optional[AzureConfig] = None
+
+    def get_provider_config(self, provider_name: Optional[str] = None) -> ProviderConfig:
         """Get configuration for a specific cloud provider.
 
         Args:
@@ -101,21 +71,30 @@ class Config(AttrDict):
             ProviderConfig object for the specified provider
 
         Raises:
-            ConfigError: If provider configuration is missing
+            ValueError: If provider configuration is missing
         """
-        if provider_name not in self:
-            raise ConfigError(f"Missing configuration for cloud provider: {provider_name}")
+        if provider_name is None:
+            provider_name = self.provider
+        if provider_name is None:
+            raise ValueError("Provider name not provided or detected in config")
 
-        provider_config = self[provider_name]
+        match provider_name:
+            case "aws":
+                provider_config = self.aws
+            case "gcp":
+                provider_config = self.gcp
+            case "azure":
+                provider_config = self.azure
+            case _:
+                raise ValueError(f"Unsupported provider: {provider_name}")
 
-        # Provider config should already be a ProviderConfig
-        if not isinstance(provider_config, ProviderConfig):
-            raise ConfigError(f"Provider configuration for {provider_name} is not a ProviderConfig instance")
+        if provider_config is None:
+            raise ValueError(f"Provider configuration not found for {provider_name}")
 
         return provider_config
 
 
-def load_config(config_file: str) -> Config:
+def load_config(config_file: str, cli_args: Optional[Dict[str, Any]] = None) -> Config:
     """
     Load configuration from a YAML file.
 
@@ -126,91 +105,38 @@ def load_config(config_file: str) -> Config:
         Config object containing the configuration
 
     Raises:
-        ConfigError: If the file cannot be loaded or is invalid
+        FileNotFoundError: If the file cannot be found
+        VlueError: If the file cannot be loaded or is invalid
     """
-    try:
-        if not os.path.exists(config_file):
-            raise ConfigError(f"Configuration file not found: {config_file}")
+    if not os.path.exists(config_file):
+        raise FileNotFoundError(f"Configuration file not found: {config_file}")
 
-        with open(config_file, 'r') as f:
-            config_dict = yaml.safe_load(f)
+    with open(config_file, "r") as f:
+        config_dict = yaml.safe_load(f)
 
-        if not isinstance(config_dict, dict):
-            raise ConfigError("Configuration file must contain a YAML dictionary")
+    if not isinstance(config_dict, dict):
+        raise ValueError("Configuration file must contain a YAML dictionary")
 
-        # Convert to Config object
-        config = Config(config_dict)
+    # Convert to Config object
+    config = Config(**config_dict)
 
-        # Process provider configurations
-        known_providers = ['aws', 'gcp', 'azure']
-        for provider in known_providers:
-            if provider in config:
-                # Convert provider config to ProviderConfig object
-                provider_data = config[provider]
-                provider_config = ProviderConfig(provider, provider_data)
+    if cli_args is not None and cli_args.get("provider") is not None:
+        config.provider = cli_args["provider"]
+    if cli_args is not None and cli_args.get("queue_name"):
+        if config.aws is not None:
+            config.aws.queue_name = cli_args["queue_name"]
+        if config.gcp is not None:
+            config.gcp.queue_name = cli_args["queue_name"]
+        if config.azure is not None:
+            config.azure.queue_name = cli_args["queue_name"]
 
-                try:
-                    provider_config.validate()
-                except ConfigError as e:
-                    raise ConfigError(f"Error in {provider} configuration: {str(e)}")
-
-                config[provider] = provider_config
-
-        return config
-
-    except yaml.YAMLError as e:
-        raise ConfigError(f"Error parsing configuration file: {e}")
-    except Exception as e:
-        if isinstance(e, ConfigError):
-            # Re-raise ConfigError with its original message
-            raise
-        raise ConfigError(f"Error loading configuration: {e}")
+    return config
 
 
-def validate_cloud_config(config: Config, provider: str) -> None:
-    """
-    Validate that a cloud provider configuration has all required fields.
 
-    Args:
-        config: Configuration object
-        provider: Cloud provider name ('aws', 'gcp', or 'azure')
-
-    Raises:
-        ConfigError: If required fields are missing
-    """
-    if provider not in config:
-        raise ConfigError(f"Missing configuration for cloud provider: {provider}")
-
-    # Config should already be a validated ProviderConfig instance
-    if not isinstance(config[provider], ProviderConfig):
-        raise ConfigError(f"Provider configuration for {provider} is not a ProviderConfig instance")
-
-
-def get_provider_config(config: Config, provider: str) -> ProviderConfig:
-    """
-    Get configuration for a specific cloud provider.
-
-    Args:
-        config: Full configuration object
-        provider: Cloud provider name ('aws', 'gcp', or 'azure')
-
-    Returns:
-        ProviderConfig object for the specified provider
-
-    Raises:
-        ConfigError: If provider configuration is missing
-    """
-    if provider not in config:
-        raise ConfigError(f"Missing configuration for cloud provider: {provider}")
-
-    provider_config = config[provider]
-    if not isinstance(provider_config, ProviderConfig):
-        raise ConfigError(f"Provider configuration for {provider} is not a ProviderConfig instance")
-
-    return provider_config
-
-
-def get_run_config(config: Config, provider: str, cli_args: Optional[Dict[str, Any]] = None) -> Config:
+def get_run_config(
+    config: Config, provider: str, cli_args: Optional[Dict[str, Any]] = None
+) -> Config:
     """
     Get the run configuration with proper override hierarchy:
     CLI args > Provider-specific config > Global run config > Defaults
@@ -225,46 +151,25 @@ def get_run_config(config: Config, provider: str, cli_args: Optional[Dict[str, A
     """
     # Default values
     run_config = {
-        'cpu': 1,
-        'memory_gb': 2,
-        'disk_gb': 10,
-        'image': 'ubuntu-2404-lts',
-        'startup_script': '',
-        'region': None,
+        "cpu": 1,
+        "memory_gb": 2,
+        "disk_gb": 10,
+        "image": "ubuntu-2404-lts",
+        "startup_script": "",
+        "region": None,
     }
-
-    # Override with global run config if present
-    if 'run' in config and isinstance(config['run'], dict):
-        for key in run_config:
-            if key in config['run']:
-                run_config[key] = config['run'][key]
-
-    # Override with provider-specific config if present
-    if provider in config:
-        # Get provider config without validation since we only need run config values
-        # which are not required fields
-        provider_data = config[provider]
-        if isinstance(provider_data, ProviderConfig):
-            provider_config = provider_data
-        else:
-            # Create a ProviderConfig but don't validate it
-            provider_config = ProviderConfig(provider, provider_data)
-
-        for key in run_config:
-            if key in provider_config:
-                run_config[key] = provider_config[key]
 
     # Override with CLI args if provided
     if cli_args:
         # Map CLI arg names to config names
         cli_map = {
-            'cpu': 'cpu',
-            'memory': 'memory_gb',
-            'disk': 'disk_gb',
-            'image': 'image',
-            'startup_script_file': 'startup_script',
-            'instance_types': 'instance_types',
-            'region': 'region',
+            "cpu": "cpu",
+            "memory": "memory_gb",
+            "disk": "disk_gb",
+            "image": "image",
+            "startup_script_file": "startup_script",
+            "instance_types": "instance_types",
+            "region": "region",
         }
 
         for cli_key, config_key in cli_map.items():
@@ -272,17 +177,17 @@ def get_run_config(config: Config, provider: str, cli_args: Optional[Dict[str, A
                 value = cli_args[cli_key]
 
                 # Special handling for startup script file
-                if cli_key == 'startup_script_file' and value:
+                if cli_key == "startup_script_file" and value:
                     try:
-                        with open(value, 'r') as f:
+                        with open(value, "r") as f:
                             run_config[config_key] = f.read()
                     except Exception as e:
-                        raise ConfigError(f"Error reading startup script file {value}: {e}")
-                elif cli_key == 'instance_types' and value:
+                        raise ValueError(f"Error reading startup script file {value}: {e}")
+                elif cli_key == "instance_types" and value:
                     new_instance_types = []
                     for str1 in value:
-                        for str2 in str1.split(','):
-                            for str3 in str2.split(' '):
+                        for str2 in str1.split(","):
+                            for str3 in str2.split(" "):
                                 new_instance_types.append(str3.strip())
                     run_config[config_key] = new_instance_types
                 else:
@@ -307,11 +212,11 @@ def load_startup_script(file_path: str) -> str:
     """
     try:
         if not os.path.exists(file_path):
-            raise ConfigError(f"Startup script file not found: {file_path}")
+            raise FileNotFoundError(f"Startup script file not found: {file_path}")
 
-        with open(file_path, 'r') as f:
+        with open(file_path, "r") as f:
             script = f.read()
 
         return script
     except Exception as e:
-        raise ConfigError(f"Error loading startup script: {e}")
+        raise RuntimeError(f"Error loading startup script: {e}")

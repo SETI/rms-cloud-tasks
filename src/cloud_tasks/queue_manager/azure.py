@@ -17,7 +17,7 @@ from cloud_tasks.common.config import ProviderConfig
 class AzureServiceBusQueue(TaskQueue):
     """Azure Service Bus implementation of the TaskQueue interface."""
 
-    def __init__(self, queue_name: str, config: ProviderConfig) -> None:
+    def __init__(self, config: ProviderConfig) -> None:
         """
         Initialize the Azure Service Bus queue with configuration.
 
@@ -248,4 +248,13 @@ class AzureServiceBusQueue(TaskQueue):
             )
         except Exception:
             self._logger.error(f"Error purging queue: {str(e)}")
+            raise
+
+    async def delete_queue(self) -> None:
+        """Delete the Service Bus queue entirely."""
+        try:
+            await self._admin_client.delete_queue(self._queue_name)
+            self._logger.info(f"Successfully deleted queue {self._queue_name}")
+        except Exception as e:
+            self._logger.error(f"Error deleting queue: {str(e)}")
             raise

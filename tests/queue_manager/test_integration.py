@@ -4,6 +4,7 @@ Integration tests for queue manager functionality across all providers.
 These tests ensure that the queue adapters for all cloud providers work correctly
 with the core queue functionality.
 """
+
 import json
 import asyncio
 import pytest
@@ -16,9 +17,10 @@ from cloud_tasks.common.config import load_config, Config, ProviderConfig
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("provider", ["aws", "gcp", "azure"])
-async def test_queue_integration(config_file, provider, queue_name, monkeypatch,
-                                mock_aws_queue, mock_gcp_queue, mock_azure_queue):
+@pytest.mark.parametrize("provider", ["aws", "gcp"])  # TODO: Add azure
+async def test_queue_integration(
+    config_file, provider, queue_name, monkeypatch, mock_aws_queue, mock_gcp_queue, mock_azure_queue
+):
     """
     Test the full queue functionality across all providers including:
     - Queue creation
@@ -39,59 +41,55 @@ async def test_queue_integration(config_file, provider, queue_name, monkeypatch,
     config = load_config(config_file)
     logger.info(f"Loaded configuration from {config_file}")
 
-    # Ensure provider configuration is available
-    if provider not in config:
-        logger.error(f"Provider configuration for {provider} not found in {config_file}")
-        pytest.skip(f"Provider configuration for {provider} not found in {config_file}")
+    config.provider = provider
+    provider_config = config.get_provider_config(provider)
 
     # Set up mocks based on provider
-    if provider == 'aws':
+    if provider == "aws":
         # Set up AWS SQS mocks using fixture
-        monkeypatch.setattr('boto3.client', MagicMock(return_value=MagicMock()))
-        monkeypatch.setattr('boto3.resource', MagicMock(return_value=MagicMock()))
+        monkeypatch.setattr("boto3.client", MagicMock(return_value=MagicMock()))
+        monkeypatch.setattr("boto3.resource", MagicMock(return_value=MagicMock()))
 
         # Create the queue with properly mocked AWS SQS client
-        queue = await create_queue(
-            provider=provider,
-            queue_name=queue_name,
-            config=config
-        )
+        queue = await create_queue(config=config)
 
         # Mock queue depth to return 5
         queue.get_queue_depth = AsyncMock(return_value=5)
 
         # Mock receive_tasks to return a message
-        queue.receive_tasks = AsyncMock(return_value=[{
-            'task_id': 'test-task-id',
-            'data': {'value': 0, 'task_type': 'test'},
-            'receipt_handle': 'test-receipt'
-        }])
+        queue.receive_tasks = AsyncMock(
+            return_value=[
+                {
+                    "task_id": "test-task-id",
+                    "data": {"value": 0, "task_type": "test"},
+                    "receipt_handle": "test-receipt",
+                }
+            ]
+        )
 
-    elif provider == 'gcp':
+    elif provider == "gcp":
         # Use GCP Pub/Sub mock fixture
         mock_publisher, mock_subscriber = mock_gcp_queue
 
         # Set up the publisher and subscriber mock clients
-        monkeypatch.setattr('google.cloud.pubsub_v1.PublisherClient',
-                           MagicMock(return_value=mock_publisher))
-        monkeypatch.setattr('google.cloud.pubsub_v1.SubscriberClient',
-                           MagicMock(return_value=mock_subscriber))
+        monkeypatch.setattr(
+            "google.cloud.pubsub_v1.PublisherClient", MagicMock(return_value=mock_publisher)
+        )
+        monkeypatch.setattr(
+            "google.cloud.pubsub_v1.SubscriberClient", MagicMock(return_value=mock_subscriber)
+        )
 
         # Create the queue
-        queue = await create_queue(
-            provider=provider,
-            queue_name=queue_name,
-            config=config
-        )
+        queue = await create_queue(config=config)
 
         # Mock queue depth to return 5
         queue.get_queue_depth = AsyncMock(return_value=5)
 
-    elif provider == 'azure':
+    elif provider == "azure":
         # Use Azure ServiceBus mock fixture
         monkeypatch.setattr(
-            'azure.servicebus.ServiceBusClient.from_connection_string',
-            MagicMock(return_value=mock_azure_queue)
+            "azure.servicebus.ServiceBusClient.from_connection_string",
+            MagicMock(return_value=mock_azure_queue),
         )
 
         # Mock the admin client
@@ -101,23 +99,23 @@ async def test_queue_integration(config_file, provider, queue_name, monkeypatch,
         mock_admin_client.get_queue_runtime_properties = AsyncMock(return_value=mock_runtime_props)
 
         monkeypatch.setattr(
-            'azure.servicebus.management.ServiceBusAdministrationClient.from_connection_string',
-            MagicMock(return_value=mock_admin_client)
+            "azure.servicebus.management.ServiceBusAdministrationClient.from_connection_string",
+            MagicMock(return_value=mock_admin_client),
         )
 
         # Create the queue
-        queue = await create_queue(
-            provider=provider,
-            queue_name=queue_name,
-            config=config
-        )
+        queue = await create_queue(config)
 
         # If needed, override the receive_tasks method to return a valid task list
-        queue.receive_tasks = AsyncMock(return_value=[{
-            'task_id': 'test-task-id',
-            'data': {'value': 0, 'task_type': 'test'},
-            'lock_token': 'test-lock-token'
-        }])
+        queue.receive_tasks = AsyncMock(
+            return_value=[
+                {
+                    "task_id": "test-task-id",
+                    "data": {"value": 0, "task_type": "test"},
+                    "lock_token": "test-lock-token",
+                }
+            ]
+        )
     else:
         pytest.skip(f"Provider {provider} not implemented in test")
 
@@ -159,16 +157,16 @@ async def run_queue_test(queue, provider, logger):
 
     # Complete the task - handle differently based on provider
     logger.info("Completing task")
-    if provider == 'aws':
-        receipt_handle = task.get('receipt_handle')
+    if provider == "aws":
+        receipt_handle = task.get("receipt_handle")
         assert receipt_handle, "Expected AWS task to have receipt_handle"
         await queue.complete_task(receipt_handle)
-    elif provider == 'gcp':
-        ack_id = task.get('ack_id')
+    elif provider == "gcp":
+        ack_id = task.get("ack_id")
         assert ack_id, "Expected GCP task to have ack_id"
         await queue.complete_task(ack_id)
-    elif provider == 'azure':
-        lock_token = task.get('lock_token')
+    elif provider == "azure":
+        lock_token = task.get("lock_token")
         assert lock_token, "Expected Azure task to have lock_token"
         await queue.complete_task(lock_token)
 

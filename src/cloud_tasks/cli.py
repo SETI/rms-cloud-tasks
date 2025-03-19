@@ -14,10 +14,11 @@ from tqdm import tqdm  # type: ignore
 from typing import Any, Dict, Iterable
 import yaml  # type: ignore
 
-from cloud_tasks.common.config import Config, ConfigError, get_run_config, load_config
+from cloud_tasks.common.config import Config, get_run_config, load_config
 from cloud_tasks.queue_manager import create_queue
-from cloud_tasks.instance_orchestrator import create_instance_manager
-from cloud_tasks.instance_orchestrator.orchestrator import InstanceOrchestrator
+
+# from cloud_tasks.instance_orchestrator import create_instance_manager
+# from cloud_tasks.instance_orchestrator.orchestrator import InstanceOrchestrator
 from cloud_tasks.common.logging_config import configure_logging
 
 # Use custom logging configuration
@@ -73,19 +74,17 @@ async def load_queue_cmd(args: argparse.Namespace, config: Config) -> None:
         config: Configuration
     """
     try:
-        queue_name = config.queue_name
+        provider = config.provider
+        provider_config = config.get_provider_config()
+        queue_name = provider_config.queue_name
         if queue_name is None:
             logger.fatal("Queue name must be specified")
             sys.exit(1)
 
-        logger.info(f"Loading tasks from {args.tasks}")
+        logger.info(f"Creating task queue {queue_name} on {provider}")
+        task_queue = await create_queue(config)
 
-        provider = config.provider
-
-        logger.info(f"Creating task queue {args.queue_name} on {provider}")
-        task_queue = await create_queue(queue_name=args.queue_name, config=config)
-
-        logger.info("Populating task queue")
+        logger.info(f"Populating task queue from {args.tasks}")
         num_tasks = 0
         with tqdm(desc="Enqueueing tasks") as pbar:
             for task in yield_tasks_from_file(args.tasks):
@@ -99,9 +98,6 @@ async def load_queue_cmd(args: argparse.Namespace, config: Config) -> None:
         queue_depth = await task_queue.get_queue_depth()
         logger.info(f"Tasks loaded successfully. Queue depth (may be approximate): {queue_depth}")
 
-    except ConfigError as e:
-        logger.fatal(f"Configuration error: {e}", exc_info=True)
-        sys.exit(1)
     except Exception as e:
         logger.fatal(f"Error loading tasks: {e}", exc_info=True)
         sys.exit(1)
@@ -114,155 +110,175 @@ async def show_queue_cmd(args: argparse.Namespace, config: Config) -> None:
         args: Command-line arguments
         config: Configuration
     """
+    provider = config.provider
+    provider_config = config.get_provider_config()
+    queue_name = provider_config.queue_name
+    print(f"Checking queue depth for {queue_name} on {provider}...")
+
     try:
-        print(f"Checking queue depth for {args.queue_name} on {args.provider}...")
-
-        try:
-            task_queue = await create_queue(queue_name=args.queue_name, config=config)
-        except Exception as e:
-            logger.error(f"Error connecting to queue: {e}")
-            print(f"\nError connecting to queue: {e}")
-            print("\nPlease check your configuration and ensure the queue exists.")
-            sys.exit(1)
-
-        # Get queue depth
-        try:
-            queue_depth = await task_queue.get_queue_depth()
-        except Exception as e:
-            logger.error(f"Error getting queue depth: {e}")
-            print(f"\nError retrieving queue depth: {e}")
-            print("\nThe queue may exist but you might not have permission to access it.")
-            sys.exit(1)
-
-        # Display queue depth with some formatting
-        print("\n" + "=" * 50)
-        print("QUEUE INFORMATION")
-        print("=" * 50)
-        print(f"Queue name:     {args.queue_name}")
-        print(f"Provider:       {args.provider}")
-        print(f"Current depth:  {queue_depth} message(s)")
-
-        if queue_depth == 0:
-            print("\nQueue is empty. No messages available.")
-        else:
-            # If verbose, try to get a sample message without removing it
-            if args.detail:
-                print("\nAttempting to peek at first message...")
-                try:
-                    messages = await task_queue.receive_tasks(
-                        max_count=1, visibility_timeout_seconds=10
-                    )
-
-                    if messages:
-                        message = messages[0]
-                        task_id = message.get("task_id", "unknown")
-
-                        print("\n" + "-" * 50)
-                        print("SAMPLE MESSAGE")
-                        print("-" * 50)
-                        print(f"Task ID: {task_id}")
-
-                        # Get receipt handle info based on provider
-                        receipt_info = ""
-                        if "receipt_handle" in message:  # AWS
-                            receipt_info = (
-                                f"Receipt Handle: {message['receipt_handle'][:50]}..."
-                                if len(message.get("receipt_handle", "")) > 50
-                                else f"Receipt Handle: {message.get('receipt_handle', '')}"
-                            )
-                        elif "ack_id" in message:  # GCP
-                            receipt_info = (
-                                f"Ack ID: {message['ack_id'][:50]}..."
-                                if len(message.get("ack_id", "")) > 50
-                                else f"Ack ID: {message.get('ack_id', '')}"
-                            )
-                        elif "lock_token" in message:  # Azure
-                            receipt_info = (
-                                f"Lock Token: {message['lock_token'][:50]}..."
-                                if len(message.get("lock_token", "")) > 50
-                                else f"Lock Token: {message.get('lock_token', '')}"
-                            )
-
-                        if receipt_info:
-                            print(f"{receipt_info}")
-
-                        try:
-                            data = message.get("data", {})
-                            print("\nData:")
-                            if isinstance(data, dict):
-                                print(json.dumps(data, indent=2))
-                            else:
-                                print(data)
-                        except Exception as e:
-                            print(f"Error displaying data: {e}")
-                            print(f"Raw data: {message.get('data', {})}")
-
-                        print("\nNote: Message was not removed from the queue.")
-                    else:
-                        print("\nCould not retrieve a sample message. This might happen if:")
-                        print("  - Another consumer received the message")
-                        print("  - The message is not available for immediate delivery")
-                        print("  - There's an issue with queue visibility settings")
-                except Exception as e:
-                    logger.error(f"Error peeking at message: {e}")
-                    print(f"\nError retrieving sample message: {e}")
-
-    except ConfigError as e:
-        logger.error(f"Configuration error: {e}")
-        print(f"\nConfiguration error: {e}")
-        sys.exit(1)
+        task_queue = await create_queue(config)
     except Exception as e:
-        logger.error(f"Error showing queue depth: {e}", exc_info=True)
-        print(f"\nError: {e}")
+        logger.error(f"Error connecting to queue: {e}")
+        print(f"\nError connecting to queue: {e}")
+        print("\nPlease check your configuration and ensure the queue exists.")
         sys.exit(1)
 
+    # Get queue depth
+    try:
+        queue_depth = await task_queue.get_queue_depth()
+    except Exception as e:
+        logger.error(f"Error getting queue depth: {e}")
+        print(f"\nError retrieving queue depth: {e}")
+        print("\nThe queue may exist but you might not have permission to access it.")
+        sys.exit(1)
 
-async def empty_queue_cmd(args: argparse.Namespace, config: Config) -> None:
+    # Display queue depth with some formatting
+    print("\n" + "=" * 50)
+    print("QUEUE INFORMATION")
+    print("=" * 50)
+    print(f"Queue name:     {args.queue_name}")
+    print(f"Provider:       {args.provider}")
+    print(f"Current depth:  {queue_depth} message(s)")
+
+    if queue_depth == 0:
+        print("\nQueue is empty. No messages available.")
+    else:
+        # If verbose, try to get a sample message without removing it
+        if args.detail:
+            print("\nAttempting to peek at first message...")
+            try:
+                messages = await task_queue.receive_tasks(
+                    max_count=1, visibility_timeout_seconds=10
+                )
+
+                if messages:
+                    message = messages[0]
+                    task_id = message.get("task_id", "unknown")
+
+                    print("\n" + "-" * 50)
+                    print("SAMPLE MESSAGE")
+                    print("-" * 50)
+                    print(f"Task ID: {task_id}")
+
+                    # Get receipt handle info based on provider
+                    receipt_info = ""
+                    if "receipt_handle" in message:  # AWS
+                        receipt_info = (
+                            f"Receipt Handle: {message['receipt_handle'][:50]}..."
+                            if len(message.get("receipt_handle", "")) > 50
+                            else f"Receipt Handle: {message.get('receipt_handle', '')}"
+                        )
+                    elif "ack_id" in message:  # GCP
+                        receipt_info = (
+                            f"Ack ID: {message['ack_id'][:50]}..."
+                            if len(message.get("ack_id", "")) > 50
+                            else f"Ack ID: {message.get('ack_id', '')}"
+                        )
+                    elif "lock_token" in message:  # Azure
+                        receipt_info = (
+                            f"Lock Token: {message['lock_token'][:50]}..."
+                            if len(message.get("lock_token", "")) > 50
+                            else f"Lock Token: {message.get('lock_token', '')}"
+                        )
+
+                    if receipt_info:
+                        print(f"{receipt_info}")
+
+                    try:
+                        data = message.get("data", {})
+                        print("\nData:")
+                        if isinstance(data, dict):
+                            print(json.dumps(data, indent=2))
+                        else:
+                            print(data)
+                    except Exception as e:
+                        print(f"Error displaying data: {e}")
+                        print(f"Raw data: {message.get('data', {})}")
+
+                    print("\nNote: Message was not removed from the queue.")
+                else:
+                    print("\nCould not retrieve a sample message. This might happen if:")
+                    print("  - Another consumer received the message")
+                    print("  - The message is not available for immediate delivery")
+                    print("  - There's an issue with queue visibility settings")
+            except Exception as e:
+                logger.error(f"Error peeking at message: {e}")
+                print(f"\nError retrieving sample message: {e}")
+
+
+async def purge_queue_cmd(args: argparse.Namespace, config: Config) -> None:
     """Empty a task queue by removing all messages from it.
 
     Parameters:
         args: Command-line arguments
         config: Configuration
     """
-    try:
-        task_queue = await create_queue(queue_name=args.queue_name, config=config)
+    provider = config.provider
+    provider_config = config.get_provider_config()
+    queue_name = provider_config.queue_name
+    task_queue = await create_queue(config)
 
-        queue_depth = await task_queue.get_queue_depth()
+    queue_depth = await task_queue.get_queue_depth()
 
-        if queue_depth == 0:
-            print(f"Queue '{args.queue_name}' is already empty (0 messages).")
+    if queue_depth == 0:
+        print(f"Queue '{queue_name}' on '{provider}' is already empty (0 messages).")
+        return
+
+    # Confirm with the user if not using --force
+    if not args.force:
+        confirm = input(
+            f"\nWARNING: This will permanently delete all {queue_depth} messages from queue "
+            f"'{queue_name}' on '{provider}'."
+            f"\nType 'EMPTY {queue_name}' to confirm: "
+        )
+        if confirm != f"EMPTY {queue_name}":
+            print("Operation cancelled.")
             return
 
-        # Confirm with the user if not using --force
-        if not args.force:
-            confirm = input(
-                f"\nWARNING: This will permanently delete all {queue_depth} messages from queue "
-                f"'{args.queue_name}'."
-                f"\nType 'EMPTY {args.queue_name}' to confirm: "
-            )
-            if confirm != f"EMPTY {args.queue_name}":
-                print("Operation cancelled.")
-                return
+    print(f"Emptying queue '{queue_name}'...")
+    await task_queue.purge_queue()
 
-        print(f"Emptying queue '{args.queue_name}'...")
-        await task_queue.purge_queue()
+    # Verify the queue is now empty
+    new_depth = await task_queue.get_queue_depth()
+    if new_depth == 0:
+        print(
+            f"SUCCESS: Queue '{queue_name}' has been emptied. Removed " f"{queue_depth} message(s)."
+        )
+    else:
+        print(f"WARNING: Queue purge operation completed but {new_depth} messages still remain.")
+        print("Some messages may be in flight or locked by consumers.")
 
-        # Verify the queue is now empty
-        new_depth = await task_queue.get_queue_depth()
-        if new_depth == 0:
-            print(
-                f"SUCCESS: Queue '{args.queue_name}' has been emptied. Removed "
-                f"{queue_depth} message(s)."
-            )
-        else:
-            print(
-                f"WARNING: Queue purge operation completed but {new_depth} messages still remain."
-            )
-            print("Some messages may be in flight or locked by consumers.")
 
+async def delete_queue_cmd(args: argparse.Namespace, config: Config) -> None:
+    """Delete a task queue entirely from the cloud provider.
+
+    Parameters:
+        args: Command-line arguments
+        config: Configuration
+    """
+    provider = config.provider
+    provider_config = config.get_provider_config()
+    queue_name = provider_config.queue_name
+
+    # Confirm with the user if not using --force
+    if not args.force:
+        confirm = input(
+            f"\nWARNING: This will permanently delete the queue '{queue_name}' from {provider}.\n"
+            f"This operation cannot be undone and will remove all infrastructure.\n"
+            f"Type 'DELETE {queue_name}' to confirm: "
+        )
+        if confirm != f"DELETE {queue_name}":
+            print("Operation cancelled.")
+            return
+
+    try:
+        print(f"Deleting queue '{queue_name}' from {provider}...")
+        task_queue = await create_queue(config)
+        await task_queue.delete_queue()
+        print(f"SUCCESS: Queue '{queue_name}' has been deleted.")
     except Exception as e:
-        logger.error(f"Error emptying queue: {e}")
-        print(f"Error: {e}")
+        logger.error(f"Error deleting queue: {e}")
+        print(f"\nError deleting queue: {e}")
         sys.exit(1)
 
 
@@ -308,7 +324,7 @@ async def manage_pool_cmd(args: argparse.Namespace, config: Config) -> None:
 
         # Create task queue to monitor progress
         logger.info(f"Creating task queue {args.queue_name} on {provider}")
-        task_queue = await create_queue(queue_name=args.queue_name, config=config)
+        task_queue = await create_queue(config)
 
         # Create job ID
         job_id = args.job_id or f"job-{int(time.time())}"
@@ -385,9 +401,6 @@ async def manage_pool_cmd(args: argparse.Namespace, config: Config) -> None:
             logger.info("Received interrupt, stopping job")
             await orchestrator.stop()
 
-    except ConfigError as e:
-        logger.error(f"Configuration error: {e}", exc_info=True)
-        sys.exit(1)
     except Exception as e:
         logger.error(f"Error managing instance pool: {e}", exc_info=True)
         sys.exit(1)
@@ -517,10 +530,6 @@ async def list_running_instances_cmd(args: argparse.Namespace, config: Config) -
             else:
                 print(f"\nNo instances found for provider: {args.provider}")
 
-    except ConfigError as e:
-        logger.error(f"Configuration error: {e}")
-        print(f"Error: {e}")
-        sys.exit(1)
     except Exception as e:
         logger.error(f"Error listing running instances: {e}", exc_info=True)
         print(f"Error listing running instances: {e}")
@@ -576,7 +585,7 @@ async def run_job(args: argparse.Namespace, config: Config) -> None:
 
         # Create task queue
         logger.info(f"Creating task queue on {provider}")
-        task_queue = await create_queue(queue_name=args.queue_name, config=config)
+        task_queue = await create_queue(config)
 
         # Create job ID
         job_id = args.job_id or f"job-{int(time.time())}"
@@ -654,9 +663,6 @@ async def run_job(args: argparse.Namespace, config: Config) -> None:
             logger.info("Received interrupt, stopping job")
             await orchestrator.stop()
 
-    except ConfigError as e:
-        logger.error(f"Configuration error: {e}", exc_info=True)
-        sys.exit(1)
     except Exception as e:
         logger.error(f"Error running job: {e}", exc_info=True)
         sys.exit(1)
@@ -671,7 +677,7 @@ async def status_job(args: argparse.Namespace, config: Config) -> None:
     """
     try:
         # Create task queue to check depth
-        task_queue = await create_queue(queue_name=args.queue_name, config=config)
+        task_queue = await create_queue(config)
 
         # Create orchestrator
         orchestrator = InstanceOrchestrator(
@@ -726,7 +732,7 @@ async def stop_job(args: argparse.Namespace, config: Config) -> None:
     """
     try:
         # Create task queue
-        task_queue = await create_queue(queue_name=args.queue_name, config=config)
+        task_queue = await create_queue(config)
 
         # Create orchestrator with the provider parameter and full config
         orchestrator = InstanceOrchestrator(
@@ -1015,7 +1021,7 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
         pricing_data = {}
         try:
             # Create a config structure for the get_optimal_instance_type function to use
-            provider_config = config.get_provider(args.provider)
+            provider_config = config.get_provider_config(args.provider)
 
             # For AWS and Azure, we need to set region explicitly for pricing
             if args.provider == "aws" and "region" not in provider_config:
@@ -1279,6 +1285,10 @@ def main():
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
     subparsers.required = True
 
+    #
+    # QUEUE MANAGEMENT COMMANDS
+    #
+
     # Load queue command
     load_queue_parser = subparsers.add_parser(
         "load_queue", help="Load tasks into a queue without starting instances"
@@ -1287,7 +1297,7 @@ def main():
     add_tasks_args(load_queue_parser)
     load_queue_parser.set_defaults(func=load_queue_cmd)
 
-    # Show queue depth command
+    # Show queue command
     show_queue_parser = subparsers.add_parser(
         "show_queue",
         help="Show the current depth of a task queue; use --verbose to show sample message "
@@ -1299,15 +1309,29 @@ def main():
     )
     show_queue_parser.set_defaults(func=show_queue_cmd)
 
-    # Command: empty_queue
-    empty_queue_parser = subparsers.add_parser(
-        "empty_queue", help="Empty a task queue by removing all messages"
+    # Purge queue command
+    purge_queue_parser = subparsers.add_parser(
+        "purge_queue", help="Purge a task queue by removing all messages"
     )
-    add_common_args(empty_queue_parser)
-    empty_queue_parser.add_argument(
-        "--force", "-f", action="store_true", help="Empty the queue without confirmation prompt"
+    add_common_args(purge_queue_parser)
+    purge_queue_parser.add_argument(
+        "--force", "-f", action="store_true", help="Purge the queue without confirmation prompt"
     )
-    empty_queue_parser.set_defaults(func=empty_queue_cmd)
+    purge_queue_parser.set_defaults(func=purge_queue_cmd)
+
+    # Delete queue command
+    delete_queue_parser = subparsers.add_parser(
+        "delete_queue", help="Permanently delete a task queue and its infrastructure"
+    )
+    add_common_args(delete_queue_parser)
+    delete_queue_parser.add_argument(
+        "--force", "-f", action="store_true", help="Delete the queue without confirmation prompt"
+    )
+    delete_queue_parser.set_defaults(func=delete_queue_cmd)
+
+    #
+    # JOB MANAGEMENT COMMANDS
+    #
 
     # Run command (combines load_tasks and manage_pool)
     run_parser = subparsers.add_parser(
@@ -1351,6 +1375,10 @@ def main():
     list_running_instances_parser.add_argument("--region", help="Filter instances by region")
     list_running_instances_parser.set_defaults(func=list_running_instances_cmd)
 
+    #
+    # INFORMATION GATHERING COMMANDS
+    #
+
     # List images command
     list_images_parser = subparsers.add_parser(
         "list_images", help="List available VM images for the specified provider"
@@ -1381,7 +1409,7 @@ def main():
     )
     list_images_parser.set_defaults(func=list_images_cmd)
 
-    # List instances command
+    # List instance types command
     list_instance_types_parser = subparsers.add_parser(
         "list_instance_types",
         help="List compute instance types for the specified provider with pricing information",
@@ -1440,9 +1468,9 @@ def main():
     # Load configuration
     logger.info(f"Loading configuration from {args.config}")
     try:
-        config = load_config(args.config)
-    except ConfigError as e:
-        logger.fatal(f"Configuration error: {e}")
+        config = load_config(args.config, vars(args))
+    except Exception as e:
+        logger.fatal(f"Configuration error: {e}", exc_info=True)
         sys.exit(1)
 
     if args.provider is None:

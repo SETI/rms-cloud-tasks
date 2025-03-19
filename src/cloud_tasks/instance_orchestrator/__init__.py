@@ -1,6 +1,7 @@
 """
 Instance Orchestrator factory module.
 """
+
 from typing import Any, Dict
 
 from cloud_tasks.common.base import InstanceManager
@@ -23,14 +24,17 @@ async def create_instance_manager(provider: str, config: Dict[str, Any]) -> Inst
     """
     provider_config = get_provider_config(config, provider)
 
-    if provider == 'aws':
+    if provider == "aws":
         from cloud_tasks.instance_orchestrator.aws import AWSEC2InstanceManager
+
         instance_manager: InstanceManager = AWSEC2InstanceManager()
-    elif provider == 'gcp':
+    elif provider == "gcp":
         from cloud_tasks.instance_orchestrator.gcp import GCPComputeInstanceManager
+
         instance_manager = GCPComputeInstanceManager()
-    elif provider == 'azure':
+    elif provider == "azure":
         from cloud_tasks.instance_orchestrator.azure import AzureVMInstanceManager
+
         instance_manager = AzureVMInstanceManager()
     else:
         raise ValueError(f"Unsupported instance provider: {provider}")
