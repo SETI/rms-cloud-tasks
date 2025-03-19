@@ -41,7 +41,6 @@ def yield_tasks_from_file(tasks_file: str) -> Iterable[Dict[str, Any]]:
     Raises:
         ValueError: If the file cannot be read
     """
-
     if not tasks_file.endswith((".json", ".yaml", ".yml")):
         raise ValueError(
             f"Unsupported file format for tasks: {tasks_file}; must be .json, .yml, or .yaml"
@@ -65,7 +64,7 @@ def yield_tasks_from_file(tasks_file: str) -> Iterable[Dict[str, Any]]:
                     y = l
 
 
-async def load_tasks_cmd(args: argparse.Namespace, config: Config) -> None:
+async def load_queue_cmd(args: argparse.Namespace, config: Config) -> None:
     """
     Load tasks into a queue without starting instances.
 
@@ -73,7 +72,6 @@ async def load_tasks_cmd(args: argparse.Namespace, config: Config) -> None:
         args: Command-line arguments
         config: Configuration
     """
-
     try:
         queue_name = config.queue_name
         if queue_name is None:
@@ -85,9 +83,7 @@ async def load_tasks_cmd(args: argparse.Namespace, config: Config) -> None:
         provider = config.provider
 
         logger.info(f"Creating task queue {args.queue_name} on {provider}")
-        task_queue = await create_queue(
-            provider=provider, queue_name=args.queue_name, config=config
-        )
+        task_queue = await create_queue(queue_name=args.queue_name, config=config)
 
         logger.info("Populating task queue")
         num_tasks = 0
@@ -111,21 +107,18 @@ async def load_tasks_cmd(args: argparse.Namespace, config: Config) -> None:
         sys.exit(1)
 
 
-async def show_queue_depth_cmd(args: argparse.Namespace, config: Config) -> None:
+async def show_queue_cmd(args: argparse.Namespace, config: Config) -> None:
     """Show the current depth of a task queue.
 
     Parameters:
         args: Command-line arguments
         config: Configuration
     """
-
     try:
         print(f"Checking queue depth for {args.queue_name} on {args.provider}...")
 
         try:
-            task_queue = await create_queue(
-                provider=args.provider, queue_name=args.queue_name, config=config
-            )
+            task_queue = await create_queue(queue_name=args.queue_name, config=config)
         except Exception as e:
             logger.error(f"Error connecting to queue: {e}")
             print(f"\nError connecting to queue: {e}")
@@ -231,11 +224,8 @@ async def empty_queue_cmd(args: argparse.Namespace, config: Config) -> None:
         args: Command-line arguments
         config: Configuration
     """
-
     try:
-        task_queue = await create_queue(
-            provider=args.provider, queue_name=args.queue_name, config=config
-        )
+        task_queue = await create_queue(queue_name=args.queue_name, config=config)
 
         queue_depth = await task_queue.get_queue_depth()
 
@@ -318,9 +308,7 @@ async def manage_pool_cmd(args: argparse.Namespace, config: Config) -> None:
 
         # Create task queue to monitor progress
         logger.info(f"Creating task queue {args.queue_name} on {provider}")
-        task_queue = await create_queue(
-            provider=provider, queue_name=args.queue_name, config=config
-        )
+        task_queue = await create_queue(queue_name=args.queue_name, config=config)
 
         # Create job ID
         job_id = args.job_id or f"job-{int(time.time())}"
@@ -357,7 +345,7 @@ async def manage_pool_cmd(args: argparse.Namespace, config: Config) -> None:
             initial_queue_depth = queue_depth
 
             if initial_queue_depth == 0:
-                logger.warning("Queue is empty. Add tasks using the 'load_tasks' command.")
+                logger.warning("Queue is empty. Add tasks using the 'load_queue' command.")
 
             with tqdm(total=initial_queue_depth, desc="Processing tasks") as pbar:
                 last_depth = queue_depth
@@ -550,7 +538,7 @@ async def run_job(args: argparse.Namespace, config: Config) -> None:
     try:
         # Load tasks
         logger.info(f"Loading tasks from {args.tasks}")
-        tasks = load_tasks_from_file(args.tasks)
+        tasks = yield_tasks_from_file(args.tasks)  # TODO
         logger.info(f"Loaded {len(tasks)} tasks")
 
         # Initialize cloud services
@@ -588,9 +576,7 @@ async def run_job(args: argparse.Namespace, config: Config) -> None:
 
         # Create task queue
         logger.info(f"Creating task queue on {provider}")
-        task_queue = await create_queue(
-            provider=provider, queue_name=args.queue_name, config=config
-        )
+        task_queue = await create_queue(queue_name=args.queue_name, config=config)
 
         # Create job ID
         job_id = args.job_id or f"job-{int(time.time())}"
@@ -685,9 +671,7 @@ async def status_job(args: argparse.Namespace, config: Config) -> None:
     """
     try:
         # Create task queue to check depth
-        task_queue = await create_queue(
-            provider=args.provider, queue_name=args.queue_name, config=config
-        )
+        task_queue = await create_queue(queue_name=args.queue_name, config=config)
 
         # Create orchestrator
         orchestrator = InstanceOrchestrator(
@@ -742,9 +726,7 @@ async def stop_job(args: argparse.Namespace, config: Config) -> None:
     """
     try:
         # Create task queue
-        task_queue = await create_queue(
-            provider=args.provider, queue_name=args.queue_name, config=config
-        )
+        task_queue = await create_queue(queue_name=args.queue_name, config=config)
 
         # Create orchestrator with the provider parameter and full config
         orchestrator = InstanceOrchestrator(
@@ -789,7 +771,6 @@ async def list_images_cmd(args: argparse.Namespace, config: Config) -> None:
         args: Command-line arguments
         config: Configuration
     """
-
     try:
         # Create instance manager for the provider
         instance_manager = await create_instance_manager(provider=args.provider, config=config)
@@ -964,7 +945,7 @@ async def list_images_cmd(args: argparse.Namespace, config: Config) -> None:
         sys.exit(1)
 
 
-async def list_instances_cmd(args: argparse.Namespace, config: Config) -> None:
+async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> None:
     """
     List available compute instance types for the specified provider with pricing information.
 
@@ -1066,6 +1047,7 @@ async def list_instances_cmd(args: argparse.Namespace, config: Config) -> None:
         # Add price data to instances for sorting
         for instance in instances:
             if instance["name"] in pricing_data:
+                print(pricing_data[instance["name"]])
                 cpu_price, ram_price = pricing_data[instance["name"]]
                 instance["cpu_price"] = cpu_price
                 instance["ram_price"] = ram_price
@@ -1129,11 +1111,7 @@ async def list_instances_cmd(args: argparse.Namespace, config: Config) -> None:
             instances = instances[: args.limit]
 
         # Display results with pricing if available
-        print(
-            f"Found {len(instances)} {'filtered ' if args.filter or args.instance_types or
-                                                     args.size_filter else ''}"
-            f"instance types for {args.provider}:"
-        )
+        print(f"Found {len(instances)} instance types for {args.provider}:")
         print()
 
         has_pricing = bool(pricing_data)
@@ -1301,25 +1279,25 @@ def main():
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
     subparsers.required = True
 
-    # Load tasks command
-    load_tasks_parser = subparsers.add_parser(
-        "load_tasks", help="Load tasks into a queue without starting instances"
+    # Load queue command
+    load_queue_parser = subparsers.add_parser(
+        "load_queue", help="Load tasks into a queue without starting instances"
     )
-    add_common_args(load_tasks_parser)
-    add_tasks_args(load_tasks_parser)
-    load_tasks_parser.set_defaults(func=load_tasks_cmd)
+    add_common_args(load_queue_parser)
+    add_tasks_args(load_queue_parser)
+    load_queue_parser.set_defaults(func=load_queue_cmd)
 
     # Show queue depth command
-    show_queue_depth_parser = subparsers.add_parser(
-        "show_queue_depth",
+    show_queue_parser = subparsers.add_parser(
+        "show_queue",
         help="Show the current depth of a task queue; use --verbose to show sample message "
         "contents",
     )
-    add_common_args(show_queue_depth_parser)
-    show_queue_depth_parser.add_argument(
+    add_common_args(show_queue_parser)
+    show_queue_parser.add_argument(
         "--detail", action="store_true", help="Attempt to show a sample message"
     )
-    show_queue_depth_parser.set_defaults(func=show_queue_depth_cmd)
+    show_queue_parser.set_defaults(func=show_queue_cmd)
 
     # Command: empty_queue
     empty_queue_parser = subparsers.add_parser(
@@ -1375,7 +1353,7 @@ def main():
 
     # List images command
     list_images_parser = subparsers.add_parser(
-        "list_available_images", help="List available VM images for the specified provider"
+        "list_images", help="List available VM images for the specified provider"
     )
     add_common_args(list_images_parser, include_queue_name=False)
     # Additional filtering options
@@ -1404,54 +1382,53 @@ def main():
     list_images_parser.set_defaults(func=list_images_cmd)
 
     # List instances command
-    list_instances_parser = subparsers.add_parser(
-        "list_available_instances",
-        help="List available compute instance types for the specified provider with pricing "
-        "information",
+    list_instance_types_parser = subparsers.add_parser(
+        "list_instance_types",
+        help="List compute instance types for the specified provider with pricing information",
     )
-    add_common_args(list_instances_parser, include_queue_name=False)
-    list_instances_parser.add_argument(
+    add_common_args(list_instance_types_parser, include_queue_name=False)
+    list_instance_types_parser.add_argument(
         "--min-cpu", type=int, help="Filter instance types by minimum number of vCPUs"
     )
-    list_instances_parser.add_argument(
+    list_instance_types_parser.add_argument(
         "--max-cpu", type=int, help="Filter instance types by maximum number of vCPUs"
     )
-    list_instances_parser.add_argument(
+    list_instance_types_parser.add_argument(
         "--min-memory", type=int, help="Filter instance types by minimum amount of memory (GB)"
     )
-    list_instances_parser.add_argument(
+    list_instance_types_parser.add_argument(
         "--max-memory", type=int, help="Filter instance types by maximum amount of memory (GB)"
     )
-    list_instances_parser.add_argument(
+    list_instance_types_parser.add_argument(
         "--min-memory-ratio", type=int, help="Filter instance types by minimum memory:vCPU ratio"
     )
-    list_instances_parser.add_argument(
+    list_instance_types_parser.add_argument(
         "--max-memory-ratio", type=int, help="Filter instance types by maximum memory:vCPU ratio"
     )
-    list_instances_parser.add_argument(
+    list_instance_types_parser.add_argument(
         "--instance-types",
         nargs="+",
         help='List of instance type patterns to filter by (e.g., "t3 m5" for AWS)',
     )
-    list_instances_parser.add_argument(
+    list_instance_types_parser.add_argument(
         "--filter", help="Filter instance types containing this text in any field"
     )
-    list_instances_parser.add_argument(
+    list_instance_types_parser.add_argument(
         "--limit", type=int, help="Limit the number of instance types displayed"
     )
-    list_instances_parser.add_argument(
+    list_instance_types_parser.add_argument(
         "--use-spot",
         action="store_true",
         help="Show spot/preemptible instance pricing instead of on-demand",
     )
-    list_instances_parser.add_argument(
+    list_instance_types_parser.add_argument(
         "--sort-by",
         help='Sort results by comma-separated fields (e.g., "price,vcpu" or "type,-memory"). '
         "Available fields: type/name, vcpu, memory, cpu_price, mem_price, total_price. "
         'Prefix with "-" for descending order. '
         'Partial field names like "mem" for "memory" or "v" for "vcpu" are supported.',
     )
-    list_instances_parser.set_defaults(func=list_instances_cmd)
+    list_instance_types_parser.set_defaults(func=list_instance_types_cmd)
 
     # Parse arguments
     args = parser.parse_args()

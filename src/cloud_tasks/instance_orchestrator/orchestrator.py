@@ -1,6 +1,7 @@
 """
 Instance Orchestrator core module.
 """
+
 import asyncio
 import base64
 import json
@@ -10,7 +11,8 @@ import traceback
 from typing import Any, Dict, List, Optional, Set, Union
 import datetime
 
-from cloud_tasks.common.base import InstanceManager, TaskQueue
+from cloud_tasks.common.base import InstanceManager
+from cloud_tasks.queue_manager.taskqueue import TaskQueue
 from cloud_tasks.instance_orchestrator import create_instance_manager
 from cloud_tasks.common.logging_config import configure_logging
 from cloud_tasks.common.config import Config, ProviderConfig
@@ -51,7 +53,7 @@ class InstanceOrchestrator:
         config: Optional[Config] = None,
         custom_image: Optional[str] = None,
         startup_script: str = "",
-        **kwargs
+        **kwargs,
     ):
         """
         Initialize the instance orchestrator.
@@ -115,17 +117,17 @@ class InstanceOrchestrator:
             # If region is specified in constructor, it takes precedence
             logger.info(f"Using specified region: {self.region}")
             provider_config = self.config.get_provider(provider)
-            if provider == 'azure':
-                provider_config['location'] = self.region
+            if provider == "azure":
+                provider_config["location"] = self.region
             else:
-                provider_config['region'] = self.region
+                provider_config["region"] = self.region
         elif provider in self.config:
             provider_config = self.config.get_provider(provider)
-            if 'region' in provider_config and provider != 'azure':
+            if "region" in provider_config and provider != "azure":
                 # Use region from provider config if available
                 self.region = provider_config.region
                 logger.info(f"Using region from config: {self.region}")
-            elif 'location' in provider_config and provider == 'azure':
+            elif "location" in provider_config and provider == "azure":
                 # Azure uses 'location' instead of 'region'
                 self.region = provider_config.location
                 logger.info(f"Using location from config: {self.region}")
@@ -158,7 +160,9 @@ class InstanceOrchestrator:
         # Set check interval for scaling loop
         self.check_interval_seconds = 60  # Check scaling every minute
 
-    def generate_worker_startup_script(self, provider: str, queue_name: str, config: Dict[str, Any]) -> str:
+    def generate_worker_startup_script(
+        self, provider: str, queue_name: str, config: Dict[str, Any]
+    ) -> str:
         """
         Generate a startup script for worker instances.
 
@@ -197,13 +201,13 @@ class InstanceOrchestrator:
 
             try:
                 self.task_queue = await create_queue(
-                    provider=self.provider,
-                    queue_name=self.queue_name,
-                    config=self.config
+                    provider=self.provider, queue_name=self.queue_name, config=self.config
                 )
             except Exception as e:
                 logger.error(f"Failed to initialize task queue: {e}", exc_info=True)
-                raise RuntimeError(f"Task queue initialization failed. Please provide a task queue or check configuration: {e}")
+                raise RuntimeError(
+                    f"Task queue initialization failed. Please provide a task queue or check configuration: {e}"
+                )
 
         # Begin monitoring
         self.running = True
@@ -244,8 +248,8 @@ class InstanceOrchestrator:
         # Get current instances
         try:
             current_instances = await self.list_job_instances()
-            running_count = len([i for i in current_instances if i['state'] == 'running'])
-            starting_count = len([i for i in current_instances if i['state'] == 'starting'])
+            running_count = len([i for i in current_instances if i["state"] == "running"])
+            starting_count = len([i for i in current_instances if i["state"] == "starting"])
 
             logger.info(f"Current instances: {running_count} running, {starting_count} starting")
 
@@ -266,20 +270,25 @@ class InstanceOrchestrator:
 
             # If queue has been empty for a while and we have more than min_instances,
             # terminate excess instances
-            if (self.empty_queue_since is not None and
-                float(time.time()) - self.empty_queue_since > self.instance_termination_delay_seconds and
-                total_instances > self.min_instances):
+            if (
+                self.empty_queue_since is not None
+                and float(time.time()) - self.empty_queue_since
+                > self.instance_termination_delay_seconds
+                and total_instances > self.min_instances
+            ):
 
                 # Calculate how many instances to terminate
                 instances_to_terminate = total_instances - self.min_instances
-                logger.info(f"Queue has been empty for {float(time.time()) - self.empty_queue_since}s, "
-                           f"terminating {instances_to_terminate} instances")
+                logger.info(
+                    f"Queue has been empty for {float(time.time()) - self.empty_queue_since}s, "
+                    f"terminating {instances_to_terminate} instances"
+                )
 
                 # Terminate instances
                 terminate_count = 0
                 for instance in current_instances:
-                    if instance['state'] == 'running' and terminate_count < instances_to_terminate:
-                        await self.instance_manager.terminate_instance(instance['id'])
+                    if instance["state"] == "running" and terminate_count < instances_to_terminate:
+                        await self.instance_manager.terminate_instance(instance["id"])
                         logger.info(f"Terminated instance: {instance['id']}")
                         terminate_count += 1
         else:
@@ -291,26 +300,37 @@ class InstanceOrchestrator:
             # Calculate desired number of instances based on queue depth and tasks per instance
             desired_instances = min(
                 self.max_instances,
-                max(self.min_instances, (queue_depth + self.tasks_per_instance - 1) // self.tasks_per_instance)
+                max(
+                    self.min_instances,
+                    (queue_depth + self.tasks_per_instance - 1) // self.tasks_per_instance,
+                ),
             )
 
-            logger.info(f"Calculated desired instances: {desired_instances} based on queue_depth={queue_depth} and tasks_per_instance={self.tasks_per_instance}")
+            logger.info(
+                f"Calculated desired instances: {desired_instances} based on queue_depth={queue_depth} and tasks_per_instance={self.tasks_per_instance}"
+            )
 
             # Scale up if needed
             if total_instances < desired_instances:
                 instances_to_add = desired_instances - total_instances
-                logger.info(f"Scaling up: Adding {instances_to_add} instances (from {total_instances} to {desired_instances})")
+                logger.info(
+                    f"Scaling up: Adding {instances_to_add} instances (from {total_instances} to {desired_instances})"
+                )
 
                 try:
                     new_instance_ids = await self.provision_instances(instances_to_add)
                     if new_instance_ids:
-                        logger.info(f"Successfully provisioned {len(new_instance_ids)} new instances: {new_instance_ids}")
+                        logger.info(
+                            f"Successfully provisioned {len(new_instance_ids)} new instances: {new_instance_ids}"
+                        )
                     else:
                         logger.warning("No instances were provisioned despite scaling request")
                 except Exception as e:
                     logger.error(f"Failed to provision instances: {e}")
             else:
-                logger.info(f"No scaling needed. Current: {total_instances}, Desired: {desired_instances}")
+                logger.info(
+                    f"No scaling needed. Current: {total_instances}, Desired: {desired_instances}"
+                )
 
         # Update last scaling time
         self.last_scaling_time = float(time.time())
@@ -339,7 +359,7 @@ class InstanceOrchestrator:
             List of instance dictionaries
         """
         # Define tags to filter by
-        tags = {'job_id': self.job_id}
+        tags = {"job_id": self.job_id}
 
         instances = await self.instance_manager.list_running_instances(tag_filter=tags)
         return instances
@@ -363,7 +383,7 @@ class InstanceOrchestrator:
                 self.cpu_required,
                 self.memory_required_gb,
                 self.disk_required_gb,
-                use_spot=self.use_spot_instances
+                use_spot=self.use_spot_instances,
             )
             logger.info(f"Selected instance type: {instance_type}")
 
@@ -374,16 +394,12 @@ class InstanceOrchestrator:
             startup_script = self.generate_worker_startup_script(
                 provider=self.provider,
                 queue_name=self.queue_name,  # Use the actual queue name
-                config=dict(provider_config)  # Pass provider-specific config as a dict
+                config=dict(provider_config),  # Pass provider-specific config as a dict
             )
 
             # Define tags
-            created_at = time.strftime('%Y-%m-%dT%H:%M:%S')
-            tags = {
-                'job_id': self.job_id,
-                'created_at': created_at,
-                'role': 'worker'
-            }
+            created_at = time.strftime("%Y-%m-%dT%H:%M:%S")
+            tags = {"job_id": self.job_id, "created_at": created_at, "role": "worker"}
 
             # Start instances
             instance_ids = []
@@ -394,17 +410,19 @@ class InstanceOrchestrator:
                         startup_script,
                         tags,
                         use_spot=self.use_spot_instances,
-                        custom_image=self.custom_image
+                        custom_image=self.custom_image,
                     )
                     instance_ids.append(instance_id)
                     # Store instance with creation time
                     self.instances[instance_id] = {
-                        'status': 'starting',
-                        'created_at': datetime.datetime.now().timestamp(),
-                        'instance_type': instance_type,
-                        'is_spot': self.use_spot_instances
+                        "status": "starting",
+                        "created_at": datetime.datetime.now().timestamp(),
+                        "instance_type": instance_type,
+                        "is_spot": self.use_spot_instances,
                     }
-                    logger.info(f"Started {'spot' if self.use_spot_instances else 'on-demand'} instance {instance_id}")
+                    logger.info(
+                        f"Started {'spot' if self.use_spot_instances else 'on-demand'} instance {instance_id}"
+                    )
                 except Exception as e:
                     logger.error(f"Failed to start instance: {e}", exc_info=True)
 
@@ -418,7 +436,7 @@ class InstanceOrchestrator:
 
         for instance in instances:
             try:
-                await self.instance_manager.terminate_instance(instance['id'])
+                await self.instance_manager.terminate_instance(instance["id"])
                 logger.info(f"Terminated instance {instance['id']}")
             except Exception as e:
                 logger.error(f"Error terminating instance {instance['id']}: {e}", exc_info=True)
@@ -433,22 +451,22 @@ class InstanceOrchestrator:
         instances = await self.list_job_instances()
         queue_depth = await self.task_queue.get_queue_depth()
 
-        running_count = len([i for i in instances if i['state'] == 'running'])
-        starting_count = len([i for i in instances if i['state'] == 'starting'])
+        running_count = len([i for i in instances if i["state"] == "running"])
+        starting_count = len([i for i in instances if i["state"] == "starting"])
 
         return {
-            'job_id': self.job_id,
-            'queue_depth': queue_depth,
-            'instances': {
-                'total': len(instances),
-                'running': running_count,
-                'starting': starting_count,
-                'details': instances
+            "job_id": self.job_id,
+            "queue_depth": queue_depth,
+            "instances": {
+                "total": len(instances),
+                "running": running_count,
+                "starting": starting_count,
+                "details": instances,
             },
-            'settings': {
-                'max_instances': self.max_instances,
-                'min_instances': self.min_instances,
-                'tasks_per_instance': self.tasks_per_instance
+            "settings": {
+                "max_instances": self.max_instances,
+                "min_instances": self.min_instances,
+                "tasks_per_instance": self.tasks_per_instance,
             },
-            'is_running': self.running
+            "is_running": self.running,
         }

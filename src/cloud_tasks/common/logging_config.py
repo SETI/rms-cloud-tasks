@@ -1,8 +1,10 @@
 """
 Custom logging configuration with proper microsecond support.
 """
+
 import logging
 import datetime
+
 
 class MicrosecondFormatter(logging.Formatter):
     """
@@ -18,16 +20,16 @@ class MicrosecondFormatter(logging.Formatter):
         if datefmt:
             s = ct.strftime(datefmt)
             # Always truncate to 3 digits (millisecond precision) even when datefmt is provided
-            if '.%f' in datefmt:
+            if ".%f" in datefmt:
                 # Find the position of microseconds in the formatted string
-                parts = datefmt.split('.%f')
+                parts = datefmt.split(".%f")
                 if len(parts) > 1:
                     # Get the length of the part before .%f
                     prefix_len = len(ct.strftime(parts[0]))
                     # Get the length of the microseconds (should be 6)
-                    microsec_len = len(ct.strftime('.%f')) - 1  # subtract 1 for the dot
+                    microsec_len = len(ct.strftime(".%f")) - 1  # subtract 1 for the dot
                     # Truncate the string to include only the first 3 digits of microseconds
-                    s = s[:prefix_len + 4]  # +4 accounts for the dot and 3 digits
+                    s = s[: prefix_len + 4]  # +4 accounts for the dot and 3 digits
                     # If there's content after microseconds, append it
                     if len(parts) > 1 and parts[1]:
                         s += ct.strftime(parts[1])
@@ -38,16 +40,36 @@ class MicrosecondFormatter(logging.Formatter):
         return s
 
 
-def configure_logging(level=logging.INFO):
+def configure_logging(level=logging.INFO, libraries_level=logging.CRITICAL):
     """
     Configure logging with proper microsecond support.
 
     Args:
         level: Logging level to use (default: INFO)
+        libraries_level: Logging level for libraries (default: CRITICAL)
     """
+
+    logging.getLogger("asyncio").setLevel(libraries_level)
+    logging.getLogger("urllib3").setLevel(libraries_level)
+
+    # AWS
+    logging.getLogger("boto").setLevel(libraries_level)
+    logging.getLogger("boto3").setLevel(libraries_level)
+    logging.getLogger("boto3.resources").setLevel(libraries_level)
+    logging.getLogger("botocore").setLevel(libraries_level)
+
+    # GCP
+    logging.getLogger("google").setLevel(libraries_level)
+    logging.getLogger("google.auth").setLevel(libraries_level)
+    logging.getLogger("google.cloud").setLevel(libraries_level)
+    logging.getLogger("google.cloud.pubsub").setLevel(libraries_level)
+
+    # Azure
+    logging.getLogger("azure").setLevel(libraries_level)
+    logging.getLogger("azure.servicebus").setLevel(libraries_level)
+
     formatter = MicrosecondFormatter(
-        fmt='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S.%f'
+        fmt="%(asctime)s - %(name)s - %(levelname)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S.%f"
     )
 
     # Configure the root logger
