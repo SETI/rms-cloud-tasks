@@ -34,7 +34,11 @@ azure-mgmt-servicebus>=8.2.1
 azure-mgmt-resource>=23.3.0
 azure-storage-blob>=12.14.0
 
-# Test dependencies
+# Testing
 pytest>=7.2.0
 pytest-asyncio>=0.20.0
 pytest-mock>=3.10.0
+
+# Documentation
+sphinx>=8.2.3
+sphinx-rtd-theme>=3.0.2
