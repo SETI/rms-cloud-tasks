@@ -3,8 +3,8 @@ import json
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from cloud_tasks.instance_orchestrator.aws import AWSEC2InstanceManager
-from cloud_tasks.instance_orchestrator.orchestrator import InstanceOrchestrator
+from cloud_tasks.instance_manager.aws import AWSEC2InstanceManager
+from cloud_tasks.instance_manager.orchestrator import InstanceOrchestrator
 
 pytest.skip(allow_module_level=True)  # TODO: Fix this test
 

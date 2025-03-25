@@ -14,10 +14,12 @@ from tqdm import tqdm  # type: ignore
 from typing import Any, Dict, Iterable
 import yaml  # type: ignore
 
-from cloud_tasks.common.config import Config, get_run_config, load_config
+import pydantic
+
+from cloud_tasks.common.config import Config, load_config
+from cloud_tasks.instance_manager import create_instance_manager
 from cloud_tasks.queue_manager import create_queue
 
-# from cloud_tasks.instance_orchestrator import create_instance_manager
 # from cloud_tasks.instance_orchestrator.orchestrator import InstanceOrchestrator
 from cloud_tasks.common.logging_config import configure_logging
 
@@ -415,7 +417,7 @@ async def list_running_instances_cmd(args: argparse.Namespace, config: Config) -
     """
     try:
         # Create instance manager
-        instance_manager = await create_instance_manager(provider=args.provider, config=config)
+        instance_manager = await create_instance_manager(config)
 
         # Get list of running instances
         tag_filter = {}
@@ -749,9 +751,7 @@ async def stop_job(args: argparse.Namespace, config: Config) -> None:
         orchestrator.task_queue = task_queue
 
         # Create the instance manager
-        orchestrator.instance_manager = await create_instance_manager(
-            provider=args.provider, config=config
-        )
+        orchestrator.instance_manager = await create_instance_manager(config)
 
         # Stop orchestrator (terminates instances)
         logger.info(f"Stopping job {args.job_id}")
@@ -779,10 +779,10 @@ async def list_images_cmd(args: argparse.Namespace, config: Config) -> None:
     """
     try:
         # Create instance manager for the provider
-        instance_manager = await create_instance_manager(provider=args.provider, config=config)
+        instance_manager = await create_instance_manager(config)
 
         # Get images
-        images = await instance_manager.list_available_images()
+        images = await instance_manager.get_available_images()
 
         if not images:
             print(f"No images found for provider {args.provider}")
@@ -957,12 +957,14 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
 
     Parameters:
         args: Command-line arguments
+        config: Configuration
     """
     try:
         # Create instance manager for the provider
-        instance_manager = await create_instance_manager(provider=args.provider, config=config)
+        instance_manager = await create_instance_manager(config)
 
         # Get available instance types
+        print("Retrieving instance types...")
         instances = await instance_manager.list_available_instance_types()
 
         if not instances:
@@ -975,31 +977,36 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
             for inst in instances
             if (args.min_cpu is None or inst["vcpu"] >= args.min_cpu)
             and (args.max_cpu is None or inst["vcpu"] <= args.max_cpu)
-            and (args.min_memory is None or inst["memory_gb"] >= args.min_memory)
-            and (args.max_memory is None or inst["memory_gb"] <= args.max_memory)
+            and (args.min_total_memory is None or inst["memory_gb"] >= args.min_memory)
+            and (args.max_total_memory is None or inst["memory_gb"] <= args.max_memory)
             and (
-                args.min_memory_ratio is None
-                or inst["memory_gb"] / inst["vcpu"] >= args.min_memory_ratio
+                args.min_memory_per_cpu is None
+                or inst["memory_gb"] / inst["vcpu"] >= args.min_memory_per_cpu
             )
             and (
-                args.max_memory_ratio is None
-                or inst["memory_gb"] / inst["vcpu"] <= args.max_memory_ratio
+                args.max_memory_per_cpu is None
+                or inst["memory_gb"] / inst["vcpu"] <= args.max_memory_per_cpu
             )
+            and (args.min_disk is None or inst["storage_gb"] >= args.min_disk)
+            and (args.max_disk is None or inst["storage_gb"] <= args.max_disk)
+            and (
+                args.min_disk_per_cpu is None
+                or inst["storage_gb"] / inst["vcpu"] >= args.min_disk_per_cpu
+            )
+            and (
+                args.max_disk_per_cpu is None
+                or inst["storage_gb"] / inst["vcpu"] <= args.max_disk_per_cpu
+            )
+            and (not args.use_spot or (args.use_spot and inst["supports_spot"]))
         ]
 
         # Apply instance type filter if specified
         if args.instance_types:
-            new_instance_types = []
-            for str1 in args.instance_types:
-                for str2 in str1.split(","):
-                    for str3 in str2.split(" "):
-                        if str3.strip():
-                            new_instance_types.append(str3.strip())
             filtered_instances = []
             for instance in instances:
                 instance_name = instance["name"]
                 # Check if instance matches any prefix or exact name
-                for pattern in new_instance_types:
+                for pattern in args.instance_types:
                     if instance_name.startswith(pattern):
                         filtered_instances.append(instance)
                         break
@@ -1018,52 +1025,48 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
             instances = filtered_instances
 
         # Try to get pricing information where available
-        pricing_data = {}
-        try:
-            # Create a config structure for the get_optimal_instance_type function to use
-            provider_config = config.get_provider_config(args.provider)
+        print("Retrieving pricing information...")
+        pricing_data = await instance_manager.get_instance_pricing(
+            [x["name"] for x in instances], args.use_spot
+        )
 
-            # For AWS and Azure, we need to set region explicitly for pricing
-            if args.provider == "aws" and "region" not in provider_config:
-                print(
-                    "Note: Pricing information requires a region. Using default us-west-2 for "
-                    "pricing data."
-                )
-                provider_config["region"] = "us-west-2"  # TODO Default region
-            elif args.provider == "azure" and "location" not in provider_config:
-                print(
-                    "Note: Pricing information requires a location. Using default eastus for "
-                    "pricing data."
-                )
-                provider_config["location"] = "eastus"  # TODO Default region
-
-            # Get pricing data for all eligible instance types
-            for instance in instances:
-                try:
-                    price = await instance_manager.get_instance_pricing(
-                        instance["name"], args.use_spot
-                    )
-                    if price is not None:
-                        pricing_data[instance["name"]] = price
-                except Exception as e:
-                    logger.warning(f"Could not get pricing for {instance['name']}: {e}")
-        except Exception as e:
-            logger.warning(f"Could not retrieve pricing information: {e}")
-
+        instances_and_zones = []
         # Add price data to instances for sorting
         for instance in instances:
-            if instance["name"] in pricing_data:
-                print(pricing_data[instance["name"]])
-                cpu_price, ram_price = pricing_data[instance["name"]]
-                instance["cpu_price"] = cpu_price
-                instance["ram_price"] = ram_price
-                instance["total_price"] = (
-                    cpu_price * instance["vcpu"] + ram_price * instance["memory_gb"]
-                )
+            inst_name = instance["name"]
+            if inst_name in pricing_data and pricing_data[inst_name] is not None:
+                for zone, zone_pricing in pricing_data[inst_name].items():
+                    cpu_price, per_cpu_price, ram_price, per_gb_price, total_price = zone_pricing
+                    if cpu_price is None and per_cpu_price is not None:
+                        cpu_price = per_cpu_price * instance["vcpu"]
+                    elif per_cpu_price is None and cpu_price is not None:
+                        per_cpu_price = cpu_price / instance["vcpu"]
+                    if ram_price is None and per_gb_price is not None:
+                        ram_price = per_gb_price * instance["memory_gb"]
+                    elif per_gb_price is None and ram_price is not None:
+                        per_gb_price = ram_price / instance["memory_gb"]
+                    if total_price is None:
+                        total_price = cpu_price + ram_price
+
+                    data = {
+                        **instance,
+                        "name": inst_name,
+                        "zone": zone,
+                        "cpu_price": per_cpu_price,
+                        "ram_price": per_gb_price,
+                        "total_price": total_price,
+                    }
+                    instances_and_zones.append(data)
             else:
-                instance["cpu_price"] = math.inf
-                instance["ram_price"] = math.inf
-                instance["total_price"] = math.inf
+                data = {
+                    **instance,
+                    "name": inst_name,
+                    "zone": "N/A",
+                    "cpu_price": math.inf,
+                    "ram_price": math.inf,
+                    "total_price": math.inf,
+                }
+                instances_and_zones.append(data)
 
         # Apply custom sorting if specified
         if args.sort_by:
@@ -1072,6 +1075,8 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
                 "type": "name",
                 "t": "name",
                 "name": "name",
+                "zone": "zone",
+                "z": "zone",
                 "vcpu": "vcpu",
                 "v": "vcpu",
                 "cpu": "vcpu",
@@ -1082,6 +1087,7 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
                 "ram": "memory_gb",
                 "cpu_price": "cpu_price",
                 "cp": "cpu_price",
+                "vcpu_price": "cpu_price",
                 "mem_price": "ram_price",
                 "mp": "ram_price",
                 "total_price": "total_price",
@@ -1104,79 +1110,51 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
                     if field_name is None:
                         logger.warning(f"Invalid sort field: {sort_field}")
                         continue
-                    instances.sort(key=lambda x: x[field_name], reverse=descending)
+                    instances_and_zones.sort(key=lambda x: x[field_name], reverse=descending)
             else:
                 # Default sort if no fields specified
-                instances.sort(key=lambda x: (x["vcpu"], x["memory_gb"]))
+                instances_and_zones.sort(
+                    key=lambda x: (x["vcpu"], x["memory_gb"], x["name"], x["zone"])
+                )
         else:
             # Default sort by vCPU, then memory if no sort-by specified
-            instances.sort(key=lambda x: (x["vcpu"], x["memory_gb"]))
+            instances_and_zones.sort(
+                key=lambda x: (x["vcpu"], x["memory_gb"], x["name"], x["zone"])
+            )
 
         # Limit results if specified - applied after sorting
-        if args.limit and len(instances) > args.limit:
-            instances = instances[: args.limit]
+        if args.limit and len(instances_and_zones) > args.limit:
+            instances_and_zones = instances_and_zones[: args.limit]
 
         # Display results with pricing if available
-        print(f"Found {len(instances)} instance types for {args.provider}:")
+        print(f"Found {len(instances_and_zones)} instance/zone pairs for {args.provider}:")
         print()
 
         has_pricing = bool(pricing_data)
 
-        # Format output based on provider
-        if args.provider == "aws":
+        print(
+            f"{'Instance Type':<24} {'Arch':>10} {'vCPU':>4} {'Mem (GB)':>9} "
+            f"{'$/vCPU/Hr':>10} {'$/GB/Hr':>8} {'Total $/Hr':>11} {'Zone':>10}"
+        )
+        print("-" * 98)
+        for inst in instances_and_zones:
+            if math.isinf(inst["cpu_price"]):
+                cpu_price_str = "N/A"
+            else:
+                cpu_price_str = f"${inst['cpu_price']:.4f}"
+            if math.isinf(inst["ram_price"]):
+                ram_price_str = "N/A"
+            else:
+                ram_price_str = f"${inst['ram_price']:.4f}"
+            if math.isinf(inst["total_price"]):
+                total_price_str = "N/A"
+            else:
+                total_price_str = f"${inst['total_price']:.4f}"
             print(
-                f"{'Instance Type':<24} {'vCPU':>6} {'Memory (GB)':>12} {'Storage (GB)':>12} "
-                f"{'Architecture':>12} {'Price/vCPU/Hour':>17}"
+                f"{inst['name']:<24} {inst['architecture']:>10} {inst['vcpu']:>4} "
+                f"{inst['memory_gb']:>9.1f} {cpu_price_str:>10} {ram_price_str:>8} "
+                f"{total_price_str:>11} {inst['zone']:>15}"
             )
-            print("-" * 80)
-            for inst in instances:
-                price_str = "N/A"
-                if inst["name"] in pricing_data:
-                    price_str = f"${pricing_data[inst['name']]:.4f}"
-                print(
-                    f"{inst['name']:<24} {inst['vcpu']:>6} {inst['memory_gb']:>12.1f} "
-                    f"{inst.get('storage_gb', 0):>12} {inst.get('architecture', 'x86_64'):>12} "
-                    f"{price_str:>17}"
-                )
-
-        elif args.provider == "gcp":
-            print(
-                f"{'Machine Type':<24} {'vCPU':>4} {'Mem (GB)':>9} {'$/vCPU/Hr':>10} "
-                f"{'$/GB/Hr':>8} {'Total $/Hr':>11}"
-            )
-            print("-" * 90)
-            for inst in instances:
-                if math.isinf(inst["cpu_price"]):
-                    cpu_price_str = "N/A"
-                else:
-                    cpu_price_str = f"${inst['cpu_price']:.4f}"
-                if math.isinf(inst["ram_price"]):
-                    ram_price_str = "N/A"
-                else:
-                    ram_price_str = f"${inst['ram_price']:.4f}"
-                if math.isinf(inst["total_price"]):
-                    total_price_str = "N/A"
-                else:
-                    total_price_str = f"${inst['total_price']:.4f}"
-                print(
-                    f"{inst['name']:<24} {inst['vcpu']:>4} {inst['memory_gb']:>9.1f} "
-                    f"{cpu_price_str:>10} {ram_price_str:>8} {total_price_str:>11}"
-                )
-
-        elif args.provider == "azure":
-            print(
-                f"{'VM Size':<24} {'vCPU':>6} {'Memory (GB)':>12} {'Storage (GB)':>12} "
-                f"{'Price/Hour':>17}"
-            )
-            print("-" * 70)
-            for inst in instances:
-                price_str = "N/A"
-                if inst["name"] in pricing_data:
-                    price_str = f"${pricing_data[inst['name']]:.4f}"
-                print(
-                    f"{inst['name']:<24} {inst['vcpu']:>6} {inst['memory_gb']:>12.1f} "
-                    f"{inst.get('storage_gb', 0):>12} {price_str:>17}"
-                )
 
         # Show no pricing data info if we couldn't get pricing
         if not has_pricing:
@@ -1225,6 +1203,73 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
         sys.exit(1)
 
 
+async def list_regions_cmd(args: argparse.Namespace, config: Config) -> None:
+    """
+    List available regions for the specified provider.
+
+    Parameters:
+        args: Command-line arguments
+        config: Configuration
+    """
+    try:
+        # Create instance manager for the provider
+        instance_manager = await create_instance_manager(config)
+
+        # Get regions with prefix filtering applied in the provider implementation
+        regions = await instance_manager.get_available_regions(prefix=args.prefix)
+
+        if not regions:
+            if args.prefix:
+                print(f"No regions found with prefix '{args.prefix}' for provider {args.provider}")
+            else:
+                print(f"No regions found for provider {args.provider}")
+            return
+
+        # Display results
+        if args.prefix:
+            print(
+                f"Found {len(regions)} regions for {args.provider} (filtered by prefix: {args.prefix})"
+            )
+        else:
+            print(f"Found {len(regions)} regions for {args.provider}:")
+        print()
+
+        print(f"{'Region':<25} {'Description':<40}")
+        print("-" * 100)
+
+        for region_name in sorted(regions):
+            region = regions[region_name]
+            print(f"{region['name']:<25} {region['description']:<40}")
+
+            if args.zones:
+                if region["zones"]:
+                    print(f"  Availability Zones: {', '.join(sorted(region['zones']))}")
+                else:
+                    print("  No availability zones found")
+
+            if args.detail:
+                if args.provider == "aws":
+                    print(f"  Opt-in Status: {region.get('opt_in_status', 'N/A')}")
+                elif args.provider == "azure" and region.get("metadata"):
+                    print(f"  Geography: {region['metadata'].get('geography', 'N/A')}")
+                    print(f"  Geography Group: {region['metadata'].get('geography_group', 'N/A')}")
+                    print(
+                        f"  Physical Location: {region['metadata'].get('physical_location', 'N/A')}"
+                    )
+
+            if args.zones or args.detail:
+                print()
+
+        if not args.zones:
+            print("\nUse --zones to show availability zones for each region")
+        if not args.detail:
+            print("Use --detail to show additional provider-specific information")
+
+    except Exception as e:
+        logger.error(f"Error listing regions: {e}", exc_info=True)
+        sys.exit(1)
+
+
 # Helper functions for argument parsing
 
 
@@ -1239,23 +1284,11 @@ def add_common_args(parser: argparse.ArgumentParser, include_queue_name: bool = 
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose output")
 
 
-def add_tasks_args(parser: argparse.ArgumentParser) -> None:
-    """Add task-loading specific arguments."""
-    parser.add_argument("--tasks", required=True, help="Path to tasks file (JSON or YAML)")
-
-
 def add_instance_pool_args(parser: argparse.ArgumentParser) -> None:
     """Add instance pool management specific arguments."""
     parser.add_argument("--job-id", help="Unique job ID (generated if not provided)")
     parser.add_argument("--max-instances", type=int, default=5, help="Maximum number of instances")
     parser.add_argument("--min-instances", type=int, default=0, help="Minimum number of instances")
-    parser.add_argument("--cpu", type=int, help="Minimum CPU cores per instance (overrides config)")
-    parser.add_argument(
-        "--memory", type=float, help="Minimum memory (GB) per instance (overrides config)"
-    )
-    parser.add_argument(
-        "--disk", type=int, help="Minimum disk space (GB) per instance (overrides config)"
-    )
     parser.add_argument("--image", help="Custom VM image to use (overrides config)")
     parser.add_argument(
         "--startup-script-file", help="Path to custom startup script file (overrides config)"
@@ -1263,20 +1296,70 @@ def add_instance_pool_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--tasks-per-instance", type=int, default=10, help="Number of tasks per instance"
     )
+
+
+def add_instance_args(parser: argparse.ArgumentParser) -> None:
+    """Add compute instance-specific arguments."""
+    parser.add_argument(
+        "--min-cpu", type=int, help="Filter instance types by minimum number of vCPUs"
+    )
+    parser.add_argument(
+        "--max-cpu", type=int, help="Filter instance types by maximum number of vCPUs"
+    )
+    parser.add_argument(
+        "--min-total-memory",
+        type=float,
+        help="Filter instance types by minimum amount of total memory (GB)",
+    )
+    parser.add_argument(
+        "--max-total-memory",
+        type=float,
+        help="Filter instance types by maximum amount of total memory (GB)",
+    )
+    parser.add_argument(
+        "--min-memory-per-cpu",
+        type=float,
+        help="Filter instance types by minimum memory (GB) per vCPU",
+    )
+    parser.add_argument(
+        "--max-memory-per-cpu",
+        type=float,
+        help="Filter instance types by maximum memory (GB) per vCPU",
+    )
+    parser.add_argument(
+        "--min-disk",
+        type=float,
+        help="Filter instance types by minimum disk (GB)",
+    )
+    parser.add_argument(
+        "--max-disk",
+        type=float,
+        help="Filter instance types by maximum disk (GB)",
+    )
+    parser.add_argument(
+        "--min-disk-per-cpu",
+        type=float,
+        help="Filter instance types by minimum disk (GB) per vCPU",
+    )
+    parser.add_argument(
+        "--max-disk-per-cpu",
+        type=float,
+        help="Filter instance types by maximum disk (GB) per vCPU",
+    )
+    parser.add_argument(
+        "--instance-types",
+        nargs="+",
+        help='Filter instance types by name prefix (e.g., "t3 m5" for AWS)',
+    )
     parser.add_argument(
         "--use-spot",
         action="store_true",
         help="Use spot/preemptible instances (cheaper but can be terminated)",
     )
     parser.add_argument(
-        "--region", help="Specific region to launch instances in (defaults to cheapest region)"
+        "--region", help="Specific region to use (derived from zone if not provided)"
     )
-    parser.add_argument(
-        "--instance-types",
-        nargs="+",
-        help='List of instance type patterns to use (e.g., "t3" for all t3 instances, "t3.micro" '
-        "for exact match)",
-    )
+    parser.add_argument("--zone", help="Specific zone to use")
 
 
 def main():
@@ -1285,23 +1368,26 @@ def main():
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
     subparsers.required = True
 
-    #
-    # QUEUE MANAGEMENT COMMANDS
-    #
+    # ------------------------- #
+    # QUEUE MANAGEMENT COMMANDS #
+    # ------------------------- #
 
-    # Load queue command
+    # --- Load queue command ---
+
     load_queue_parser = subparsers.add_parser(
         "load_queue", help="Load tasks into a queue without starting instances"
     )
     add_common_args(load_queue_parser)
-    add_tasks_args(load_queue_parser)
+    load_queue_parser.add_argument(
+        "--tasks", required=True, help="Path to tasks file (JSON or YAML)"
+    )
     load_queue_parser.set_defaults(func=load_queue_cmd)
 
-    # Show queue command
+    # --- Show queue command ---
+
     show_queue_parser = subparsers.add_parser(
         "show_queue",
-        help="Show the current depth of a task queue; use --verbose to show sample message "
-        "contents",
+        help="Show the current depth of a task queue's contents",
     )
     add_common_args(show_queue_parser)
     show_queue_parser.add_argument(
@@ -1309,7 +1395,8 @@ def main():
     )
     show_queue_parser.set_defaults(func=show_queue_cmd)
 
-    # Purge queue command
+    # --- Purge queue command ---
+
     purge_queue_parser = subparsers.add_parser(
         "purge_queue", help="Purge a task queue by removing all messages"
     )
@@ -1319,7 +1406,8 @@ def main():
     )
     purge_queue_parser.set_defaults(func=purge_queue_cmd)
 
-    # Delete queue command
+    # --- Delete queue command ---
+
     delete_queue_parser = subparsers.add_parser(
         "delete_queue", help="Permanently delete a task queue and its infrastructure"
     )
@@ -1329,66 +1417,37 @@ def main():
     )
     delete_queue_parser.set_defaults(func=delete_queue_cmd)
 
-    #
-    # JOB MANAGEMENT COMMANDS
-    #
-
-    # Run command (combines load_tasks and manage_pool)
-    run_parser = subparsers.add_parser(
-        "run", help="Run a job (load tasks and manage instance pool)"
-    )
-    add_common_args(run_parser)
-    add_tasks_args(run_parser)
-    add_instance_pool_args(run_parser)
-    run_parser.set_defaults(func=run_job)
-
-    # Manage pool command
-    manage_pool_parser = subparsers.add_parser(
-        "manage_pool", help="Manage an instance pool for processing tasks"
-    )
-    add_common_args(manage_pool_parser)
-    add_instance_pool_args(manage_pool_parser)
-    manage_pool_parser.set_defaults(func=manage_pool_cmd)
-
-    # Status command
-    status_parser = subparsers.add_parser("status", help="Check job status")
-    add_common_args(status_parser)
-    status_parser.add_argument("--job-id", required=True, help="Job ID to check")
-    status_parser.add_argument("--region", help="Specific region to look for instances in")
-    status_parser.set_defaults(func=status_job)
-
-    # Stop command
-    stop_parser = subparsers.add_parser("stop", help="Stop a running job")
-    add_common_args(stop_parser)
-    stop_parser.add_argument("--job-id", required=True, help="Job ID to stop")
-    stop_parser.add_argument(
-        "--purge-queue", action="store_true", help="Purge the queue after stopping"
-    )
-    stop_parser.set_defaults(func=stop_job)
-
-    # List running instances command
-    list_running_instances_parser = subparsers.add_parser(
-        "list_running_instances", help="List currently running instances for the specified provider"
-    )
-    add_common_args(list_running_instances_parser, include_queue_name=False)
-    list_running_instances_parser.add_argument("--job-id", help="Filter instances by job ID")
-    list_running_instances_parser.add_argument("--region", help="Filter instances by region")
-    list_running_instances_parser.set_defaults(func=list_running_instances_cmd)
-
-    #
+    # --------------------------
     # INFORMATION GATHERING COMMANDS
-    #
+    # --------------------------
 
-    # List images command
+    # --- List regions command ---
+
+    list_regions_parser = subparsers.add_parser(
+        "list_regions", help="List available regions for the specified provider"
+    )
+    add_common_args(list_regions_parser, include_queue_name=False)
+    list_regions_parser.add_argument(
+        "--prefix", help="Filter regions to only show those with names starting with this prefix"
+    )
+    list_regions_parser.add_argument(
+        "--zones", action="store_true", help="Show availability zones for each region"
+    )
+    list_regions_parser.add_argument(
+        "--detail", action="store_true", help="Show additional provider-specific information"
+    )
+    list_regions_parser.set_defaults(func=list_regions_cmd)
+
+    # --- List images command ---
+
     list_images_parser = subparsers.add_parser(
         "list_images", help="List available VM images for the specified provider"
     )
     add_common_args(list_images_parser, include_queue_name=False)
-    # Additional filtering options
     list_images_parser.add_argument(
-        "--source",
-        choices=["aws", "gcp", "azure", "user"],
-        help="Filter by image source (standard cloud images or user-created)",
+        "--user",
+        action="store_true",
+        help="Include user-created images in the list",
     )
     list_images_parser.add_argument(
         "--filter", help="Filter images containing this text in any field"
@@ -1409,45 +1468,19 @@ def main():
     )
     list_images_parser.set_defaults(func=list_images_cmd)
 
-    # List instance types command
+    # --- List instance types command ---
+
     list_instance_types_parser = subparsers.add_parser(
         "list_instance_types",
         help="List compute instance types for the specified provider with pricing information",
     )
     add_common_args(list_instance_types_parser, include_queue_name=False)
-    list_instance_types_parser.add_argument(
-        "--min-cpu", type=int, help="Filter instance types by minimum number of vCPUs"
-    )
-    list_instance_types_parser.add_argument(
-        "--max-cpu", type=int, help="Filter instance types by maximum number of vCPUs"
-    )
-    list_instance_types_parser.add_argument(
-        "--min-memory", type=int, help="Filter instance types by minimum amount of memory (GB)"
-    )
-    list_instance_types_parser.add_argument(
-        "--max-memory", type=int, help="Filter instance types by maximum amount of memory (GB)"
-    )
-    list_instance_types_parser.add_argument(
-        "--min-memory-ratio", type=int, help="Filter instance types by minimum memory:vCPU ratio"
-    )
-    list_instance_types_parser.add_argument(
-        "--max-memory-ratio", type=int, help="Filter instance types by maximum memory:vCPU ratio"
-    )
-    list_instance_types_parser.add_argument(
-        "--instance-types",
-        nargs="+",
-        help='List of instance type patterns to filter by (e.g., "t3 m5" for AWS)',
-    )
+    add_instance_args(list_instance_types_parser)
     list_instance_types_parser.add_argument(
         "--filter", help="Filter instance types containing this text in any field"
     )
     list_instance_types_parser.add_argument(
         "--limit", type=int, help="Limit the number of instance types displayed"
-    )
-    list_instance_types_parser.add_argument(
-        "--use-spot",
-        action="store_true",
-        help="Show spot/preemptible instance pricing instead of on-demand",
     )
     list_instance_types_parser.add_argument(
         "--sort-by",
@@ -1458,8 +1491,21 @@ def main():
     )
     list_instance_types_parser.set_defaults(func=list_instance_types_cmd)
 
+    # -------------- #
+    # Main execution #
+    # -------------- #
+
     # Parse arguments
     args = parser.parse_args()
+
+    if hasattr(args, "instance_types") and args.instance_types:
+        new_instance_types = []
+        for str1 in args.instance_types:
+            for str2 in str1.split(","):
+                for str3 in str2.split(" "):
+                    if str3.strip():
+                        new_instance_types.append(str3.strip())
+        args.instance_types = new_instance_types
 
     # Set up logging level based on verbosity
     if hasattr(args, "verbose") and args.verbose:
@@ -1468,16 +1514,13 @@ def main():
     # Load configuration
     logger.info(f"Loading configuration from {args.config}")
     try:
-        config = load_config(args.config, vars(args))
-    except Exception as e:
-        logger.fatal(f"Configuration error: {e}", exc_info=True)
-        sys.exit(1)
-
-    if args.provider is None:
-        args.provider = config.get("provider")
-
-    if args.provider is None:
-        logger.fatal("Provider must be specified")
+        config = load_config(args.config)
+        config.overload_from_cli(vars(args))
+        config.update_run_config_from_provider_config()
+        config.validate_config()
+    except (pydantic.ValidationError, ValueError) as e:
+        logger.fatal(f"Invalid configuration: {e}")
+        print(f"Invalid configuration: {e}")
         sys.exit(1)
 
     # Run the appropriate command
@@ -1486,3 +1529,59 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+    """_summary_
+    # --------------------------
+    # JOB MANAGEMENT COMMANDS
+    # --------------------------
+
+    # --- Run command (combines load_tasks and manage_pool)
+    run_parser = subparsers.add_parser(
+        "run", help="Run a job (load tasks and manage instance pool)"
+    )
+    add_common_args(run_parser)
+    add_tasks_args(run_parser)
+    add_instance_pool_args(run_parser)
+    run_parser.set_defaults(func=run_job)
+
+    # --- Manage pool command ---
+
+    manage_pool_parser = subparsers.add_parser(
+        "manage_pool", help="Manage an instance pool for processing tasks"
+    )
+    # --cpus-per-task
+    # --startup-script-file
+    add_common_args(manage_pool_parser)
+    add_instance_pool_args(manage_pool_parser)
+    manage_pool_parser.set_defaults(func=manage_pool_cmd)
+
+    # --- Status command ---
+
+    status_parser = subparsers.add_parser("status", help="Check job status")
+    add_common_args(status_parser)
+    status_parser.add_argument("--job-id", required=True, help="Job ID to check")
+    status_parser.add_argument("--region", help="Specific region to look for instances in")
+    status_parser.set_defaults(func=status_job)
+
+    # --- Stop command ---
+
+    stop_parser = subparsers.add_parser("stop", help="Stop a running job")
+    add_common_args(stop_parser)
+    stop_parser.add_argument("--job-id", required=True, help="Job ID to stop")
+    stop_parser.add_argument(
+        "--purge-queue", action="store_true", help="Purge the queue after stopping"
+    )
+    stop_parser.set_defaults(func=stop_job)
+
+    # --- List running instances command ---
+
+    list_running_instances_parser = subparsers.add_parser(
+        "list_running_instances", help="List currently running instances for the specified provider"
+    )
+    add_common_args(list_running_instances_parser, include_queue_name=False)
+    list_running_instances_parser.add_argument("--job-id", help="Filter instances by job ID")
+    list_running_instances_parser.add_argument("--region", help="Filter instances by region")
+    list_running_instances_parser.set_defaults(func=list_running_instances_cmd)
+
+
+    """

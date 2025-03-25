@@ -1,8 +1,7 @@
 """
-Task Queue Manager
+Task Queue Manager module and factory function
 """
 from typing import cast
-
 
 from .taskqueue import TaskQueue
 

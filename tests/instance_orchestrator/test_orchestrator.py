@@ -14,7 +14,7 @@ pytest.skip(allow_module_level=True)  # TODO: Fix this test
 # Filter coroutine warnings for these tests
 warnings.filterwarnings("ignore", message="coroutine .* was never awaited")
 
-from cloud_tasks.instance_orchestrator.orchestrator import InstanceOrchestrator
+from cloud_tasks.instance_manager.orchestrator import InstanceOrchestrator
 
 
 @pytest.fixture
@@ -335,7 +335,7 @@ def test_generate_worker_startup_script(orchestrator):
 async def test_instance_type_filtering_gcp():
     """Test that GCP instance_types configuration filters available machine types correctly."""
     # Create a mock GCP instance manager with instance_types configuration
-    from cloud_tasks.instance_orchestrator.gcp import GCPComputeInstanceManager
+    from cloud_tasks.instance_manager.gcp import GCPComputeInstanceManager
 
     manager = GCPComputeInstanceManager()
 
@@ -385,7 +385,7 @@ async def test_instance_type_filtering_gcp():
 async def test_instance_type_filtering_azure():
     """Test that Azure instance_types configuration filters available VM sizes correctly."""
     # Now that the Azure package is installed, we can import directly
-    from cloud_tasks.instance_orchestrator.azure import AzureVMInstanceManager
+    from cloud_tasks.instance_manager.azure import AzureVMInstanceManager
 
     manager = AzureVMInstanceManager()
 
@@ -434,7 +434,7 @@ async def test_instance_type_filtering_azure():
 @pytest.mark.asyncio
 async def test_instance_type_filtering_gcp_error():
     """Test that specifying non-existent GCP instance types raises an error."""
-    from cloud_tasks.instance_orchestrator.gcp import GCPComputeInstanceManager
+    from cloud_tasks.instance_manager.gcp import GCPComputeInstanceManager
 
     manager = GCPComputeInstanceManager()
 
@@ -480,7 +480,7 @@ async def test_instance_type_filtering_gcp_error():
 @pytest.mark.asyncio
 async def test_instance_type_filtering_azure_error():
     """Test that specifying non-existent Azure VM sizes raises an error."""
-    from cloud_tasks.instance_orchestrator.azure import AzureVMInstanceManager
+    from cloud_tasks.instance_manager.azure import AzureVMInstanceManager
 
     manager = AzureVMInstanceManager()
 

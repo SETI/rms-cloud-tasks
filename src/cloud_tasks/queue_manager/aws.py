@@ -24,6 +24,7 @@ class AWSSQSQueue(TaskQueue):
             queue_name: Name of the SQS queue
             config: AWS configuration with access_key, secret_key, and region
         """
+        super().__init__(aws_config)
         self._sqs = None
         self._queue_url = None
         self._queue_name = None

@@ -254,3 +254,6 @@ def test_load_config_converts_providers():
         # Clean up the temporary file
         if os.path.exists(tmp_path):
             os.unlink(tmp_path)
+
+
+# TODO Need much better tests for the config system

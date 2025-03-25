@@ -3,51 +3,67 @@ Configuration handling for the multi-cloud task processing system.
 """
 
 import os
-from typing import Any, Dict, Optional, List, Union
+from typing import Any, Dict, Optional, List, Literal, Union
 import yaml
 
-from pydantic import BaseModel
+from pydantic import BaseModel, NonNegativeFloat, NonNegativeInt,constr, Field
 
 
 class ProviderConfig(BaseModel):
     pass
 
 
-class AWSConfig(ProviderConfig):
-    queue_name: Optional[str] = None
-    instance_types: Optional[List[str]] = None
+class RunConfig(BaseModel, validate_assignment = True):
+    # Memory and disk are in GB
+    min_cpu: Optional[NonNegativeInt] = None
+    max_cpu: Optional[NonNegativeInt] = None
+    min_total_memory: Optional[NonNegativeFloat] = None
+    max_total_memory: Optional[NonNegativeFloat] = None
+    min_memory_per_cpu: Optional[NonNegativeFloat] = None
+    max_memory_per_cpu: Optional[NonNegativeFloat] = None
+    min_disk: Optional[NonNegativeFloat] = None
+    max_disk: Optional[NonNegativeFloat] = None
+    min_disk_per_cpu: Optional[NonNegativeFloat] = None
+    max_disk_per_cpu: Optional[NonNegativeFloat] = None
+    instance_types: Optional[List[str] | str] = None  # Overriden by provider config
+    use_spot: Optional[bool] = None
     startup_script: Optional[str] = None
+    startup_script_file: Optional[str] = None
     image: Optional[str] = None
-    cpu: Optional[int] = None
-    memory_gb: Optional[float] = None
-    disk_gb: Optional[float] = None
-
-    access_key: Optional[str] = None
-    secret_key: Optional[str] = None
-    region: Optional[str] = None
+    cpus_per_task: Optional[NonNegativeFloat] = None
 
 
-class GCPConfig(ProviderConfig):
-    queue_name: Optional[str] = None
-    instance_types: Optional[List[str]] = None
+class AWSConfig(ProviderConfig, validate_assignment = True):
+    queue_name: Optional[constr(min_length=1)] = None
+    instance_types: Optional[List[str] | str] = None
     startup_script: Optional[str] = None
-    image: Optional[str] = None
-    cpu: Optional[int] = None
-    memory_gb: Optional[float] = None
-    disk_gb: Optional[float] = None
+    startup_script_file: Optional[constr(min_length=1)] = None
+    image: Optional[constr(min_length=1)] = None
 
-    project_id: Optional[str] = None
-    credentials_file: Optional[str] = None
+    access_key: Optional[constr(min_length=1)] = None
+    secret_key: Optional[constr(min_length=1)] = None
+    region: Optional[constr(min_length=1)] = None
 
 
-class AzureConfig(ProviderConfig):
-    queue_name: Optional[str] = None
-    instance_types: Optional[List[str]] = None
-    startup_script: Optional[str] = None
-    image: Optional[str] = None
-    cpu: Optional[int] = None
-    memory_gb: Optional[float] = None
-    disk_gb: Optional[float] = None
+class GCPConfig(ProviderConfig, validate_assignment = True):
+    queue_name: Optional[constr(min_length=1)] = None
+    instance_types: Optional[List[str] | str] = None
+    startup_script: Optional[constr(min_length=1)] = None
+    startup_script_file: Optional[constr(min_length=1)] = None
+    image: Optional[constr(min_length=1)] = None
+
+    project_id: Optional[constr(min_length=1)] = None
+    region: Optional[constr(min_length=1)] = None
+    zone: Optional[constr(min_length=1)] = None
+    credentials_file: Optional[constr(min_length=1)] = None
+
+
+class AzureConfig(ProviderConfig, validate_assignment = True):
+    queue_name: Optional[constr(min_length=1)] = None
+    instance_types: Optional[List[str] | str] = None
+    startup_script: Optional[constr(min_length=1)] = None
+    startup_script_file: Optional[constr(min_length=1)] = None
+    image: Optional[constr(min_length=1)] = None
 
     subscription_id: Optional[str] = None
     tenant_id: Optional[str] = None
@@ -55,11 +71,88 @@ class AzureConfig(ProviderConfig):
     client_secret: Optional[str] = None
 
 
-class Config(BaseModel):
-    provider: Optional[str] = None
+class Config(BaseModel, validate_assignment = True):
+    provider: Optional[Literal["aws", "gcp", "azure"]] = None
     aws: Optional[AWSConfig] = None
     gcp: Optional[GCPConfig] = None
     azure: Optional[AzureConfig] = None
+    run: Optional[RunConfig] = None
+
+    def overload_from_cli(self, cli_args: Optional[Dict[str, Any]] = None) -> None:
+        """Overload Config object with command line arguments.
+
+        Args:
+            cli_args: Command line arguments as a dictionary
+        """
+        # Override loaded file and/or defaults with command line arguments
+        if cli_args is not None:
+            for attr_name in vars(self):
+                if attr_name in cli_args and cli_args[attr_name] is not None:
+                    setattr(self, attr_name, cli_args[attr_name])
+            for attr_name in vars(self.run):
+                if attr_name in cli_args and cli_args[attr_name] is not None:
+                    setattr(self.run, attr_name, cli_args[attr_name])
+            if self.aws is not None:
+                for attr_name in vars(self.aws):
+                    if attr_name in cli_args and cli_args[attr_name] is not None:
+                        setattr(self.aws, attr_name, cli_args[attr_name])
+            if self.gcp is not None:
+                for attr_name in vars(self.gcp):
+                    if attr_name in cli_args and cli_args[attr_name] is not None:
+                        setattr(self.gcp, attr_name, cli_args[attr_name])
+            if self.azure is not None:
+                for attr_name in vars(self.azure):
+                    if attr_name in cli_args and cli_args[attr_name] is not None:
+                        setattr(self.azure, attr_name, cli_args[attr_name])
+
+    def update_run_config_from_provider_config(self) -> None:
+        """Update run config with provider-specific config values."""
+        match self.provider:
+            case "aws":
+                if self.aws.instance_types is not None:
+                    self.run.instance_types = self.aws.instance_types
+                if self.aws.startup_script is not None:
+                    self.run.startup_script = self.aws.startup_script
+                if self.aws.startup_script_file is not None:
+                    self.run.startup_script_file = self.aws.startup_script_file
+                if self.aws.image is not None:
+                    self.run.image = self.aws.image
+            case "gcp":
+                if self.gcp.instance_types is not None:
+                    self.run.instance_types = self.gcp.instance_types
+                if self.gcp.startup_script is not None:
+                    self.run.startup_script = self.gcp.startup_script
+                if self.gcp.startup_script_file is not None:
+                    self.run.startup_script_file = self.gcp.startup_script_file
+                if self.gcp.image is not None:
+                    self.run.image = self.gcp.image
+            case "azure":
+                if self.azure.instance_types is not None:
+                    self.run.instance_types = self.azure.instance_types
+                if self.azure.startup_script is not None:
+                    self.run.startup_script = self.azure.startup_script
+                if self.azure.startup_script_file is not None:
+                    self.run.startup_script_file = self.azure.startup_script_file
+                if self.azure.image is not None:
+                    self.run.image = self.azure.image
+            case None:
+                raise ValueError("Provider must be provided")
+            case _:
+                raise ValueError(f"Unsupported provider: {self.provider}")
+
+        if self.run.startup_script is not None and self.run.startup_script_file is not None:
+            raise ValueError("Startup script and startup script file cannot both be provided")
+        if self.run.startup_script_file is not None:
+            if not os.path.exists(self.run.startup_script_file):
+                raise FileNotFoundError(f"Startup script file not found: {self.run.startup_script_file}")
+
+            with open(self.run.startup_script_file, "r") as f:
+                self.run.startup_script = f.read()
+
+    def validate_config(self) -> None:
+        """Perform final validation of the configuration."""
+        if self.provider is None:
+            raise ValueError("Provider must be provided")
 
     def get_provider_config(self, provider_name: Optional[str] = None) -> ProviderConfig:
         """Get configuration for a specific cloud provider.
@@ -94,9 +187,8 @@ class Config(BaseModel):
         return provider_config
 
 
-def load_config(config_file: str, cli_args: Optional[Dict[str, Any]] = None) -> Config:
-    """
-    Load configuration from a YAML file.
+def load_config(config_file: str) -> Config:
+    """Load configuration from a YAML file.
 
     Args:
         config_file: Path to the configuration file
@@ -106,7 +198,7 @@ def load_config(config_file: str, cli_args: Optional[Dict[str, Any]] = None) -> 
 
     Raises:
         FileNotFoundError: If the file cannot be found
-        VlueError: If the file cannot be loaded or is invalid
+        ValueError: If the file cannot be loaded or is invalid
     """
     if not os.path.exists(config_file):
         raise FileNotFoundError(f"Configuration file not found: {config_file}")
@@ -117,106 +209,18 @@ def load_config(config_file: str, cli_args: Optional[Dict[str, Any]] = None) -> 
     if not isinstance(config_dict, dict):
         raise ValueError("Configuration file must contain a YAML dictionary")
 
+    # This is annoying, but we do it so that the user doesn't have to specify all the sections
+    # in the config file but later we actually have objects to manipulate.
+    if "aws" not in config_dict:
+        config_dict["aws"] = {}
+    if "gcp" not in config_dict:
+        config_dict["gcp"] = {}
+    if "azure" not in config_dict:
+        config_dict["azure"] = {}
+    if "run" not in config_dict:
+        config_dict["run"] = {}
+
     # Convert to Config object
     config = Config(**config_dict)
 
-    if cli_args is not None and cli_args.get("provider") is not None:
-        config.provider = cli_args["provider"]
-    if cli_args is not None and cli_args.get("queue_name"):
-        if config.aws is not None:
-            config.aws.queue_name = cli_args["queue_name"]
-        if config.gcp is not None:
-            config.gcp.queue_name = cli_args["queue_name"]
-        if config.azure is not None:
-            config.azure.queue_name = cli_args["queue_name"]
-
     return config
-
-
-
-def get_run_config(
-    config: Config, provider: str, cli_args: Optional[Dict[str, Any]] = None
-) -> Config:
-    """
-    Get the run configuration with proper override hierarchy:
-    CLI args > Provider-specific config > Global run config > Defaults
-
-    Args:
-        config: Full configuration object
-        provider: Cloud provider name ('aws', 'gcp', or 'azure')
-        cli_args: Command-line arguments as a dictionary (optional)
-
-    Returns:
-        Config object with merged configuration values
-    """
-    # Default values
-    run_config = {
-        "cpu": 1,
-        "memory_gb": 2,
-        "disk_gb": 10,
-        "image": "ubuntu-2404-lts",
-        "startup_script": "",
-        "region": None,
-    }
-
-    # Override with CLI args if provided
-    if cli_args:
-        # Map CLI arg names to config names
-        cli_map = {
-            "cpu": "cpu",
-            "memory": "memory_gb",
-            "disk": "disk_gb",
-            "image": "image",
-            "startup_script_file": "startup_script",
-            "instance_types": "instance_types",
-            "region": "region",
-        }
-
-        for cli_key, config_key in cli_map.items():
-            if cli_key in cli_args and cli_args[cli_key] is not None:
-                value = cli_args[cli_key]
-
-                # Special handling for startup script file
-                if cli_key == "startup_script_file" and value:
-                    try:
-                        with open(value, "r") as f:
-                            run_config[config_key] = f.read()
-                    except Exception as e:
-                        raise ValueError(f"Error reading startup script file {value}: {e}")
-                elif cli_key == "instance_types" and value:
-                    new_instance_types = []
-                    for str1 in value:
-                        for str2 in str1.split(","):
-                            for str3 in str2.split(" "):
-                                new_instance_types.append(str3.strip())
-                    run_config[config_key] = new_instance_types
-                else:
-                    run_config[config_key] = value
-
-    # Create Config object from the run configuration
-    return Config(run_config)
-
-
-def load_startup_script(file_path: str) -> str:
-    """
-    Load a startup script from a file.
-
-    Args:
-        file_path: Path to the startup script file
-
-    Returns:
-        Contents of the startup script file as a string
-
-    Raises:
-        ConfigError: If the file cannot be loaded
-    """
-    try:
-        if not os.path.exists(file_path):
-            raise FileNotFoundError(f"Startup script file not found: {file_path}")
-
-        with open(file_path, "r") as f:
-            script = f.read()
-
-        return script
-    except Exception as e:
-        raise RuntimeError(f"Error loading startup script: {e}")

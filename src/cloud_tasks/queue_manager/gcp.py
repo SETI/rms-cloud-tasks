@@ -25,6 +25,7 @@ class GCPPubSubQueue(TaskQueue):
         Args:
             config: GCP configuration
         """
+        super().__init__(gcp_config)
         queue_name = gcp_config.queue_name
         if queue_name is None:
             raise ValueError("Queue name is required")

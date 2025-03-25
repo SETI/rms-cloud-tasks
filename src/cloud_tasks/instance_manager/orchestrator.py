@@ -13,7 +13,7 @@ import datetime
 
 from cloud_tasks.common.base import InstanceManager
 from cloud_tasks.queue_manager.taskqueue import TaskQueue
-from cloud_tasks.instance_orchestrator import create_instance_manager
+from cloud_tasks.instance_manager import create_instance_manager
 from cloud_tasks.common.logging_config import configure_logging
 from cloud_tasks.common.config import Config, ProviderConfig
 

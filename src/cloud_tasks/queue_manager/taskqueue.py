@@ -7,10 +7,9 @@ from cloud_tasks.common.config import ProviderConfig
 class TaskQueue(ABC):
     """Base interface for task queue operations."""
 
-    @abstractmethod
     def __init__(self, config: ProviderConfig) -> None:
         """Initialize the task queue with configuration."""
-        ...
+        pass
 
     @abstractmethod
     async def send_task(self, task_id: str, task_data: Dict[str, Any]) -> None:
