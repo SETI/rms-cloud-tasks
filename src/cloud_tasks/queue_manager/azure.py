@@ -4,6 +4,7 @@ Azure Service Bus implementation of the TaskQueue interface.
 
 import json
 import logging
+import asyncio
 from typing import Any, Dict, List
 from datetime import timedelta
 
@@ -41,12 +42,9 @@ class AzureServiceBusQueue(TaskQueue):
             namespace_name = config.get("namespace_name", f"{queue_name}-namespace")
 
             # Create connection string using SAS key (assuming it's provided in the config)
-            # In a real implementation, you would get this from authentication or Azure SDK
             if "connection_string" in config:
                 self._connection_string = config["connection_string"]
             else:
-                # This is a simplified example - in production, you would generate this properly
-                # using Azure identity libraries
                 self._connection_string = (
                     f"Endpoint=sb://{namespace_name}.servicebus.windows.net/;"
                     f"SharedAccessKeyName=RootManageSharedAccessKey;"
@@ -93,8 +91,6 @@ class AzureServiceBusQueue(TaskQueue):
             task_data: Task data to be processed
         """
         message = {"task_id": task_id, "data": task_data}
-
-        # Convert message to JSON string
         message_body = json.dumps(message)
 
         try:
@@ -106,9 +102,14 @@ class AzureServiceBusQueue(TaskQueue):
                 subject="task",
             )
 
-            # Send message to queue
-            with self._service_bus_client.get_queue_sender(queue_name=self._queue_name) as sender:
-                sender.send_messages(service_bus_message)
+            # Get the event loop
+            loop = asyncio.get_event_loop()
+
+            # Send message to queue in a thread pool
+            async with self._service_bus_client:
+                sender = self._service_bus_client.get_queue_sender(queue_name=self._queue_name)
+                await loop.run_in_executor(None, sender.send_messages, service_bus_message)
+
         except Exception as e:
             self._logger.error(f"Failed to publish message for task {task_id}: {str(e)}")
             raise RuntimeError(f"Failed to publish task to Azure Service Bus: {str(e)}")
@@ -130,24 +131,31 @@ class AzureServiceBusQueue(TaskQueue):
         """
         try:
             tasks = []
+            loop = asyncio.get_event_loop()
 
             # Create receiver for the queue
-            with self._service_bus_client.get_queue_receiver(
-                queue_name=self._queue_name, max_wait_time=10  # 10 seconds max wait time
-            ) as receiver:
-                # Receive up to max_count messages
-                received_messages = receiver.receive_messages(
-                    max_message_count=max_count,
-                    max_wait_time=5,  # Wait up to 5 seconds for messages
+            async with self._service_bus_client:
+                receiver = self._service_bus_client.get_queue_receiver(
+                    queue_name=self._queue_name, max_wait_time=10
+                )
+
+                # Receive messages in a thread pool
+                received_messages = await loop.run_in_executor(
+                    None,
+                    lambda: receiver.receive_messages(max_message_count=max_count, max_wait_time=5),
                 )
 
                 for message in received_messages:
                     # Parse message body
                     message_body = json.loads(message.body.decode("utf-8"))
 
-                    # Renew lock with the specified visibility timeout
-                    # Note: Azure Service Bus takes lock renewal in seconds
-                    receiver.renew_message_lock(message, timeout=visibility_timeout_seconds)
+                    # Renew lock with the specified visibility timeout in a thread pool
+                    await loop.run_in_executor(
+                        None,
+                        lambda: receiver.renew_message_lock(
+                            message, timeout=visibility_timeout_seconds
+                        ),
+                    )
 
                     tasks.append(
                         {
@@ -170,11 +178,12 @@ class AzureServiceBusQueue(TaskQueue):
             task_handle: lock_token from receive_tasks
         """
         try:
-            with self._service_bus_client.get_queue_receiver(
-                queue_name=self._queue_name
-            ) as receiver:
-                # Complete the message using its lock token
-                receiver.complete_message(task_handle)
+            loop = asyncio.get_event_loop()
+
+            async with self._service_bus_client:
+                receiver = self._service_bus_client.get_queue_receiver(queue_name=self._queue_name)
+                # Complete the message using its lock token in a thread pool
+                await loop.run_in_executor(None, receiver.complete_message, task_handle)
         except Exception as e:
             self._logger.error(f"Error completing task: {str(e)}")
             raise
@@ -187,11 +196,12 @@ class AzureServiceBusQueue(TaskQueue):
             task_handle: lock_token from receive_tasks
         """
         try:
-            with self._service_bus_client.get_queue_receiver(
-                queue_name=self._queue_name
-            ) as receiver:
-                # Abandon the message, making it available for immediate reprocessing
-                receiver.abandon_message(task_handle)
+            loop = asyncio.get_event_loop()
+
+            async with self._service_bus_client:
+                receiver = self._service_bus_client.get_queue_receiver(queue_name=self._queue_name)
+                # Abandon the message in a thread pool
+                await loop.run_in_executor(None, receiver.abandon_message, task_handle)
         except Exception as e:
             self._logger.error(f"Error failing task: {str(e)}")
             raise
@@ -204,56 +214,57 @@ class AzureServiceBusQueue(TaskQueue):
             Approximate number of messages in the queue
         """
         try:
-            # Get queue runtime properties
-            queue_properties = await self._admin_client.get_queue_runtime_properties(
-                self._queue_name
+            loop = asyncio.get_event_loop()
+
+            # Get queue runtime properties in a thread pool
+            queue_properties = await loop.run_in_executor(
+                None, lambda: self._admin_client.get_queue_runtime_properties(self._queue_name)
             )
 
-            # Return active message count
             return queue_properties.active_message_count
 
         except Exception as e:
-            # Log error and return 0 as fallback
             self._logger.error(f"Error getting queue depth: {str(e)}")
             return 0
 
     async def purge_queue(self) -> None:
         """Remove all messages from the queue by deleting and recreating it."""
         try:
-            # Delete the queue if it exists
-            await self._admin_client.delete_queue(self._queue_name)
+            loop = asyncio.get_event_loop()
 
-            # Create a new queue with the same properties
-            await self._admin_client.create_queue(
-                self._queue_name,
-                max_delivery_count=10,
-                lock_duration=timedelta(seconds=30),  # TODO Default lock duration in seconds
-                max_size_in_megabytes=1024,
-                requires_duplicate_detection=True,
-                duplicate_detection_history_time_window=timedelta(minutes=1),
+            # Delete the queue if it exists in a thread pool
+            await loop.run_in_executor(
+                None, lambda: self._admin_client.delete_queue(self._queue_name)
+            )
+
+            # Wait a moment for deletion to complete
+            await asyncio.sleep(2)
+
+            # Create a new queue with the same properties in a thread pool
+            await loop.run_in_executor(
+                None,
+                lambda: self._admin_client.create_queue(
+                    self._queue_name,
+                    max_delivery_count=10,
+                    lock_duration=timedelta(seconds=30),
+                    max_size_in_megabytes=1024,
+                    requires_duplicate_detection=True,
+                    duplicate_detection_history_time_window=timedelta(minutes=1),
+                ),
             )
         except Exception as e:
-            # Check if queue exists before deleting
-            self._admin_client.get_queue(self._queue_name)
-            self._admin_client.delete_queue(self._queue_name)
-
-            # Create a new queue with the same properties
-            self._admin_client.create_queue(
-                self._queue_name,
-                max_delivery_count=10,
-                lock_duration=timedelta(seconds=30),
-                max_size_in_megabytes=1024,
-                requires_duplicate_detection=True,
-                duplicate_detection_history_time_window=timedelta(minutes=1),
-            )
-        except Exception:
             self._logger.error(f"Error purging queue: {str(e)}")
             raise
 
     async def delete_queue(self) -> None:
         """Delete the Service Bus queue entirely."""
         try:
-            await self._admin_client.delete_queue(self._queue_name)
+            loop = asyncio.get_event_loop()
+
+            # Delete the queue in a thread pool
+            await loop.run_in_executor(
+                None, lambda: self._admin_client.delete_queue(self._queue_name)
+            )
             self._logger.info(f"Successfully deleted queue {self._queue_name}")
         except Exception as e:
             self._logger.error(f"Error deleting queue: {str(e)}")

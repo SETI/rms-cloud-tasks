@@ -83,22 +83,62 @@ async def load_queue_cmd(args: argparse.Namespace, config: Config) -> None:
             logger.fatal("Queue name must be specified")
             sys.exit(1)
 
-        logger.info(f"Creating task queue {queue_name} on {provider}")
+        print(f"Creating task queue {queue_name} on {provider} if necessary...")
         task_queue = await create_queue(config)
 
-        logger.info(f"Populating task queue from {args.tasks}")
+        print(f"Populating task queue from {args.tasks}...")
         num_tasks = 0
+        tasks_to_skip = args.start_task - 1 if args.start_task else 0
+        tasks_remaining = args.limit
+
+        # Create a semaphore to limit concurrent tasks
+        semaphore = asyncio.Semaphore(args.max_concurrent_tasks)
+        pending_tasks = set()
+
+        async def enqueue_task(task):
+            """Helper function to enqueue a single task with semaphore control."""
+            async with semaphore:
+                await task_queue.send_task(task["id"], task["data"])
+
         with tqdm(desc="Enqueueing tasks") as pbar:
             for task in yield_tasks_from_file(args.tasks):
-                logger.info(task)
-                await task_queue.send_task(task["id"], task["data"])
-                pbar.update(1)
-                num_tasks += 1
+                # Skip tasks until we reach the start_task
+                if tasks_to_skip > 0:
+                    tasks_to_skip -= 1
+                    continue
 
-        logger.info(f"Loaded {num_tasks} tasks")
+                # Check if we've reached the limit
+                if tasks_remaining is not None:
+                    if tasks_remaining <= 0:
+                        break
+                    tasks_remaining -= 1
+
+                logger.debug(f"Loading task: {task}")
+
+                # Create and track the task
+                task_obj = asyncio.create_task(enqueue_task(task))
+                pending_tasks.add(task_obj)
+                task_obj.add_done_callback(pending_tasks.discard)
+
+                # Update progress when tasks complete
+                while len(pending_tasks) >= args.max_concurrent_tasks:
+                    done, pending_tasks = await asyncio.wait(
+                        pending_tasks, return_when=asyncio.FIRST_COMPLETED
+                    )
+                    pbar.update(len(done))
+                    num_tasks += len(done)
+                    logger.debug(f"Increment of {len(done)} task(s)")
+            # Wait for remaining tasks to complete
+            if pending_tasks:
+                done, pending_tasks = await asyncio.wait(pending_tasks)
+                pbar.update(len(done))
+                num_tasks += len(done)
+                logger.debug(f"Final increment of {len(done)} task(s)")
+
+        print(f"Loaded {num_tasks} task(s)")
 
         queue_depth = await task_queue.get_queue_depth()
-        logger.info(f"Tasks loaded successfully. Queue depth (may be approximate): {queue_depth}")
+        print(f"Tasks loaded successfully. Queue depth (may be approximate): {queue_depth}")
 
     except Exception as e:
         logger.fatal(f"Error loading tasks: {e}", exc_info=True)
@@ -135,12 +175,7 @@ async def show_queue_cmd(args: argparse.Namespace, config: Config) -> None:
         sys.exit(1)
 
     # Display queue depth with some formatting
-    print("\n" + "=" * 50)
-    print("QUEUE INFORMATION")
-    print("=" * 50)
-    print(f"Queue name:     {args.queue_name}")
-    print(f"Provider:       {args.provider}")
-    print(f"Current depth:  {queue_depth} message(s)")
+    print(f"Current depth: {queue_depth} message(s)")
 
     if queue_depth == 0:
         print("\nQueue is empty. No messages available.")
@@ -243,9 +278,7 @@ async def purge_queue_cmd(args: argparse.Namespace, config: Config) -> None:
     # Verify the queue is now empty
     new_depth = await task_queue.get_queue_depth()
     if new_depth == 0:
-        print(
-            f"SUCCESS: Queue '{queue_name}' has been emptied. Removed " f"{queue_depth} message(s)."
-        )
+        print(f"Queue '{queue_name}' has been emptied. Removed " f"{queue_depth} message(s).")
     else:
         print(f"WARNING: Queue purge operation completed but {new_depth} messages still remain.")
         print("Some messages may be in flight or locked by consumers.")
@@ -277,7 +310,7 @@ async def delete_queue_cmd(args: argparse.Namespace, config: Config) -> None:
         print(f"Deleting queue '{queue_name}' from {provider}...")
         task_queue = await create_queue(config)
         await task_queue.delete_queue()
-        print(f"SUCCESS: Queue '{queue_name}' has been deleted.")
+        print(f"Queue '{queue_name}' has been deleted.")
     except Exception as e:
         logger.error(f"Error deleting queue: {e}")
         print(f"\nError deleting queue: {e}")
@@ -782,15 +815,15 @@ async def list_images_cmd(args: argparse.Namespace, config: Config) -> None:
         instance_manager = await create_instance_manager(config)
 
         # Get images
-        images = await instance_manager.get_available_images()
+        images = await instance_manager.list_available_images()
 
         if not images:
             print(f"No images found for provider {args.provider}")
             return
 
         # Apply filters if specified
-        if args.source:
-            images = [img for img in images if img.get("source", "").lower() == args.source.lower()]
+        if not args.user:
+            images = [img for img in images if img.get("source", "").lower() != "user"]
 
         if args.filter:
             # Filter by any field containing the filter string
@@ -867,7 +900,7 @@ async def list_images_cmd(args: argparse.Namespace, config: Config) -> None:
 
         # Display results
         print(
-            f"Found {len(images)} {'filtered ' if args.filter or args.source else ''}images for "
+            f"Found {len(images)} {'filtered ' if args.filter else ''}images for "
             f"{args.provider}:"
         )
         print()
@@ -1380,6 +1413,18 @@ def main():
     add_common_args(load_queue_parser)
     load_queue_parser.add_argument(
         "--tasks", required=True, help="Path to tasks file (JSON or YAML)"
+    )
+    load_queue_parser.add_argument(
+        "--start-task", type=int, help="Skip tasks until this task number (1-based indexing)"
+    )
+    load_queue_parser.add_argument(
+        "--limit", type=int, default=None, help="Maximum number of tasks to enqueue"
+    )
+    load_queue_parser.add_argument(
+        "--max-concurrent-tasks",
+        type=int,
+        default=100,
+        help="Maximum number of concurrent tasks to enqueue (default: 100)",
     )
     load_queue_parser.set_defaults(func=load_queue_cmd)
 

@@ -136,7 +136,7 @@ class Config(BaseModel, validate_assignment = True):
                 if self.azure.image is not None:
                     self.run.image = self.azure.image
             case None:
-                raise ValueError("Provider must be provided")
+                raise ValueError("Provider must be specified")
             case _:
                 raise ValueError(f"Unsupported provider: {self.provider}")
 
@@ -152,7 +152,7 @@ class Config(BaseModel, validate_assignment = True):
     def validate_config(self) -> None:
         """Perform final validation of the configuration."""
         if self.provider is None:
-            raise ValueError("Provider must be provided")
+            raise ValueError("Provider must be specified")
 
     def get_provider_config(self, provider_name: Optional[str] = None) -> ProviderConfig:
         """Get configuration for a specific cloud provider.

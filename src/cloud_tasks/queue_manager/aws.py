@@ -4,6 +4,7 @@ AWS SQS implementation of the TaskQueue interface.
 
 import json
 import logging
+import asyncio
 from typing import Any, Dict, List
 
 import boto3  # type: ignore
@@ -74,11 +75,19 @@ class AWSSQSQueue(TaskQueue):
         message = {"task_id": task_id, "data": task_data}
 
         try:
-            self._sqs.send_message(
-                QueueUrl=self._queue_url,
-                MessageBody=json.dumps(message),
-                MessageAttributes={"TaskId": {"DataType": "String", "StringValue": task_id}},
+            # Get the event loop
+            loop = asyncio.get_event_loop()
+
+            # Run the blocking SQS operation in a thread pool
+            await loop.run_in_executor(
+                None,
+                lambda: self._sqs.send_message(
+                    QueueUrl=self._queue_url,
+                    MessageBody=json.dumps(message),
+                    MessageAttributes={"TaskId": {"DataType": "String", "StringValue": task_id}},
+                ),
             )
+
             self._logger.debug(f"Published message for task {task_id}")
         except Exception as e:
             self._logger.error(f"Failed to send task to AWS SQS queue: {str(e)}")
@@ -103,12 +112,19 @@ class AWSSQSQueue(TaskQueue):
             # SQS limits max_count to 10
             max_count = min(max_count, 10)
 
-            response = self._sqs.receive_message(
-                QueueUrl=self._queue_url,
-                MaxNumberOfMessages=max_count,
-                VisibilityTimeout=visibility_timeout_seconds,
-                MessageAttributeNames=["All"],
-                WaitTimeSeconds=10,  # Using long polling
+            # Get the event loop
+            loop = asyncio.get_event_loop()
+
+            # Run the blocking receive operation in a thread pool
+            response = await loop.run_in_executor(
+                None,
+                lambda: self._sqs.receive_message(
+                    QueueUrl=self._queue_url,
+                    MaxNumberOfMessages=max_count,
+                    VisibilityTimeout=visibility_timeout_seconds,
+                    MessageAttributeNames=["All"],
+                    WaitTimeSeconds=10,  # Using long polling
+                ),
             )
 
             tasks = []
@@ -119,9 +135,7 @@ class AWSSQSQueue(TaskQueue):
                         {
                             "task_id": body["task_id"],
                             "data": body["data"],
-                            "receipt_handle": message[
-                                "ReceiptHandle"
-                            ],  # Used to complete/fail the task
+                            "receipt_handle": message["ReceiptHandle"],
                         }
                     )
 
@@ -139,7 +153,16 @@ class AWSSQSQueue(TaskQueue):
             task_handle: Receipt handle from receive_tasks
         """
         try:
-            self._sqs.delete_message(QueueUrl=self._queue_url, ReceiptHandle=task_handle)
+            # Get the event loop
+            loop = asyncio.get_event_loop()
+
+            # Run the blocking delete operation in a thread pool
+            await loop.run_in_executor(
+                None,
+                lambda: self._sqs.delete_message(
+                    QueueUrl=self._queue_url, ReceiptHandle=task_handle
+                ),
+            )
             self._logger.debug(f"Completed task with ack_id: {task_handle}")
         except Exception as e:
             self._logger.error(f"Error completing task: {str(e)}")
@@ -153,9 +176,15 @@ class AWSSQSQueue(TaskQueue):
             task_handle: Receipt handle from receive_tasks
         """
         try:
-            # Change visibility timeout to 0, making the message immediately available
-            self._sqs.change_message_visibility(
-                QueueUrl=self._queue_url, ReceiptHandle=task_handle, VisibilityTimeout=0
+            # Get the event loop
+            loop = asyncio.get_event_loop()
+
+            # Run the blocking visibility change operation in a thread pool
+            await loop.run_in_executor(
+                None,
+                lambda: self._sqs.change_message_visibility(
+                    QueueUrl=self._queue_url, ReceiptHandle=task_handle, VisibilityTimeout=0
+                ),
             )
             self._logger.debug(f"Failed task with ack_id: {task_handle}")
         except Exception as e:
@@ -170,8 +199,15 @@ class AWSSQSQueue(TaskQueue):
             Approximate number of messages in the queue
         """
         try:
-            response = self._sqs.get_queue_attributes(
-                QueueUrl=self._queue_url, AttributeNames=["ApproximateNumberOfMessages"]
+            # Get the event loop
+            loop = asyncio.get_event_loop()
+
+            # Run the blocking get attributes operation in a thread pool
+            response = await loop.run_in_executor(
+                None,
+                lambda: self._sqs.get_queue_attributes(
+                    QueueUrl=self._queue_url, AttributeNames=["ApproximateNumberOfMessages"]
+                ),
             )
 
             message_count = int(response["Attributes"]["ApproximateNumberOfMessages"])
@@ -184,7 +220,13 @@ class AWSSQSQueue(TaskQueue):
     async def purge_queue(self) -> None:
         """Remove all messages from the queue."""
         try:
-            self._sqs.purge_queue(QueueUrl=self._queue_url)
+            # Get the event loop
+            loop = asyncio.get_event_loop()
+
+            # Run the blocking purge operation in a thread pool
+            await loop.run_in_executor(
+                None, lambda: self._sqs.purge_queue(QueueUrl=self._queue_url)
+            )
             self._logger.debug(f"Purged queue {self._queue_name}")
         except Exception as e:
             self._logger.error(f"Error purging queue: {str(e)}")
@@ -193,7 +235,13 @@ class AWSSQSQueue(TaskQueue):
     async def delete_queue(self) -> None:
         """Delete the SQS queue entirely."""
         try:
-            self._sqs.delete_queue(QueueUrl=self._queue_url)
+            # Get the event loop
+            loop = asyncio.get_event_loop()
+
+            # Run the blocking delete operation in a thread pool
+            await loop.run_in_executor(
+                None, lambda: self._sqs.delete_queue(QueueUrl=self._queue_url)
+            )
             self._logger.info(f"Successfully deleted queue {self._queue_name}")
         except Exception as e:
             self._logger.error(f"Error deleting queue: {str(e)}")

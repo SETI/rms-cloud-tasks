@@ -5,6 +5,7 @@ Google Cloud Pub/Sub implementation of the TaskQueue interface.
 import json
 import logging
 import time
+import asyncio
 from typing import Any, Dict, List
 
 from google.cloud import pubsub_v1  # type: ignore
@@ -140,10 +141,13 @@ class GCPPubSubQueue(TaskQueue):
         data = json.dumps(message).encode("utf-8")
 
         try:
+            # Create the publish future
             future = self._publisher.publish(self._topic_path, data=data, task_id=task_id)
 
-            # Wait for message to be published with timeout
-            message_id = future.result(timeout=30)  # TODO Default timeout in seconds
+            # Convert the synchronous future to an asyncio future
+            loop = asyncio.get_event_loop()
+            message_id = await loop.run_in_executor(None, future.result, 30)
+
             self._logger.debug(
                 f"Published message '{message_id}' for task '{task_id}' on queue "
                 f"'{self._queue_name}'"
@@ -175,23 +179,32 @@ class GCPPubSubQueue(TaskQueue):
                 - 'ack_id' (str): Pub/Sub acknowledgment ID used for completing or failing the task
         """
         try:
-            # Pull messages from the subscription
-            response = self._subscriber.pull(
-                request={
-                    "subscription": self._subscription_path,
-                    "max_messages": max_count,
-                }
+            # Get the event loop
+            loop = asyncio.get_event_loop()
+
+            # Pull messages from the subscription in a thread pool
+            response = await loop.run_in_executor(
+                None,
+                lambda: self._subscriber.pull(
+                    request={
+                        "subscription": self._subscription_path,
+                        "max_messages": max_count,
+                    }
+                ),
             )
 
             tasks = []
             for received_message in response.received_messages:
-                # Modify the ack deadline for this message
-                self._subscriber.modify_ack_deadline(
-                    request={
-                        "subscription": self._subscription_path,
-                        "ack_ids": [received_message.ack_id],
-                        "ack_deadline_seconds": visibility_timeout_seconds,
-                    }
+                # Modify the ack deadline for this message in a thread pool
+                await loop.run_in_executor(
+                    None,
+                    lambda: self._subscriber.modify_ack_deadline(
+                        request={
+                            "subscription": self._subscription_path,
+                            "ack_ids": [received_message.ack_id],
+                            "ack_deadline_seconds": visibility_timeout_seconds,
+                        }
+                    ),
                 )
 
                 # Parse message data
@@ -222,12 +235,18 @@ class GCPPubSubQueue(TaskQueue):
             task_handle: ack_id from receive_tasks
         """
         try:
-            # Acknowledge the message
-            self._subscriber.acknowledge(
-                request={
-                    "subscription": self._subscription_path,
-                    "ack_ids": [task_handle],
-                }
+            # Get the event loop
+            loop = asyncio.get_event_loop()
+
+            # Acknowledge the message in a thread pool
+            await loop.run_in_executor(
+                None,
+                lambda: self._subscriber.acknowledge(
+                    request={
+                        "subscription": self._subscription_path,
+                        "ack_ids": [task_handle],
+                    }
+                ),
             )
             self._logger.debug(f"Completed task with ack_id: {task_handle}")
         except Exception as e:
@@ -246,13 +265,19 @@ class GCPPubSubQueue(TaskQueue):
             task_handle: ack_id from receive_tasks
         """
         try:
-            # Set ack deadline to 0, making the message immediately available
-            self._subscriber.modify_ack_deadline(
-                request={
-                    "subscription": self._subscription_path,
-                    "ack_ids": [task_handle],
-                    "ack_deadline_seconds": 0,
-                }
+            # Get the event loop
+            loop = asyncio.get_event_loop()
+
+            # Set ack deadline to 0 in a thread pool
+            await loop.run_in_executor(
+                None,
+                lambda: self._subscriber.modify_ack_deadline(
+                    request={
+                        "subscription": self._subscription_path,
+                        "ack_ids": [task_handle],
+                        "ack_deadline_seconds": 0,
+                    }
+                ),
             )
             self._logger.debug(f"Failed task with ack_id: {task_handle}")
         except Exception as e:
@@ -271,26 +296,36 @@ class GCPPubSubQueue(TaskQueue):
             Approximate number of messages in the queue
         """
         try:
-            # Attempt to pull a few messages to check if there are any in the queue
-            # without actually processing them
-            pull_response = self._subscriber.pull(
-                request={
-                    "subscription": self._subscription_path,
-                    "max_messages": 10,  # Request up to 10 messages to get a sample
-                    "return_immediately": True,  # Don't block waiting for messages
-                }
+            # Get the event loop
+            loop = asyncio.get_event_loop()
+
+            # Attempt to pull a few messages in a thread pool
+            pull_response = await loop.run_in_executor(
+                None,
+                lambda: self._subscriber.pull(
+                    request={
+                        "subscription": self._subscription_path,
+                        "max_messages": 10,  # Request up to 10 messages to get a sample
+                        "return_immediately": True,  # Don't block waiting for messages
+                    }
+                ),
             )
 
             # If we received any messages, we need to modify their ack deadline
             # to make them immediately available for regular processing
             if pull_response.received_messages:
                 ack_ids = [msg.ack_id for msg in pull_response.received_messages]
-                self._subscriber.modify_ack_deadline(
-                    request={
-                        "subscription": self._subscription_path,
-                        "ack_ids": ack_ids,
-                        "ack_deadline_seconds": 0,  # Make immediately available again
-                    }
+
+                # Modify ack deadline in a thread pool
+                await loop.run_in_executor(
+                    None,
+                    lambda: self._subscriber.modify_ack_deadline(
+                        request={
+                            "subscription": self._subscription_path,
+                            "ack_ids": ack_ids,
+                            "ack_deadline_seconds": 0,  # Make immediately available again
+                        }
+                    ),
                 )
 
                 # Count how many messages we found
@@ -313,9 +348,19 @@ class GCPPubSubQueue(TaskQueue):
     async def purge_queue(self) -> None:
         """Remove all messages from the queue by recreating the subscription."""
         self._logger.info(f"Purging queue {self._subscription_name} by recreating subscription")
+
+        # Get the event loop
+        loop = asyncio.get_event_loop()
+
         # Delete and recreate the subscription
         try:
-            self._subscriber.delete_subscription(request={"subscription": self._subscription_path})
+            # Delete subscription in a thread pool
+            await loop.run_in_executor(
+                None,
+                lambda: self._subscriber.delete_subscription(
+                    request={"subscription": self._subscription_path}
+                ),
+            )
             self._logger.info(f"Deleted subscription {self._subscription_name}")
         except Exception as e:
             self._logger.error(
@@ -325,17 +370,20 @@ class GCPPubSubQueue(TaskQueue):
             raise
 
         # Wait a moment for deletion to complete
-        time.sleep(2)
+        await asyncio.sleep(2)  # Use asyncio.sleep instead of time.sleep
 
         try:
-            # Recreate subscription
-            self._subscriber.create_subscription(
-                request={
-                    "name": self._subscription_path,
-                    "topic": self._topic_path,
-                    "message_retention_duration": {"seconds": 7 * 24 * 60 * 60},
-                    "ack_deadline_seconds": 30,  # TODO Default ack deadline in seconds
-                }
+            # Recreate subscription in a thread pool
+            await loop.run_in_executor(
+                None,
+                lambda: self._subscriber.create_subscription(
+                    request={
+                        "name": self._subscription_path,
+                        "topic": self._topic_path,
+                        "message_retention_duration": {"seconds": 7 * 24 * 60 * 60},
+                        "ack_deadline_seconds": 30,
+                    }
+                ),
             )
             self._logger.info(
                 f"Recreated subscription '{self._subscription_name}' for Pub/Sub queue "
@@ -351,9 +399,18 @@ class GCPPubSubQueue(TaskQueue):
 
     async def delete_queue(self) -> None:
         """Delete both the Pub/Sub subscription and topic entirely."""
+        # Get the event loop
+        loop = asyncio.get_event_loop()
+
         # Delete subscription first
         try:
-            self._subscriber.delete_subscription(request={"subscription": self._subscription_path})
+            # Delete subscription in a thread pool
+            await loop.run_in_executor(
+                None,
+                lambda: self._subscriber.delete_subscription(
+                    request={"subscription": self._subscription_path}
+                ),
+            )
             self._logger.info(f"Successfully deleted subscription {self._subscription_name}")
         except Exception as e:
             self._logger.error(
@@ -364,7 +421,10 @@ class GCPPubSubQueue(TaskQueue):
 
         # Then delete the topic
         try:
-            self._publisher.delete_topic(request={"topic": self._topic_path})
+            # Delete topic in a thread pool
+            await loop.run_in_executor(
+                None, lambda: self._publisher.delete_topic(request={"topic": self._topic_path})
+            )
             self._logger.info(f"Successfully deleted topic {self._topic_name}")
         except Exception as e:
             self._logger.error(
