@@ -815,6 +815,7 @@ async def list_images_cmd(args: argparse.Namespace, config: Config) -> None:
         instance_manager = await create_instance_manager(config)
 
         # Get images
+        print("Retrieving images...")
         images = await instance_manager.list_available_images()
 
         if not images:
@@ -907,14 +908,20 @@ async def list_images_cmd(args: argparse.Namespace, config: Config) -> None:
 
         # Format output based on provider
         if args.provider == "aws":
-            print(f"{'ID':<20} {'Name':<40} {'Creation Date':<24} {'Source':<6}")
+            print(f"{'Name':<80} {'Source':<6}")
             print("-" * 90)
             for img in images:
-                print(
-                    f"{img.get('id', 'N/A'):<20} {img.get('name', 'N/A')[:38]:<40} "
-                    f"{img.get('creation_date', 'N/A')[:22]:<24} {img.get('source', 'N/A'):<6}"
-                )
-                # TODO Update for --detail
+                print(f"{img.get('name', 'N/A')[:78]:<80} {img.get('source', 'N/A'):<6}")
+                if args.detail:
+                    print(f"{img.get('description', 'N/A')}")
+                    print(f"ID: {img.get('id', 'N/A')}")
+                    print(
+                        f"CREATION DATE: "
+                        f"{img.get('creation_date', 'N/A')[:24]:<26}  STATUS: "
+                        f"{img.get('status', 'N/A'):<20}"
+                    )
+                    print(f"URL: {img.get('self_link', 'N/A')}")
+                    print()
 
         elif args.provider == "gcp":
             print(f"{'Family':<35} {'Name':<50} {'Project':<20} {'Source':<6}")
@@ -926,12 +933,12 @@ async def list_images_cmd(args: argparse.Namespace, config: Config) -> None:
                 )
                 if args.detail:
                     print(f"{img.get('description', 'N/A')}")
-                    print(f"{img.get('self_link', 'N/A')}")
                     print(
                         f"ID: {img.get('id', 'N/A'):<24}  CREATION DATE: "
                         f"{img.get('creation_date', 'N/A')[:32]:<34}  STATUS: "
                         f"{img.get('status', 'N/A'):<20}"
                     )
+                    print(f"URL: {img.get('self_link', 'N/A')}")
                     print()
         elif args.provider == "azure":
             if any(img.get("source") == "Azure" for img in images):
@@ -1010,15 +1017,15 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
             for inst in instances
             if (args.min_cpu is None or inst["vcpu"] >= args.min_cpu)
             and (args.max_cpu is None or inst["vcpu"] <= args.max_cpu)
-            and (args.min_total_memory is None or inst["memory_gb"] >= args.min_memory)
-            and (args.max_total_memory is None or inst["memory_gb"] <= args.max_memory)
+            and (args.min_total_memory is None or inst["ram_gb"] >= args.min_total_memory)
+            and (args.max_total_memory is None or inst["ram_gb"] <= args.max_total_memory)
             and (
                 args.min_memory_per_cpu is None
-                or inst["memory_gb"] / inst["vcpu"] >= args.min_memory_per_cpu
+                or inst["ram_gb"] / inst["vcpu"] >= args.min_memory_per_cpu
             )
             and (
                 args.max_memory_per_cpu is None
-                or inst["memory_gb"] / inst["vcpu"] <= args.max_memory_per_cpu
+                or inst["ram_gb"] / inst["vcpu"] <= args.max_memory_per_cpu
             )
             and (args.min_disk is None or inst["storage_gb"] >= args.min_disk)
             and (args.max_disk is None or inst["storage_gb"] <= args.max_disk)
@@ -1069,15 +1076,19 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
             inst_name = instance["name"]
             if inst_name in pricing_data and pricing_data[inst_name] is not None:
                 for zone, zone_pricing in pricing_data[inst_name].items():
-                    cpu_price, per_cpu_price, ram_price, per_gb_price, total_price = zone_pricing
+                    cpu_price = zone_pricing["cpu_price"]
+                    per_cpu_price = zone_pricing["per_cpu_price"]
+                    ram_price = zone_pricing["ram_price"]
+                    per_gb_price = zone_pricing["ram_per_gb_price"]
+                    total_price = zone_pricing["total_price"]
                     if cpu_price is None and per_cpu_price is not None:
                         cpu_price = per_cpu_price * instance["vcpu"]
                     elif per_cpu_price is None and cpu_price is not None:
                         per_cpu_price = cpu_price / instance["vcpu"]
                     if ram_price is None and per_gb_price is not None:
-                        ram_price = per_gb_price * instance["memory_gb"]
+                        ram_price = per_gb_price * instance["ram_gb"]
                     elif per_gb_price is None and ram_price is not None:
-                        per_gb_price = ram_price / instance["memory_gb"]
+                        per_gb_price = ram_price / instance["ram_gb"]
                     if total_price is None:
                         total_price = cpu_price + ram_price
 
@@ -1085,8 +1096,8 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
                         **instance,
                         "name": inst_name,
                         "zone": zone,
-                        "cpu_price": per_cpu_price,
-                        "ram_price": per_gb_price,
+                        "per_cpu_price": per_cpu_price,
+                        "ram_per_gb_price": per_gb_price,
                         "total_price": total_price,
                     }
                     instances_and_zones.append(data)
@@ -1095,8 +1106,8 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
                     **instance,
                     "name": inst_name,
                     "zone": "N/A",
-                    "cpu_price": math.inf,
-                    "ram_price": math.inf,
+                    "per_cpu_price": math.inf,
+                    "ram_per_gb_price": math.inf,
                     "total_price": math.inf,
                 }
                 instances_and_zones.append(data)
@@ -1114,10 +1125,10 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
                 "v": "vcpu",
                 "cpu": "vcpu",
                 "c": "vcpu",
-                "memory": "memory_gb",
-                "mem": "memory_gb",
-                "m": "memory_gb",
-                "ram": "memory_gb",
+                "memory": "ram_gb",
+                "mem": "ram_gb",
+                "m": "ram_gb",
+                "ram": "ram_gb",
                 "cpu_price": "cpu_price",
                 "cp": "cpu_price",
                 "vcpu_price": "cpu_price",
@@ -1127,6 +1138,9 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
                 "p": "total_price",
                 "tp": "total_price",
                 "cost": "total_price",
+                "description": "description",
+                "d": "description",
+                "desc": "description",
             }
 
             # Parse the sort fields
@@ -1147,13 +1161,11 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
             else:
                 # Default sort if no fields specified
                 instances_and_zones.sort(
-                    key=lambda x: (x["vcpu"], x["memory_gb"], x["name"], x["zone"])
+                    key=lambda x: (x["vcpu"], x["ram_gb"], x["name"], x["zone"])
                 )
         else:
             # Default sort by vCPU, then memory if no sort-by specified
-            instances_and_zones.sort(
-                key=lambda x: (x["vcpu"], x["memory_gb"], x["name"], x["zone"])
-            )
+            instances_and_zones.sort(key=lambda x: (x["vcpu"], x["ram_gb"], x["name"], x["zone"]))
 
         # Limit results if specified - applied after sorting
         if args.limit and len(instances_and_zones) > args.limit:
@@ -1167,26 +1179,27 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
 
         print(
             f"{'Instance Type':<24} {'Arch':>10} {'vCPU':>4} {'Mem (GB)':>9} "
-            f"{'$/vCPU/Hr':>10} {'$/GB/Hr':>8} {'Total $/Hr':>11} {'Zone':>10}"
+            f"{'$/vCPU/Hr':>10} {'$/GB/Hr':>8} {'Total $/Hr':>11} {'Zone':>10}        "
+            f"{'Description':>10}"
         )
-        print("-" * 98)
+        print("-" * 139)
         for inst in instances_and_zones:
-            if math.isinf(inst["cpu_price"]):
+            if math.isinf(inst["per_cpu_price"]):
                 cpu_price_str = "N/A"
             else:
-                cpu_price_str = f"${inst['cpu_price']:.4f}"
-            if math.isinf(inst["ram_price"]):
+                cpu_price_str = f"${inst['per_cpu_price']:.4f}"
+            if math.isinf(inst["ram_per_gb_price"]):
                 ram_price_str = "N/A"
             else:
-                ram_price_str = f"${inst['ram_price']:.4f}"
+                ram_price_str = f"${inst['ram_per_gb_price']:.4f}"
             if math.isinf(inst["total_price"]):
                 total_price_str = "N/A"
             else:
                 total_price_str = f"${inst['total_price']:.4f}"
             print(
                 f"{inst['name']:<24} {inst['architecture']:>10} {inst['vcpu']:>4} "
-                f"{inst['memory_gb']:>9.1f} {cpu_price_str:>10} {ram_price_str:>8} "
-                f"{total_price_str:>11} {inst['zone']:>15}"
+                f"{inst['ram_gb']:>9.1f} {cpu_price_str:>10} {ram_price_str:>8} "
+                f"{total_price_str:>11} {inst['zone']:>15}  {inst['description'][:60]:<60}"
             )
 
         # Show no pricing data info if we couldn't get pricing
@@ -1274,23 +1287,27 @@ async def list_regions_cmd(args: argparse.Namespace, config: Config) -> None:
             region = regions[region_name]
             print(f"{region['name']:<25} {region['description']:<40}")
 
+            skip_line = False
             if args.zones:
                 if region["zones"]:
                     print(f"  Availability Zones: {', '.join(sorted(region['zones']))}")
                 else:
                     print("  No availability zones found")
+                skip_line = True
 
             if args.detail:
                 if args.provider == "aws":
                     print(f"  Opt-in Status: {region.get('opt_in_status', 'N/A')}")
+                    skip_line = True
                 elif args.provider == "azure" and region.get("metadata"):
                     print(f"  Geography: {region['metadata'].get('geography', 'N/A')}")
                     print(f"  Geography Group: {region['metadata'].get('geography_group', 'N/A')}")
                     print(
                         f"  Physical Location: {region['metadata'].get('physical_location', 'N/A')}"
                     )
+                    skip_line = True
 
-            if args.zones or args.detail:
+            if skip_line:
                 print()
 
         if not args.zones:
@@ -1314,7 +1331,13 @@ def add_common_args(parser: argparse.ArgumentParser, include_queue_name: bool = 
     parser.add_argument("--provider", choices=["aws", "gcp", "azure"], help="Cloud provider")
     if include_queue_name:
         parser.add_argument("--queue-name", help="Name of the task queue")
-    parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose output")
+    parser.add_argument(
+        "--verbose",
+        "-v",
+        action="count",
+        default=0,
+        help="Increase verbosity level (-v for warning, -vv for info, -vvv for debug)",
+    )
 
 
 def add_instance_pool_args(parser: argparse.ArgumentParser) -> None:
@@ -1530,9 +1553,9 @@ def main():
     list_instance_types_parser.add_argument(
         "--sort-by",
         help='Sort results by comma-separated fields (e.g., "price,vcpu" or "type,-memory"). '
-        "Available fields: type/name, vcpu, memory, cpu_price, mem_price, total_price. "
+        "Available fields: type/name, vcpu, ram_gb, cpu_price, ram_price, total_price. "
         'Prefix with "-" for descending order. '
-        'Partial field names like "mem" for "memory" or "v" for "vcpu" are supported.',
+        'Partial field names like "ram" or "mem" for "ram_gb" or "v" for "vcpu" are supported.',
     )
     list_instance_types_parser.set_defaults(func=list_instance_types_cmd)
 
@@ -1553,8 +1576,13 @@ def main():
         args.instance_types = new_instance_types
 
     # Set up logging level based on verbosity
-    if hasattr(args, "verbose") and args.verbose:
-        logging.getLogger().setLevel(logging.DEBUG)
+    if hasattr(args, "verbose"):
+        if args.verbose == 1:
+            logging.getLogger().setLevel(logging.WARNING)
+        elif args.verbose == 2:
+            logging.getLogger().setLevel(logging.INFO)
+        elif args.verbose > 2:
+            logging.getLogger().setLevel(logging.DEBUG)
 
     # Load configuration
     logger.info(f"Loading configuration from {args.config}")

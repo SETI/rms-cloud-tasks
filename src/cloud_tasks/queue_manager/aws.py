@@ -26,14 +26,20 @@ class AWSSQSQueue(TaskQueue):
             config: AWS configuration with access_key, secret_key, and region
         """
         super().__init__(aws_config)
-        self._sqs = None
-        self._queue_url = None
-        self._queue_name = None
+        self._queue_name = aws_config.queue_name
+        if self._queue_name is None:
+            raise ValueError("Queue name is required")
+
         self._logger = logging.getLogger(__name__)
 
+        self._sqs = None
+        self._queue_url = None
+
+        # Check if queue exists
+        self._queue_exists = False
         try:
-            self._queue_name = aws_config.queue_name
             self._logger.info(f"Initializing AWS SQS queue with queue name: {self._queue_name}")
+
             # Create SQS client
             self._sqs = boto3.client(
                 "sqs",
@@ -42,27 +48,54 @@ class AWSSQSQueue(TaskQueue):
                 region_name=aws_config.region,
             )
 
-            # Create queue if it doesn't exist
+            # Check if queue exists
             try:
-                response = self._sqs.create_queue(
-                    QueueName=self._queue_name,
-                    Attributes={
-                        "VisibilityTimeout": "30",  # TODO Default visibility timeout in seconds
-                        "MessageRetentionPeriod": "1209600",  # 14 days (maximum)
-                    },
-                )
+                response = self._sqs.get_queue_url(QueueName=self._queue_name)
                 self._queue_url = response["QueueUrl"]
+                self._logger.info(f"Found existing queue: {self._queue_name}")
+                self._queue_exists = True
             except ClientError as e:
-                # If queue already exists, get its URL
-                if e.response["Error"]["Code"] == "QueueAlreadyExists":
-                    response = self._sqs.get_queue_url(QueueName=self._queue_name)
-                    self._queue_url = response["QueueUrl"]
+                if e.response["Error"]["Code"] == "AWS.SimpleQueueService.NonExistentQueue":
+                    self._logger.info(
+                        f"Queue {self._queue_name} does not exist...deferring creation"
+                    )
                 else:
                     raise
 
         except Exception as e:
             self._logger.error(f"Failed to initialize AWS SQS queue: {str(e)}")
             raise
+
+    def _create_queue(self) -> None:
+        """Create the SQS queue if it doesn't exist."""
+        if self._queue_exists:
+            return
+
+        try:
+            self._logger.debug(f"Creating queue: {self._queue_name}")
+            response = self._sqs.create_queue(
+                QueueName=self._queue_name,
+                Attributes={
+                    "VisibilityTimeout": "30",  # TODO Default visibility timeout in seconds
+                    "MessageRetentionPeriod": "1209600",  # 14 days (maximum)
+                },
+            )
+            self._queue_url = response["QueueUrl"]
+            self._queue_exists = True
+            self._logger.info(f"Successfully created queue: {self._queue_name}")
+        except ClientError as e:
+            # If queue was created by another process while we were trying
+            if e.response["Error"]["Code"] == "QueueAlreadyExists":
+                response = self._sqs.get_queue_url(QueueName=self._queue_name)
+                self._queue_url = response["QueueUrl"]
+                self._queue_exists = True
+                self._logger.info(f"Queue was created by another process: {self._queue_name}")
+            else:
+                self._logger.error(
+                    f"Failed to create queue '{self._queue_name}': {str(e)}",
+                    exc_info=True,
+                )
+                raise
 
     async def send_task(self, task_id: str, task_data: Dict[str, Any]) -> None:
         """
@@ -72,6 +105,10 @@ class AWSSQSQueue(TaskQueue):
             task_id: Unique identifier for the task
             task_data: Task data to be processed
         """
+        self._logger.debug(f"Sending task '{task_id}' to queue '{self._queue_name}'")
+
+        self._create_queue()
+
         message = {"task_id": task_id, "data": task_data}
 
         try:
@@ -96,7 +133,7 @@ class AWSSQSQueue(TaskQueue):
     async def receive_tasks(
         self,
         max_count: int = 1,
-        visibility_timeout_seconds: int = 30,  # TODO Default visibility timeout in seconds
+        visibility_timeout_seconds: int = 30,
     ) -> List[Dict[str, Any]]:
         """
         Receive tasks from the SQS queue with a visibility timeout.
@@ -108,6 +145,10 @@ class AWSSQSQueue(TaskQueue):
         Returns:
             List of task dictionaries with task_id, data, and receipt_handle
         """
+        self._logger.debug(f"Receiving up to {max_count} tasks from queue '{self._queue_name}'")
+
+        self._create_queue()
+
         try:
             # SQS limits max_count to 10
             max_count = min(max_count, 10)
@@ -152,6 +193,12 @@ class AWSSQSQueue(TaskQueue):
         Args:
             task_handle: Receipt handle from receive_tasks
         """
+        self._logger.debug(
+            f"Completing task with ack_id '{task_handle}' on queue '{self._queue_name}'"
+        )
+
+        self._create_queue()
+
         try:
             # Get the event loop
             loop = asyncio.get_event_loop()
@@ -175,6 +222,12 @@ class AWSSQSQueue(TaskQueue):
         Args:
             task_handle: Receipt handle from receive_tasks
         """
+        self._logger.debug(
+            f"Failing task with ack_id '{task_handle}' on queue '{self._queue_name}'"
+        )
+
+        self._create_queue()
+
         try:
             # Get the event loop
             loop = asyncio.get_event_loop()
@@ -198,6 +251,10 @@ class AWSSQSQueue(TaskQueue):
         Returns:
             Approximate number of messages in the queue
         """
+        self._logger.debug(f"Getting queue depth for queue '{self._queue_name}'")
+
+        self._create_queue()
+
         try:
             # Get the event loop
             loop = asyncio.get_event_loop()
@@ -219,6 +276,10 @@ class AWSSQSQueue(TaskQueue):
 
     async def purge_queue(self) -> None:
         """Remove all messages from the queue."""
+        self._logger.debug(f"Purging queue '{self._queue_name}'")
+
+        self._create_queue()
+
         try:
             # Get the event loop
             loop = asyncio.get_event_loop()
@@ -234,14 +295,28 @@ class AWSSQSQueue(TaskQueue):
 
     async def delete_queue(self) -> None:
         """Delete the SQS queue entirely."""
+        self._logger.debug(f"Deleting queue '{self._queue_name}'")
+
+        # Only try to delete if the queue exists
+        try:
+            response = self._sqs.get_queue_url(QueueName=self._queue_name)
+            # We don't use self._queue_url here because it may be stale
+            queue_url = response["QueueUrl"]
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "AWS.SimpleQueueService.NonExistentQueue":
+                self._logger.info(f"Queue '{self._queue_name}' does not exist")
+                return
+            else:
+                raise
+
         try:
             # Get the event loop
             loop = asyncio.get_event_loop()
 
             # Run the blocking delete operation in a thread pool
-            await loop.run_in_executor(
-                None, lambda: self._sqs.delete_queue(QueueUrl=self._queue_url)
-            )
+            await loop.run_in_executor(None, lambda: self._sqs.delete_queue(QueueUrl=queue_url))
+            self._queue_exists = False
+            self._queue_url = None
             self._logger.info(f"Successfully deleted queue {self._queue_name}")
         except Exception as e:
             self._logger.error(f"Error deleting queue: {str(e)}")

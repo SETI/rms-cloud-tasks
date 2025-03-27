@@ -12,13 +12,13 @@ from azure.servicebus import ServiceBusClient, ServiceBusMessage  # type: ignore
 from azure.servicebus.management import ServiceBusAdministrationClient  # type: ignore
 
 from .taskqueue import TaskQueue
-from cloud_tasks.common.config import ProviderConfig
+from cloud_tasks.common.config import AzureConfig
 
 
 class AzureServiceBusQueue(TaskQueue):
     """Azure Service Bus implementation of the TaskQueue interface."""
 
-    def __init__(self, config: ProviderConfig) -> None:
+    def __init__(self, azure_config: AzureConfig) -> None:
         """
         Initialize the Azure Service Bus queue with configuration.
 
@@ -33,17 +33,17 @@ class AzureServiceBusQueue(TaskQueue):
         self._logger = logging.getLogger(__name__)
 
         try:
-            self._queue_name = queue_name
+            self._queue_name = azure_config.queue_name
 
             # Construct connection string from config
-            tenant_id = config["tenant_id"]
-            client_id = config["client_id"]
-            client_secret = config["client_secret"]
-            namespace_name = config.get("namespace_name", f"{queue_name}-namespace")
+            tenant_id = azure_config.tenant_id
+            client_id = azure_config.client_id
+            client_secret = azure_config.client_secret
+            namespace_name = azure_config.namespace_name
 
             # Create connection string using SAS key (assuming it's provided in the config)
-            if "connection_string" in config:
-                self._connection_string = config["connection_string"]
+            if azure_config.connection_string:
+                self._connection_string = azure_config.connection_string
             else:
                 self._connection_string = (
                     f"Endpoint=sb://{namespace_name}.servicebus.windows.net/;"
@@ -61,6 +61,7 @@ class AzureServiceBusQueue(TaskQueue):
                 conn_str=self._connection_string, logging_enable=True
             )
 
+            # TODO Make lazy queue creation like gcp/aws
             # # Create queue if it doesn't exist
             # try:
             #     # Check if queue exists - Azure SDK uses get_queue rather than queue_exists
@@ -90,6 +91,8 @@ class AzureServiceBusQueue(TaskQueue):
             task_id: Unique identifier for the task
             task_data: Task data to be processed
         """
+        self._logger.debug(f"Sending task '{task_id}' to queue '{self._queue_name}'")
+
         message = {"task_id": task_id, "data": task_data}
         message_body = json.dumps(message)
 
@@ -129,6 +132,8 @@ class AzureServiceBusQueue(TaskQueue):
         Returns:
             List of task dictionaries with task_id, data, and lock_token
         """
+        self._logger.debug(f"Receiving up to {max_count} tasks from queue '{self._queue_name}'")
+
         try:
             tasks = []
             loop = asyncio.get_event_loop()
@@ -177,6 +182,10 @@ class AzureServiceBusQueue(TaskQueue):
         Args:
             task_handle: lock_token from receive_tasks
         """
+        self._logger.debug(
+            f"Completing task with lock_token '{task_handle}' on queue '{self._queue_name}'"
+        )
+
         try:
             loop = asyncio.get_event_loop()
 
@@ -195,6 +204,10 @@ class AzureServiceBusQueue(TaskQueue):
         Args:
             task_handle: lock_token from receive_tasks
         """
+        self._logger.debug(
+            f"Failing task with lock_token '{task_handle}' on queue '{self._queue_name}'"
+        )
+
         try:
             loop = asyncio.get_event_loop()
 
@@ -213,6 +226,8 @@ class AzureServiceBusQueue(TaskQueue):
         Returns:
             Approximate number of messages in the queue
         """
+        self._logger.debug(f"Getting queue depth for queue '{self._queue_name}'")
+
         try:
             loop = asyncio.get_event_loop()
 
@@ -229,6 +244,8 @@ class AzureServiceBusQueue(TaskQueue):
 
     async def purge_queue(self) -> None:
         """Remove all messages from the queue by deleting and recreating it."""
+        self._logger.debug(f"Purging queue '{self._queue_name}'")
+
         try:
             loop = asyncio.get_event_loop()
 
@@ -258,6 +275,8 @@ class AzureServiceBusQueue(TaskQueue):
 
     async def delete_queue(self) -> None:
         """Delete the Service Bus queue entirely."""
+        self._logger.debug(f"Deleting queue '{self._queue_name}'")
+
         try:
             loop = asyncio.get_event_loop()
 

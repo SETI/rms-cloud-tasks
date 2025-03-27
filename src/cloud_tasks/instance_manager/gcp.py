@@ -468,15 +468,20 @@ class GCPComputeInstanceManager(InstanceManager):
         List available Compute Engine instance types with their specifications.
 
         Returns:
-            List of dictionaries with instance types and their specifications
+            List of dictionaries with instance types and their specifications:
+                "name": instance type name
+                "vcpu": number of vCPUs
+                "ram_gb": amount of RAM in GB
+                "architecture": architecture of the instance type
+                "storage_gb": amount of storage in GB
+                "supports_spot": whether the instance type supports spot pricing
+                "description": description of the instance type
+                "url": URL to the instance type details
         """
+        self._logger.debug("Listing available Compute Engine instance types")
+
         # Ensure we have a zone
-        zone = self._zone
-        if not zone:
-            zone = self._DEFAULT_ZONE
-            self._logger.warning(
-                f"No zone specified for listing instance types, using '{zone}' as default"
-            )
+        zone = await self._get_default_zone()
 
         # List instance types in the zone
         request = compute_v1.ListMachineTypesRequest(project=self._project_id, zone=zone)
@@ -488,7 +493,7 @@ class GCPComputeInstanceManager(InstanceManager):
             instance_info = {
                 "name": machine_type.name,
                 "vcpu": machine_type.guest_cpus,
-                "memory_gb": machine_type.memory_mb / 1024.0,
+                "ram_gb": machine_type.memory_mb / 1024.0,
                 "architecture": machine_type.architecture,
                 "storage_gb": 0,  # GCP separates storage from instance type
                 "supports_spot": True,  # TODO: Check if this is correct
@@ -535,9 +540,11 @@ class GCPComputeInstanceManager(InstanceManager):
 
     async def get_instance_pricing(
         self, instance_type: List[str] | str, use_spot: bool = False
-    ) -> Dict[str, Tuple[float, float]]:
+    ) -> Dict[str, Dict[str, float | None]]:
         """
         Get the hourly price for one or more specific instance types.
+
+        Note that GCP pricing is per-region for both on-demand and spot instances.
 
         Args:
             instance_type: The instance type name (e.g., 'n1-standard-1') or a list of instance
@@ -545,13 +552,23 @@ class GCPComputeInstanceManager(InstanceManager):
             use_spot: Whether to use spot/preemptible pricing
 
         Returns:
-            A dictionary mapping instance type to hourly price in USD as a tuple of
-            (per_cpu_price, ram_per_gb_price)
+            A dictionary mapping instance type to a dictionary of hourly price in USD as a tuple of
+            (cpu_price, per_cpu_price, ram_price, ram_per_gb_price, total_price) keyed by
+            availability zone. If any price is not available, it is set to None.
         """
         if isinstance(instance_type, str):
             instance_type = [instance_type]
 
+        self._logger.debug(
+            f"Getting pricing for {len(instance_type)} instance types (spot: {use_spot})"
+        )
+
         ret = {}
+
+        if len(instance_type) == 0:
+            self._logger.warning("No instance types provided")
+            return ret
+
         for machine_type in instance_type:
             self._logger.debug(
                 f"Getting pricing for instance type: {machine_type} (spot: {use_spot})"
@@ -652,13 +669,13 @@ class GCPComputeInstanceManager(InstanceManager):
             self._logger.debug(f"Ram price:  ${ram_price:.6f}/GB/hour")
 
             ret_val = {
-                f"{self._region}-*": (
-                    None,  # CPU price (we don't have this)
-                    core_price,  # Per-CPU price
-                    None,  # Memory price (we don't have this)
-                    ram_price,  # Per-GB price
-                    None,  # Total price
-                )
+                f"{self._region}-*": {
+                    "cpu_price": None,  # CPU price (we don't have this)
+                    "per_cpu_price": core_price,  # Per-CPU price
+                    "ram_price": None,  # Memory price (we don't have this)
+                    "ram_per_gb_price": ram_price,  # Per-GB price
+                    "total_price": None,  # Total price
+                }
             }
             self._instance_pricing_cache[(machine_family, use_spot)] = ret_val
             ret[machine_type] = ret_val
@@ -1051,15 +1068,21 @@ class GCPComputeInstanceManager(InstanceManager):
 
         # List of common public OS image projects
         public_projects = [
-            "ubuntu-os-cloud",  # Ubuntu images
-            "debian-cloud",  # Debian images
-            "centos-cloud",  # CentOS images
-            "rhel-cloud",  # Red Hat Enterprise Linux images
-            "fedora-cloud",  # Fedora images
-            "suse-cloud",  # SUSE Linux images
-            "rocky-linux-cloud",  # Rocky Linux images
-            "cos-cloud",  # Container-Optimized OS images
-            "windows-cloud",  # Windows Server images
+            "cos-cloud",
+            "debian-cloud",
+            "rocky-linux-cloud",
+            "ubuntu-os-cloud",
+            "centos-cloud",
+            "fedora-coreos-cloud",
+            "opensuse-cloud",
+            "oracle-linux-cloud",
+            "rhel-cloud",
+            "rhel-sap-cloud",
+            "suse-cloud",
+            "suse-sap-cloud",
+            "ubuntu-os-pro-cloud",
+            # "windows-cloud",
+            # "windows-sql-cloud",
         ]
 
         # Dictionary to store all images
@@ -1128,7 +1151,7 @@ class GCPComputeInstanceManager(InstanceManager):
             )
 
             self._logger.debug(f"Fetching custom images from project {self._project_id}")
-            image_list = self._images_client.list(request=request)
+            image_list = list(self._images_client.list(request=request))
 
             # Process each image
             for image in image_list:
@@ -1232,3 +1255,21 @@ class GCPComputeInstanceManager(InstanceManager):
             f"Found {len(region_dict)} available regions: {', '.join(sorted(region_dict.keys()))}"
         )
         return region_dict
+
+    async def _get_default_zone(self) -> str:
+        """
+        Get the default zone for the region.
+        """
+        if self._zone:
+            self._logger.debug(f"Using specified zone {self._zone}")
+            return self._zone
+
+        self._logger.debug(f"Getting default zone for region {self._region}")
+
+        # Create the request to list zones
+        request = compute_v1.ListZonesRequest(project=self._project_id)
+        zones = self._zones_client.list(request=request)
+
+        # Get the first zone in the list
+        self._logger.debug(f"Default zone is {zones[0].name}")
+        return zones[0].name

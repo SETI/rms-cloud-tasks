@@ -48,28 +48,10 @@ class AWSEC2InstanceManager(InstanceManager):
 
         self._logger.info(f"Initializing AWS EC2 instance manager")
 
-        self._credentials = {}
-        if aws_config.access_key is None or aws_config.secret_key is None:
-            self._credentials = {
-                "aws_access_key_id": os.getenv("AWS_ACCESS_KEY_ID"),
-                "aws_secret_access_key": os.getenv("AWS_SECRET_ACCESS_KEY"),
-            }
-            if (
-                self._credentials["aws_access_key_id"] is None
-                or self._credentials["aws_secret_access_key"] is None
-            ):
-                self._logger.error(
-                    "No AWS credentials provided, and environment variables are not set"
-                )
-                raise ValueError(
-                    "No AWS credentials provided, and environment variables are not set"
-                )
-            self._logger.warning("No AWS credentials provided, using environment variables")
-        else:
-            self._credentials = {
-                "aws_access_key_id": aws_config.access_key,
-                "aws_secret_access_key": aws_config.secret_key,
-            }
+        self._credentials = {
+            "aws_access_key_id": aws_config.access_key,
+            "aws_secret_access_key": aws_config.secret_key,
+        }
 
         # Store instance_types configuration if present
         self._instance_type = aws_config.instance_types
@@ -167,9 +149,23 @@ class AWSEC2InstanceManager(InstanceManager):
         """
         List available EC2 instance types with their specifications.
 
+        This skips instance types that are bare metal or that don't support on-demand
+        pricing (there really shouldn't be any instance types that support spot but not
+        on-demand pricing).
+
         Returns:
-            List of dictionaries with instance types and their specifications
+            List of dictionaries with instance types and their specifications:
+                "name": instance type name
+                "vcpu": number of vCPUs
+                "ram_gb": amount of RAM in GB
+                "architecture": architecture of the instance type
+                "storage_gb": amount of storage in GB
+                "supports_spot": whether the instance type supports spot pricing
+                "description": description of the instance type
+                "url": URL to the instance type details
         """
+        self._logger.debug("Listing available EC2 instance types")
+
         # List instance types
         paginator = self._ec2_client.get_paginator("describe_instance_types")
         instance_types = []
@@ -185,7 +181,7 @@ class AWSEC2InstanceManager(InstanceManager):
                 instance_info = {
                     "name": instance_type["InstanceType"],
                     "vcpu": instance_type["VCpuInfo"]["DefaultVCpus"],
-                    "memory_gb": instance_type["MemoryInfo"]["SizeInMiB"] / 1024.0,
+                    "ram_gb": instance_type["MemoryInfo"]["SizeInMiB"] / 1024.0,
                     "architecture": instance_type["ProcessorInfo"]["SupportedArchitectures"][0],
                     "storage_gb": 0,  # AWS separates storage from instance type
                     "supports_spot": "spot" in instance_type["SupportedUsageClasses"],
@@ -205,9 +201,12 @@ class AWSEC2InstanceManager(InstanceManager):
 
     async def get_instance_pricing(
         self, instance_type: List[str] | str, use_spot: bool = False
-    ) -> Dict[str, Dict[str, Tuple[float, float]]]:
+    ) -> Dict[str, Dict[str, Dict[str, float | None]]]:
         """
         Get the hourly price for one or more specific instance types.
+
+        Note that AWS pricing is per-region for on-demand pricing and per-zone
+        for spot instances.
 
         Args:
             instance_type: The instance type name (e.g., 't3.micro') or a list of instance type
@@ -215,14 +214,26 @@ class AWSEC2InstanceManager(InstanceManager):
             use_spot: Whether to use spot pricing
 
         Returns:
-            A dictionary mapping instance type to a dictionary of hourly price in USD as a tuple of
-            (cpu_price, per_cpu_price, ram_price, ram_per_gb_price, total_price) keyed by
-            availability zone. If any price is not available, it is set to None.
+            A dictionary mapping instance type to a dictionary of hourly price in USD:
+                "cpu_price": CPU price in USD/hour
+                "per_cpu_price": Per-CPU price in USD/hour
+                "ram_price": RAM price in USD/hour
+                "ram_per_gb_price": Per-GB RAM price in USD/hour
+                "total_price": Total price in USD/hour
+            If any price is not available, it is set to None.
         """
         if isinstance(instance_type, str):
             instance_type = [instance_type]
 
+        self._logger.debug(
+            f"Getting pricing for {len(instance_type)} instance types (spot: {use_spot})"
+        )
+
         ret = {}
+
+        if len(instance_type) == 0:
+            self._logger.warning("No instance types provided")
+            return ret
 
         if use_spot:
             # Spot pricing
@@ -240,13 +251,13 @@ class AWSEC2InstanceManager(InstanceManager):
             for price in spot_prices["SpotPriceHistory"]:
                 if price["InstanceType"] not in ret:
                     ret[price["InstanceType"]] = {}
-                ret[price["InstanceType"]][price["AvailabilityZone"]] = (
-                    float(price["SpotPrice"]),  # CPU price (combined CPU and memory)
-                    None,  # Per-CPU price (we don't have this)
-                    0.0,  # Memory price
-                    0.0,  # Per-GB price (we don't have this)
-                    float(price["SpotPrice"]),  # Total price
-                )
+                ret[price["InstanceType"]][price["AvailabilityZone"]] = {
+                    "cpu_price": float(price["SpotPrice"]),  # CPU price (combined CPU and memory)
+                    "per_cpu_price": None,  # Per-CPU price (we don't have this)
+                    "ram_price": 0.0,  # Memory price
+                    "ram_per_gb_price": 0.0,  # Per-GB price (we don't have this)
+                    "total_price": float(price["SpotPrice"]),  # Total price
+                }
                 self._logger.debug(
                     f"Price for spot instance type: \"{price['InstanceType']}\" in "
                     f"zone \"{price['AvailabilityZone']}\" is ${float(price['SpotPrice']):.4f}/hour"
@@ -346,13 +357,14 @@ class AWSEC2InstanceManager(InstanceManager):
                                 f"Found on-demand price for {inst_name}: ${price:.4f}/hour"
                             )
                             ret[inst_name] = {
-                                f"{self._region}-*": (
-                                    price,  # CPU price (combined CPU and memory)
-                                    price / float(attributes["vcpu"]),  # Per-CPU price
-                                    0.0,  # Memory price
-                                    0.0,  # Per-GB price (we don't have this)
-                                    price,  # Total price
-                                )
+                                f"{self._region}-*": {
+                                    "cpu_price": price,  # CPU price (combined CPU and memory)
+                                    "per_cpu_price": price
+                                    / float(attributes["vcpu"]),  # Per-CPU price
+                                    "ram_price": 0.0,  # Memory price
+                                    "ram_per_gb_price": 0.0,  # Per-GB price (we don't have this)
+                                    "total_price": price,  # Total price
+                                }
                             }
                             break
                     if inst_name in ret:
@@ -876,13 +888,31 @@ class AWSEC2InstanceManager(InstanceManager):
         # Format for return
         formatted_images = []
         for image in all_images:
+            # {'PlatformDetails': 'Linux/UNIX', 'UsageOperation': 'RunInstances',
+            # 'BlockDeviceMappings': [{'Ebs': {'DeleteOnTermination': True, 'Iops': 3000,
+            # 'SnapshotId': 'snap-01e17fe7a2a2b97c4', 'VolumeSize': 2, 'VolumeType':
+            # 'gp3', 'Throughput': 125, 'Encrypted': False}, 'DeviceName': '/dev/xvda'}],
+            # 'Description': 'Amazon Linux 2023 AMI 2023.6.20250317.2 x86_64 Minimal HVM
+            # kernel-6.1', 'EnaSupport': True, 'Hypervisor': 'xen', 'ImageOwnerAlias':
+            # 'amazon', 'Name': 'al2023-ami-minimal-2023.6.20250317.2-kernel-6.1-x86_64',
+            # 'RootDeviceName': '/dev/xvda', 'RootDeviceType': 'ebs', 'SriovNetSupport':
+            # 'simple', 'VirtualizationType': 'hvm', 'BootMode': 'uefi-preferred',
+            # 'DeprecationTime': '2025-06-22T21:09:00.000Z', 'ImdsSupport': 'v2.0',
+            # 'ImageId': 'ami-06e58da439b5eef26', 'ImageLocation':
+            # 'amazon/al2023-ami-minimal-2023.6.20250317.2-kernel-6.1-x86_64', 'State':
+            # 'available', 'OwnerId': '137112412989', 'CreationDate':
+            # '2025-03-24T21:09:23.000Z', 'Public': True, 'Architecture': 'x86_64',
+            # 'ImageType': 'machine'}
+            if image.get("State") != "available":
+                continue
             image_info = {
                 "id": image["ImageId"],
                 "name": image.get("Name", "No Name"),
                 "description": image.get("Description", "No Description"),
+                "family": image.get("PlatformDetails", "No Family"),
                 "creation_date": image.get("CreationDate", "Unknown"),
-                "source": "AWS" if image.get("OwnerId") == "amazon" else "User",
-                "platform": image.get("Platform", "Linux/UNIX"),
+                "source": "AWS" if image.get("ImageOwnerAlias") == "amazon" else "User",
+                "project": "N/A",
                 "status": image.get(
                     "State", "unknown"
                 ),  # status for consistency with other providers

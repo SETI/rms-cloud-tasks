@@ -1,13 +1,11 @@
 # provider: gcp
 
 aws:
-  access_key: YOUR_AWS_ACCESS_KEY
-  secret_key: YOUR_AWS_SECRET_KEY
   region: us-west-2
   queue_name: fred-aws
 
 gcp:
-  project_id: rfrench
+  project_id: rms-node-419806
   region: us-central1
   queue_name: fred-gcp
 
