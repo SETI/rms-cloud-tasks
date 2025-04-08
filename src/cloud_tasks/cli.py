@@ -455,115 +455,136 @@ async def list_running_instances_cmd(args: argparse.Namespace, config: Config) -
         # Get list of running instances
         tag_filter = {}
         if args.job_id:
-            tag_filter["job_id"] = args.job_id
-            print(f"\nListing instances for {args.provider} with job_id: {args.job_id}")
+            tag_filter["rms_cloud_run_job_id"] = args.job_id
+            print(f"Listing instances with job ID: {args.job_id}\n")
         else:
-            print(f"\nListing all instances for {args.provider}")
+            if args.all_instances:
+                print("Listing all instances including ones not created by cloud run\n")
+            else:
+                print("Listing all instances created by cloud run\n")
 
         try:
-            # For GCP, pass the region parameter explicitly
-            if args.provider == "gcp" and args.region and not instance_manager.zone:
-                # List instances with specific region filter
-                instances = await instance_manager.list_running_instances(
-                    tag_filter=tag_filter, region=args.region
-                )
-            else:
-                instances = await instance_manager.list_running_instances(tag_filter=tag_filter)
+            # # For GCP, pass the region parameter explicitly
+            # if args.provider == "gcp" and args.region and not instance_manager.zone:
+            #     # List instances with specific region filter
+            #     instances = await instance_manager.list_running_instances(
+            #         tag_filter=tag_filter, region=config.region
+            #     )
+            # else:
+            instances = await instance_manager.list_running_instances(
+                job_id=args.job_id, include_non_job=args.all_instances
+            )
         except Exception as e:
             logger.error(f"Error listing instances: {e}")
-            error_message = str(e)
-
-            if args.provider == "gcp" and (
-                "zone" in error_message or "no region" in error_message.lower()
-            ):
-                print("\nError: Zone/region information is required for GCP.")
-                print("You have two options:")
-                print("  1. Specify a region with --region (e.g., --region us-central1)")
-                print("  2. Add 'zone' to your config file in the GCP section")
-            else:
-                print(f"\nError listing instances: {error_message}")
             sys.exit(1)
 
         # Display instances
         if instances:
-            print(f"\nFound {len(instances)} instances for provider: {args.provider}")
+            # Define field mapping for sorting
+            field_mapping = {
+                "id": "id",
+                "i": "id",
+                "type": "type",
+                "t": "type",
+                "state": "state",
+                "s": "state",
+                "zone": "zone",
+                "z": "zone",
+                "created": "creation_time",
+                "creation": "creation_time",
+                "c": "creation_time",
+                "time": "creation_time",
+                "creation_time": "creation_time",
+            }
 
-            # Headers
-            if args.provider == "gcp":
-                print(
-                    f"{'ID':<20} {'Type':<15} {'State':<10} {'Zone':<15} {'Created':<26} {'Tags'}"
-                )
-                print("-" * 95)
+            # Apply custom sorting if specified
+            if args.sort_by:
+                sort_fields = args.sort_by.split(",")
+                if sort_fields:
+                    for sort_field in sort_fields[::-1]:
+                        if sort_field.startswith("-"):
+                            descending = True
+                            sort_field = sort_field[1:]
+                        else:
+                            descending = False
+                        field_name = field_mapping.get(sort_field.lower())
+                        if field_name is None:
+                            print(f"Invalid sort field: {sort_field}")
+                            sys.exit(1)
+                        instances.sort(key=lambda x: x.get(field_name, ""), reverse=descending)
+                else:
+                    # Default sort if no fields specified
+                    instances.sort(key=lambda x: x.get("id", ""))
             else:
-                print(f"{'ID':<20} {'Type':<15} {'State':<10} {'Created':<26} {'Tags'}")
-                print("-" * 80)
+                # Default sort by ID if no sort-by specified
+                instances.sort(key=lambda x: x.get("id", ""))
 
+            if not args.detail:
+                # Headers
+                if args.provider == "gcp":
+                    print(
+                        f"{'Job ID':<16} {'ID':<26} {'Type':<15} {'State':<11} {'Zone':<15} {'Created':<30}"
+                    )
+                    print("-" * 117)
+                else:
+                    print(f"{'Job ID':<16} {'ID':<26} {'Type':<15} {'State':<11} {'Created':<30}")
+                    print("-" * 101)
+
+            instance_count = 0
+            state_counts = {}
             for instance in instances:
+                instance_count += 1
+
                 # Extract common fields with safe defaults
                 instance_id = instance.get("id", "N/A")
                 instance_type = instance.get("type", "N/A")
                 state = instance.get("state", "N/A")
                 created_at = instance.get("creation_time", instance.get("created_at", "N/A"))
-                zone = instance.get("zone", "")
+                zone = instance.get("zone", "N/A")
+                private_ip = instance.get("private_ip", "N/A")
+                public_ip = instance.get("public_ip", "N/A")
+                job_id = instance.get("job_id", "N/A")
+                state_counts[state] = state_counts.get(state, 0) + 1
 
-                # Format tags as a comma-separated string of key=value pairs
-                tags = instance.get("tags", {})
-                tags_str = ", ".join([f"{k}={v}" for k, v in tags.items()]) if tags else "No tags"
-
-                # Truncate tags if verbose mode is not enabled
-                if not args.verbose and len(tags_str) > 40:
-                    tags_str = tags_str[:37] + "..."
-
-                if args.verbose:
-                    # More detailed output in verbose mode
-                    print(f"\nInstance ID: {instance_id}")
-                    print(f"Type: {instance_type}")
-                    print(f"State: {state}")
+                if args.detail:
+                    # More detailed output in detail mode with aligned values
+                    print("\n")
+                    print(f"Instance ID: {instance_id}")
+                    print(f"Type:        {instance_type}")
+                    print(f"State:       {state}")
 
                     if zone:
-                        print(f"Zone: {zone}")
+                        print(f"Zone:        {zone}")
 
-                    print(f"Created: {created_at}")
+                    if job_id:
+                        print(f"Job ID:      {job_id}")
 
-                    if "private_ip" in instance:
-                        print(f"Private IP: {instance['private_ip']}")
-                    if "public_ip" in instance:
-                        print(f"Public IP: {instance['public_ip']}")
+                    print(f"Created:     {created_at}")
 
-                    print("Tags:")
-                    if tags:
-                        for k, v in tags.items():
-                            print(f"  {k}: {v}")
-                    else:
-                        print("  No tags")
-                    print("-" * 40)
+                    if private_ip:
+                        print(f"Private IP:  {private_ip}")
+                    if public_ip:
+                        print(f"Public IP:   {public_ip}")
                 else:
                     if args.provider == "gcp" and zone:
                         print(
-                            f"{instance_id:<20} {instance_type:<15} {state:<10} {zone:<15} "
-                            f"{created_at:<26} {tags_str}"
+                            f"{job_id:<16} {instance_id:<26} {instance_type:<15} {state:<11} "
+                            f"{zone:<15} {created_at:<30}"
                         )
                     else:
                         print(
-                            f"{instance_id:<20} {instance_type:<15} {state:<10} {created_at:<26} "
-                            f"{tags_str}"
+                            f"{job_id:<16} {instance_id:<26} {instance_type:<15} {state:<11} "
+                            f"{created_at:<30} "
                         )
 
-            # Print count summary
-            running_count = len([i for i in instances if i["state"] == "running"])
-            starting_count = len([i for i in instances if i["state"] == "starting"])
-            other_count = len(instances) - running_count - starting_count
-
-            print(f"\nSummary: {len(instances)} total instances")
-            print(f"  {running_count} running")
-            print(f"  {starting_count} starting")
-            if other_count > 0:
-                print(f"  {other_count} in other states")
+            print(f"\nSummary: {instance_count} total instances")
+            for state, count in sorted(state_counts.items()):
+                print(f"  {count} {state}")
         else:
             if args.job_id:
                 print(f"\nNo instances found for job ID: {args.job_id}")
             else:
-                print(f"\nNo instances found for provider: {args.provider}")
+                print(f"\nNo instances found")
 
     except Exception as e:
         logger.error(f"Error listing running instances: {e}", exc_info=True)
@@ -885,8 +906,8 @@ async def list_images_cmd(args: argparse.Namespace, config: Config) -> None:
                         descending = False
                     field_name = field_mapping.get(sort_field)
                     if field_name is None:
-                        logger.warning(f"Invalid sort field: {sort_field}")
-                        continue
+                        print(f"Invalid sort field: {sort_field}")
+                        sys.exit(1)
                     images.sort(key=lambda x: x[field_name], reverse=descending)
             else:
                 # Default sort if no fields specified
@@ -1155,8 +1176,8 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
                         descending = False
                     field_name = field_mapping.get(sort_field)
                     if field_name is None:
-                        logger.warning(f"Invalid sort field: {sort_field}")
-                        continue
+                        print(f"Invalid sort field: {sort_field}")
+                        sys.exit(1)
                     instances_and_zones.sort(key=lambda x: x[field_name], reverse=descending)
             else:
                 # Default sort if no fields specified
@@ -1332,6 +1353,10 @@ def add_common_args(parser: argparse.ArgumentParser, include_queue_name: bool = 
     if include_queue_name:
         parser.add_argument("--queue-name", help="Name of the task queue")
     parser.add_argument(
+        "--region", help="Specific region to use (derived from zone if not provided)"
+    )
+    parser.add_argument("--zone", help="Specific zone to use")
+    parser.add_argument(
         "--verbose",
         "-v",
         action="count",
@@ -1412,10 +1437,6 @@ def add_instance_args(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="Use spot/preemptible instances (cheaper but can be terminated)",
     )
-    parser.add_argument(
-        "--region", help="Specific region to use (derived from zone if not provided)"
-    )
-    parser.add_argument("--zone", help="Specific zone to use")
 
 
 def main():
@@ -1485,9 +1506,37 @@ def main():
     )
     delete_queue_parser.set_defaults(func=delete_queue_cmd)
 
-    # --------------------------
-    # INFORMATION GATHERING COMMANDS
-    # --------------------------
+    # ---------------------------- #
+    # INSTANCE MANAGEMENT COMMANDS #
+    # ---------------------------- #
+
+    # --- List running instances command ---
+
+    list_running_instances_parser = subparsers.add_parser(
+        "list_running_instances", help="List currently running instances for the specified provider"
+    )
+    add_common_args(list_running_instances_parser, include_queue_name=False)
+    list_running_instances_parser.add_argument("--job-id", help="Filter instances by job ID")
+    list_running_instances_parser.add_argument(
+        "--all-instances",
+        action="store_true",
+        help="Show all instances including ones that were not created by cloud run",
+    )
+    list_running_instances_parser.add_argument(
+        "--sort-by",
+        help='Sort results by comma-separated fields (e.g., "state,type" or "-created,id"). '
+        "Available fields: id, type, state, zone, creation_time. "
+        'Prefix with "-" for descending order. '
+        'Partial field names like "t" for "type" or "s" for "state" are supported.',
+    )
+    list_running_instances_parser.add_argument(
+        "--detail", action="store_true", help="Show additional provider-specific information"
+    )
+    list_running_instances_parser.set_defaults(func=list_running_instances_cmd)
+
+    # ------------------------------ #
+    # INFORMATION GATHERING COMMANDS #
+    # ------------------------------ #
 
     # --- List regions command ---
 
@@ -1646,15 +1695,6 @@ if __name__ == "__main__":
     )
     stop_parser.set_defaults(func=stop_job)
 
-    # --- List running instances command ---
-
-    list_running_instances_parser = subparsers.add_parser(
-        "list_running_instances", help="List currently running instances for the specified provider"
-    )
-    add_common_args(list_running_instances_parser, include_queue_name=False)
-    list_running_instances_parser.add_argument("--job-id", help="Filter instances by job ID")
-    list_running_instances_parser.add_argument("--region", help="Filter instances by region")
-    list_running_instances_parser.set_defaults(func=list_running_instances_cmd)
 
 
     """

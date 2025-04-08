@@ -39,19 +39,14 @@ class GCPComputeInstanceManager(InstanceManager):
 
         Args:
             config: Dictionary with GCP configuration. If credentials_file is not provided,
-                   the default application credentials from the environment will be used.
+                the default application credentials from the environment will be used.
 
         Raises:
             ValueError: If required configuration is missing
         """
         super().__init__(gcp_config)
-        self._compute_client = None
-        self._billing_client = None
         self._billing_compute_skus = None
         self._instance_pricing_cache = {}
-        self._region = None
-        self._zone = None
-        self._credentials = None
         self._logger = logging.getLogger(__name__)
 
         self._logger.info(f"Initializing GCP Compute Engine instance manager")
@@ -111,8 +106,9 @@ class GCPComputeInstanceManager(InstanceManager):
             self._logger.info(f"Extracted region {self._region} from zone {self._zone}")
         elif self._region and not self._zone:
             # Extract zone from region (e.g., us-central1 -> us-central1-a)
-            self._zone = "-".join(self._region.split("-") + ["a"])
-            self._logger.info(f"Extracted zone {self._zone} from region {self._region}")
+            pass  # TODO: Implement this
+            # self._zone = "-".join(self._region.split("-") + ["a"])
+            # self._logger.info(f"Extracted zone {self._zone} from region {self._region}")
 
         # Initialize clients
         self._compute_client = compute_v1.InstancesClient(credentials=self._credentials)
@@ -133,121 +129,6 @@ class GCPComputeInstanceManager(InstanceManager):
             self._logger.warning(
                 "No region specified, will determine cheapest region during instance selection"
             )
-
-    async def find_cheapest_region(self, instance_type: str = "n1-standard-1") -> Dict[str, str]:
-        """
-        Find the cheapest GCP region and zone for the given instance type.
-
-        Args:
-            instance_type: instance type to check prices for (default: n1-standard-1)
-
-        Returns:
-            Dictionary with 'region' and 'zone' keys
-        """
-        try:
-            # Get all available regions
-            request = compute_v1.ListRegionsRequest(project=self._project_id)
-            regions = self._regions_client.list(request=request)
-            region_names = [region.name for region in regions]
-
-            self._logger.info(
-                f"Checking prices across {len(region_names)} regions for {instance_type}"
-            )
-
-            region_prices = {}
-            for region_name in region_names:
-                try:
-                    # Get zones in this region
-                    zones_request = compute_v1.ListZonesRequest(
-                        project=self._project_id, filter=f"name eq {region_name}-.*"
-                    )
-                    zones = self._zones_client.list(request=zones_request)
-                    zone_names = [zone.name for zone in zones]
-
-                    if not zone_names:
-                        continue
-
-                    # Choose the first zone in the region for pricing check
-                    zone = zone_names[0]
-
-                    # Get pricing from Cloud Billing Catalog API
-                    service_name = "compute.googleapis.com"
-
-                    # Make pricing request
-                    request = billing.ListServicesRequest()
-                    services = self._billing_client.list_services(request=request)
-
-                    # Find compute service
-                    compute_service = None
-                    for service in services:
-                        if service.name.endswith(service_name):
-                            compute_service = service
-                            break
-
-                    if compute_service:
-                        # Get SKUs for the service
-                        sku_request = billing.ListSkusRequest(parent=compute_service.name)
-                        skus = self._billing_client.list_skus(request=sku_request)
-
-                        # Find matching SKU for the instance type in this region
-                        price = None
-                        for sku in skus:
-                            if (
-                                instance_type in sku.description
-                                and "Core" in sku.description
-                                and region_name in sku.service_regions
-                            ):
-                                # Get the price in USD
-                                for pricing_info in sku.pricing_info:
-                                    for (
-                                        price_by_currency
-                                    ) in pricing_info.pricing_expression.tiered_rates[
-                                        0
-                                    ].unit_price.currency_code:
-                                        if price_by_currency == "USD":
-                                            price = (
-                                                pricing_info.pricing_expression.tiered_rates[
-                                                    0
-                                                ].unit_price.nanos
-                                                / 1e9
-                                            )
-                                            region_prices[region_name] = {
-                                                "price": price,
-                                                "zone": zone,
-                                            }
-                                            self._logger.info(
-                                                f"  {region_name} ({zone}): ${price:.6f}/hour"
-                                            )
-                                            break
-                                    if price:
-                                        break
-                            if price:
-                                break
-
-                except Exception as e:
-                    self._logger.warning(f"  Error getting price for {region_name}: {e}")
-                    continue
-
-            if not region_prices:
-                self._logger.warning(
-                    "Could not retrieve prices for any region, using us-central1 as default"
-                )
-                return {"region": self._DEFAULT_REGION, "zone": self._DEFAULT_ZONE}
-
-            # Find the cheapest region
-            cheapest_region = min(region_prices.items(), key=lambda x: x[1]["price"])[0]
-            cheapest_zone = region_prices[cheapest_region]["zone"]
-            cheapest_price = region_prices[cheapest_region]["price"]
-
-            self._logger.info(
-                f"Cheapest region is {cheapest_region} ({cheapest_zone}) at ${cheapest_price:.6f}/hour"
-            )
-            return {"region": cheapest_region, "zone": cheapest_zone}
-
-        except Exception as e:
-            self._logger.error(f"Error finding cheapest region: {e}")
-            self._logger.info("Using us-central1 as default region")
-            return {"region": "us-central1", "zone": "us-central1-a"}
 
     async def get_optimal_instance_type(
         self,
@@ -817,14 +698,14 @@ class GCPComputeInstanceManager(InstanceManager):
             raise
 
     async def list_running_instances(
-        self, tag_filter: Optional[Dict[str, str]] = None, region: Optional[str] = None
+        self, job_id: Optional[str] = None, include_non_job: bool = False
     ) -> List[Dict[str, Any]]:
         """
-        List currently running Compute Engine instances, optionally filtered by labels.
+        List currently running Compute Engine instances, optionally filtered by job_id.
 
         Args:
-            tag_filter: Dictionary of labels to filter instances
-            region: Optional region to filter instances by
+            job_id: Job ID to filter instances
+            include_non_job: Include instances that do not have a job_id tag
 
         Returns:
             List of instance dictionaries with id, type, state, and creation_time
@@ -832,13 +713,11 @@ class GCPComputeInstanceManager(InstanceManager):
         Raises:
             ValueError: If no zone or region is specified and listing all zones fails
         """
-        # Build filter string if tags are provided
-        filter_str = ""
-        if tag_filter:
-            filters = []
-            for key, value in tag_filter.items():
-                filters.append(f"labels.{key}={value}")
-            filter_str = " AND ".join(filters)
+        # Build filter string if job_id is provided
+        if job_id:
+            self._logger.debug(f"Listing running instances with job_id filter '{job_id}'")
+        else:
+            self._logger.debug("Listing running instances")
 
         instances = []
 
@@ -846,38 +725,25 @@ class GCPComputeInstanceManager(InstanceManager):
         if self._zone:
             # List instances in the specified zone
             self._logger.info(f"Listing instances in zone {self._zone}")
-            request = compute_v1.ListInstancesRequest(
-                project=self._project_id, zone=self._zone, filter=filter_str
-            )
+            request = compute_v1.ListInstancesRequest(project=self._project_id, zone=self._zone)
 
             try:
                 instances_list = self._compute_client.list(request=request)
-                instances.extend(self._process_instances(instances_list))
+                instances.extend(
+                    self._standardize_instance_data(instances_list, job_id, include_non_job)
+                )
             except Exception as e:
-                self._logger.error(f"Error listing instances in zone {self._zone}: {e}")
+                self._logger.error(
+                    f"Error listing instances in zone {self._zone}: {e}", exc_info=True
+                )
                 raise
         else:
-            # Use region parameter if provided
-            target_region = region or self._region
-
-            if target_region:
-                self._logger.info(f"Listing instances in all zones of region {target_region}")
-            else:
-                self._logger.warning(
-                    "No zone or region specified. Attempting to list instances across all regions."
-                )
-                self._logger.warning(
-                    "This may fail if you don't have permissions or if the project has many zones."
-                )
-                self._logger.warning(
-                    "Consider specifying --region or adding a zone in your config file."
-                )
+            self._logger.info(f"Listing instances in all zones of region {self._region}")
 
             # List all zones in the project
             try:
                 zones_request = compute_v1.ListZonesRequest(project=self._project_id)
-                zones_client = compute_v1.ZonesClient(credentials=self._credentials)
-                zones = zones_client.list(request=zones_request)
+                zones = self._zones_client.list(request=zones_request)
 
                 # Filter zones by region if specified
                 filtered_zones = []
@@ -886,31 +752,29 @@ class GCPComputeInstanceManager(InstanceManager):
                     zone_region = "-".join(zone.name.split("-")[:-1])
 
                     # Add to filtered list if in target region or no region filter
-                    if not target_region or zone_region == target_region:
+                    if zone_region == self._region:
                         filtered_zones.append(zone)
 
-                if target_region and not filtered_zones:
-                    self._logger.warning(f"No zones found in region {target_region}")
-                    return []  # Return empty list if no zones match the region filter
-
                 if not filtered_zones:
-                    self._logger.error("No zones found in the project")
-                    raise ValueError(
-                        "No zones found in the project. Please check your permissions or specify a region/zone."
-                    )
+                    self._logger.warning(f"No zones found in region {self._region}")
+                    return []  # Return empty list if no zones match the region filter
 
                 # For each zone, list instances
                 for zone in filtered_zones:
                     self._logger.debug(f"Listing instances in zone {zone.name}")
                     request = compute_v1.ListInstancesRequest(
-                        project=self._project_id, zone=zone.name, filter=filter_str
+                        project=self._project_id, zone=zone.name
                     )
 
                     try:
                         instances_list = self._compute_client.list(request=request)
-                        instances.extend(self._process_instances(instances_list))
+                        instances.extend(
+                            self._standardize_instance_data(instances_list, job_id, include_non_job)
+                        )
                     except Exception as e:
-                        self._logger.warning(f"Error listing instances in zone {zone.name}: {e}")
+                        self._logger.warning(
+                            f"Error listing instances in zone {zone.name}: {e}", exc_info=True
+                        )
                         # Continue to next zone instead of failing
                         continue
             except Exception as e:
@@ -918,15 +782,14 @@ class GCPComputeInstanceManager(InstanceManager):
                 if "permission" in str(e).lower():
                     error_msg += "\nYou may not have sufficient permissions to list zones."
 
-                if not target_region:
-                    error_msg += "\nPlease specify a region using the --region parameter or add a zone in your config file."
-
                 self._logger.error(error_msg)
                 raise ValueError(error_msg)
 
         return instances
 
-    def _process_instances(self, instances_list) -> List[Dict[str, Any]]:
+    def _standardize_instance_data(
+        self, instances_list, job_id: Optional[str], include_non_job: bool
+    ) -> List[Dict[str, Any]]:
         """
         Process the list of GCP instances into a standardized format.
 
@@ -939,7 +802,7 @@ class GCPComputeInstanceManager(InstanceManager):
         instances = []
         for instance in instances_list:
             # Extract instance type from URL (e.g., ".../machineTypes/n1-standard-1")
-            instance_type = instance.instance_type.split("/")[-1]
+            instance_type = instance.machine_type.split("/")[-1]
 
             instance_info = {
                 "id": instance.name,
@@ -949,25 +812,39 @@ class GCPComputeInstanceManager(InstanceManager):
                 "zone": instance.zone.split("/")[-1],  # Extract zone name from URL
             }
 
+            if instance.tags and instance.tags.items:
+                for tag in instance.tags.items:
+                    if tag.startswith("rms-cloud-run-"):
+                        inst_job_id = tag[14:]
+                        if job_id and inst_job_id != job_id:
+                            self._logger.debug(
+                                f"Skipping instance {instance.name} because it has job_id "
+                                f"{inst_job_id}"
+                            )
+                            break
+                        instance_info["job_id"] = inst_job_id
+                        break
+            if "job_id" not in instance_info and not include_non_job:
+                self._logger.debug(
+                    f"Skipping instance {instance.name} because it has no job_id tag"
+                )
+                continue  # Skip if no job_id tag found
+
             # Add IP addresses if available
             if instance.network_interfaces and len(instance.network_interfaces) > 0:
                 # Private IP
-                if instance.network_interfaces[0].network_ip:
-                    instance_info["private_ip"] = instance.network_interfaces[0].network_ip
+                if instance.network_interfaces[0].network_i_p:
+                    instance_info["private_ip"] = instance.network_interfaces[0].network_i_p
 
                 # Public IP
                 if (
                     instance.network_interfaces[0].access_configs
                     and len(instance.network_interfaces[0].access_configs) > 0
-                    and instance.network_interfaces[0].access_configs[0].nat_ip
+                    and instance.network_interfaces[0].access_configs[0].nat_i_p
                 ):
                     instance_info["public_ip"] = (
-                        instance.network_interfaces[0].access_configs[0].nat_ip
+                        instance.network_interfaces[0].access_configs[0].nat_i_p
                     )
-
-            # Add labels
-            if instance.labels:
-                instance_info["tags"] = instance.labels
 
             instances.append(instance_info)
 
@@ -1273,3 +1150,118 @@ class GCPComputeInstanceManager(InstanceManager):
         # Get the first zone in the list
         self._logger.debug(f"Default zone is {zones[0].name}")
         return zones[0].name
+
+    # async def find_cheapest_region(self, instance_type: str = "n1-standard-1") -> Dict[str, str]:
+    #     """
+    #     Find the cheapest GCP region and zone for the given instance type.
+
+    #     Args:
+    #         instance_type: instance type to check prices for (default: n1-standard-1)
+
+    #     Returns:
+    #         Dictionary with 'region' and 'zone' keys
+    #     """
+    #     try:
+    #         # Get all available regions
+    #         request = compute_v1.ListRegionsRequest(project=self._project_id)
+    #         regions = self._regions_client.list(request=request)
+    #         region_names = [region.name for region in regions]
+
+    #         self._logger.info(
+    #             f"Checking prices across {len(region_names)} regions for {instance_type}"
+    #         )
+
+    #         region_prices = {}
+    #         for region_name in region_names:
+    #             try:
+    #                 # Get zones in this region
+    #                 zones_request = compute_v1.ListZonesRequest(
+    #                     project=self._project_id, filter=f"name eq {region_name}-.*"
+    #                 )
+    #                 zones = self._zones_client.list(request=zones_request)
+    #                 zone_names = [zone.name for zone in zones]
+
+    #                 if not zone_names:
+    #                     continue
+
+    #                 # Choose the first zone in the region for pricing check
+    #                 zone = zone_names[0]
+
+    #                 # Get pricing from Cloud Billing Catalog API
+    #                 service_name = "compute.googleapis.com"
+
+    #                 # Make pricing request
+    #                 request = billing.ListServicesRequest()
+    #                 services = self._billing_client.list_services(request=request)
+
+    #                 # Find compute service
+    #                 compute_service = None
+    #                 for service in services:
+    #                     if service.name.endswith(service_name):
+    #                         compute_service = service
+    #                         break
+
+    #                 if compute_service:
+    #                     # Get SKUs for the service
+    #                     sku_request = billing.ListSkusRequest(parent=compute_service.name)
+    #                     skus = self._billing_client.list_skus(request=sku_request)
+
+    #                     # Find matching SKU for the instance type in this region
+    #                     price = None
+    #                     for sku in skus:
+    #                         if (
+    #                             instance_type in sku.description
+    #                             and "Core" in sku.description
+    #                             and region_name in sku.service_regions
+    #                         ):
+    #                             # Get the price in USD
+    #                             for pricing_info in sku.pricing_info:
+    #                                 for (
+    #                                     price_by_currency
+    #                                 ) in pricing_info.pricing_expression.tiered_rates[
+    #                                     0
+    #                                 ].unit_price.currency_code:
+    #                                     if price_by_currency == "USD":
+    #                                         price = (
+    #                                             pricing_info.pricing_expression.tiered_rates[
+    #                                                 0
+    #                                             ].unit_price.nanos
+    #                                             / 1e9
+    #                                         )
+    #                                         region_prices[region_name] = {
+    #                                             "price": price,
+    #                                             "zone": zone,
+    #                                         }
+    #                                         self._logger.info(
+    #                                             f"  {region_name} ({zone}): ${price:.6f}/hour"
+    #                                         )
+    #                                         break
+    #                                 if price:
+    #                                     break
+    #                         if price:
+    #                             break
+
+    #             except Exception as e:
+    #                 self._logger.warning(f"  Error getting price for {region_name}: {e}")
+    #                 continue
+
+    #         if not region_prices:
+    #             self._logger.warning(
+    #                 "Could not retrieve prices for any region, using us-central1 as default"
+    #             )
+    #             return {"region": self._DEFAULT_REGION, "zone": self._DEFAULT_ZONE}
+
+    #         # Find the cheapest region
+    #         cheapest_region = min(region_prices.items(), key=lambda x: x[1]["price"])[0]
+    #         cheapest_zone = region_prices[cheapest_region]["zone"]
+    #         cheapest_price = region_prices[cheapest_region]["price"]
+
+    #         self._logger.info(
+    #             f"Cheapest region is {cheapest_region} ({cheapest_zone}) at ${cheapest_price:.6f}/hour"
+    #         )
+    #         return {"region": cheapest_region, "zone": cheapest_zone}
+
+    #     except Exception as e:
+    #         self._logger.error(f"Error finding cheapest region: {e}")
+    #         self._logger.info("Using us-central1 as default region")
+    #         return {"region": "us-central1", "zone": "us-central1-a"}
