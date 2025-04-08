@@ -70,12 +70,12 @@ if [ "${P}" == "aws" ]; then
     set +x
 else
     echo
-    echo "****** Comparing spot prices for m3.2xlarge in different regions ******"
+    echo "****** Comparing spot prices for n2-highmem-16 in different regions ******"
     echo
     set -x
-    python -m src.cloud_tasks.cli list_instance_types --config examples/run_cli_config.yml --provider ${P} --instance-types m3.2xlarge --use-spot ${ARGS}  # Default us-west-2
-    python -m src.cloud_tasks.cli list_instance_types --config examples/run_cli_config.yml --provider ${P} --instance-types m3.2xlarge --use-spot --region us-west-1 ${ARGS}
-    python -m src.cloud_tasks.cli list_instance_types --config examples/run_cli_config.yml --provider ${P} --instance-types m3.2xlarge --use-spot --region us-east-1 ${ARGS}
-    python -m src.cloud_tasks.cli list_instance_types --config examples/run_cli_config.yml --provider ${P} --instance-types m3.2xlarge --use-spot --region us-east-2 ${ARGS}
+    python -m src.cloud_tasks.cli list_instance_types --config examples/run_cli_config.yml --provider ${P} --instance-types n2-highmem-16 --use-spot ${ARGS}  # Default us-central1
+    python -m src.cloud_tasks.cli list_instance_types --config examples/run_cli_config.yml --provider ${P} --instance-types n2-highmem-16 --use-spot --region southamerica-east1 ${ARGS}
+    python -m src.cloud_tasks.cli list_instance_types --config examples/run_cli_config.yml --provider ${P} --instance-types n2-highmem-16 --use-spot --region europe-west8 ${ARGS}
+    python -m src.cloud_tasks.cli list_instance_types --config examples/run_cli_config.yml --provider ${P} --instance-types n2-highmem-16 --use-spot --region northamerica-northeast1 ${ARGS}
     set +x
 fi

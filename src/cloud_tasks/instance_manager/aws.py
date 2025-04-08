@@ -6,8 +6,7 @@ import base64
 import datetime
 import json
 import logging
-import os
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import boto3  # type: ignore
 from botocore.exceptions import ClientError  # type: ignore
@@ -518,23 +517,25 @@ class AWSEC2InstanceManager(InstanceManager):
         self._ec2_client.terminate_instances(InstanceIds=[instance_id])
 
     async def list_running_instances(
-        self, tag_filter: Optional[Dict[str, str]] = None
+        self, job_id: Optional[str] = None, include_non_job: bool = False
     ) -> List[Dict[str, Any]]:
         """
-        List currently running EC2 instances, optionally filtered by tags.
+        List currently running Compute Engine instances, optionally filtered by job_id.
 
         Args:
-            tag_filter: Dictionary of tags to filter instances
+            job_id: Job ID to filter instances
+            include_non_job: Include instances that do not have a job_id tag
 
         Returns:
-            List of instance dictionaries with id, type, state, and launch_time
+            List of instance dictionaries with id, type, state, and creation_time
         """
         filters = []
 
-        # Add tag filters if provided
-        if tag_filter:
-            for key, value in tag_filter.items():
-                filters.append({"Name": f"tag:{key}", "Values": [value]})
+        if job_id:
+            self._logger.debug(f"Listing running instances with job_id filter '{job_id}'")
+            filters.append({"Name": "tag:rms_cloud_run_job_id", "Values": [job_id]})
+        else:
+            self._logger.debug("Listing running instances")
 
         # Get instances
         response = self._ec2_client.describe_instances(Filters=filters)
@@ -542,23 +543,37 @@ class AWSEC2InstanceManager(InstanceManager):
         instances = []
         for reservation in response["Reservations"]:
             for instance in reservation["Instances"]:
-                # Skip terminated instances
-                if instance["State"]["Name"] == "terminated":
-                    continue
-
                 # Extract relevant information
                 instance_info = {
                     "id": instance["InstanceId"],
                     "type": instance["InstanceType"],
                     "state": self.STATUS_MAP[instance["State"]["Name"]],
-                    "launch_time": instance["LaunchTime"].isoformat(),
-                    "public_ip": instance.get("PublicIpAddress", ""),
-                    "private_ip": instance.get("PrivateIpAddress", ""),
+                    "creation_time": instance["LaunchTime"].isoformat(),
+                    "zone": instance["Placement"]["AvailabilityZone"],
                 }
 
-                # Extract tags
                 if "Tags" in instance:
-                    instance_info["tags"] = {tag["Key"]: tag["Value"] for tag in instance["Tags"]}
+                    for tag in instance["Tags"]:
+                        if tag["Key"] == "rms_cloud_run_job_id":
+                            inst_job_id = tag["Value"]
+                            if job_id and inst_job_id != job_id:
+                                self._logger.debug(
+                                    f"Skipping instance {instance['InstanceId']} because it has "
+                                    f"job_id {inst_job_id}"
+                                )
+                                break
+                            instance_info["job_id"] = inst_job_id
+                            break
+                if "job_id" not in instance_info and not include_non_job:
+                    self._logger.debug(
+                        f"Skipping instance {instance['InstanceId']} because it has no job_id tag"
+                    )
+                    continue  # Skip if no job_id tag found
+
+                if "PrivateIpAddress" in instance:
+                    instance_info["private_ip"] = instance["PrivateIpAddress"]
+                if "PublicIpAddress" in instance:
+                    instance_info["public_ip"] = instance["PublicIpAddress"]
 
                 instances.append(instance_info)
 

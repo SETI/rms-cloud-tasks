@@ -34,6 +34,7 @@ class RunConfig(BaseModel, validate_assignment = True):
 
 
 class AWSConfig(ProviderConfig, validate_assignment = True):
+    job_id: Optional[constr(min_length=1)] = None
     queue_name: Optional[constr(min_length=1)] = None
     instance_types: Optional[List[str] | str] = None
     startup_script: Optional[str] = None
@@ -46,6 +47,7 @@ class AWSConfig(ProviderConfig, validate_assignment = True):
 
 
 class GCPConfig(ProviderConfig, validate_assignment = True):
+    job_id: Optional[constr(min_length=1)] = None
     queue_name: Optional[constr(min_length=1)] = None
     instance_types: Optional[List[str] | str] = None
     startup_script: Optional[constr(min_length=1)] = None
@@ -59,6 +61,7 @@ class GCPConfig(ProviderConfig, validate_assignment = True):
 
 
 class AzureConfig(ProviderConfig, validate_assignment = True):
+    job_id: Optional[constr(min_length=1)] = None
     queue_name: Optional[constr(min_length=1)] = None
     instance_types: Optional[List[str] | str] = None
     startup_script: Optional[constr(min_length=1)] = None
@@ -183,6 +186,11 @@ class Config(BaseModel, validate_assignment = True):
 
         if provider_config is None:
             raise ValueError(f"Provider configuration not found for {provider_name}")
+
+        if provider_config.queue_name is None:
+            job_id = provider_config.job_id
+            if job_id is not None:
+                provider_config.queue_name = f"rms-cloud-run-{job_id}"
 
         return provider_config
 

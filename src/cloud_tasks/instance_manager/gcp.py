@@ -5,7 +5,7 @@ Google Cloud Compute Engine implementation of the InstanceManager interface.
 import asyncio
 import logging
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 import uuid
 
 from google.api_core.exceptions import NotFound  # type: ignore
@@ -713,7 +713,6 @@ class GCPComputeInstanceManager(InstanceManager):
         Raises:
             ValueError: If no zone or region is specified and listing all zones fails
         """
-        # Build filter string if job_id is provided
         if job_id:
             self._logger.debug(f"Listing running instances with job_id filter '{job_id}'")
         else:
@@ -1145,7 +1144,7 @@ class GCPComputeInstanceManager(InstanceManager):
 
         # Create the request to list zones
         request = compute_v1.ListZonesRequest(project=self._project_id)
-        zones = self._zones_client.list(request=request)
+        zones = list(self._zones_client.list(request=request))
 
         # Get the first zone in the list
         self._logger.debug(f"Default zone is {zones[0].name}")

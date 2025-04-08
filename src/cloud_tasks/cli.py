@@ -77,13 +77,10 @@ async def load_queue_cmd(args: argparse.Namespace, config: Config) -> None:
     """
     try:
         provider = config.provider
-        provider_config = config.get_provider_config()
+        provider_config = config.get_provider_config(provider)
         queue_name = provider_config.queue_name
-        if queue_name is None:
-            logger.fatal("Queue name must be specified")
-            sys.exit(1)
 
-        print(f"Creating task queue {queue_name} on {provider} if necessary...")
+        print(f"Creating task queue '{queue_name}' on {provider} if necessary...")
         task_queue = await create_queue(config)
 
         print(f"Populating task queue from {args.tasks}...")
@@ -153,14 +150,14 @@ async def show_queue_cmd(args: argparse.Namespace, config: Config) -> None:
         config: Configuration
     """
     provider = config.provider
-    provider_config = config.get_provider_config()
+    provider_config = config.get_provider_config(provider)
     queue_name = provider_config.queue_name
-    print(f"Checking queue depth for {queue_name} on {provider}...")
+    print(f"Checking queue depth for '{queue_name}' on {provider}...")
 
     try:
         task_queue = await create_queue(config)
     except Exception as e:
-        logger.error(f"Error connecting to queue: {e}")
+        logger.fatal(f"Error connecting to queue: {e}", exc_info=True)
         print(f"\nError connecting to queue: {e}")
         print("\nPlease check your configuration and ensure the queue exists.")
         sys.exit(1)
@@ -169,7 +166,7 @@ async def show_queue_cmd(args: argparse.Namespace, config: Config) -> None:
     try:
         queue_depth = await task_queue.get_queue_depth()
     except Exception as e:
-        logger.error(f"Error getting queue depth: {e}")
+        logger.fatal(f"Error getting queue depth: {e}", exc_info=True)
         print(f"\nError retrieving queue depth: {e}")
         print("\nThe queue may exist but you might not have permission to access it.")
         sys.exit(1)
@@ -239,7 +236,7 @@ async def show_queue_cmd(args: argparse.Namespace, config: Config) -> None:
                     print("  - The message is not available for immediate delivery")
                     print("  - There's an issue with queue visibility settings")
             except Exception as e:
-                logger.error(f"Error peeking at message: {e}")
+                logger.fatal(f"Error peeking at message: {e}", exc_info=True)
                 print(f"\nError retrieving sample message: {e}")
 
 
@@ -251,7 +248,7 @@ async def purge_queue_cmd(args: argparse.Namespace, config: Config) -> None:
         config: Configuration
     """
     provider = config.provider
-    provider_config = config.get_provider_config()
+    provider_config = config.get_provider_config(provider)
     queue_name = provider_config.queue_name
     task_queue = await create_queue(config)
 
@@ -292,7 +289,7 @@ async def delete_queue_cmd(args: argparse.Namespace, config: Config) -> None:
         config: Configuration
     """
     provider = config.provider
-    provider_config = config.get_provider_config()
+    provider_config = config.get_provider_config(provider)
     queue_name = provider_config.queue_name
 
     # Confirm with the user if not using --force
@@ -312,7 +309,7 @@ async def delete_queue_cmd(args: argparse.Namespace, config: Config) -> None:
         await task_queue.delete_queue()
         print(f"Queue '{queue_name}' has been deleted.")
     except Exception as e:
-        logger.error(f"Error deleting queue: {e}")
+        logger.fatal(f"Error deleting queue: {e}", exc_info=True)
         print(f"\nError deleting queue: {e}")
         sys.exit(1)
 
@@ -437,7 +434,7 @@ async def manage_pool_cmd(args: argparse.Namespace, config: Config) -> None:
             await orchestrator.stop()
 
     except Exception as e:
-        logger.error(f"Error managing instance pool: {e}", exc_info=True)
+        logger.fatal(f"Error managing instance pool: {e}", exc_info=True)
         sys.exit(1)
 
 
@@ -475,7 +472,7 @@ async def list_running_instances_cmd(args: argparse.Namespace, config: Config) -
                 job_id=args.job_id, include_non_job=args.all_instances
             )
         except Exception as e:
-            logger.error(f"Error listing instances: {e}")
+            logger.fatal(f"Error listing instances: {e}", exc_info=True)
             sys.exit(1)
 
         # Display instances
@@ -533,6 +530,9 @@ async def list_running_instances_cmd(args: argparse.Namespace, config: Config) -
             instance_count = 0
             state_counts = {}
             for instance in instances:
+                if not args.include_terminated and instance.get("state") == "terminated":
+                    continue
+
                 instance_count += 1
 
                 # Extract common fields with safe defaults
@@ -548,7 +548,6 @@ async def list_running_instances_cmd(args: argparse.Namespace, config: Config) -
 
                 if args.detail:
                     # More detailed output in detail mode with aligned values
-                    print("\n")
                     print(f"Instance ID: {instance_id}")
                     print(f"Type:        {instance_type}")
                     print(f"State:       {state}")
@@ -565,6 +564,7 @@ async def list_running_instances_cmd(args: argparse.Namespace, config: Config) -
                         print(f"Private IP:  {private_ip}")
                     if public_ip:
                         print(f"Public IP:   {public_ip}")
+                    print()
                 else:
                     if args.provider == "gcp" and zone:
                         print(
@@ -1029,7 +1029,7 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
         instances = await instance_manager.list_available_instance_types()
 
         if not instances:
-            print(f"No instance types found for provider {args.provider}")
+            print(f"No instance types found for provider {config.provider}")
             return
 
         # Filter based on minimum requirements
@@ -1193,14 +1193,14 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
             instances_and_zones = instances_and_zones[: args.limit]
 
         # Display results with pricing if available
-        print(f"Found {len(instances_and_zones)} instance/zone pairs for {args.provider}:")
+        print(f"Found {len(instances_and_zones)} instance/zone pairs for {config.provider}:")
         print()
 
         has_pricing = bool(pricing_data)
 
         print(
             f"{'Instance Type':<24} {'Arch':>10} {'vCPU':>4} {'Mem (GB)':>9} "
-            f"{'$/vCPU/Hr':>10} {'$/GB/Hr':>8} {'Total $/Hr':>11} {'Zone':>10}        "
+            f"{'$/vCPU/Hr':>10} {'$/GB/Hr':>8} {'Total $/Hr':>11} {'Zone':>12}               "
             f"{'Description':>10}"
         )
         print("-" * 139)
@@ -1220,7 +1220,7 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
             print(
                 f"{inst['name']:<24} {inst['architecture']:>10} {inst['vcpu']:>4} "
                 f"{inst['ram_gb']:>9.1f} {cpu_price_str:>10} {ram_price_str:>8} "
-                f"{total_price_str:>11} {inst['zone']:>15}  {inst['description'][:60]:<60}"
+                f"{total_price_str:>11}  {inst['zone']:<25} {inst['description'][:60]:<60}"
             )
 
         # Show no pricing data info if we couldn't get pricing
@@ -1344,14 +1344,21 @@ async def list_regions_cmd(args: argparse.Namespace, config: Config) -> None:
 # Helper functions for argument parsing
 
 
-def add_common_args(parser: argparse.ArgumentParser, include_queue_name: bool = True) -> None:
+def add_common_args(
+    parser: argparse.ArgumentParser, include_queue_name: bool = True, include_job_id: bool = True
+) -> None:
     """Add common arguments to all command parsers."""
     parser.add_argument(
         "--config", default="cloud_run_config.yaml", help="Path to configuration file"
     )
     parser.add_argument("--provider", choices=["aws", "gcp", "azure"], help="Cloud provider")
     if include_queue_name:
-        parser.add_argument("--queue-name", help="Name of the task queue")
+        parser.add_argument(
+            "--queue-name",
+            help="The name of the task queue to use (derived from job ID if not provided)",
+        )
+    if include_job_id:
+        parser.add_argument("--job-id", help="The job ID used to group tasks and compute instances")
     parser.add_argument(
         "--region", help="Specific region to use (derived from zone if not provided)"
     )
@@ -1515,12 +1522,17 @@ def main():
     list_running_instances_parser = subparsers.add_parser(
         "list_running_instances", help="List currently running instances for the specified provider"
     )
-    add_common_args(list_running_instances_parser, include_queue_name=False)
+    add_common_args(list_running_instances_parser, include_queue_name=False, include_job_id=False)
     list_running_instances_parser.add_argument("--job-id", help="Filter instances by job ID")
     list_running_instances_parser.add_argument(
         "--all-instances",
         action="store_true",
         help="Show all instances including ones that were not created by cloud run",
+    )
+    list_running_instances_parser.add_argument(
+        "--include-terminated",
+        action="store_true",
+        help="Include terminated instances",
     )
     list_running_instances_parser.add_argument(
         "--sort-by",
@@ -1543,7 +1555,7 @@ def main():
     list_regions_parser = subparsers.add_parser(
         "list_regions", help="List available regions for the specified provider"
     )
-    add_common_args(list_regions_parser, include_queue_name=False)
+    add_common_args(list_regions_parser, include_queue_name=False, include_job_id=False)
     list_regions_parser.add_argument(
         "--prefix", help="Filter regions to only show those with names starting with this prefix"
     )
@@ -1560,7 +1572,7 @@ def main():
     list_images_parser = subparsers.add_parser(
         "list_images", help="List available VM images for the specified provider"
     )
-    add_common_args(list_images_parser, include_queue_name=False)
+    add_common_args(list_images_parser, include_queue_name=False, include_job_id=False)
     list_images_parser.add_argument(
         "--user",
         action="store_true",
@@ -1591,7 +1603,7 @@ def main():
         "list_instance_types",
         help="List compute instance types for the specified provider with pricing information",
     )
-    add_common_args(list_instance_types_parser, include_queue_name=False)
+    add_common_args(list_instance_types_parser, include_queue_name=False, include_job_id=False)
     add_instance_args(list_instance_types_parser)
     list_instance_types_parser.add_argument(
         "--filter", help="Filter instance types containing this text in any field"
