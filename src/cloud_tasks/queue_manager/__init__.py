@@ -25,14 +25,14 @@ async def create_queue(config: Config) -> TaskQueue:
     provider_config = config.get_provider_config(provider)
 
     match provider:
-        case "aws":
+        case "AWS":
             # We import these here to avoid requiring the dependencies for unused providers
             from .aws import AWSSQSQueue
             queue: TaskQueue = AWSSQSQueue(cast(AWSConfig, provider_config))
-        case "gcp":
+        case "GCP":
             from .gcp import GCPPubSubQueue
             queue = GCPPubSubQueue(cast(GCPConfig, provider_config))
-        case "azure":
+        case "AZURE":
             from .azure import AzureServiceBusQueue
             queue = AzureServiceBusQueue(cast(AzureConfig, provider_config))
         case _:

@@ -5,7 +5,7 @@ Google Cloud Compute Engine implementation of the InstanceManager interface.
 import asyncio
 import logging
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import uuid
 
 from google.api_core.exceptions import NotFound  # type: ignore
@@ -132,90 +132,119 @@ class GCPComputeInstanceManager(InstanceManager):
 
     async def get_optimal_instance_type(
         self,
-        cpu_required: int,
-        memory_required_gb: int,
-        disk_required_gb: int,
+        min_cpu: Optional[int] = None,
+        max_cpu: Optional[int] = None,
+        min_total_memory: Optional[int] = None,
+        max_total_memory: Optional[int] = None,
+        min_memory_per_cpu: Optional[float] = None,
+        max_memory_per_cpu: Optional[float] = None,
+        min_disk: Optional[int] = None,
+        max_disk: Optional[int] = None,
+        min_disk_per_cpu: Optional[float] = None,
+        max_disk_per_cpu: Optional[float] = None,
+        instance_types: Optional[List[str]] = None,
         use_spot: bool = False,
-    ) -> str:
+    ) -> Tuple[str, str, float]:
         """
         Get the most cost-effective GCP instance type that meets requirements.
-        If no region was specified during initialization, this method will also
-        find and use the cheapest region.
 
         Args:
-            cpu_required: Minimum number of vCPUs
-            memory_required_gb: Minimum memory in GB
-            disk_required_gb: Minimum disk space in GB
+            min_cpu: Minimum number of vCPUs
+            max_cpu: Maximum number of vCPUs
+            min_total_memory: Minimum total memory in GB
+            max_total_memory: Maximum total memory in GB
+            min_memory_per_cpu: Minimum memory per vCPU in GB
+            max_memory_per_cpu: Maximum memory per vCPU in GB
+            min_disk: Minimum disk space in GB
+            max_disk: Maximum disk space in GB
+            min_disk_per_cpu: Minimum disk space per vCPU in GB
+            max_disk_per_cpu: Maximum disk space per vCPU in GB
+            instance_types: List of prefixes of the instance type names to consider
             use_spot: Whether to use preemptible instances (GCP equivalent of spot)
 
         Returns:
             GCP instance type name (e.g., 'n1-standard-2')
         """
-        self._logger.info(
-            f"Finding optimal instance type with: CPU={cpu_required}, Memory={memory_required_gb}GB, "
-            f"Disk={disk_required_gb}GB, Spot/Preemptible={use_spot}"
+        self._logger.debug(
+            f"Finding optimal instance type with constraints: min_cpu={min_cpu}, max_cpu={max_cpu}, "
+            f"min_total_memory={min_total_memory}, max_total_memory={max_total_memory}, "
+            f"min_memory_per_cpu={min_memory_per_cpu}, max_memory_per_cpu={max_memory_per_cpu}, "
+            f"min_disk={min_disk}, max_disk={max_disk}, min_disk_per_cpu={min_disk_per_cpu}, "
+            f"max_disk_per_cpu={max_disk_per_cpu}, Spot={use_spot}, "
+            f"instance_types={instance_types}"
         )
 
-        # If no region/zone was specified, find the cheapest one
-        if not self._region or not self._zone:
-            self._logger.info("No region specified, searching for cheapest region...")
-            region_info = await self.find_cheapest_region()
-            self._region = region_info["region"]
-            self._zone = region_info["zone"]
-            self._logger.info(f"Selected region {self._region}, zone {self._zone} for lowest cost")
-        else:
-            self._logger.info(f"Using specified region {self._region}, zone {self._zone}")
-
         # Get available instance types
-        instance_types = await self.list_available_instance_types()
+        instance_types_list = await self.list_available_instance_types()
         self._logger.debug(
-            f"Found {len(instance_types)} available instance types in zone {self._zone}"
+            f"Found {len(instance_types_list)} available instance types in zone {self._zone}"
         )
 
         # Filter to instance types that meet requirements
         eligible_types = []
-        for machine in instance_types:
-            if machine["vcpu"] >= cpu_required and machine["memory_gb"] >= memory_required_gb:
-                # We don't filter on disk since persistent disks can be attached
+        for machine in instance_types_list:
+            if (
+                (min_cpu is None or machine["vcpu"] >= min_cpu)
+                and (max_cpu is None or machine["vcpu"] <= max_cpu)
+                and (min_total_memory is None or machine["ram_gb"] >= min_total_memory)
+                and (max_total_memory is None or machine["ram_gb"] <= max_total_memory)
+                and (
+                    min_memory_per_cpu is None
+                    or machine["ram_gb"] / machine["vcpu"] >= min_memory_per_cpu
+                )
+                and (
+                    max_memory_per_cpu is None
+                    or machine["ram_gb"] / machine["vcpu"] <= max_memory_per_cpu
+                )
+                and (min_disk is None or machine.get("storage_gb", 0) >= min_disk)
+                and (max_disk is None or machine.get("storage_gb", 0) <= max_disk)
+                and (
+                    min_disk_per_cpu is None
+                    or machine.get("storage_gb", 0) / machine["vcpu"] >= min_disk_per_cpu
+                )
+                and (
+                    max_disk_per_cpu is None
+                    or machine.get("storage_gb", 0) / machine["vcpu"] <= max_disk_per_cpu
+                )
+            ):
                 eligible_types.append(machine)
 
         self._logger.debug(f"Found {len(eligible_types)} instance types that meet requirements:")
         for idx, machine in enumerate(eligible_types):
             self._logger.debug(
-                f"  [{idx+1}] {machine['name']}: {machine['vcpu']} vCPU, {machine['memory_gb']:.2f} GB memory"
+                f"  [{idx+1:3d}] {machine['name']}: {machine['vcpu']} vCPU, {machine['ram_gb']:.2f} GB memory"
             )
 
-        # Filter by instance_types if specified in configuration
-        if self._instance_types:
+        # Filter by instance_types if specified
+        if instance_types:
+            # Update eligible types with filtered list
             filtered_types = []
             for machine in eligible_types:
                 machine_name = machine["name"]
                 # Check if machine matches any prefix or exact name
-                for pattern in self._instance_types:
-                    if machine_name.startswith(pattern) or machine_name == pattern:
+                for pattern in instance_types:
+                    if machine_name.startswith(pattern):
                         filtered_types.append(machine)
                         break
+            eligible_types = filtered_types
 
-            # Update eligible types with filtered list
-            if filtered_types:
-                eligible_types = filtered_types
-                self._logger.debug(
-                    f"Filtered to {len(eligible_types)} instance types based on instance_types configuration:"
-                )
-                for idx, machine in enumerate(eligible_types):
-                    self._logger.debug(
-                        f"  [{idx+1}] {machine['name']}: {machine['vcpu']} vCPU, {machine['memory_gb']:.2f} GB memory"
-                    )
-            else:
-                error_msg = f"No machines match the instance_types patterns: {self._instance_types}. Available instance types meeting requirements: {[m['name'] for m in eligible_types]}"
+            if len(eligible_types) == 0:
+                error_msg = f"No machines match the instance_types patterns: {instance_types}. Available instance types meeting requirements: {[m['name'] for m in eligible_types]}"
                 self._logger.error(error_msg)
                 raise ValueError(error_msg)
 
-        if not eligible_types:
-            raise ValueError(
-                f"No instance type meets requirements: {cpu_required} vCPU, "
-                f"{memory_required_gb} GB memory"
+            self._logger.debug(
+                f"Filtered to {len(eligible_types)} instance types based on instance_types argument:"
             )
+            for idx, machine in enumerate(eligible_types):
+                self._logger.debug(
+                    f"  [{idx+1}:3d] {machine['name']}: {machine['vcpu']} vCPU, {machine['ram_gb']:.2f} GB memory"
+                )
+
+        if not eligible_types:
+            raise ValueError("No instance type meets requirements")
+
+        eligible_type_dict = {m["name"]: m for m in eligible_types}
 
         # Use GCP Cloud Catalog API to get current prices
         pricing_data = {}
@@ -223,92 +252,9 @@ class GCPComputeInstanceManager(InstanceManager):
             f"Retrieving pricing data for {len(eligible_types)} eligible instance types..."
         )
 
-        for machine in eligible_types:
-            instance_type = machine["name"]
-            self._logger.debug(f"Getting pricing for instance type: {instance_type}")
-
-            try:
-                # Get pricing from Cloud Billing Catalog API
-                service_name = "compute.googleapis.com"
-
-                # Make pricing request
-                request = billing.ListServicesRequest()
-                services = self._billing_client.list_services(request=request)
-
-                # Find compute service
-                compute_service = None
-                for service in services:
-                    if service.name.endswith(service_name):
-                        compute_service = service
-                        break
-
-                if compute_service:
-                    self._logger.debug(f"Found compute service: {compute_service.display_name}")
-                    # Get SKUs for the service
-                    sku_request = billing.ListSkusRequest(parent=compute_service.name)
-                    skus = self._billing_client.list_skus(request=sku_request)
-
-                    # Find matching SKU for the instance type in this region
-                    for sku in skus:
-                        price_found = False
-                        sku_description = sku.description.lower()
-
-                        machine_name_parts = instance_type.split("-")
-                        machine_family = machine_name_parts[0]
-
-                        # Debug log for SKU matching
-                        sku_match = (
-                            machine_family in sku_description
-                            and (
-                                ("core" in sku_description and not use_spot)
-                                or ("preemptible" in sku_description and use_spot)
-                            )
-                            and self._region in sku.service_regions
-                        )
-
-                        if sku_match:
-                            self._logger.debug(
-                                f"Matching SKU found: {sku.description} in region {self._region}"
-                            )
-
-                        # Check if this SKU matches our instance type and region
-                        if sku_match:
-                            # Extract price info
-                            for pricing_info in sku.pricing_info:
-                                for tier in pricing_info.pricing_expression.tiered_rates:
-                                    unit_price = tier.unit_price
-                                    # Convert to USD dollars
-                                    price = unit_price.units + (unit_price.nanos / 1e9)
-
-                                    self._logger.debug(
-                                        f"  Price: ${price:.6f} per {pricing_info.pricing_expression.usage_unit}"
-                                    )
-
-                                    # Store price for this instance type
-                                    if (
-                                        instance_type not in pricing_data
-                                        or price < pricing_data[instance_type]
-                                    ):
-                                        pricing_data[instance_type] = price
-                                        price_found = True
-                                        break
-
-                                if price_found:
-                                    break
-
-            except Exception as e:
-                self._logger.warning(f"Error getting pricing for {instance_type}: {e}")
-                continue
+        pricing_data = await self.get_instance_pricing(list(eligible_type_dict.keys()), use_spot)
 
         # Log the complete pricing data found
-        if pricing_data:
-            self._logger.debug("Retrieved pricing data for the following instance types:")
-            for instance_type, price in pricing_data.items():
-                self._logger.debug(f"  {instance_type}: ${price:.6f} per hour")
-        else:
-            self._logger.warning("Could not retrieve any pricing data from GCP API")
-
-        # If we couldn't get pricing from API, fall back to our heuristic
         if not pricing_data:
             self._logger.warning(
                 "Could not get pricing data from GCP API, falling back to heuristic"
@@ -319,30 +265,66 @@ class GCPComputeInstanceManager(InstanceManager):
             self._logger.info(f"Selected {selected_type} based on heuristic (lowest vCPU + memory)")
             return selected_type
 
-        # Select instance with the lowest price
-        priced_instances = [(instance_type, price) for instance_type, price in pricing_data.items()]
-        if not priced_instances:
-            self._logger.warning(
-                "No pricing data found for eligible instance types, falling back to heuristic"
-            )
-            eligible_types.sort(key=lambda x: x["vcpu"] + x["memory_gb"])
-            selected_type = eligible_types[0]["name"]
-            self._logger.info(f"Selected {selected_type} based on heuristic (lowest vCPU + memory)")
-            return selected_type
+        # Fill in missing price info and also expand to include all zones
+        zone_pricing_data = {}
+        for instance_type, price in pricing_data.items():
+            if price is None:
+                self._logger.warning(f"No pricing data found for {instance_type}; ignoring")
+                continue
+            for zone, price_in_zone in price.items():
+                if price_in_zone["total_price"] is None:
+                    price_in_zone = dict(price_in_zone)  # Make a copy before mutating
+                    instance_type_data = eligible_type_dict[instance_type]
+                    if (
+                        price_in_zone["per_cpu_price"] is None
+                        or price_in_zone["ram_per_gb_price"] is None
+                    ):
+                        print(price_in_zone)
+                        # TODO Fix this for AWS
+                        self._logger.warning(
+                            f"No pricing data found for {instance_type} in {zone}; ignoring"
+                        )
+                        continue
+                    price_in_zone["total_price"] = (
+                        price_in_zone["per_cpu_price"] * instance_type_data["vcpu"]
+                        + price_in_zone["ram_per_gb_price"] * instance_type_data["ram_gb"]
+                    )
+                zone_pricing_data[(instance_type, zone)] = price_in_zone
 
-        priced_instances.sort(key=lambda x: x[1])  # Sort by price
+        if len(zone_pricing_data) == 0:
+            self._logger.warning("No pricing data found for any instance types")
+            return None
+
+        self._logger.debug("Retrieved pricing data for the following instance types:")
+        for (instance_type, zone), price in zone_pricing_data.items():
+            self._logger.debug(f"  {instance_type} in {zone}: ${price['total_price']:.6f} per hour")
+
+        # Select instance with the lowest price
+        priced_instances = [
+            (instance_type, zone, price)
+            for (instance_type, zone), price in zone_pricing_data.items()
+        ]
+        priced_instances.sort(
+            key=lambda x: (
+                x[2]["total_price"],
+                eligible_type_dict[x[0]]["vcpu"],
+            )
+        )  # Sort by price, then by vCPU
 
         # Debug log for all priced instances in order
-        self._logger.debug("instance types sorted by price (cheapest first):")
-        for i, (instance_type, price) in enumerate(priced_instances):
-            self._logger.debug(f"  {i+1}. {instance_type}: ${price:.6f}/hour")
+        self._logger.debug("Instance types sorted by price (cheapest first):")
+        for i, (instance_type, zone, price) in enumerate(priced_instances):
+            self._logger.debug(
+                f"  [{i+1:3d}] {instance_type} in {zone}: ${price['total_price']:.6f}/hour"
+            )
 
-        selected_type = priced_instances[0][0]
-        price = priced_instances[0][1]
-        self._logger.info(
-            f"Selected {selected_type} at ${price:.6f} per hour in {self._region} ({self._zone}){' (spot/preemptible)' if use_spot else ''}"
+        selected_type, selected_zone, selected_price = priced_instances[0]
+        price = selected_price["total_price"]
+        self._logger.debug(
+            f"Selected {selected_type} in {selected_zone} at ${price:.6f} per hour "
+            f"{' (spot)' if use_spot else '(on demand)'}"
         )
-        return selected_type
+        return selected_type, selected_zone, price
 
     async def list_available_instance_types(self) -> List[Dict[str, Any]]:
         """
@@ -483,7 +465,9 @@ class GCPComputeInstanceManager(InstanceManager):
                 ):
                     if "instance core" in sku_description:
                         core_sku = sku
-                    elif "instance ram" in sku_description:
+                    elif (
+                        "instance ram" in sku_description and "sole tenancy" not in sku_description
+                    ):
                         ram_sku = sku
 
             if core_sku is None:

@@ -20,8 +20,8 @@ from cloud_tasks.common.config import Config, load_config
 from cloud_tasks.instance_manager import create_instance_manager
 from cloud_tasks.queue_manager import create_queue
 
-# from cloud_tasks.instance_orchestrator.orchestrator import InstanceOrchestrator
 from cloud_tasks.common.logging_config import configure_logging
+from cloud_tasks.instance_manager.orchestrator import InstanceOrchestrator
 
 # Use custom logging configuration
 configure_logging(level=logging.WARNING)
@@ -323,115 +323,93 @@ async def manage_pool_cmd(args: argparse.Namespace, config: Config) -> None:
         config: Configuration
     """
     try:
-        # Initialize cloud services
-        provider = args.provider
+        logger.info(f"Starting pool management for job: {config.get_provider_config().job_id}")
 
-        # Get the run configuration with proper overrides
-        cli_args = vars(args)
-        run_config = get_run_config(config, provider, cli_args)
-
-        if not run_config.startup_script:
-            logger.fatal("No startup script specified")
-            sys.exit(1)
-
-        logger.info(
-            f"Using #CPU: {run_config.cpu}, Memory: {run_config.memory_gb} GB, "
-            f"Disk: {run_config.disk_gb} GB"
-        )
-        logger.info(f"Using image: {run_config.image}")
-        script_preview = run_config.startup_script[:50].replace("\n", " ") + (
-            "..." if len(run_config.startup_script) > 50 else ""
-        )
-        logger.info(f"Using startup script: {script_preview}")
-
-        # Log instance types restriction if set
-        if hasattr(run_config, "instance_types") and run_config.instance_types:
-            logger.info(f"Restricting instance types to: {' '.join(run_config.instance_types)}")
-
-        # Handle region parameter
-        if run_config.region:
-            logger.info(f"Using specified region: {run_config.region}")
-        else:
-            logger.info("No region specified, will find cheapest")
-
-        # Create task queue to monitor progress
-        logger.info(f"Creating task queue {args.queue_name} on {provider}")
-        task_queue = await create_queue(config)
-
-        # Create job ID
-        job_id = args.job_id or f"job-{int(time.time())}"
-        logger.info(f"Starting job {job_id}")
-
-        # Create the orchestrator with parameters from run_config
-        orchestrator = InstanceOrchestrator(
-            provider=provider,
-            job_id=job_id,
-            cpu_required=run_config.cpu,
-            memory_required_gb=run_config.memory_gb,
-            disk_required_gb=run_config.disk_gb,
-            min_instances=args.min_instances,
-            max_instances=args.max_instances,
-            tasks_per_instance=args.tasks_per_instance,
-            use_spot_instances=args.use_spot,
-            region=run_config.region,
-            queue_name=args.queue_name,
-            custom_image=run_config.image,
-            startup_script=run_config.startup_script,
-            config=config,
-        )
-
-        # Set the task queue on the orchestrator
-        orchestrator.task_queue = task_queue
+        # Create the orchestrator using only the config object
+        # Configuration (including startup script, region, etc.) is handled
+        # during the config loading phase in main()
+        orchestrator = InstanceOrchestrator(config=config)
 
         # Start orchestrator
         logger.info("Starting orchestrator")
         await orchestrator.start()
 
-        # Monitor job progress
+        # Monitor job progress (using orchestrator's task_queue)
         try:
-            queue_depth = await task_queue.get_queue_depth()
+            queue_depth = await orchestrator.task_queue.get_queue_depth()
             initial_queue_depth = queue_depth
 
             if initial_queue_depth == 0:
-                logger.warning("Queue is empty. Add tasks using the 'load_queue' command.")
+                logger.warning(
+                    "Queue is empty. Add tasks using the 'load_tasks' command before starting "
+                    "the pool."
+                )
 
+            # We might want a way to keep this running indefinitely even if queue is empty
+            # if min_instances > 0, or have a separate command just to maintain a pool.
+            # For now, it exits if the queue becomes empty.
             with tqdm(total=initial_queue_depth, desc="Processing tasks") as pbar:
                 last_depth = queue_depth
 
-                while queue_depth > 0:
-                    await asyncio.sleep(5)
-                    queue_depth = await task_queue.get_queue_depth()
+                while queue_depth > 0 or orchestrator.num_running_instances > 0:
+                    # Check if the orchestrator is still running
+                    if not orchestrator.running:
+                        logger.info("Orchestrator stopped, exiting monitor loop.")
+                        break
 
-                    # Update progress bar
+                    await asyncio.sleep(5)  # Shorter sleep for responsiveness
+
+                    # Check instance health/count (optional, orchestrator loop does this)
+                    status = await orchestrator.get_job_status()
+                    running_count = status["instances"]["running"]
+                    starting_count = status["instances"]["starting"]
+                    total_instances = running_count + starting_count
+
+                    try:
+                        queue_depth = await orchestrator.task_queue.get_queue_depth()
+                    except Exception as q_err:
+                        logger.error(f"Error getting queue depth in monitor loop: {q_err}")
+                        # Decide how to handle this - continue, break, etc.
+                        continue  # Continue for now
+
+                    # Update progress bar only if queue depth decreases
                     processed = last_depth - queue_depth
                     if processed > 0:
                         pbar.update(processed)
                         last_depth = queue_depth
 
-                    # Print job status
-                    if args.verbose:
-                        status = await orchestrator.get_job_status()
-                        instances_info = (
-                            f"{status['instances']['running']} running, "
-                            f"{status['instances']['starting']} starting"
-                        )
+                    # Print job status if verbose
+                    if args.verbose >= 2:  # Use INFO level for status updates
+                        instances_info = f"{running_count} running, {starting_count} starting"
                         logger.info(f"Queue depth: {queue_depth}, Instances: {instances_info}")
 
-                # Ensure progress bar reaches 100%
+                    # Exit condition if queue is empty and no minimum instances required
+                    if queue_depth == 0 and orchestrator.min_instances == 0:
+                        logger.info("Queue is empty and min_instances is 0, finishing up.")
+                        # Wait briefly for any final processing or scaling down
+                        await asyncio.sleep(orchestrator.check_interval_seconds)
+                        break
+
+                # Ensure progress bar reaches 100% if there were initial tasks
                 if initial_queue_depth > 0:
-                    pbar.update(pbar.total - pbar.n)
+                    pbar.update(max(0, pbar.total - pbar.n))
 
-            logger.info("All tasks processed")
+            logger.info("Monitoring complete or queue is empty.")
 
-            # Stop orchestrator
+            # Stop orchestrator gracefully
             logger.info("Stopping orchestrator")
             await orchestrator.stop()
 
-            logger.info(f"Job {job_id} completed successfully")
+            logger.info(f"Job {orchestrator.job_id} management finished.")
 
         except KeyboardInterrupt:
-            logger.info("Received interrupt, stopping job")
+            logger.info("Received interrupt, stopping job management")
             await orchestrator.stop()
+        except Exception as monitor_err:
+            logger.error(f"Error during monitoring: {monitor_err}", exc_info=True)
+            logger.info("Attempting to stop orchestrator due to monitoring error...")
+            await orchestrator.stop()
+            sys.exit(1)
 
     except Exception as e:
         logger.fatal(f"Error managing instance pool: {e}", exc_info=True)
@@ -730,49 +708,53 @@ async def status_job(args: argparse.Namespace, config: Config) -> None:
 
     Parameters:
         args: Command-line arguments
+        config: Configuration
     """
     try:
-        # Create task queue to check depth
-        task_queue = await create_queue(config)
+        # Create orchestrator using only the config
+        orchestrator = InstanceOrchestrator(config=config)
 
-        # Create orchestrator
-        orchestrator = InstanceOrchestrator(
-            provider=args.provider,
-            job_id=args.job_id,
-            region=args.region if hasattr(args, "region") else None,
-            queue_name=args.queue_name,
-            config=config,
-        )
+        # Instance Manager and Task Queue are initialized within the orchestrator if needed,
+        # but for status, we might need to initialize them explicitly if start() is not called.
+        # Let's rely on get_job_status which should handle initialization or use existing state.
 
-        # Set task queue on orchestrator
-        orchestrator.task_queue = task_queue
+        # Start the orchestrator components needed for status without starting the scaling loop
+        await orchestrator.instance_manager.initialize()  # Assuming an initialize method or similar
+        await orchestrator.task_queue.initialize()  # Assuming an initialize method or similar
 
-        # Get instances with job ID tag
-        instances = await orchestrator.instance_manager.list_running_instances(
-            tag_filter={"job_id": args.job_id}
-        )
-
-        # Get queue depth
-        queue_depth = await task_queue.get_queue_depth()
+        # Get job status
+        status = await orchestrator.get_job_status()
 
         # Print status
-        running_count = len([i for i in instances if i["state"] == "running"])
-        starting_count = len([i for i in instances if i["state"] == "starting"])
-
-        print(f"Job: {args.job_id}")
-        print(f"Queue: {args.queue_name}")
-        print(f"Queue depth: {queue_depth}")
+        print(f"Job: {status['job_id']}")
+        print(f"Queue: {config.get_provider_config().queue_name}")  # Get queue name from config
+        print(f"Queue depth: {status['queue_depth']}")
         print(
-            f"Instances: {len(instances)} total ({running_count} running, "
-            f"{starting_count} starting)"
+            f"Instances: {status['instances']['total']} total "
+            f"({status['instances']['running']} running, "
+            f"{status['instances']['starting']} starting)"
         )
 
         if args.verbose:
-            print("\nInstances:")
-            for instance in instances:
-                print(f"  {instance['id']}: {instance['type']} - {instance['state']}")
-                if "public_ip" in instance and instance["public_ip"]:
-                    print(f"    Public IP: {instance['public_ip']}")
+            print("\nInstance Details:")
+            if status["instances"]["details"]:
+                for instance in status["instances"]["details"]:
+                    # Format instance details for display
+                    job_id_str = instance.get("job_id", "N/A")
+                    created_str = instance.get("creation_time", instance.get("created_at", "N/A"))
+                    zone_str = instance.get("zone", "N/A")
+                    print(
+                        f"  ID: {instance['id']:<30} Type: {instance.get('type', 'N/A'):<15} "
+                        f"State: {instance.get('state', 'N/A'):<10} Zone: {zone_str:<15} "
+                        f"Created: {created_str:<30} JobID: {job_id_str}"
+                    )
+                    if args.verbose >= 2:  # More details with -vv
+                        if instance.get("private_ip"):
+                            print(f"    Private IP: {instance['private_ip']}")
+                        if instance.get("public_ip"):
+                            print(f"    Public IP: {instance['public_ip']}")
+            else:
+                print("  No instances found for this job.")
 
     except Exception as e:
         logger.error(f"Error checking job status: {e}", exc_info=True)
@@ -785,37 +767,33 @@ async def stop_job(args: argparse.Namespace, config: Config) -> None:
 
     Parameters:
         args: Command-line arguments
+        config: Configuration
     """
     try:
-        # Create task queue
-        task_queue = await create_queue(config)
+        # Create orchestrator using only the config
+        orchestrator = InstanceOrchestrator(config=config)
 
-        # Create orchestrator with the provider parameter and full config
-        orchestrator = InstanceOrchestrator(
-            provider=args.provider,
-            job_id=args.job_id,
-            # Minimum parameters needed for stopping
-            min_instances=0,
-            max_instances=0,
-            queue_name=args.queue_name,
-            config=config,  # Pass the full config
-        )
-
-        # Set the task_queue directly
-        orchestrator.task_queue = task_queue
-
-        # Create the instance manager
-        orchestrator.instance_manager = await create_instance_manager(config)
+        # Initialize necessary components without starting the loop
+        # This ensures instance_manager and task_queue are available
+        await orchestrator.instance_manager.initialize()  # Assuming initialize
+        await orchestrator.task_queue.initialize()  # Assuming initialize
 
         # Stop orchestrator (terminates instances)
-        logger.info(f"Stopping job {args.job_id}")
-        await orchestrator.stop()
+        job_id_to_stop = orchestrator.job_id  # Get job_id from orchestrator
+        logger.info(f"Stopping job {job_id_to_stop}")
+        await orchestrator.stop()  # stop already handles termination
 
+        # Purge queue if requested
         if args.purge_queue:
-            logger.info(f"Purging queue {args.queue_name}")
-            await task_queue.purge_queue()
+            queue_name_to_purge = orchestrator.queue_name  # Get queue_name from orchestrator
+            logger.info(f"Purging queue {queue_name_to_purge}")
+            # Ensure task_queue is available before purging
+            if orchestrator.task_queue:
+                await orchestrator.task_queue.purge_queue()
+            else:
+                logger.warning("Task queue not available for purging.")
 
-        logger.info(f"Job {args.job_id} stopped")
+        logger.info(f"Job {job_id_to_stop} stopped")
 
     except Exception as e:
         logger.error(f"Error stopping job: {e}", exc_info=True)
@@ -1374,15 +1352,25 @@ def add_common_args(
 
 def add_instance_pool_args(parser: argparse.ArgumentParser) -> None:
     """Add instance pool management specific arguments."""
-    parser.add_argument("--job-id", help="Unique job ID (generated if not provided)")
-    parser.add_argument("--max-instances", type=int, default=5, help="Maximum number of instances")
-    parser.add_argument("--min-instances", type=int, default=0, help="Minimum number of instances")
+    parser.add_argument(
+        "--max-instances", type=int, default=5, help="Maximum number of compute instances"
+    )
+    parser.add_argument(
+        "--min-instances", type=int, default=1, help="Minimum number of compute instances"
+    )
     parser.add_argument("--image", help="Custom VM image to use (overrides config)")
     parser.add_argument(
         "--startup-script-file", help="Path to custom startup script file (overrides config)"
     )
+    parser.add_argument("--cpus-per-task", type=int, default=1, help="Number of vCPUs per task")
     parser.add_argument(
-        "--tasks-per-instance", type=int, default=10, help="Number of tasks per instance"
+        "--min-tasks-per-instance", type=int, default=1, help="Minimum number of tasks per instance"
+    )
+    parser.add_argument(
+        "--max-tasks-per-instance",
+        type=int,
+        default=10,
+        help="Maximum number of tasks per instance",
     )
 
 
@@ -1516,6 +1504,18 @@ def main():
     # ---------------------------- #
     # INSTANCE MANAGEMENT COMMANDS #
     # ---------------------------- #
+
+    # --- Manage pool command ---
+
+    manage_pool_parser = subparsers.add_parser(
+        "manage_pool", help="Manage an instance pool for processing tasks"
+    )
+    # --cpus-per-task
+    # --startup-script-file
+    add_common_args(manage_pool_parser)
+    add_instance_pool_args(manage_pool_parser)
+    add_instance_args(manage_pool_parser)
+    manage_pool_parser.set_defaults(func=manage_pool_cmd)
 
     # --- List running instances command ---
 
@@ -1677,17 +1677,6 @@ if __name__ == "__main__":
     add_tasks_args(run_parser)
     add_instance_pool_args(run_parser)
     run_parser.set_defaults(func=run_job)
-
-    # --- Manage pool command ---
-
-    manage_pool_parser = subparsers.add_parser(
-        "manage_pool", help="Manage an instance pool for processing tasks"
-    )
-    # --cpus-per-task
-    # --startup-script-file
-    add_common_args(manage_pool_parser)
-    add_instance_pool_args(manage_pool_parser)
-    manage_pool_parser.set_defaults(func=manage_pool_cmd)
 
     # --- Status command ---
 

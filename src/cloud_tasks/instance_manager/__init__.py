@@ -26,14 +26,14 @@ async def create_instance_manager(config: Config) -> InstanceManager:
     provider_config = config.get_provider_config(provider)
 
     match provider:
-        case "aws":
+        case "AWS":
             # We import these here to avoid requiring the dependencies for unused providers
             from .aws import AWSEC2InstanceManager
             instance_manager: InstanceManager = AWSEC2InstanceManager(cast(AWSConfig, provider_config))
-        case "gcp":
+        case "GCP":
             from .gcp import GCPComputeInstanceManager
             instance_manager = GCPComputeInstanceManager(cast(GCPConfig, provider_config))
-        case "azure":
+        case "AZURE":
             from .azure import AzureVMInstanceManager
             instance_manager = AzureVMInstanceManager(cast(AzureConfig, provider_config))
         case _:

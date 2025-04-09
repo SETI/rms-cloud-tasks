@@ -14,6 +14,14 @@ class ProviderConfig(BaseModel):
 
 
 class RunConfig(BaseModel, validate_assignment = True):
+    # Number of instances
+    min_instances: Optional[NonNegativeInt] = None
+    max_instances: Optional[NonNegativeInt] = None
+    cpus_per_task: Optional[NonNegativeFloat] = None
+    min_tasks_per_instance: Optional[NonNegativeInt] = None
+    max_tasks_per_instance: Optional[NonNegativeInt] = None
+
+    # Instance attributes
     # Memory and disk are in GB
     min_cpu: Optional[NonNegativeInt] = None
     max_cpu: Optional[NonNegativeInt] = None
@@ -26,11 +34,14 @@ class RunConfig(BaseModel, validate_assignment = True):
     min_disk_per_cpu: Optional[NonNegativeFloat] = None
     max_disk_per_cpu: Optional[NonNegativeFloat] = None
     instance_types: Optional[List[str] | str] = None  # Overriden by provider config
+
+    # Pricing options
     use_spot: Optional[bool] = None
+
+    # Boot options
     startup_script: Optional[str] = None
     startup_script_file: Optional[str] = None
     image: Optional[str] = None
-    cpus_per_task: Optional[NonNegativeFloat] = None
 
 
 class AWSConfig(ProviderConfig, validate_assignment = True):
@@ -75,7 +86,7 @@ class AzureConfig(ProviderConfig, validate_assignment = True):
 
 
 class Config(BaseModel, validate_assignment = True):
-    provider: Optional[Literal["aws", "gcp", "azure"]] = None
+    provider: Optional[Literal["aws", "gcp", "azure", "AWS", "GCP", "AZURE"]] = None
     aws: Optional[AWSConfig] = None
     gcp: Optional[GCPConfig] = None
     azure: Optional[AzureConfig] = None
@@ -108,10 +119,13 @@ class Config(BaseModel, validate_assignment = True):
                     if attr_name in cli_args and cli_args[attr_name] is not None:
                         setattr(self.azure, attr_name, cli_args[attr_name])
 
+        if self.provider is not None:
+            self.provider = self.provider.upper()
+
     def update_run_config_from_provider_config(self) -> None:
         """Update run config with provider-specific config values."""
         match self.provider:
-            case "aws":
+            case "AWS":
                 if self.aws.instance_types is not None:
                     self.run.instance_types = self.aws.instance_types
                 if self.aws.startup_script is not None:
@@ -120,7 +134,7 @@ class Config(BaseModel, validate_assignment = True):
                     self.run.startup_script_file = self.aws.startup_script_file
                 if self.aws.image is not None:
                     self.run.image = self.aws.image
-            case "gcp":
+            case "GCP":
                 if self.gcp.instance_types is not None:
                     self.run.instance_types = self.gcp.instance_types
                 if self.gcp.startup_script is not None:
@@ -129,7 +143,7 @@ class Config(BaseModel, validate_assignment = True):
                     self.run.startup_script_file = self.gcp.startup_script_file
                 if self.gcp.image is not None:
                     self.run.image = self.gcp.image
-            case "azure":
+            case "AZURE":
                 if self.azure.instance_types is not None:
                     self.run.instance_types = self.azure.instance_types
                 if self.azure.startup_script is not None:
@@ -161,7 +175,7 @@ class Config(BaseModel, validate_assignment = True):
         """Get configuration for a specific cloud provider.
 
         Args:
-            provider_name: Cloud provider name ('aws', 'gcp', or 'azure')
+            provider_name: Cloud provider name ('AWS', 'GCP', or 'AZURE')
 
         Returns:
             ProviderConfig object for the specified provider
@@ -175,11 +189,11 @@ class Config(BaseModel, validate_assignment = True):
             raise ValueError("Provider name not provided or detected in config")
 
         match provider_name:
-            case "aws":
+            case "AWS":
                 provider_config = self.aws
-            case "gcp":
+            case "GCP":
                 provider_config = self.gcp
-            case "azure":
+            case "AZURE":
                 provider_config = self.azure
             case _:
                 raise ValueError(f"Unsupported provider: {provider_name}")
@@ -230,5 +244,8 @@ def load_config(config_file: str) -> Config:
 
     # Convert to Config object
     config = Config(**config_dict)
+
+    if config.provider is not None:
+        config.provider = config.provider.upper()
 
     return config
