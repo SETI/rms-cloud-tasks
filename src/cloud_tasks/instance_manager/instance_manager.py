@@ -12,8 +12,8 @@ class InstanceManager(ABC):
         self.config = config
 
     @abstractmethod
-    async def list_available_instance_types(self) -> List[Dict[str, Any]]:
-        """List available instance types with their specifications."""
+    async def get_available_instance_types(self) -> Dict[str, Dict[str, Any]]:
+        """Get available instance types with their specifications."""
         pass
 
     @abstractmethod

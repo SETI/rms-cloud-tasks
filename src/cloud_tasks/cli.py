@@ -1004,27 +1004,27 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
 
         # Get available instance types
         print("Retrieving instance types...")
-        instances = await instance_manager.list_available_instance_types()
+        instances = await instance_manager.get_available_instance_types()
 
         if not instances:
             print(f"No instance types found for provider {config.provider}")
             return
 
         # Filter based on minimum requirements
-        instances = [
-            inst
-            for inst in instances
+        instances = {
+            inst_name: inst
+            for inst_name, inst in instances.items()
             if (args.min_cpu is None or inst["vcpu"] >= args.min_cpu)
             and (args.max_cpu is None or inst["vcpu"] <= args.max_cpu)
-            and (args.min_total_memory is None or inst["ram_gb"] >= args.min_total_memory)
-            and (args.max_total_memory is None or inst["ram_gb"] <= args.max_total_memory)
+            and (args.min_total_memory is None or inst["mem_gb"] >= args.min_total_memory)
+            and (args.max_total_memory is None or inst["mem_gb"] <= args.max_total_memory)
             and (
                 args.min_memory_per_cpu is None
-                or inst["ram_gb"] / inst["vcpu"] >= args.min_memory_per_cpu
+                or inst["mem_gb"] / inst["vcpu"] >= args.min_memory_per_cpu
             )
             and (
                 args.max_memory_per_cpu is None
-                or inst["ram_gb"] / inst["vcpu"] <= args.max_memory_per_cpu
+                or inst["mem_gb"] / inst["vcpu"] <= args.max_memory_per_cpu
             )
             and (args.min_disk is None or inst["storage_gb"] >= args.min_disk)
             and (args.max_disk is None or inst["storage_gb"] <= args.max_disk)
@@ -1037,79 +1037,41 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
                 or inst["storage_gb"] / inst["vcpu"] <= args.max_disk_per_cpu
             )
             and (not args.use_spot or (args.use_spot and inst["supports_spot"]))
-        ]
+        }
 
         # Apply instance type filter if specified
         if args.instance_types:
-            filtered_instances = []
-            for instance in instances:
-                instance_name = instance["name"]
+            filtered_instances = {}
+            for instance_name, instance in instances.items():
                 # Check if instance matches any prefix or exact name
                 for pattern in args.instance_types:
                     if instance_name.startswith(pattern):
-                        filtered_instances.append(instance)
+                        filtered_instances[instance_name] = instance
                         break
             instances = filtered_instances
 
         # Apply text filter if specified
         if args.filter:
             filter_text = args.filter.lower()
-            filtered_instances = []
-            for instance in instances:
+            filtered_instances = {}
+            for instance_name, instance in instances.items():
                 # Check if any field contains the filter string
                 for key, value in instance.items():
                     if isinstance(value, (str, int, float)) and filter_text in str(value).lower():
-                        filtered_instances.append(instance)
+                        filtered_instances[instance_name] = instance
                         break
             instances = filtered_instances
 
         # Try to get pricing information where available
         print("Retrieving pricing information...")
-        pricing_data = await instance_manager.get_instance_pricing(
-            [x["name"] for x in instances], args.use_spot
-        )
+        pricing_data = await instance_manager.get_instance_pricing(instances, args.use_spot)
 
-        instances_and_zones = []
-        # Add price data to instances for sorting
-        for instance in instances:
-            inst_name = instance["name"]
-            if inst_name in pricing_data and pricing_data[inst_name] is not None:
-                for zone, zone_pricing in pricing_data[inst_name].items():
-                    cpu_price = zone_pricing["cpu_price"]
-                    per_cpu_price = zone_pricing["per_cpu_price"]
-                    ram_price = zone_pricing["ram_price"]
-                    per_gb_price = zone_pricing["ram_per_gb_price"]
-                    total_price = zone_pricing["total_price"]
-                    if cpu_price is None and per_cpu_price is not None:
-                        cpu_price = per_cpu_price * instance["vcpu"]
-                    elif per_cpu_price is None and cpu_price is not None:
-                        per_cpu_price = cpu_price / instance["vcpu"]
-                    if ram_price is None and per_gb_price is not None:
-                        ram_price = per_gb_price * instance["ram_gb"]
-                    elif per_gb_price is None and ram_price is not None:
-                        per_gb_price = ram_price / instance["ram_gb"]
-                    if total_price is None:
-                        total_price = cpu_price + ram_price
-
-                    data = {
-                        **instance,
-                        "name": inst_name,
-                        "zone": zone,
-                        "per_cpu_price": per_cpu_price,
-                        "ram_per_gb_price": per_gb_price,
-                        "total_price": total_price,
-                    }
-                    instances_and_zones.append(data)
-            else:
-                data = {
-                    **instance,
-                    "name": inst_name,
-                    "zone": "N/A",
-                    "per_cpu_price": math.inf,
-                    "ram_per_gb_price": math.inf,
-                    "total_price": math.inf,
-                }
-                instances_and_zones.append(data)
+        pricing_data_list = []
+        for zone_pricing in pricing_data.values():
+            if zone_pricing is None:
+                continue
+            for x in zone_pricing.values():
+                pricing_data_list.append(x)
 
         # Apply custom sorting if specified
         if args.sort_by:
@@ -1124,15 +1086,35 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
                 "v": "vcpu",
                 "cpu": "vcpu",
                 "c": "vcpu",
-                "memory": "ram_gb",
-                "mem": "ram_gb",
-                "m": "ram_gb",
-                "ram": "ram_gb",
+                "mem_gb": "mem_gb",
+                "memory": "mem_gb",
+                "mem": "mem_gb",
+                "m": "mem_gb",
+                "ram": "mem_gb",
+                "local_ssd": "local_ssd_gb",
+                "local_ssd_gb": "local_ssd_gb",
+                "lssd": "local_ssd_gb",
+                "ssd": "local_ssd_gb",
+                "storage": "storage_gb",
+                "storage_gb": "storage_gb",
+                "disk": "storage_gb",
                 "cpu_price": "cpu_price",
                 "cp": "cpu_price",
+                "per_cpu_price": "cpu_price",
                 "vcpu_price": "cpu_price",
-                "mem_price": "ram_price",
-                "mp": "ram_price",
+                "mem_price": "mem_price",
+                "mp": "mem_price",
+                "per_gb_price": "mem_per_gb_price",
+                "mem_per_gb_price": "mem_per_gb_price",
+                "local_ssd_price": "local_ssd_price",
+                "lssd_price": "local_ssd_price",
+                "local_ssd_per_gb_price": "local_ssd_per_gb_price",
+                "lssd_per_gb_price": "local_ssd_per_gb_price",
+                "ssd_price": "local_ssd_price",
+                "storage_price": "storage_price",
+                "disk_price": "storage_price",
+                "storage_per_gb_price": "storage_per_gb_price",
+                "disk_per_gb_price": "storage_per_gb_price",
                 "total_price": "total_price",
                 "p": "total_price",
                 "tp": "total_price",
@@ -1156,92 +1138,71 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
                     if field_name is None:
                         print(f"Invalid sort field: {sort_field}")
                         sys.exit(1)
-                    instances_and_zones.sort(key=lambda x: x[field_name], reverse=descending)
+                    pricing_data_list.sort(key=lambda x: x[field_name], reverse=descending)
             else:
                 # Default sort if no fields specified
-                instances_and_zones.sort(
-                    key=lambda x: (x["vcpu"], x["ram_gb"], x["name"], x["zone"])
-                )
+                pricing_data_list.sort(key=lambda x: (x["vcpu"], x["mem_gb"], x["name"], x["zone"]))
         else:
             # Default sort by vCPU, then memory if no sort-by specified
-            instances_and_zones.sort(key=lambda x: (x["vcpu"], x["ram_gb"], x["name"], x["zone"]))
+            pricing_data_list.sort(key=lambda x: (x["vcpu"], x["mem_gb"], x["name"], x["zone"]))
 
         # Limit results if specified - applied after sorting
-        if args.limit and len(instances_and_zones) > args.limit:
-            instances_and_zones = instances_and_zones[: args.limit]
+        if args.limit and len(pricing_data) > args.limit:
+            pricing_data = pricing_data[: args.limit]
 
         # Display results with pricing if available
-        print(f"Found {len(instances_and_zones)} instance/zone pairs for {config.provider}:")
         print()
 
-        has_pricing = bool(pricing_data)
-
-        print(
-            f"{'Instance Type':<24} {'Arch':>10} {'vCPU':>4} {'Mem (GB)':>9} "
-            f"{'$/vCPU/Hr':>10} {'$/GB/Hr':>8} {'Total $/Hr':>11} {'Zone':>12}               "
-            f"{'Description':>10}"
+        underline = "-" * 107
+        header = (
+            f"{'Instance Type':<24} {'Arch':>10} {'vCPU':>4} {'Mem (GB)':>10} "
+            f"{'LSSD (GB)':>10} {'Disk (GB)':>10} "
         )
-        print("-" * 139)
-        for inst in instances_and_zones:
-            if math.isinf(inst["per_cpu_price"]):
+
+        if args.detail:
+            header += (
+                f"{'$/vCPU/Hr':>10} {'Mem $/GB/Hr':>12} {'LSSD $/GB/Hr':>13} {'Disk $/GB/Hr':>13} "
+            )
+        header += f"{'Total $/Hr':>11} {'Zone':>12}"
+        if args.detail:
+            header += f"               {'Description':>10}"
+            underline += "-" * 100
+
+        print(header)
+        print(underline)
+        for price_data in pricing_data_list:
+            if math.isinf(price_data["per_cpu_price"]):
                 cpu_price_str = "N/A"
             else:
-                cpu_price_str = f"${inst['per_cpu_price']:.4f}"
-            if math.isinf(inst["ram_per_gb_price"]):
-                ram_price_str = "N/A"
+                cpu_price_str = f"${price_data['per_cpu_price']:.4f}"
+
+            if math.isinf(price_data["mem_per_gb_price"]):
+                mem_price_str = "N/A"
             else:
-                ram_price_str = f"${inst['ram_per_gb_price']:.4f}"
-            if math.isinf(inst["total_price"]):
+                mem_price_str = f"${price_data['mem_per_gb_price']:.4f}"
+
+            if math.isinf(price_data["total_price"]):
                 total_price_str = "N/A"
             else:
-                total_price_str = f"${inst['total_price']:.4f}"
-            print(
-                f"{inst['name']:<24} {inst['architecture']:>10} {inst['vcpu']:>4} "
-                f"{inst['ram_gb']:>9.1f} {cpu_price_str:>10} {ram_price_str:>8} "
-                f"{total_price_str:>11}  {inst['zone']:<25} {inst['description'][:60]:<60}"
-            )
+                total_price_str = f"${price_data['total_price']:.4f}"
 
-        # Show no pricing data info if we couldn't get pricing
-        if not has_pricing:
-            print(
-                "\nNote: To show pricing information, configure credentials with pricing "
-                "API access."
-            )
-            print("      Pricing varies by region and can change over time.")
-        elif args.use_spot:
-            print(
-                "\nNote: Showing spot/preemptible instance pricing which is variable and "
-                "subject to change."
-            )
-            print("      These instances can be terminated by the cloud provider at any time.")
-        else:
-            print(
-                "\nNote: On-demand pricing shown. Use --use-spot to see spot/preemptible pricing."
-            )
+            local_ssd_price_str = f"${price_data['local_ssd_per_gb_price']:.8f}"
+            storage_gb_price_str = f"${price_data['storage_per_gb_price']:.4f}"
 
-        if args.provider == "aws":
-            print(
-                "\nTo filter instance types with the 'run' or 'manage_pool' commands, use the "
-                "--instance-types parameter:"
+            val = (
+                f"{price_data['name']:<24} {price_data['architecture']:>10} {price_data['vcpu']:>4} "
+                f"{price_data['mem_gb']:>10.1f} {price_data['local_ssd_gb']:>10} "
+                f"{price_data['storage_gb']:>10} "
             )
-            print("  --instance-types t3 m5 (will include all t3.* and m5.* instances)")
-        elif args.provider == "gcp":
-            print(
-                "\nTo filter instance types with the 'run' or 'manage_pool' commands, use the "
-                "--instance-types parameter:"
-            )
-            print(
-                "  --instance-types n1 n2 e2 (will include all n1-*, n2-* and e2-* machine types)"
-            )
-        elif args.provider == "azure":
-            print(
-                "\nTo filter instance types with the 'run' or 'manage_pool' commands, use the "
-                "--instance-types parameter:"
-            )
-            print(
-                "  --instance-types Standard_B Standard_D (will include all Standard_B* and "
-                "Standard_D* VM sizes)"
-            )
+            if args.detail:
+                val += (
+                    f"{cpu_price_str:>10} {mem_price_str:>12} "
+                    f"{local_ssd_price_str:>13} {storage_gb_price_str:>13} "
+                )
+            val += f"{total_price_str:>11}  {price_data['zone']:<25} "
+            if args.detail:
+                val += f"{price_data['description'][:60]:<60}"
+            print(val)
 
     except Exception as e:
         logger.error(f"Error listing instance types: {e}", exc_info=True)
@@ -1606,6 +1567,9 @@ def main():
     add_common_args(list_instance_types_parser, include_queue_name=False, include_job_id=False)
     add_instance_args(list_instance_types_parser)
     list_instance_types_parser.add_argument(
+        "--detail", action="store_true", help="Show additional cost information"
+    )
+    list_instance_types_parser.add_argument(
         "--filter", help="Filter instance types containing this text in any field"
     )
     list_instance_types_parser.add_argument(
@@ -1614,9 +1578,13 @@ def main():
     list_instance_types_parser.add_argument(
         "--sort-by",
         help='Sort results by comma-separated fields (e.g., "price,vcpu" or "type,-memory"). '
-        "Available fields: type/name, vcpu, ram_gb, cpu_price, ram_price, total_price. "
+        "Available fields: "
+        "name, vcpu, mem, local_ssd, storage, "
+        "vcpu_price, mem_price, local_ssd_price, storage_price, "
+        "price_per_cpu, mem_per_gb_price, local_ssd_per_gb_price, storage_per_gb_price, "
+        "total_price, zone, description. "
         'Prefix with "-" for descending order. '
-        'Partial field names like "ram" or "mem" for "ram_gb" or "v" for "vcpu" are supported.',
+        'Partial field names like "ram" or "mem" for "mem_gb" or "v" for "vcpu" are supported.',
     )
     list_instance_types_parser.set_defaults(func=list_instance_types_cmd)
 

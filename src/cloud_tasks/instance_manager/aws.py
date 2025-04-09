@@ -144,9 +144,9 @@ class AWSEC2InstanceManager(InstanceManager):
             print("Using us-east-1 as default region")
             return self._DEFAULT_REGION
 
-    async def list_available_instance_types(self) -> List[Dict[str, Any]]:
+    async def get_available_instance_types(self) -> Dict[str, Dict[str, Any]]:
         """
-        List available EC2 instance types with their specifications.
+        Get available EC2 instance types with their specifications.
 
         This skips instance types that are bare metal or that don't support on-demand
         pricing (there really shouldn't be any instance types that support spot but not
@@ -156,9 +156,10 @@ class AWSEC2InstanceManager(InstanceManager):
             List of dictionaries with instance types and their specifications:
                 "name": instance type name
                 "vcpu": number of vCPUs
-                "ram_gb": amount of RAM in GB
+                "mem_gb": amount of RAM in GB
+                "local_ssd_gb": amount of local SSD storage in GB
+                "storage_gb": amount of other storage in GB
                 "architecture": architecture of the instance type
-                "storage_gb": amount of storage in GB
                 "supports_spot": whether the instance type supports spot pricing
                 "description": description of the instance type
                 "url": URL to the instance type details
@@ -167,7 +168,7 @@ class AWSEC2InstanceManager(InstanceManager):
 
         # List instance types
         paginator = self._ec2_client.get_paginator("describe_instance_types")
-        instance_types = []
+        instance_types = {}
 
         # Paginate through all instance types
         for page in paginator.paginate():
@@ -180,8 +181,9 @@ class AWSEC2InstanceManager(InstanceManager):
                 instance_info = {
                     "name": instance_type["InstanceType"],
                     "vcpu": instance_type["VCpuInfo"]["DefaultVCpus"],
-                    "ram_gb": instance_type["MemoryInfo"]["SizeInMiB"] / 1024.0,
+                    "mem_gb": instance_type["MemoryInfo"]["SizeInMiB"] / 1024.0,
                     "architecture": instance_type["ProcessorInfo"]["SupportedArchitectures"][0],
+                    "local_ssd_gb": 0,  # AWS separates storage from instance type
                     "storage_gb": 0,  # AWS separates storage from instance type
                     "supports_spot": "spot" in instance_type["SupportedUsageClasses"],
                     "description": instance_type["InstanceType"],
@@ -190,17 +192,17 @@ class AWSEC2InstanceManager(InstanceManager):
 
                 # Add storage info if available
                 if "InstanceStorageInfo" in instance_type:
-                    instance_info["storage_gb"] = instance_type["InstanceStorageInfo"].get(
+                    instance_info["local_ssd_gb"] = instance_type["InstanceStorageInfo"].get(
                         "TotalSizeInGB", 0
                     )
 
-                instance_types.append(instance_info)
+                instance_types[instance_info["name"]] = instance_info
 
         return instance_types
 
     async def get_instance_pricing(
-        self, instance_type: List[str] | str, use_spot: bool = False
-    ) -> Dict[str, Dict[str, Dict[str, float | None]]]:
+        self, instance_types: Dict[str, Dict[str, Any]], use_spot: bool = False
+    ) -> Dict[str, Dict[str, float | None]]:
         """
         Get the hourly price for one or more specific instance types.
 
@@ -208,29 +210,28 @@ class AWSEC2InstanceManager(InstanceManager):
         for spot instances.
 
         Args:
-            instance_type: The instance type name (e.g., 't3.micro') or a list of instance type
-                names
+            instance_types: A dictionary mapping instance type to a dictionary of instance type
+                specifications as returned by get_available_instance_types().
             use_spot: Whether to use spot pricing
 
         Returns:
             A dictionary mapping instance type to a dictionary of hourly price in USD:
-                "cpu_price": CPU price in USD/hour
-                "per_cpu_price": Per-CPU price in USD/hour
-                "ram_price": RAM price in USD/hour
-                "ram_per_gb_price": Per-GB RAM price in USD/hour
-                "total_price": Total price in USD/hour
-            If any price is not available, it is set to None.
+                "cpu_price": Total price of CPU in USD/hour
+                "per_cpu_price": Price of CPU in USD/vCPU/hour
+                "mem_price": Total price of RAM in USD/hour
+                "mem_per_gb_price": Price of RAM in USD/GB/hour
+                "total_price": Total price of instance in USD/hour
+                "zone": availability zone
+            Plus the original instance type info keyed by availability zone. If any price is not
+            available, it is set to None.
         """
-        if isinstance(instance_type, str):
-            instance_type = [instance_type]
-
         self._logger.debug(
-            f"Getting pricing for {len(instance_type)} instance types (spot: {use_spot})"
+            f"Getting pricing for {len(instance_types)} instance types (spot: {use_spot})"
         )
 
         ret = {}
 
-        if len(instance_type) == 0:
+        if len(instance_types) == 0:
             self._logger.warning("No instance types provided")
             return ret
 
@@ -241,21 +242,31 @@ class AWSEC2InstanceManager(InstanceManager):
             # zone in this region
             now = datetime.datetime.now()
             spot_prices = self._ec2_client.describe_spot_price_history(
-                InstanceTypes=instance_type,
+                InstanceTypes=list(instance_types.keys()),
                 ProductDescriptions=["Linux/UNIX"],
                 StartTime=now,
                 EndTime=now,
-                MaxResults=len(instance_type) * 10,  # For different availability zones
+                MaxResults=len(instance_types) * 10,  # For different availability zones
             )
             for price in spot_prices["SpotPriceHistory"]:
-                if price["InstanceType"] not in ret:
-                    ret[price["InstanceType"]] = {}
-                ret[price["InstanceType"]][price["AvailabilityZone"]] = {
-                    "cpu_price": float(price["SpotPrice"]),  # CPU price (combined CPU and memory)
-                    "per_cpu_price": None,  # Per-CPU price (we don't have this)
-                    "ram_price": 0.0,  # Memory price
-                    "ram_per_gb_price": 0.0,  # Per-GB price (we don't have this)
+                inst_type = price["InstanceType"]
+                if inst_type not in ret:
+                    ret[inst_type] = {}
+                zone = price["AvailabilityZone"]
+                cpu_price = float(price["SpotPrice"])
+                vcpus = instance_types[inst_type]["vcpu"]
+                ret[inst_type][zone] = {
+                    "cpu_price": cpu_price,  # CPU price (combined CPU and memory)
+                    "per_cpu_price": cpu_price / vcpus,  # Per-CPU price
+                    "mem_price": 0.0,  # Memory price (we don't have this)
+                    "mem_per_gb_price": 0.0,  # Per-GB price (we don't have this)
+                    "local_ssd_price": 0.0,  # Local SSD price (we don't have this)
+                    "local_ssd_per_gb_price": 0.0,  # Local SSD per-GB price (we don't have this)
+                    "storage_price": 0.0,  # Storage price (we don't have this)
+                    "storage_per_gb_price": 0.0,  # Storage per-GB price (we don't have this)
                     "total_price": float(price["SpotPrice"]),  # Total price
+                    "zone": price["AvailabilityZone"],
+                    **instance_types[price["InstanceType"]],
                 }
                 self._logger.debug(
                     f"Price for spot instance type: \"{price['InstanceType']}\" in "
@@ -273,11 +284,11 @@ class AWSEC2InstanceManager(InstanceManager):
                 {"Type": "TERM_MATCH", "Field": "tenancy", "Value": "Shared"},
                 {"Type": "TERM_MATCH", "Field": "preInstalledSw", "Value": "NA"},
             ]
-            if len(instance_type) <= 25:
+            if len(instance_types) <= 25:
                 # If there are 25 or fewer instance types, use the instance type filter.
                 # We choose this because there are 26 pages of responses in the pricing
                 # API as of 2025-03-25 so this balances the number of API calls.
-                for inst_name in instance_type:
+                for inst_name in instance_types:
                     new_filter_list = filter_list + [
                         {"Type": "TERM_MATCH", "Field": "instanceType", "Value": inst_name}
                     ]
@@ -315,7 +326,7 @@ class AWSEC2InstanceManager(InstanceManager):
                     if not response["PriceList"]:
                         # We're missing pricing data for a huge chunk, so just give up
                         self._logger.error("No pricing data found - aborting")
-                        for inst_name in instance_type:
+                        for inst_name in instance_types:
                             ret[inst_name] = None
                         return ret
                     for price_item in response["PriceList"]:
@@ -330,7 +341,7 @@ class AWSEC2InstanceManager(InstanceManager):
                         break
 
             # Now go through the instance types and match against the pricing data
-            for inst_name in instance_type:
+            for inst_name, inst_info in instance_types.items():
                 price_data = pricing_dict.get(inst_name)
                 if price_data is None:
                     self._logger.warning(f"Could not find pricing data for {inst_name}")
@@ -360,9 +371,15 @@ class AWSEC2InstanceManager(InstanceManager):
                                     "cpu_price": price,  # CPU price (combined CPU and memory)
                                     "per_cpu_price": price
                                     / float(attributes["vcpu"]),  # Per-CPU price
-                                    "ram_price": 0.0,  # Memory price
-                                    "ram_per_gb_price": 0.0,  # Per-GB price (we don't have this)
+                                    "mem_price": 0.0,  # Memory price
+                                    "mem_per_gb_price": 0.0,  # Per-GB price (we don't have this)
+                                    "local_ssd_price": 0.0,  # Local SSD price (we don't have this)
+                                    "local_ssd_per_gb_price": 0.0,  # Local SSD per-GB price (we don't have this)
+                                    "storage_price": 0.0,  # Storage price (we don't have this)
+                                    "storage_per_gb_price": 0.0,  # Storage per-GB price (we don't have this)
                                     "total_price": price,  # Total price
+                                    "zone": f"{self._region}-*",
+                                    **inst_info,
                                 }
                             }
                             break
