@@ -6,6 +6,7 @@ import base64
 import datetime
 import json
 import logging
+import re
 from typing import Any, Dict, List, Optional
 
 import boto3  # type: ignore
@@ -144,13 +145,34 @@ class AWSEC2InstanceManager(InstanceManager):
             print("Using us-east-1 as default region")
             return self._DEFAULT_REGION
 
-    async def get_available_instance_types(self) -> Dict[str, Dict[str, Any]]:
-        """
-        Get available EC2 instance types with their specifications.
+    async def get_available_instance_types(
+        self, constraints: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Dict[str, Any]]:
+        """Get available EC2 instance types with their specifications.
 
         This skips instance types that are bare metal or that don't support on-demand
         pricing (there really shouldn't be any instance types that support spot but not
         on-demand pricing).
+
+        Args:
+            constraints: Dictionary of constraints to filter instance types by. Constraints
+                include::
+                    "instance_types": List of regex patterns to filter instance types by name
+                    "min_cpu": Minimum number of vCPUs
+                    "max_cpu": Maximum number of vCPUs
+                    "min_total_memory": Minimum total memory in GB
+                    "max_total_memory": Maximum total memory in GB
+                    "min_memory_per_cpu": Minimum memory per vCPU in GB
+                    "max_memory_per_cpu": Maximum memory per vCPU in GB
+                    "min_local_ssd": Minimum amount of local SSD storage in GB
+                    "max_local_ssd": Maximum amount of local SSD storage in GB
+                    "min_local_ssd_per_cpu": Minimum amount of local SSD storage per vCPU
+                    "max_local_ssd_per_cpu": Maximum amount of local SSD storage per vCPU
+                    "min_storage": Minimum amount of other storage in GB
+                    "max_storage": Maximum amount of other storage in GB
+                    "min_storage_per_cpu": Minimum amount of other storage per vCPU
+                    "max_storage_per_cpu": Maximum amount of other storage per vCPU
+                    "use_spot": Whether to filter for spot-capable instance types
 
         Returns:
             List of dictionaries with instance types and their specifications:
@@ -166,6 +188,9 @@ class AWSEC2InstanceManager(InstanceManager):
         """
         self._logger.debug("Listing available EC2 instance types")
 
+        if constraints is None:
+            constraints = {}
+
         # List instance types
         paginator = self._ec2_client.get_paginator("describe_instance_types")
         instance_types = {}
@@ -173,6 +198,15 @@ class AWSEC2InstanceManager(InstanceManager):
         # Paginate through all instance types
         for page in paginator.paginate():
             for instance_type in page["InstanceTypes"]:
+                if constraints["instance_types"]:
+                    match_ok = False
+                    for type_filter in constraints["instance_types"]:
+                        if re.match(type_filter, instance_type["InstanceType"]):
+                            match_ok = True
+                            break
+                    if not match_ok:
+                        continue
+
                 if (
                     instance_type["BareMetal"]
                     or "on-demand" not in instance_type["SupportedUsageClasses"]
@@ -196,7 +230,75 @@ class AWSEC2InstanceManager(InstanceManager):
                         "TotalSizeInGB", 0
                     )
 
-                instance_types[instance_info["name"]] = instance_info
+                if (
+                    (
+                        constraints["min_cpu"] is None
+                        or instance_info["vcpu"] >= constraints["min_cpu"]
+                    )
+                    and (
+                        constraints["max_cpu"] is None
+                        or instance_info["vcpu"] <= constraints["max_cpu"]
+                    )
+                    and (
+                        constraints["min_total_memory"] is None
+                        or instance_info["mem_gb"] >= constraints["min_total_memory"]
+                    )
+                    and (
+                        constraints["max_total_memory"] is None
+                        or instance_info["mem_gb"] <= constraints["max_total_memory"]
+                    )
+                    and (
+                        constraints["min_memory_per_cpu"] is None
+                        or instance_info["mem_gb"] / instance_info["vcpu"]
+                        >= constraints["min_memory_per_cpu"]
+                    )
+                    and (
+                        constraints["max_memory_per_cpu"] is None
+                        or instance_info["mem_gb"] / instance_info["vcpu"]
+                        <= constraints["max_memory_per_cpu"]
+                    )
+                    and (
+                        constraints["min_local_ssd"] is None
+                        or instance_info["local_ssd_gb"] >= constraints["min_local_ssd"]
+                    )
+                    and (
+                        constraints["max_local_ssd"] is None
+                        or instance_info["local_ssd_gb"] <= constraints["max_local_ssd"]
+                    )
+                    and (
+                        constraints["min_local_ssd_per_cpu"] is None
+                        or instance_info["local_ssd_gb"] / instance_info["vcpu"]
+                        >= constraints["min_local_ssd_per_cpu"]
+                    )
+                    and (
+                        constraints["max_local_ssd_per_cpu"] is None
+                        or instance_info["local_ssd_gb"] / instance_info["vcpu"]
+                        <= constraints["max_local_ssd_per_cpu"]
+                    )
+                    and (
+                        constraints["min_storage"] is None
+                        or instance_info["storage_gb"] >= constraints["min_storage"]
+                    )
+                    and (
+                        constraints["max_storage"] is None
+                        or instance_info["storage_gb"] <= constraints["max_storage"]
+                    )
+                    and (
+                        constraints["min_storage_per_cpu"] is None
+                        or instance_info["storage_gb"] / instance_info["vcpu"]
+                        >= constraints["min_storage_per_cpu"]
+                    )
+                    and (
+                        constraints["max_storage_per_cpu"] is None
+                        or instance_info["storage_gb"] / instance_info["vcpu"]
+                        <= constraints["max_storage_per_cpu"]
+                    )
+                    and (
+                        not constraints["use_spot"]
+                        or (constraints["use_spot"] and instance_info["supports_spot"])
+                    )
+                ):
+                    instance_types[instance_info["name"]] = instance_info
 
         return instance_types
 

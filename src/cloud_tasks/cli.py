@@ -1004,53 +1004,18 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
 
         # Get available instance types
         print("Retrieving instance types...")
-        instances = await instance_manager.get_available_instance_types()
+
+        # Turn command line arguments into a dictionary
+        # Note we can do this because the names of the command line arguments and the constraints
+        # are the same
+        constraints = vars(args)
+        instances = await instance_manager.get_available_instance_types(constraints)
 
         if not instances:
-            print(f"No instance types found for provider {config.provider}")
+            print(f"No instance types found")
             return
 
-        # Filter based on minimum requirements
-        instances = {
-            inst_name: inst
-            for inst_name, inst in instances.items()
-            if (args.min_cpu is None or inst["vcpu"] >= args.min_cpu)
-            and (args.max_cpu is None or inst["vcpu"] <= args.max_cpu)
-            and (args.min_total_memory is None or inst["mem_gb"] >= args.min_total_memory)
-            and (args.max_total_memory is None or inst["mem_gb"] <= args.max_total_memory)
-            and (
-                args.min_memory_per_cpu is None
-                or inst["mem_gb"] / inst["vcpu"] >= args.min_memory_per_cpu
-            )
-            and (
-                args.max_memory_per_cpu is None
-                or inst["mem_gb"] / inst["vcpu"] <= args.max_memory_per_cpu
-            )
-            and (args.min_disk is None or inst["storage_gb"] >= args.min_disk)
-            and (args.max_disk is None or inst["storage_gb"] <= args.max_disk)
-            and (
-                args.min_disk_per_cpu is None
-                or inst["storage_gb"] / inst["vcpu"] >= args.min_disk_per_cpu
-            )
-            and (
-                args.max_disk_per_cpu is None
-                or inst["storage_gb"] / inst["vcpu"] <= args.max_disk_per_cpu
-            )
-            and (not args.use_spot or (args.use_spot and inst["supports_spot"]))
-        }
-
-        # Apply instance type filter if specified
-        if args.instance_types:
-            filtered_instances = {}
-            for instance_name, instance in instances.items():
-                # Check if instance matches any prefix or exact name
-                for pattern in args.instance_types:
-                    if instance_name.startswith(pattern):
-                        filtered_instances[instance_name] = instance
-                        break
-            instances = filtered_instances
-
-        # Apply text filter if specified
+        # Apply text filter to all fields if specified
         if args.filter:
             filter_text = args.filter.lower()
             filtered_instances = {}
@@ -1364,24 +1329,44 @@ def add_instance_args(parser: argparse.ArgumentParser) -> None:
         help="Filter instance types by maximum memory (GB) per vCPU",
     )
     parser.add_argument(
-        "--min-disk",
+        "--min-local-ssd",
         type=float,
-        help="Filter instance types by minimum disk (GB)",
+        help="Filter instance types by minimum local-SSD storage (GB)",
     )
     parser.add_argument(
-        "--max-disk",
+        "--max-local-ssd",
         type=float,
-        help="Filter instance types by maximum disk (GB)",
+        help="Filter instance types by maximum local-SSD storage (GB)",
     )
     parser.add_argument(
-        "--min-disk-per-cpu",
+        "--min-local-ssd-per-cpu",
         type=float,
-        help="Filter instance types by minimum disk (GB) per vCPU",
+        help="Filter instance types by minimum local-SSD storage per vCPU",
     )
     parser.add_argument(
-        "--max-disk-per-cpu",
+        "--max-local-ssd-per-cpu",
         type=float,
-        help="Filter instance types by maximum disk (GB) per vCPU",
+        help="Filter instance types by maximum local-SSD storage per vCPU",
+    )
+    parser.add_argument(
+        "--min-storage",
+        type=float,
+        help="Filter instance types by minimum non-local-SSD storage (GB)",
+    )
+    parser.add_argument(
+        "--max-storage",
+        type=float,
+        help="Filter instance types by maximum non-local-SSD storage (GB)",
+    )
+    parser.add_argument(
+        "--min-storage-per-cpu",
+        type=float,
+        help="Filter instance types by minimum non-local-SSD storage (GB) per vCPU",
+    )
+    parser.add_argument(
+        "--max-storage-per-cpu",
+        type=float,
+        help="Filter instance types by maximum non-local-SSD storage (GB) per vCPU",
     )
     parser.add_argument(
         "--instance-types",

@@ -3,19 +3,16 @@ Instance Orchestrator core module.
 """
 
 import asyncio
-import base64
-import json
 import logging
 import time
-import traceback
-from typing import Any, Dict, List, Optional, Set, Union
+from typing import Any, Dict, List, Optional, Set
 import datetime
 
 from cloud_tasks.instance_manager.instance_manager import InstanceManager
+from cloud_tasks.queue_manager import create_queue
 from cloud_tasks.queue_manager.taskqueue import TaskQueue
 from cloud_tasks.instance_manager import create_instance_manager
-from cloud_tasks.common.logging_config import configure_logging
-from cloud_tasks.common.config import Config, ProviderConfig
+from cloud_tasks.common.config import Config
 
 
 class InstanceOrchestrator:
@@ -50,35 +47,11 @@ class InstanceOrchestrator:
         self._queue_name = provider_config.queue_name
 
         # Extract run configuration (assuming config.run is populated)
-        run_config = self._config.run
-        if not run_config:
+        self._run_config = self._config.run
+        if not self._run_config:
             raise ValueError("Run configuration section ('run:') is missing.")
 
-        # Instance requirements
-        # TODO: Define defaults more formally, perhaps in RunConfig itself
-        self._min_cpu = run_config.min_cpu
-        self._max_cpu = run_config.max_cpu
-        self._min_total_memory = run_config.min_total_memory
-        self._max_total_memory = run_config.max_total_memory
-        self._min_memory_per_cpu = run_config.min_memory_per_cpu
-        self._max_memory_per_cpu = run_config.max_memory_per_cpu
-        self._min_disk = run_config.min_disk
-        self._max_disk = run_config.max_disk
-        self._min_disk_per_cpu = run_config.min_disk_per_cpu
-        self._max_disk_per_cpu = run_config.max_disk_per_cpu
-        self._instance_types = run_config.instance_types
-
-        # Scaling parameters
-        self._min_instances = run_config.min_instances
-        self._max_instances = run_config.max_instances
-        self._use_spot_instances = run_config.use_spot
-        self._cpus_per_task = run_config.cpus_per_task or 1
-        self._min_tasks_per_instance = run_config.min_tasks_per_instance
-        self._max_tasks_per_instance = run_config.max_tasks_per_instance
-
-        # Startup parameters
-        self._image = run_config.image
-        self._startup_script = run_config.startup_script
+        self._startup_script = self._generate_worker_startup_script()
 
         # TODO: Add scale_up/down_thresholds to RunConfig?
         # self._scale_up_threshold = 10  # Default or fetch from config if added
@@ -93,7 +66,8 @@ class InstanceOrchestrator:
         self._task_queue: Optional[TaskQueue] = None
         self._running_instances: Set[str] = set()
         self._optimal_instance_type = None
-        self._instances: Dict[str, Dict[str, Any]] = {}  # Dictionary to track instance status
+        self._optimal_instance_zone = None
+        self._optimal_instance_price = None
 
         # Empty queue tracking for scale-down
         self._empty_queue_since = None
@@ -113,38 +87,44 @@ class InstanceOrchestrator:
         self._check_interval_seconds = 60  # Check scaling every minute
 
         self._logger.info("Orchestrator configured for:")
-        self._logger.info(f" Provider: {self._provider}")
-        self._logger.info(f" Region: {self._region}")
-        self._logger.info(f" Zone: {self._zone}")
-        self._logger.info(f" Job ID: {self._job_id}")
-        self._logger.info(f" Queue: {self._queue_name}")
-        self._logger.info(f" Instance scaling: {self._min_instances} to {self._max_instances}")
-        if self._use_spot_instances:
-            self._logger.info(f" Pricing: Spot instances")
+        self._logger.info(f"  Provider: {self._provider}")
+        self._logger.info(f"  Region: {self._region}")
+        self._logger.info(f"  Zone: {self._zone}")
+        self._logger.info(f"  Job ID: {self._job_id}")
+        self._logger.info(f"  Queue: {self._queue_name}")
+        self._logger.info(
+            f"  Instance scaling: {self._run_config.min_instances} to {self._run_config.max_instances}"
+        )
+        if self._run_config.use_spot:
+            self._logger.info(f"  Pricing: Spot instances")
         else:
-            self._logger.info(f" Pricing: On-demand instances")
+            self._logger.info(f"  Pricing: On-demand instances")
         self._logger.info("  Requirements:")
-        self._logger.info(f"    CPUs: {self._min_cpu} to {self._max_cpu}")
-        self._logger.info(f"    Memory: {self._min_total_memory} to {self._max_total_memory} GB")
+        self._logger.info(f"    CPUs: {self._run_config.min_cpu} to {self._run_config.max_cpu}")
         self._logger.info(
-            f"    Memory per CPU: {self._min_memory_per_cpu} to {self._max_memory_per_cpu} GB"
+            f"    Memory: {self._run_config.min_total_memory} to {self._run_config.max_total_memory} GB"
         )
-        self._logger.info(f"    Disk: {self._min_disk} to {self._max_disk} GB")
         self._logger.info(
-            f"    Disk per CPU: {self._min_disk_per_cpu} to {self._max_disk_per_cpu} GB"
+            f"    Memory per CPU: {self._run_config.min_memory_per_cpu} to {self._run_config.max_memory_per_cpu} GB"
         )
-        self._logger.info(f"    CPUs per task: {self._cpus_per_task}")
         self._logger.info(
-            f"    Tasks per instance: {self._min_tasks_per_instance} to {self._max_tasks_per_instance}"
+            f"    Local SSD: {self._run_config.min_local_ssd} to {self._run_config.max_local_ssd} GB"
         )
-        self._logger.info(f"    Instance types: {self._instance_types}")
-        self._logger.info(f"  Image: {self._image}")
+        self._logger.info(
+            f"    Disk per CPU: {self._run_config.min_local_ssd_per_cpu} to {self._run_config.max_local_ssd_per_cpu} GB"
+        )
+        self._logger.info(f"    CPUs per task: {self._run_config.cpus_per_task}")
+        self._logger.info(
+            f"    Tasks per instance: {self._run_config.min_tasks_per_instance} to {self._run_config.max_tasks_per_instance}"
+        )
+        self._logger.info(f"    Instance types: {self._run_config.instance_types}")
+        self._logger.info(f"  Image: {self._run_config.image}")
         self._logger.info(f"  Check interval: {self._check_interval_seconds} seconds")
         self._logger.info(
             f"  Instance termination delay: {self._instance_termination_delay_seconds} seconds"
         )
 
-        self._logger.info(f"  Startup script: {self._startup_script}")
+        self._logger.info(f"  Startup script:\n{self._run_config.startup_script}")
 
     @property
     def task_queue(self) -> TaskQueue:
@@ -166,7 +146,7 @@ class InstanceOrchestrator:
     def queue_name(self) -> str:
         return self._queue_name
 
-    def generate_worker_startup_script(self) -> str:
+    def _generate_worker_startup_script(self) -> str:
         """
         Generate a startup script for worker instances.
 
@@ -175,8 +155,8 @@ class InstanceOrchestrator:
         """
         # TODO: Implement creation of startup script
         # If a custom startup script is provided, use it
-        if self.startup_script:
-            return self.startup_script
+        if self._run_config.startup_script:
+            return self._run_config.startup_script
 
         self._logger.error("No startup script provided")
         raise RuntimeError("No startup script provided")
@@ -198,10 +178,6 @@ class InstanceOrchestrator:
 
         # Initialize the task queue if not set
         if self._task_queue is None:
-            from cloud_tasks.queue_manager import create_queue
-
-            self._logger.info(f"Initializing task queue: {self._queue_name}")
-
             try:
                 self._task_queue = await create_queue(self._config)
             except Exception as e:
@@ -212,25 +188,16 @@ class InstanceOrchestrator:
 
         # Get optimal instance type based on requirements from config
         instance_type, instance_zone, instance_price = (
-            await self._instance_manager.get_optimal_instance_type(
-                min_cpu=self._min_cpu,
-                max_cpu=self._max_cpu,
-                min_total_memory=self._min_total_memory,
-                max_total_memory=self._max_total_memory,
-                min_memory_per_cpu=self._min_memory_per_cpu,
-                max_memory_per_cpu=self._max_memory_per_cpu,
-                min_disk=self._min_disk,
-                max_disk=self._max_disk,
-                min_disk_per_cpu=self._min_disk_per_cpu,
-                max_disk_per_cpu=self._max_disk_per_cpu,
-                instance_types=self._instance_types,
-                use_spot=self._use_spot_instances,
-            )
+            await self._instance_manager.get_optimal_instance_type(vars(self._run_config))
         )
         self._logger.info(
             f"Selected instance type: {instance_type} in {instance_zone} "
             f"at ${instance_price:.6f}/hour"
         )
+
+        self._optimal_instance_type = instance_type
+        self._optimal_instance_zone = instance_zone
+        self._optimal_instance_price = instance_price
 
         # Begin monitoring
         self._running = True
@@ -299,10 +266,10 @@ class InstanceOrchestrator:
                 self._empty_queue_since is not None
                 and float(time.time()) - self._empty_queue_since
                 > self._instance_termination_delay_seconds
-                and total_instances > self._min_instances
+                and total_instances > self._run_config.min_instances
             ):
                 # Calculate how many instances to terminate
-                instances_to_terminate = total_instances - self._min_instances
+                instances_to_terminate = total_instances - self._run_config.min_instances
                 self._logger.info(
                     f"Queue has been empty for {float(time.time()) - self._empty_queue_since}s, "
                     f"terminating {instances_to_terminate} instances"
@@ -322,16 +289,19 @@ class InstanceOrchestrator:
             self._empty_queue_since = None
 
             # Calculate desired number of instances based on queue depth and tasks per instance
-            desired_instances = min(
-                self._max_instances,
-                max(
-                    self._min_instances,
-                    (queue_depth + self._cpus_per_task - 1) // self._cpus_per_task,
-                ),
+            desired_instances = int(
+                min(
+                    self._run_config.max_instances,
+                    max(
+                        self._run_config.min_instances,
+                        (queue_depth + self._run_config.cpus_per_task - 1)
+                        // self._run_config.cpus_per_task,
+                    ),
+                )
             )
 
             self._logger.info(
-                f"Calculated desired instances: {desired_instances} based on queue_depth={queue_depth} and tasks_per_instance={self._cpus_per_task}"
+                f"Calculated desired instances: {desired_instances} based on queue_depth={queue_depth} and tasks_per_instance={self._run_config.cpus_per_task}"
             )
 
             # Scale up if needed
@@ -345,7 +315,7 @@ class InstanceOrchestrator:
                     new_instance_ids = await self.provision_instances(instances_to_add)
                     if new_instance_ids:
                         self._logger.info(
-                            f"Successfully provisioned {len(new_instance_ids)} new instances: {new_instance_ids}"
+                            f"Successfully provisioned {len(new_instance_ids)} new instances"
                         )
                     else:
                         self._logger.warning(
@@ -416,22 +386,16 @@ class InstanceOrchestrator:
             for _ in range(count):
                 try:
                     instance_id = await self._instance_manager.start_instance(
-                        instance_type=instance_type,
-                        startup_script=self.startup_script or "",  # Pass empty string if None
-                        labels=labels,  # Pass labels/tags consistently
-                        use_spot=self.use_spot_instances,
-                        custom_image=self.custom_image,
+                        instance_type=self._optimal_instance_type,
+                        startup_script=self._startup_script or "",  # Pass empty string if None
+                        job_id=self._job_id,
+                        use_spot=self._run_config.use_spot,
+                        image=self._run_config.image,
+                        zone=self._optimal_instance_zone,
                     )
                     instance_ids.append(instance_id)
-                    # Store instance with creation time
-                    self.instances[instance_id] = {
-                        "status": "starting",
-                        "created_at": datetime.datetime.now().timestamp(),
-                        "instance_type": instance_type,
-                        "is_spot": self.use_spot_instances,
-                    }
                     self._logger.info(
-                        f"Started {'spot' if self.use_spot_instances else 'on-demand'} instance {instance_id}"
+                        f"Started {'spot' if self._run_config.use_spot else 'on-demand'} instance {instance_id}"
                     )
                 except Exception as e:
                     self._logger.error(f"Failed to start instance: {e}", exc_info=True)
@@ -476,9 +440,9 @@ class InstanceOrchestrator:
                 "details": instances,
             },
             "settings": {
-                "max_instances": self._max_instances,
-                "min_instances": self._min_instances,
-                "cpus_per_task": self._cpus_per_task,
+                "max_instances": self._run_config.max_instances,
+                "min_instances": self._run_config.min_instances,
+                "cpus_per_task": self._run_config.cpus_per_task,
             },
             "is_running": self.running,
         }

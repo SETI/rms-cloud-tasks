@@ -5,7 +5,9 @@ Google Cloud Compute Engine implementation of the InstanceManager interface.
 import asyncio
 import copy
 import logging
+import random
 import re
+import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
 import uuid
@@ -25,6 +27,8 @@ class GCPComputeInstanceManager(InstanceManager):
 
     _DEFAULT_REGION = "us-central1"
     _DEFAULT_ZONE = "us-central1-a"
+
+    _JOB_ID_TAG_PREFIX = "rmscr-"
 
     # Map of instance statuses to standardized statuses
     STATUS_MAP = {
@@ -51,7 +55,7 @@ class GCPComputeInstanceManager(InstanceManager):
         self._instance_pricing_cache = {}
         self._logger = logging.getLogger(__name__)
 
-        self._logger.info(f"Initializing GCP Compute Engine instance manager")
+        self._logger.debug(f"Initializing GCP Compute Engine instance manager")
 
         self._project_id = gcp_config.project_id
 
@@ -61,7 +65,7 @@ class GCPComputeInstanceManager(InstanceManager):
             if isinstance(self._instance_types, str):
                 # If a single string was provided, convert to a list
                 self._instance_types = [self._instance_types]
-            self._logger.info(f"Instance types restricted to patterns: {self._instance_types}")
+            self._logger.debug(f"Instance types restricted to patterns: {self._instance_types}")
 
         # Handle credentials - use provided service account file or default application credentials
         if gcp_config.credentials_file is not None:
@@ -81,7 +85,7 @@ class GCPComputeInstanceManager(InstanceManager):
             # Use default credentials from environment
             try:
                 self._credentials, project_id = get_default_credentials()
-                self._logger.info("Using default application credentials from environment")
+                self._logger.info("Using default application credentials")
                 if not self._project_id and project_id:
                     self._project_id = project_id
                     self._logger.info(
@@ -89,7 +93,7 @@ class GCPComputeInstanceManager(InstanceManager):
                     )
             except Exception as e:
                 raise ValueError(
-                    f"Error getting default credentials from environment: {e}. "
+                    f"Error getting default credentials: {e}. "
                     "Please ensure you're authenticated with 'gcloud auth application-default login' "
                     "or provide a credentials_file."
                 )
@@ -132,127 +136,57 @@ class GCPComputeInstanceManager(InstanceManager):
                 "No region specified, will determine cheapest region during instance selection"
             )
 
+    def _job_id_to_tag(self, job_id: str) -> str:
+        return f"{self._JOB_ID_TAG_PREFIX}{job_id}"
+
     async def get_optimal_instance_type(
-        self,
-        min_cpu: Optional[int] = None,
-        max_cpu: Optional[int] = None,
-        min_total_memory: Optional[int] = None,
-        max_total_memory: Optional[int] = None,
-        min_memory_per_cpu: Optional[float] = None,
-        max_memory_per_cpu: Optional[float] = None,
-        min_disk: Optional[int] = None,
-        max_disk: Optional[int] = None,
-        min_disk_per_cpu: Optional[float] = None,
-        max_disk_per_cpu: Optional[float] = None,
-        instance_types: Optional[List[str]] = None,
-        use_spot: bool = False,
+        self, constraints: Optional[Dict[str, Any]] = None
     ) -> Tuple[str, str, float]:
         """
         Get the most cost-effective GCP instance type that meets requirements.
 
         Args:
-            min_cpu: Minimum number of vCPUs
-            max_cpu: Maximum number of vCPUs
-            min_total_memory: Minimum total memory in GB
-            max_total_memory: Maximum total memory in GB
-            min_memory_per_cpu: Minimum memory per vCPU in GB
-            max_memory_per_cpu: Maximum memory per vCPU in GB
-            min_disk: Minimum disk space in GB
-            max_disk: Maximum disk space in GB
-            min_disk_per_cpu: Minimum disk space per vCPU in GB
-            max_disk_per_cpu: Maximum disk space per vCPU in GB
-            instance_types: List of prefixes of the instance type names to consider
-            use_spot: Whether to use preemptible instances (GCP equivalent of spot)
+            constraints: Dictionary of constraints to filter instance types by. Constraints
+                include::
+                    "min_cpu": Minimum number of vCPUs
+                    "max_cpu": Maximum number of vCPUs
+                    "min_total_memory": Minimum total memory in GB
+                    "max_total_memory": Maximum total memory in GB
+                    "min_memory_per_cpu": Minimum memory per vCPU in GB
+                    "max_memory_per_cpu": Maximum memory per vCPU in GB
+                    "min_local_ssd": Minimum amount of local SSD storage in GB
+                    "max_local_ssd": Maximum amount of local SSD storage in GB
+                    "min_local_ssd_per_cpu": Minimum amount of local SSD storage per vCPU
+                    "max_local_ssd_per_cpu": Maximum amount of local SSD storage per vCPU
+                    "min_storage": Minimum amount of other storage in GB
+                    "max_storage": Maximum amount of other storage in GB
+                    "min_storage_per_cpu": Minimum amount of other storage per vCPU
+                    "max_storage_per_cpu": Maximum amount of other storage per vCPU
+                    "use_spot": Whether to use spot instances
 
         Returns:
             GCP instance type name (e.g., 'n1-standard-2')
         """
-        self._logger.debug(
-            f"Finding optimal instance type with constraints: min_cpu={min_cpu}, max_cpu={max_cpu}, "
-            f"min_total_memory={min_total_memory}, max_total_memory={max_total_memory}, "
-            f"min_memory_per_cpu={min_memory_per_cpu}, max_memory_per_cpu={max_memory_per_cpu}, "
-            f"min_disk={min_disk}, max_disk={max_disk}, min_disk_per_cpu={min_disk_per_cpu}, "
-            f"max_disk_per_cpu={max_disk_per_cpu}, Spot={use_spot}, "
-            f"instance_types={instance_types}"
-        )
-
         # Get available instance types
-        avail_instance_types = await self.get_available_instance_types()
+        avail_instance_types = await self.get_available_instance_types(constraints)
         self._logger.debug(
             f"Found {len(avail_instance_types)} available instance types in zone {self._zone}"
         )
 
-        # Filter to instance types that meet requirements
-        eligible_types = {}
-        for machine_type, machine_info in avail_instance_types.items():
-            if (
-                (min_cpu is None or machine_info["vcpu"] >= min_cpu)
-                and (max_cpu is None or machine_info["vcpu"] <= max_cpu)
-                and (min_total_memory is None or machine_info["mem_gb"] >= min_total_memory)
-                and (max_total_memory is None or machine_info["mem_gb"] <= max_total_memory)
-                and (
-                    min_memory_per_cpu is None
-                    or machine_info["mem_gb"] / machine_info["vcpu"] >= min_memory_per_cpu
-                )
-                and (
-                    max_memory_per_cpu is None
-                    or machine_info["mem_gb"] / machine_info["vcpu"] <= max_memory_per_cpu
-                )
-                and (min_disk is None or machine_info.get("storage_gb", 0) >= min_disk)
-                and (max_disk is None or machine_info.get("storage_gb", 0) <= max_disk)
-                and (
-                    min_disk_per_cpu is None
-                    or machine_info.get("storage_gb", 0) / machine_info["vcpu"] >= min_disk_per_cpu
-                )
-                and (
-                    max_disk_per_cpu is None
-                    or machine_info.get("storage_gb", 0) / machine_info["vcpu"] <= max_disk_per_cpu
-                )
-            ):
-                eligible_types[machine_type] = machine_info
-
-        self._logger.debug(f"Found {len(eligible_types)} instance types that meet requirements:")
-        for idx, (machine_type, machine_info) in enumerate(eligible_types.items()):
-            self._logger.debug(
-                f"  [{idx+1:3d}] {machine_type}: {machine_info['vcpu']} vCPU, {machine_info['ram_gb']:.2f} GB memory"
-            )
-
-        # Filter by instance_types if specified
-        if instance_types:
-            # Update eligible types with filtered list
-            filtered_types = {}
-            for machine_type, machine_info in eligible_types.items():
-                machine_name = machine_type
-                # Check if machine matches any prefix or exact name
-                for pattern in instance_types:
-                    if machine_name.startswith(pattern):
-                        filtered_types[machine_type] = machine_info
-                        break
-            eligible_types = filtered_types
-
-            if len(eligible_types) == 0:
-                error_msg = f"No machines match the instance_types patterns: {instance_types}. Available instance types meeting requirements: {[m['name'] for m in eligible_types]}"
-                self._logger.error(error_msg)
-                raise ValueError(error_msg)
-
-            self._logger.debug(
-                f"Filtered to {len(eligible_types)} instance types based on instance_types argument:"
-            )
-            for idx, (machine_type, machine_info) in enumerate(eligible_types.items()):
-                self._logger.debug(
-                    f"  [{idx+1}:3d] {machine_type}: {machine_info['vcpu']} vCPU, {machine_info['ram_gb']:.2f} GB memory"
-                )
-
-        if not eligible_types:
+        if not avail_instance_types:
             raise ValueError("No instance type meets requirements")
 
-        # Use GCP Cloud Catalog API to get current prices
-        pricing_data = {}
         self._logger.debug(
-            f"Retrieving pricing data for {len(eligible_types)} eligible instance types..."
+            f"Found {len(avail_instance_types)} instance types that meet requirements:"
         )
+        for idx, (machine_type, machine_info) in enumerate(avail_instance_types.items()):
+            self._logger.debug(
+                f"  [{idx+1:3d}] {machine_type:20s}: {machine_info['vcpu']:4d} vCPU, {machine_info['mem_gb']:8.2f} GB memory"
+            )
 
-        pricing_data = await self.get_instance_pricing(eligible_types, use_spot)
+        pricing_data = await self.get_instance_pricing(
+            avail_instance_types, constraints["use_spot"]
+        )
 
         # Log the complete pricing data found
         if not pricing_data:
@@ -260,8 +194,8 @@ class GCPComputeInstanceManager(InstanceManager):
                 "Could not get pricing data from GCP API, falling back to heuristic"
             )
             # Sort by vCPU + memory as a simple cost heuristic
-            eligible_types.sort(key=lambda x: x["vcpu"] + x["memory_gb"])
-            selected_type = eligible_types[0]["name"]
+            avail_instance_types.sort(key=lambda x: x["vcpu"] + x["memory_gb"])
+            selected_type = avail_instance_types[0]["name"]
             self._logger.info(f"Selected {selected_type} based on heuristic (lowest vCPU + memory)")
             return selected_type
 
@@ -272,36 +206,11 @@ class GCPComputeInstanceManager(InstanceManager):
                 self._logger.warning(f"No pricing data found for {machine_type}; ignoring")
                 continue
             for zone, price_in_zone in price.items():
-                if price_in_zone["total_price"] is None:
-                    price_in_zone = dict(price_in_zone)  # Make a copy before mutating
-                    instance_type_data = eligible_types[machine_type]
-                    if (
-                        price_in_zone["per_cpu_price"] is None
-                        or price_in_zone["mem_per_gb_price"] is None
-                    ):
-                        # TODO Fix this for AWS
-                        self._logger.warning(
-                            f"No pricing data found for {machine_type} in {zone}; ignoring"
-                        )
-                        continue
-                    price_in_zone["cpu_price"] = (
-                        price_in_zone["per_cpu_price"] * instance_type_data["vcpu"]
-                    )
-                    price_in_zone["mem_price"] = (
-                        price_in_zone["mem_per_gb_price"] * instance_type_data["mem_gb"]
-                    )
-                    price_in_zone["total_price"] = (
-                        price_in_zone["cpu_price"] + price_in_zone["mem_price"]
-                    )
                 zone_pricing_data[(machine_type, zone)] = price_in_zone
 
         if len(zone_pricing_data) == 0:
             self._logger.warning("No pricing data found for any instance types")
             return None
-
-        self._logger.debug("Retrieved pricing data for the following instance types:")
-        for (machine_type, zone), price in zone_pricing_data.items():
-            self._logger.debug(f"  {machine_type} in {zone}: ${price['total_price']:.6f} per hour")
 
         # Select instance with the lowest price
         priced_instances = [
@@ -310,7 +219,7 @@ class GCPComputeInstanceManager(InstanceManager):
         priced_instances.sort(
             key=lambda x: (
                 x[2]["total_price"],
-                eligible_types[x[0]]["vcpu"],
+                x[2]["vcpu"],
             )
         )  # Sort by price, then by vCPU
 
@@ -318,20 +227,43 @@ class GCPComputeInstanceManager(InstanceManager):
         self._logger.debug("Instance types sorted by price (cheapest first):")
         for i, (machine_type, zone, price) in enumerate(priced_instances):
             self._logger.debug(
-                f"  [{i+1:3d}] {machine_type} in {zone}: ${price['total_price']:.6f}/hour"
+                f"  [{i+1:3d}] {machine_type:20s} in {zone:15s}: ${price['total_price']:10.6f}/hour"
             )
 
         selected_type, selected_zone, selected_price = priced_instances[0]
         price = selected_price["total_price"]
         self._logger.debug(
             f"Selected {selected_type} in {selected_zone} at ${price:.6f} per hour "
-            f"{' (spot)' if use_spot else '(on demand)'}"
+            f"{' (spot)' if constraints["use_spot"] else '(on demand)'}"
         )
+
         return selected_type, selected_zone, price
 
-    async def get_available_instance_types(self) -> Dict[str, Dict[str, Any]]:
-        """
-        Get available Compute Engine instance types with their specifications.
+    async def get_available_instance_types(
+        self, constraints: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Dict[str, Any]]:
+        """Get available instance types with their specifications.
+
+
+        Args:
+            constraints: Dictionary of constraints to filter instance types by. Constraints
+                include::
+                    "instance_types": List of regex patterns to filter instance types by name
+                    "min_cpu": Minimum number of vCPUs
+                    "max_cpu": Maximum number of vCPUs
+                    "min_total_memory": Minimum total memory in GB
+                    "max_total_memory": Maximum total memory in GB
+                    "min_memory_per_cpu": Minimum memory per vCPU in GB
+                    "max_memory_per_cpu": Maximum memory per vCPU in GB
+                    "min_local_ssd": Minimum amount of local SSD storage in GB
+                    "max_local_ssd": Maximum amount of local SSD storage in GB
+                    "min_local_ssd_per_cpu": Minimum amount of local SSD storage per vCPU
+                    "max_local_ssd_per_cpu": Maximum amount of local SSD storage per vCPU
+                    "min_storage": Minimum amount of other storage in GB
+                    "max_storage": Maximum amount of other storage in GB
+                    "min_storage_per_cpu": Minimum amount of other storage per vCPU
+                    "max_storage_per_cpu": Maximum amount of other storage per vCPU
+                    "use_spot": Whether to filter for spot-capable instance types
 
         Returns:
             Dictionary mapping instance type to a dictionary of instance type specifications::
@@ -347,6 +279,9 @@ class GCPComputeInstanceManager(InstanceManager):
         """
         self._logger.debug("Listing available Compute Engine instance types")
 
+        if constraints is None:
+            constraints = {}
+
         # GCP instance types are per-zone
         zone = await self._get_default_zone()
 
@@ -357,6 +292,15 @@ class GCPComputeInstanceManager(InstanceManager):
 
         instance_types = {}
         for machine_type in machine_types:
+            if constraints["instance_types"]:
+                match_ok = False
+                for type_filter in constraints["instance_types"]:
+                    if re.match(type_filter, machine_type.name):
+                        match_ok = True
+                        break
+                if not match_ok:
+                    continue
+
             # GB - This is derived by looking at the pricing ables; beware!
             one_local_ssd_size = 375
             local_ssd_size = 0
@@ -379,7 +323,72 @@ class GCPComputeInstanceManager(InstanceManager):
                 "url": machine_type.self_link,
             }
 
-            instance_types[machine_type.name] = instance_info
+            if (
+                (constraints["min_cpu"] is None or instance_info["vcpu"] >= constraints["min_cpu"])
+                and (
+                    constraints["max_cpu"] is None
+                    or instance_info["vcpu"] <= constraints["max_cpu"]
+                )
+                and (
+                    constraints["min_total_memory"] is None
+                    or instance_info["mem_gb"] >= constraints["min_total_memory"]
+                )
+                and (
+                    constraints["max_total_memory"] is None
+                    or instance_info["mem_gb"] <= constraints["max_total_memory"]
+                )
+                and (
+                    constraints["min_memory_per_cpu"] is None
+                    or instance_info["mem_gb"] / instance_info["vcpu"]
+                    >= constraints["min_memory_per_cpu"]
+                )
+                and (
+                    constraints["max_memory_per_cpu"] is None
+                    or instance_info["mem_gb"] / instance_info["vcpu"]
+                    <= constraints["max_memory_per_cpu"]
+                )
+                and (
+                    constraints["min_local_ssd"] is None
+                    or instance_info["local_ssd_gb"] >= constraints["min_local_ssd"]
+                )
+                and (
+                    constraints["max_local_ssd"] is None
+                    or instance_info["local_ssd_gb"] <= constraints["max_local_ssd"]
+                )
+                and (
+                    constraints["min_local_ssd_per_cpu"] is None
+                    or instance_info["local_ssd_gb"] / instance_info["vcpu"]
+                    >= constraints["min_local_ssd_per_cpu"]
+                )
+                and (
+                    constraints["max_local_ssd_per_cpu"] is None
+                    or instance_info["local_ssd_gb"] / instance_info["vcpu"]
+                    <= constraints["max_local_ssd_per_cpu"]
+                )
+                and (
+                    constraints["min_storage"] is None
+                    or instance_info["storage_gb"] >= constraints["min_storage"]
+                )
+                and (
+                    constraints["max_storage"] is None
+                    or instance_info["storage_gb"] <= constraints["max_storage"]
+                )
+                and (
+                    constraints["min_storage_per_cpu"] is None
+                    or instance_info["storage_gb"] / instance_info["vcpu"]
+                    >= constraints["min_storage_per_cpu"]
+                )
+                and (
+                    constraints["max_storage_per_cpu"] is None
+                    or instance_info["storage_gb"] / instance_info["vcpu"]
+                    <= constraints["max_storage_per_cpu"]
+                )
+                and (
+                    not constraints["use_spot"]
+                    or (constraints["use_spot"] and instance_info["supports_spot"])
+                )
+            ):
+                instance_types[machine_type.name] = instance_info
 
         return instance_types
 
@@ -757,9 +766,10 @@ class GCPComputeInstanceManager(InstanceManager):
         self,
         instance_type: str,
         startup_script: str,
-        labels: Dict[str, str],
-        use_spot: bool = False,
-        custom_image: Optional[str] = None,
+        job_id: str,
+        use_spot: bool,
+        image: str,
+        zone: Optional[str] = None,
     ) -> str:
         """
         Start a new GCP Compute Engine instance.
@@ -767,9 +777,9 @@ class GCPComputeInstanceManager(InstanceManager):
         Args:
             instance_type: GCP instance type (e.g., 'n1-standard-1')
             startup_script: Base64-encoded startup script
-            labels: Dictionary of labels to apply to the instance
-            use_spot: Whether to use a preemptible VM (cheaper but can be terminated)
-            custom_image: Custom image to use (if provided)
+            job_id: Job ID to use for the instance
+            use_spot: Whether to use a spot instance
+            image: Custom image to use (if provided)
 
         Returns:
             ID of the started instance
@@ -777,30 +787,40 @@ class GCPComputeInstanceManager(InstanceManager):
         if not self._compute_client:
             raise RuntimeError("GCP Compute Engine client not initialized")
 
-        self._logger.info(
-            f"Starting new instance with type: {instance_type}, spot/preemptible: {use_spot}"
-        )
+        self._logger.debug(f"Starting new instance with type: {instance_type}, spot: {use_spot}")
 
         # Generate a unique name for the instance
-        instance_id = f"{labels.get('job_id', 'job')}-{str(uuid.uuid4())[:8]}"
+        instance_id = f"{self._JOB_ID_TAG_PREFIX}{job_id}-{str(uuid.uuid4())}"
 
-        # Encode the startup script as metadata
-        metadata = {"items": [{"key": "startup-script", "value": startup_script}]}
+        if zone is not None and self._zone is not None and zone != self._zone:
+            self._logger.warning(f"Overriding default zone {self._zone} with {zone}")
+        if zone is not None and zone[-2:] == "-*":
+            random_zone = await self._get_random_zone()
+            self._logger.debug(
+                f"Zone {zone} for optimal instance type is a wildcard zone, using "
+                f"random zone {random_zone}"
+            )
+            zone = random_zone
 
         # Get image - either custom or default
-        if custom_image:
-            self._logger.info(f"Using custom image: {custom_image}")
+        if image:
+            self._logger.debug(f"Using image: {image}")
             # If it's a full URI, use it directly
-            if custom_image.startswith("https://") or "/" in custom_image:
-                source_image = custom_image
+            if image.startswith("https://") or "/" in image:
+                source_image = image
             else:
                 # Assuming it's a family name in ubuntu-os-cloud
-                source_image = await self._get_image_from_family(custom_image)
+                source_image = await self._get_image_from_family(image)
         else:
             # Get default Ubuntu 24.04 LTS image
             source_image = await self._get_default_image()
 
+        # Encode the startup script as metadata
+        # https://cloud.google.com/python/docs/reference/compute/latest/google.cloud.compute_v1.types.Metadata
+        metadata = {"items": [{"key": "startup-script", "value": startup_script}]}
+
         # Prepare the disk configuration
+        # https://cloud.google.com/python/docs/reference/compute/latest/google.cloud.compute_v1.types.AttachedDisk
         disk_config = {
             "boot": True,
             "auto_delete": True,
@@ -811,12 +831,14 @@ class GCPComputeInstanceManager(InstanceManager):
         }
 
         # Prepare the network interface configuration
+        # https://cloud.google.com/python/docs/reference/compute/latest/google.cloud.compute_v1.types.NetworkInterface
         network_interface = {
             "network": "global/networks/default",
             "access_configs": [{"type": "ONE_TO_ONE_NAT", "name": "External NAT"}],
         }
 
         # Prepare scheduling configuration for preemptible instances
+        # https://cloud.google.com/python/docs/reference/compute/latest/google.cloud.compute_v1.types.Scheduling
         scheduling = {}
         if use_spot:
             scheduling = {
@@ -825,15 +847,21 @@ class GCPComputeInstanceManager(InstanceManager):
                 "on_host_maintenance": "TERMINATE",
             }
 
+        # Add network tags so we can find these instances later
+        tags = {
+            "items": [self._job_id_to_tag(job_id)],
+        }
+
         # Prepare the instance configuration
-        config = {
+        inst_config = {
             "name": instance_id,
-            "instance_type": f"zones/{self._zone}/machineTypes/{instance_type}",
+            "machine_type": f"zones/{zone}/machineTypes/{instance_type}",
             "disks": [disk_config],
             "network_interfaces": [network_interface],
             "metadata": metadata,
-            "labels": labels,
             "scheduling": scheduling,
+            "tags": tags,
+            # "tags": [f"{self._JOB_ID_TAG_PREFIX}{job_id}"],
         }
 
         # Create the instance
@@ -841,20 +869,24 @@ class GCPComputeInstanceManager(InstanceManager):
             operation = await asyncio.to_thread(
                 self._compute_client.insert,
                 project=self._project_id,
-                zone=self._zone,
-                instance_resource=config,
+                zone=zone,
+                instance_resource=inst_config,
             )
 
             # Wait for the create operation to complete
             self._logger.info(
-                f"Creating {'spot/preemptible' if use_spot else 'standard'} instance {config['name']} ({instance_type})"
+                f"Creating {'spot' if use_spot else 'on-demand'} instance "
+                f"{instance_id} ({instance_type})"
             )
-            await self._wait_for_operation(operation["name"])
-            self._logger.info(f"Instance {config['name']} created successfully")
-            return config["name"]
+            await self._wait_for_operation(operation, zone, f"Creation of instance {instance_id}")
+            self._logger.info(
+                f"Instance {instance_id} created successfully " f"({instance_type} in zone {zone}"
+            )
+            return instance_id
         except Exception as e:
             self._logger.error(
-                f"Failed to create {'spot/preemptible' if use_spot else 'standard'} instance: {e}"
+                f"Failed to create {'spot' if use_spot else 'on-demand'} instance: {e}",
+                exc_info=True,
             )
             raise
 
@@ -913,7 +945,7 @@ class GCPComputeInstanceManager(InstanceManager):
         # If zone is specified, only query that zone
         if self._zone:
             # List instances in the specified zone
-            self._logger.info(f"Listing instances in zone {self._zone}")
+            self._logger.debug(f"Listing instances in zone {self._zone}")
             request = compute_v1.ListInstancesRequest(project=self._project_id, zone=self._zone)
 
             try:
@@ -927,7 +959,7 @@ class GCPComputeInstanceManager(InstanceManager):
                 )
                 raise
         else:
-            self._logger.info(f"Listing instances in all zones of region {self._region}")
+            self._logger.debug(f"Listing instances in all zones of region {self._region}")
 
             # List all zones in the project
             try:
@@ -1003,8 +1035,8 @@ class GCPComputeInstanceManager(InstanceManager):
 
             if instance.tags and instance.tags.items:
                 for tag in instance.tags.items:
-                    if tag.startswith("rms-cloud-run-"):
-                        inst_job_id = tag[14:]
+                    if tag.startswith(self._JOB_ID_TAG_PREFIX):
+                        inst_job_id = tag[len(self._JOB_ID_TAG_PREFIX) :]
                         if job_id and inst_job_id != job_id:
                             self._logger.debug(
                                 f"Skipping instance {instance.name} because it has job_id "
@@ -1246,35 +1278,30 @@ class GCPComputeInstanceManager(InstanceManager):
         self._logger.info(f"Found {len(all_images)} available images")
         return all_images
 
-    async def _wait_for_operation(self, operation_name: str) -> None:
+    async def _wait_for_operation(self, operation, zone: str, verbose_name: str) -> None:
         """
         Wait for a Compute Engine operation to complete.
 
         Args:
             operation_name: Name of the operation
         """
-        self._logger.debug(
-            f"Waiting for operation {operation_name} to complete in project {self._project_id}"
-        )
+        self._logger.debug(f"Waiting for operation {operation.name} to complete")
 
-        operation = self._compute_client.get(
-            project=self._project_id, zone=self._zone, operation=operation_name
-        )
+        result = operation.result(timeout=30)  # TODO
 
-        while operation.status != "DONE":
-            time.sleep(1)  # Wait between checks
-            operation = self._compute_client.get(
-                project=self._project_id, zone=self._zone, operation=operation_name
+        if operation.error_code:
+            self._logger.error(
+                f"Error during {verbose_name}: [Code: {operation.error_code}]: {operation.error_message}"
             )
+            self._logger.error(f"Operation ID: {operation.name}")
+            raise operation.exception() or RuntimeError(operation.error_message)
 
-        if operation.error:
-            error_msg = f"Operation {operation_name} failed in project {self._project_id}: {operation.error}"
-            self._logger.error(error_msg)
-            raise Exception(error_msg)
+        if operation.warnings:
+            self._logger.warning(f"Warnings during {verbose_name}:")
+            for warning in operation.warnings:
+                self._logger.warning(f" - {warning.code}: {warning.message}")
 
-        self._logger.debug(
-            f"Operation {operation_name} completed successfully in project {self._project_id}"
-        )
+        return
 
     async def get_available_regions(self, prefix: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -1333,12 +1360,34 @@ class GCPComputeInstanceManager(InstanceManager):
         self._logger.debug(f"Getting default zone for region {self._region}")
 
         # Create the request to list zones
-        request = compute_v1.ListZonesRequest(project=self._project_id)
+        request = compute_v1.ListZonesRequest(
+            project=self._project_id, filter=f"name eq {self._region}-.*"
+        )
         zones = list(self._zones_client.list(request=request))
 
         # Get the first zone in the list
         self._logger.debug(f"Default zone is {zones[0].name}")
         return zones[0].name
+
+    async def _get_random_zone(self) -> str:
+        """
+        Get a random zone for the region.
+        """
+        if self._zone:
+            self._logger.debug(f"Using specified zone {self._zone}")
+            return self._zone
+
+        self._logger.debug(f"Getting default zone for region {self._region}")
+
+        # Create the request to list zones
+        request = compute_v1.ListZonesRequest(
+            project=self._project_id, filter=f"name eq {self._region}-.*"
+        )
+        zones = list(self._zones_client.list(request=request))
+
+        # Get the first zone in the list
+        self._logger.debug(f"Default zone is {zones[0].name}")
+        return zones[random.randint(0, len(zones) - 1)].name
 
     # async def find_cheapest_region(self, instance_type: str = "n1-standard-1") -> Dict[str, str]:
     #     """

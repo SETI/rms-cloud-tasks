@@ -71,10 +71,10 @@ class GCPPubSubQueue(TaskQueue):
         self._topic_exists = False
         try:
             self._publisher.get_topic(request={"topic": self._topic_path})
-            self._logger.info(f"Topic '{self._topic_name}' already exists")
+            self._logger.debug(f"Topic '{self._topic_name}' already exists")
             self._topic_exists = True
         except gcp_exceptions.NotFound as e:
-            self._logger.info(f"Topic '{self._topic_name}' doesn't exist...deferring creation")
+            self._logger.debug(f"Topic '{self._topic_name}' doesn't exist...deferring creation")
         except Exception as e:
             self._logger.error(
                 f"Failed to access topic '{self._topic_name}' for Pub/Sub queue "
@@ -87,10 +87,10 @@ class GCPPubSubQueue(TaskQueue):
         self._subscription_exists = False
         try:
             self._subscriber.get_subscription(request={"subscription": self._subscription_path})
-            self._logger.info(f"Subscription {self._subscription_name} already exists")
+            self._logger.debug(f"Subscription {self._subscription_name} already exists")
             self._subscription_exists = True
         except gcp_exceptions.NotFound as e:
-            self._logger.info(
+            self._logger.debug(
                 f"Subscription {self._subscription_name} doesn't exist...deferring creation"
             )
         except Exception as e:
