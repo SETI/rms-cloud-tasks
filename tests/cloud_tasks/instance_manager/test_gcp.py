@@ -694,6 +694,286 @@ async def test_get_instance_pricing_cache_hit(
 
 
 @pytest.mark.asyncio
+async def test_get_optimal_instance_type_basic(
+    gcp_instance_manager: GCPComputeInstanceManager,
+    mock_instance_types: Dict[str, Dict[str, Any]],
+    mock_pricing_sku: MagicMock,
+) -> None:
+    """Test getting optimal instance type with minimal constraints."""
+    # Arrange
+    constraints = {
+        "instance_types": None,
+        "min_cpu": None,
+        "max_cpu": None,
+        "min_total_memory": None,
+        "max_total_memory": None,
+        "min_memory_per_cpu": None,
+        "max_memory_per_cpu": None,
+        "min_local_ssd": None,
+        "max_local_ssd": None,
+        "min_local_ssd_per_cpu": None,
+        "max_local_ssd_per_cpu": None,
+        "min_storage": None,
+        "max_storage": None,
+        "min_storage_per_cpu": None,
+        "max_storage_per_cpu": None,
+        "use_spot": False,
+    }
+
+    # Set up pricing SKUs
+    core_sku = mock_pricing_sku  # $1.00/core/hour
+    ram_sku = MagicMock()
+    ram_sku.description = "N1 Instance Ram running in Americas"
+    ram_sku.service_regions = ["us-central1"]
+    ram_pricing_info = MagicMock()
+    ram_pricing_info.pricing_expression.usage_unit = "GiBy.h"
+    ram_tier_rate = MagicMock()
+    ram_tier_rate.unit_price.nanos = 500000000  # $0.50/GB/hour
+    ram_pricing_info.pricing_expression.tiered_rates = [ram_tier_rate]
+    ram_sku.pricing_info = [ram_pricing_info]
+
+    gcp_instance_manager._billing_compute_skus = [core_sku, ram_sku]
+
+    # Act
+    instance_type, zone, price = await gcp_instance_manager.get_optimal_instance_type(constraints)
+
+    # Assert
+    # n1-standard-2 should be chosen as it's cheaper
+    assert instance_type == "n1-standard-2"
+    assert zone == f"{gcp_instance_manager._region}-*"
+    assert price == pytest.approx(5.75)  # 2 cores * $1.00 + 7.5GB * $0.50
+
+
+@pytest.mark.asyncio
+async def test_get_optimal_instance_type_no_matches(
+    gcp_instance_manager: GCPComputeInstanceManager,
+    mock_instance_types: Dict[str, Dict[str, Any]],
+    mock_pricing_sku: MagicMock,
+) -> None:
+    """Test getting optimal instance type when no instances match constraints."""
+    # Arrange
+    constraints = {
+        "instance_types": None,
+        "min_cpu": 8,  # Higher than any available instance
+        "max_cpu": None,
+        "min_total_memory": None,
+        "max_total_memory": None,
+        "min_memory_per_cpu": None,
+        "max_memory_per_cpu": None,
+        "min_local_ssd": None,
+        "max_local_ssd": None,
+        "min_local_ssd_per_cpu": None,
+        "max_local_ssd_per_cpu": None,
+        "min_storage": None,
+        "max_storage": None,
+        "min_storage_per_cpu": None,
+        "max_storage_per_cpu": None,
+        "use_spot": False,
+    }
+
+    # Act & Assert
+    with pytest.raises(ValueError, match="No instance type meets requirements"):
+        await gcp_instance_manager.get_optimal_instance_type(constraints)
+
+
+@pytest.mark.asyncio
+async def test_get_optimal_instance_type_spot_instance(
+    gcp_instance_manager: GCPComputeInstanceManager,
+    mock_instance_types: Dict[str, Dict[str, Any]],
+    mock_pricing_sku: MagicMock,
+) -> None:
+    """Test getting optimal instance type with spot instance requirement."""
+    # Arrange
+    constraints = {
+        "instance_types": None,
+        "min_cpu": None,
+        "max_cpu": None,
+        "min_total_memory": None,
+        "max_total_memory": None,
+        "min_memory_per_cpu": None,
+        "max_memory_per_cpu": None,
+        "min_local_ssd": None,
+        "max_local_ssd": None,
+        "min_local_ssd_per_cpu": None,
+        "max_local_ssd_per_cpu": None,
+        "min_storage": None,
+        "max_storage": None,
+        "min_storage_per_cpu": None,
+        "max_storage_per_cpu": None,
+        "use_spot": True,
+    }
+
+    # Set up spot pricing SKUs
+    core_sku = MagicMock()
+    core_sku.description = "N1 Preemptible Instance Core running in Americas"
+    core_sku.service_regions = ["us-central1"]
+    core_pricing_info = MagicMock()
+    core_pricing_info.pricing_expression.usage_unit = "h"
+    core_tier_rate = MagicMock()
+    core_tier_rate.unit_price.nanos = 300000000  # $0.30/core/hour (70% discount)
+    core_pricing_info.pricing_expression.tiered_rates = [core_tier_rate]
+    core_sku.pricing_info = [core_pricing_info]
+
+    ram_sku = MagicMock()
+    ram_sku.description = "N1 Preemptible Instance Ram running in Americas"
+    ram_sku.service_regions = ["us-central1"]
+    ram_pricing_info = MagicMock()
+    ram_pricing_info.pricing_expression.usage_unit = "GiBy.h"
+    ram_tier_rate = MagicMock()
+    ram_tier_rate.unit_price.nanos = 150000000  # $0.15/GB/hour (70% discount)
+    ram_pricing_info.pricing_expression.tiered_rates = [ram_tier_rate]
+    ram_sku.pricing_info = [ram_pricing_info]
+
+    gcp_instance_manager._billing_compute_skus = [core_sku, ram_sku]
+
+    # Act
+    instance_type, zone, price = await gcp_instance_manager.get_optimal_instance_type(constraints)
+
+    # Assert
+    assert instance_type == "n1-standard-2"
+    assert zone == f"{gcp_instance_manager._region}-*"
+    assert price == pytest.approx(1.725)  # (2 cores * $0.30 + 7.5GB * $0.15)
+
+
+@pytest.mark.asyncio
+async def test_get_optimal_instance_type_with_memory_constraints(
+    gcp_instance_manager: GCPComputeInstanceManager,
+    mock_instance_types: Dict[str, Dict[str, Any]],
+    mock_pricing_sku: MagicMock,
+) -> None:
+    """Test getting optimal instance type with memory constraints."""
+    # Arrange
+    constraints = {
+        "instance_types": None,
+        "min_cpu": None,
+        "max_cpu": None,
+        "min_total_memory": 10,  # Only n2-standard-4-lssd meets this
+        "max_total_memory": None,
+        "min_memory_per_cpu": None,
+        "max_memory_per_cpu": None,
+        "min_local_ssd": None,
+        "max_local_ssd": None,
+        "min_local_ssd_per_cpu": None,
+        "max_local_ssd_per_cpu": None,
+        "min_storage": None,
+        "max_storage": None,
+        "min_storage_per_cpu": None,
+        "max_storage_per_cpu": None,
+        "use_spot": False,
+    }
+
+    # Set up N2 pricing SKUs
+    core_sku = MagicMock()
+    core_sku.description = "N2 Instance Core running in Americas"
+    core_sku.service_regions = ["us-central1"]
+    core_pricing_info = MagicMock()
+    core_pricing_info.pricing_expression.usage_unit = "h"
+    core_tier_rate = MagicMock()
+    core_tier_rate.unit_price.nanos = 400000000  # $0.40/core/hour
+    core_pricing_info.pricing_expression.tiered_rates = [core_tier_rate]
+    core_sku.pricing_info = [core_pricing_info]
+
+    ram_sku = MagicMock()
+    ram_sku.description = "N2 Instance Ram running in Americas"
+    ram_sku.service_regions = ["us-central1"]
+    ram_pricing_info = MagicMock()
+    ram_pricing_info.pricing_expression.usage_unit = "GiBy.h"
+    ram_tier_rate = MagicMock()
+    ram_tier_rate.unit_price.nanos = 200000000  # $0.20/GB/hour
+    ram_pricing_info.pricing_expression.tiered_rates = [ram_tier_rate]
+    ram_sku.pricing_info = [ram_pricing_info]
+
+    local_ssd_sku = MagicMock()
+    local_ssd_sku.description = "N2 Local SSD provisioned space running in Americas"
+    local_ssd_sku.service_regions = ["us-central1"]
+    ssd_pricing_info = MagicMock()
+    ssd_pricing_info.pricing_expression.usage_unit = "GiBy.mo"
+    ssd_tier_rate = MagicMock()
+    ssd_tier_rate.unit_price.nanos = 0  # Free for this test
+    ssd_pricing_info.pricing_expression.tiered_rates = [ssd_tier_rate]
+    local_ssd_sku.pricing_info = [ssd_pricing_info]
+
+    gcp_instance_manager._billing_compute_skus = [core_sku, ram_sku, local_ssd_sku]
+
+    # Act
+    instance_type, zone, price = await gcp_instance_manager.get_optimal_instance_type(constraints)
+
+    # Assert
+    assert instance_type == "n2-standard-4-lssd"
+    assert zone == f"{gcp_instance_manager._region}-*"
+    assert price == pytest.approx(4.80)  # 4 cores * $0.40 + 16GB * $0.20
+
+
+@pytest.mark.asyncio
+async def test_get_optimal_instance_type_with_local_ssd_constraint(
+    gcp_instance_manager: GCPComputeInstanceManager,
+    mock_instance_types: Dict[str, Dict[str, Any]],
+    mock_pricing_sku: MagicMock,
+) -> None:
+    """Test getting optimal instance type with local SSD requirement."""
+    # Arrange
+    constraints = {
+        "instance_types": None,
+        "min_cpu": None,
+        "max_cpu": None,
+        "min_total_memory": None,
+        "max_total_memory": None,
+        "min_memory_per_cpu": None,
+        "max_memory_per_cpu": None,
+        "min_local_ssd": 500,  # Only n2-standard-4-lssd meets this
+        "max_local_ssd": None,
+        "min_local_ssd_per_cpu": None,
+        "max_local_ssd_per_cpu": None,
+        "min_storage": None,
+        "max_storage": None,
+        "min_storage_per_cpu": None,
+        "max_storage_per_cpu": None,
+        "use_spot": False,
+    }
+
+    # Set up N2 pricing SKUs
+    core_sku = MagicMock()
+    core_sku.description = "N2 Instance Core running in Americas"
+    core_sku.service_regions = ["us-central1"]
+    core_pricing_info = MagicMock()
+    core_pricing_info.pricing_expression.usage_unit = "h"
+    core_tier_rate = MagicMock()
+    core_tier_rate.unit_price.nanos = 400000000  # $0.40/core/hour
+    core_pricing_info.pricing_expression.tiered_rates = [core_tier_rate]
+    core_sku.pricing_info = [core_pricing_info]
+
+    ram_sku = MagicMock()
+    ram_sku.description = "N2 Instance Ram running in Americas"
+    ram_sku.service_regions = ["us-central1"]
+    ram_pricing_info = MagicMock()
+    ram_pricing_info.pricing_expression.usage_unit = "GiBy.h"
+    ram_tier_rate = MagicMock()
+    ram_tier_rate.unit_price.nanos = 200000000  # $0.20/GB/hour
+    ram_pricing_info.pricing_expression.tiered_rates = [ram_tier_rate]
+    ram_sku.pricing_info = [ram_pricing_info]
+
+    local_ssd_sku = MagicMock()
+    local_ssd_sku.description = "N2 Local SSD provisioned space running in Americas"
+    local_ssd_sku.service_regions = ["us-central1"]
+    ssd_pricing_info = MagicMock()
+    ssd_pricing_info.pricing_expression.usage_unit = "GiBy.mo"
+    ssd_tier_rate = MagicMock()
+    ssd_tier_rate.unit_price.nanos = 124185000000  # $0.17/GB/hour
+    ssd_pricing_info.pricing_expression.tiered_rates = [ssd_tier_rate]
+    local_ssd_sku.pricing_info = [ssd_pricing_info]
+
+    gcp_instance_manager._billing_compute_skus = [core_sku, ram_sku, local_ssd_sku]
+
+    # Act
+    instance_type, zone, price = await gcp_instance_manager.get_optimal_instance_type(constraints)
+
+    # Assert
+    assert instance_type == "n2-standard-4-lssd"
+    assert zone == f"{gcp_instance_manager._region}-*"
+    assert price == pytest.approx(132.3)  # 4 cores * $0.40 + 16GB * $0.20 + 750GB * $0.17
+
+
+@pytest.mark.asyncio
 async def test_get_optimal_instance_type_prefer_more_cpus(
     gcp_instance_manager: GCPComputeInstanceManager,
     mock_instance_types: Dict[str, Dict[str, Any]],
@@ -788,7 +1068,7 @@ async def test_get_optimal_instance_type_prefer_more_cpus(
 
     # Assert
     # n2-standard-4-lssd should be chosen because it has more CPUs (4 vs 2)
-    # even though it's slightly more expensive
+    # even though it has the same price
     assert instance_type == "n2-standard-4-lssd"
     assert zone == f"{gcp_instance_manager._region}-*"
-    assert price == pytest.approx(5.75, rel=1e-2)  # Slightly more than n1-standard-2
+    assert price == pytest.approx(5.75, rel=1e-2)

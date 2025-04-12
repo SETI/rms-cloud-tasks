@@ -7,7 +7,7 @@ import copy
 import logging
 import random
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, cast
 import uuid
 
 from google.api_core.exceptions import NotFound  # type: ignore
@@ -121,8 +121,10 @@ class GCPComputeInstanceManager(InstanceManager):
         self._machine_type_client = compute_v1.MachineTypesClient(credentials=self._credentials)
         self._images_client = compute_v1.ImagesClient(credentials=self._credentials)
         self._billing_client = billing.CloudCatalogClient(credentials=self._credentials)
-        self._billing_compute_skus = None
-        self._instance_pricing_cache = {}
+        self._billing_compute_skus: List[billing.Sku] | None = None
+        self._instance_pricing_cache: Dict[
+            Tuple[str, bool], Dict[str, Dict[str, float | str | None]] | None
+        ] = {}
 
         self._logger.info(
             f"Initialized GCP Compute Engine: project '{self._project_id}', "
@@ -221,61 +223,67 @@ class GCPComputeInstanceManager(InstanceManager):
                 (constraints["min_cpu"] is None or instance_info["vcpu"] >= constraints["min_cpu"])
                 and (
                     constraints["max_cpu"] is None
-                    or instance_info["vcpu"] <= constraints["max_cpu"]
+                    or cast(int, instance_info["vcpu"]) <= cast(int, constraints["max_cpu"])
                 )
                 and (
                     constraints["min_total_memory"] is None
-                    or instance_info["mem_gb"] >= constraints["min_total_memory"]
+                    or cast(float, instance_info["mem_gb"])
+                    >= cast(float, constraints["min_total_memory"])
                 )
                 and (
                     constraints["max_total_memory"] is None
-                    or instance_info["mem_gb"] <= constraints["max_total_memory"]
+                    or cast(float, instance_info["mem_gb"])
+                    <= cast(float, constraints["max_total_memory"])
                 )
                 and (
                     constraints["min_memory_per_cpu"] is None
-                    or instance_info["mem_gb"] / instance_info["vcpu"]
-                    >= constraints["min_memory_per_cpu"]
+                    or cast(float, instance_info["mem_gb"]) / cast(int, instance_info["vcpu"])
+                    >= cast(float, constraints["min_memory_per_cpu"])
                 )
                 and (
                     constraints["max_memory_per_cpu"] is None
-                    or instance_info["mem_gb"] / instance_info["vcpu"]
-                    <= constraints["max_memory_per_cpu"]
+                    or cast(float, instance_info["mem_gb"]) / cast(int, instance_info["vcpu"])
+                    <= cast(float, constraints["max_memory_per_cpu"])
                 )
                 and (
                     constraints["min_local_ssd"] is None
-                    or instance_info["local_ssd_gb"] >= constraints["min_local_ssd"]
+                    or cast(float, instance_info["local_ssd_gb"])
+                    >= cast(float, constraints["min_local_ssd"])
                 )
                 and (
                     constraints["max_local_ssd"] is None
-                    or instance_info["local_ssd_gb"] <= constraints["max_local_ssd"]
+                    or cast(float, instance_info["local_ssd_gb"])
+                    <= cast(float, constraints["max_local_ssd"])
                 )
                 and (
                     constraints["min_local_ssd_per_cpu"] is None
-                    or instance_info["local_ssd_gb"] / instance_info["vcpu"]
-                    >= constraints["min_local_ssd_per_cpu"]
+                    or cast(float, instance_info["local_ssd_gb"]) / cast(int, instance_info["vcpu"])
+                    >= cast(float, constraints["min_local_ssd_per_cpu"])
                 )
                 and (
                     constraints["max_local_ssd_per_cpu"] is None
-                    or instance_info["local_ssd_gb"] / instance_info["vcpu"]
-                    <= constraints["max_local_ssd_per_cpu"]
+                    or cast(float, instance_info["local_ssd_gb"]) / cast(int, instance_info["vcpu"])
+                    <= cast(float, constraints["max_local_ssd_per_cpu"])
                 )
                 and (
                     constraints["min_storage"] is None
-                    or instance_info["storage_gb"] >= constraints["min_storage"]
+                    or cast(float, instance_info["storage_gb"])
+                    >= cast(float, constraints["min_storage"])
                 )
                 and (
                     constraints["max_storage"] is None
-                    or instance_info["storage_gb"] <= constraints["max_storage"]
+                    or cast(float, instance_info["storage_gb"])
+                    <= cast(float, constraints["max_storage"])
                 )
                 and (
                     constraints["min_storage_per_cpu"] is None
-                    or instance_info["storage_gb"] / instance_info["vcpu"]
-                    >= constraints["min_storage_per_cpu"]
+                    or cast(float, instance_info["storage_gb"]) / cast(int, instance_info["vcpu"])
+                    >= cast(float, constraints["min_storage_per_cpu"])
                 )
                 and (
                     constraints["max_storage_per_cpu"] is None
-                    or instance_info["storage_gb"] / instance_info["vcpu"]
-                    <= constraints["max_storage_per_cpu"]
+                    or cast(float, instance_info["storage_gb"]) / cast(int, instance_info["vcpu"])
+                    <= cast(float, constraints["max_storage_per_cpu"])
                 )
                 and (
                     not constraints["use_spot"]
@@ -370,8 +378,8 @@ class GCPComputeInstanceManager(InstanceManager):
         return pricing_tier[0]
 
     async def get_instance_pricing(
-        self, instance_types: Dict[str, Dict[str, Any]], use_spot: bool = False
-    ) -> Dict[str, Dict[str, float | None] | None]:
+        self, instance_types: Dict[str, Dict[str, Any]], *, use_spot: bool = False
+    ) -> Dict[str, Dict[str, Dict[str, float | str | None]] | None]:
         """
         Get the hourly price for one or more specific instance types.
 
@@ -403,7 +411,7 @@ class GCPComputeInstanceManager(InstanceManager):
             f"Getting pricing for {len(instance_types)} instance types (spot: {use_spot})"
         )
 
-        ret = {}
+        ret: Dict[str, Dict[str, Dict[str, float | str | None]] | None] = {}
 
         # Lookup pricing for each instance type
         for machine_type, machine_info in instance_types.items():
@@ -447,20 +455,20 @@ class GCPComputeInstanceManager(InstanceManager):
                 # Add the instance type info to the return value
                 zone_val.update(machine_info)
                 # Update the pricing info with the new vCPU and memory info
-                per_cpu_price = zone_val["per_cpu_price"]
-                per_gb_ram_price = zone_val["mem_per_gb_price"]
-                per_gb_local_ssd_price = zone_val["local_ssd_per_gb_price"]
-                per_gb_storage_price = zone_val["storage_per_gb_price"]
+                per_cpu_price = cast(float, zone_val["per_cpu_price"])
+                per_gb_ram_price = cast(float, zone_val["mem_per_gb_price"])
+                per_gb_local_ssd_price = cast(float, zone_val["local_ssd_per_gb_price"])
+                per_gb_storage_price = cast(float, zone_val["storage_per_gb_price"])
                 cpu_price = per_cpu_price * machine_info["vcpu"]
                 ram_price = per_gb_ram_price * machine_info["mem_gb"]
                 local_ssd_price = per_gb_local_ssd_price * machine_info["local_ssd_gb"]
                 storage_price = per_gb_storage_price * machine_info["storage_gb"]
                 total_price = cpu_price + ram_price + local_ssd_price + storage_price
-                zone_val["cpu_price"] = cpu_price
-                zone_val["mem_price"] = ram_price
-                zone_val["local_ssd_price"] = local_ssd_price
-                zone_val["storage_price"] = storage_price
-                zone_val["total_price"] = total_price
+                zone_val["cpu_price"] = round(cpu_price, 6)
+                zone_val["mem_price"] = round(ram_price, 6)
+                zone_val["local_ssd_price"] = round(local_ssd_price, 6)
+                zone_val["storage_price"] = round(storage_price, 6)
+                zone_val["total_price"] = round(total_price, 6)
                 ret[machine_type] = ret_val
                 continue
 
@@ -585,8 +593,8 @@ class GCPComputeInstanceManager(InstanceManager):
                     ret[machine_type] = None
                     continue
 
-            per_cpu_price = cpu_pricing_info.unit_price.nanos / 1e9
-            per_gb_ram_price = ram_pricing_info.unit_price.nanos / 1e9
+            per_cpu_price = cast(float, cpu_pricing_info.unit_price.nanos / 1e9)
+            per_gb_ram_price = cast(float, ram_pricing_info.unit_price.nanos / 1e9)
 
             cpu_price = per_cpu_price * machine_info["vcpu"]
             ram_price = per_gb_ram_price * machine_info["mem_gb"]
@@ -599,7 +607,7 @@ class GCPComputeInstanceManager(InstanceManager):
 
             local_disk_price = 0
             per_gb_local_disk_price = 0
-            if local_disk_sku is not None:
+            if local_disk_pricing_info is not None:
                 if not is_lssd:
                     self._logger.warning(
                         f"Local SSD SKU found for non-LSSD instance type: {machine_type}"
@@ -633,15 +641,15 @@ class GCPComputeInstanceManager(InstanceManager):
 
             ret_val = {
                 f"{self._region}-*": {
-                    "cpu_price": cpu_price,  # CPU price (we don't have this)
-                    "per_cpu_price": per_cpu_price,  # Per-CPU price
-                    "mem_price": ram_price,  # Memory price (we don't have this)
-                    "mem_per_gb_price": per_gb_ram_price,  # Per-GB price
-                    "local_ssd_price": local_disk_price,  # Local SSD price
-                    "local_ssd_per_gb_price": per_gb_local_disk_price,  # Per-GB price
-                    "storage_price": storage_price,  # Storage price
-                    "storage_per_gb_price": per_gb_storage_price,  # Per-GB price
-                    "total_price": total_price,  # Total price
+                    "cpu_price": round(cpu_price, 6),  # CPU price
+                    "per_cpu_price": round(per_cpu_price, 6),  # Per-CPU price
+                    "mem_price": round(ram_price, 6),  # Memory price
+                    "mem_per_gb_price": round(per_gb_ram_price, 6),  # Per-GB price
+                    "local_ssd_price": round(local_disk_price, 6),  # Local SSD price
+                    "local_ssd_per_gb_price": round(per_gb_local_disk_price, 6),  # Per-GB price
+                    "storage_price": round(storage_price, 6),  # Storage price
+                    "storage_per_gb_price": round(per_gb_storage_price, 6),  # Per-GB price
+                    "total_price": round(total_price, 6),  # Total price
                     "zone": f"{self._region}-*",
                 }
             }
@@ -685,6 +693,9 @@ class GCPComputeInstanceManager(InstanceManager):
                 - Zone in which the instance type is cheapest
                 - Price of the instance type in USD/hour
         """
+        if constraints is None:
+            constraints = {}
+
         self._logger.debug(
             f"Getting optimal instance type in region {self._region} and zone " f"{self._zone}"
         )
@@ -700,7 +711,7 @@ class GCPComputeInstanceManager(InstanceManager):
             raise ValueError("No instance type meets requirements")
 
         pricing_data = await self.get_instance_pricing(
-            avail_instance_types, constraints["use_spot"]
+            avail_instance_types, use_spot=constraints["use_spot"]
         )
 
         # Rearrange the pricing data into a dictionary of (machine_type, zone) -> price
@@ -710,6 +721,11 @@ class GCPComputeInstanceManager(InstanceManager):
                 self._logger.debug(f"No pricing data found for {machine_type}; ignoring")
                 continue
             for zone, price_in_zone in price.items():
+                if price_in_zone is None:
+                    self._logger.debug(
+                        f"No pricing data found for {machine_type} in zone {zone}; ignoring"
+                    )
+                    continue
                 zone_pricing_data[(machine_type, zone)] = price_in_zone
 
         if len(zone_pricing_data) == 0:
@@ -717,34 +733,35 @@ class GCPComputeInstanceManager(InstanceManager):
 
         # Select instance with the lowest price
         priced_instances = [
-            (machine_type, zone, price) for (machine_type, zone), price in zone_pricing_data.items()
+            (machine_type, zone, price_info)
+            for (machine_type, zone), price_info in zone_pricing_data.items()
         ]
-        print(priced_instances)
         priced_instances.sort(
             key=lambda x: (
                 x[2]["total_price"],
-                -x[2]["vcpu"],
+                -cast(int, x[2]["vcpu"]),
             )
         )  # Sort by price, then by decreasing vCPU (this gives us the cheapest instance type with
         # the most vCPUs)
 
         self._logger.debug("Instance types sorted by price (cheapest first):")
-        for i, (machine_type, zone, price) in enumerate(priced_instances):
+        for i, (machine_type, zone, price_info) in enumerate(priced_instances):
             self._logger.debug(
-                f"  [{i+1:3d}] {machine_type:20s} in {zone:15s}: ${price['total_price']:10.6f}/hour"
+                f"  [{i+1:3d}] {machine_type:20s} in {zone:15s}: ${price_info['total_price']:10.6f}/hour"
             )
 
-        selected_type, selected_zone, selected_price = priced_instances[0]
-        price = selected_price["total_price"]
+        selected_type, selected_zone, selected_price_info = priced_instances[0]
+        total_price = selected_price_info["total_price"]
         self._logger.debug(
-            f"Selected {selected_type} in {selected_zone} at ${price:.6f} per hour "
+            f"Selected {selected_type} in {selected_zone} at ${total_price:.6f} per hour "
             f"{' (spot)' if constraints["use_spot"] else '(on demand)'}"
         )
 
-        return selected_type, selected_zone, price
+        return selected_type, selected_zone, cast(float, total_price)
 
     async def start_instance(
         self,
+        *,
         instance_type: str,
         startup_script: str,
         job_id: str,

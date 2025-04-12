@@ -54,8 +54,8 @@ class InstanceManager(ABC):
 
     @abstractmethod
     async def get_instance_pricing(
-        self, instance_types: Dict[str, Dict[str, Any]], use_spot: bool = False
-    ) -> Dict[str, Dict[str, float | None] | None]:
+        self, instance_types: Dict[str, Dict[str, Any]], *, use_spot: bool = False
+    ) -> Dict[str, Dict[str, Dict[str, float | str | None]] | None]:
         """
         Get the hourly price for one or more specific instance types.
 
