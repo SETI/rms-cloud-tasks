@@ -51,8 +51,6 @@ class InstanceOrchestrator:
         if not self._run_config:
             raise ValueError("Run configuration section ('run:') is missing.")
 
-        self._startup_script = self._generate_worker_startup_script()
-
         # TODO: Add scale_up/down_thresholds to RunConfig?
         # self._scale_up_threshold = 10  # Default or fetch from config if added
         # self._scale_down_threshold = 2  # Default or fetch from config if added
@@ -60,6 +58,9 @@ class InstanceOrchestrator:
         # Region/Location
         self._region = provider_config.region
         self._zone = provider_config.zone
+
+        if not provider_config.startup_script:
+            raise RuntimeError("startup_script is required")
 
         # Will be initialized in start()
         self._instance_manager: Optional[InstanceManager] = None
@@ -124,7 +125,9 @@ class InstanceOrchestrator:
             f"  Instance termination delay: {self._instance_termination_delay_seconds} seconds"
         )
 
-        self._logger.info(f"  Startup script:\n{self._run_config.startup_script}")
+        self._logger.info(f"  Startup script:")
+        for line in self._run_config.startup_script.replace("\r", "").strip().split("\n"):
+            self._logger.info(f"    {line}")
 
     @property
     def task_queue(self) -> TaskQueue:
@@ -153,13 +156,31 @@ class InstanceOrchestrator:
         Returns:
             Shell script for instance startup
         """
+        supplement = f"""\
+export RMS_CLOUD_RUN_JOB_ID={self._job_id}
+export RMS_CLOUD_RUN_QUEUE_NAME={self._queue_name}
+export RMS_CLOUD_RUN_INSTANCE_TYPE={self._optimal_instance_type}
+"""
         # TODO: Implement creation of startup script
         # If a custom startup script is provided, use it
         if self._run_config.startup_script:
-            return self._run_config.startup_script
+            ss = self._run_config.startup_script.strip()
+            ss = ss.replace("\r", "")  # Remove any Windows line endings
+            if ss.startswith("#!"):
+                # Insert supplement after the shebang line
+                ss_lines = ss.split("\n", 1)[1]
+                if not ss_lines[0].endswith("/bash"):
+                    msg = "Startup script uses shell other than bash; this is not supported"
+                    self._logger.error(msg)
+                    raise RuntimeError(msg)
+                ss = f"{ss_lines[0]}\n{supplement}\n{'\n'.join(ss_lines[1:])}"
+            else:
+                ss = f"{supplement}\n{ss}"
+            return ss
 
-        self._logger.error("No startup script provided")
-        raise RuntimeError("No startup script provided")
+        msg = "No startup script provided"
+        self._logger.error(msg)
+        raise RuntimeError(msg)
 
     async def start(self) -> None:
         """Start the orchestrator.
@@ -380,6 +401,8 @@ class InstanceOrchestrator:
         if not self._instance_manager:
             raise RuntimeError("Instance manager not initialized. Call start() first.")
 
+        startup_script = self._generate_worker_startup_script()
+
         async with self._instance_creation_lock:
             # Start instances
             instance_ids = []
@@ -387,7 +410,7 @@ class InstanceOrchestrator:
                 try:
                     instance_id = await self._instance_manager.start_instance(
                         instance_type=self._optimal_instance_type,
-                        startup_script=self._startup_script or "",  # Pass empty string if None
+                        startup_script=startup_script,
                         job_id=self._job_id,
                         use_spot=self._run_config.use_spot,
                         image=self._run_config.image,

@@ -7,8 +7,6 @@ import copy
 import logging
 import random
 import re
-import sys
-import time
 from typing import Any, Dict, List, Optional, Tuple
 import uuid
 
@@ -31,7 +29,7 @@ class GCPComputeInstanceManager(InstanceManager):
     _JOB_ID_TAG_PREFIX = "rmscr-"
 
     # Map of instance statuses to standardized statuses
-    STATUS_MAP = {
+    _STATUS_MAP = {
         "PROVISIONING": "starting",
         "STAGING": "starting",
         "RUNNING": "running",
@@ -40,21 +38,23 @@ class GCPComputeInstanceManager(InstanceManager):
         "SUSPENDED": "stopped",
     }
 
+    # GB - This is derived by looking at the pricing tables; beware!
+    _ONE_LOCAL_SSD_SIZE = 375  # Size of one local SSD in GB
+
     def __init__(self, gcp_config: GCPConfig):
         """Initialize the GCP Compute Engine instance manager.
 
         Args:
-            config: Dictionary with GCP configuration. If credentials_file is not provided,
-                the default application credentials from the environment will be used.
+            gcp_config: Dictionary with GCP configuration. If credentials_file is not
+                provided, the default application credentials from the environment will
+                be used.
 
         Raises:
             ValueError: If required configuration is missing
         """
         super().__init__(gcp_config)
-        self._billing_compute_skus = None
-        self._instance_pricing_cache = {}
-        self._logger = logging.getLogger(__name__)
 
+        self._logger = logging.getLogger(__name__)
         self._logger.debug(f"Initializing GCP Compute Engine instance manager")
 
         self._project_id = gcp_config.project_id
@@ -68,38 +68,35 @@ class GCPComputeInstanceManager(InstanceManager):
             self._logger.debug(f"Instance types restricted to patterns: {self._instance_types}")
 
         # Handle credentials - use provided service account file or default application credentials
-        if gcp_config.credentials_file is not None:
+        if gcp_config.credentials_file:
             try:
                 self._credentials = service_account.Credentials.from_service_account_file(
                     gcp_config.credentials_file
                 )
-                self._logger.info(f"Using credentials from file: {gcp_config.credentials_file}")
+                self._logger.debug(f"Using credentials from file: {gcp_config.credentials_file}")
             except Exception as e:
-                self._logger.error(
-                    f"Error loading credentials file: {gcp_config.credentials_file}: {e}"
-                )
-                raise ValueError(
+                raise RuntimeError(
                     f"Error loading credentials file: {gcp_config.credentials_file}: {e}"
                 )
         else:
             # Use default credentials from environment
             try:
                 self._credentials, project_id = get_default_credentials()
-                self._logger.info("Using default application credentials")
+                self._logger.debug("Using default application credentials")
                 if not self._project_id and project_id:
                     self._project_id = project_id
                     self._logger.info(
                         f"Using project ID from default credentials: {self._project_id}"
                     )
             except Exception as e:
-                raise ValueError(
+                raise RuntimeError(
                     f"Error getting default credentials: {e}. "
                     "Please ensure you're authenticated with 'gcloud auth application-default login' "
-                    "or provide a credentials_file."
+                    "or provide a credentials_file entry in the GCP configuration."
                 )
 
         if self._project_id is None:
-            raise ValueError("Missing required GCP configuration: project_id")
+            raise RuntimeError("Missing required GCP configuration: project_id")
 
         # Initialize region/zone from config if provided
         self._region = gcp_config.region
@@ -110,11 +107,12 @@ class GCPComputeInstanceManager(InstanceManager):
             # Extract region from zone (e.g., us-central1-a -> us-central1)
             self._region = "-".join(self._zone.split("-")[:-1])
             self._logger.info(f"Extracted region {self._region} from zone {self._zone}")
-        elif self._region and not self._zone:
-            # Extract zone from region (e.g., us-central1 -> us-central1-a)
-            pass  # TODO: Implement this
-            # self._zone = "-".join(self._region.split("-") + ["a"])
-            # self._logger.info(f"Extracted zone {self._zone} from region {self._region}")
+        if not self._region:
+            raise RuntimeError("Missing required GCP configuration: region")
+        # It's OK for there to be no specific zone
+
+        # Service account for authorization on worker instances
+        self._service_account = gcp_config.service_account
 
         # Initialize clients
         self._compute_client = compute_v1.InstancesClient(credentials=self._credentials)
@@ -123,127 +121,21 @@ class GCPComputeInstanceManager(InstanceManager):
         self._machine_type_client = compute_v1.MachineTypesClient(credentials=self._credentials)
         self._images_client = compute_v1.ImagesClient(credentials=self._credentials)
         self._billing_client = billing.CloudCatalogClient(credentials=self._credentials)
+        self._billing_compute_skus = None
+        self._instance_pricing_cache = {}
 
-        # Log project and region info
-        if self._region:
-            self._logger.info(
-                f"Initialized GCP Compute Engine: project '{self._project_id}', "
-                f"region '{self._region}', zone '{self._zone}'"
-            )
-        else:
-            self._logger.info(f"Initialized GCP Compute Engine: project '{self._project_id}'")
-            self._logger.warning(
-                "No region specified, will determine cheapest region during instance selection"
-            )
+        self._logger.info(
+            f"Initialized GCP Compute Engine: project '{self._project_id}', "
+            f"region '{self._region}', zone '{self._zone}'"
+        )
 
     def _job_id_to_tag(self, job_id: str) -> str:
         return f"{self._JOB_ID_TAG_PREFIX}{job_id}"
-
-    async def get_optimal_instance_type(
-        self, constraints: Optional[Dict[str, Any]] = None
-    ) -> Tuple[str, str, float]:
-        """
-        Get the most cost-effective GCP instance type that meets requirements.
-
-        Args:
-            constraints: Dictionary of constraints to filter instance types by. Constraints
-                include::
-                    "min_cpu": Minimum number of vCPUs
-                    "max_cpu": Maximum number of vCPUs
-                    "min_total_memory": Minimum total memory in GB
-                    "max_total_memory": Maximum total memory in GB
-                    "min_memory_per_cpu": Minimum memory per vCPU in GB
-                    "max_memory_per_cpu": Maximum memory per vCPU in GB
-                    "min_local_ssd": Minimum amount of local SSD storage in GB
-                    "max_local_ssd": Maximum amount of local SSD storage in GB
-                    "min_local_ssd_per_cpu": Minimum amount of local SSD storage per vCPU
-                    "max_local_ssd_per_cpu": Maximum amount of local SSD storage per vCPU
-                    "min_storage": Minimum amount of other storage in GB
-                    "max_storage": Maximum amount of other storage in GB
-                    "min_storage_per_cpu": Minimum amount of other storage per vCPU
-                    "max_storage_per_cpu": Maximum amount of other storage per vCPU
-                    "use_spot": Whether to use spot instances
-
-        Returns:
-            GCP instance type name (e.g., 'n1-standard-2')
-        """
-        # Get available instance types
-        avail_instance_types = await self.get_available_instance_types(constraints)
-        self._logger.debug(
-            f"Found {len(avail_instance_types)} available instance types in zone {self._zone}"
-        )
-
-        if not avail_instance_types:
-            raise ValueError("No instance type meets requirements")
-
-        self._logger.debug(
-            f"Found {len(avail_instance_types)} instance types that meet requirements:"
-        )
-        for idx, (machine_type, machine_info) in enumerate(avail_instance_types.items()):
-            self._logger.debug(
-                f"  [{idx+1:3d}] {machine_type:20s}: {machine_info['vcpu']:4d} vCPU, {machine_info['mem_gb']:8.2f} GB memory"
-            )
-
-        pricing_data = await self.get_instance_pricing(
-            avail_instance_types, constraints["use_spot"]
-        )
-
-        # Log the complete pricing data found
-        if not pricing_data:
-            self._logger.warning(
-                "Could not get pricing data from GCP API, falling back to heuristic"
-            )
-            # Sort by vCPU + memory as a simple cost heuristic
-            avail_instance_types.sort(key=lambda x: x["vcpu"] + x["memory_gb"])
-            selected_type = avail_instance_types[0]["name"]
-            self._logger.info(f"Selected {selected_type} based on heuristic (lowest vCPU + memory)")
-            return selected_type
-
-        # Fill in missing price info and also expand to include all zones
-        zone_pricing_data = {}
-        for machine_type, price in pricing_data.items():
-            if price is None:
-                self._logger.warning(f"No pricing data found for {machine_type}; ignoring")
-                continue
-            for zone, price_in_zone in price.items():
-                zone_pricing_data[(machine_type, zone)] = price_in_zone
-
-        if len(zone_pricing_data) == 0:
-            self._logger.warning("No pricing data found for any instance types")
-            return None
-
-        # Select instance with the lowest price
-        priced_instances = [
-            (machine_type, zone, price) for (machine_type, zone), price in zone_pricing_data.items()
-        ]
-        priced_instances.sort(
-            key=lambda x: (
-                x[2]["total_price"],
-                x[2]["vcpu"],
-            )
-        )  # Sort by price, then by vCPU
-
-        # Debug log for all priced instances in order
-        self._logger.debug("Instance types sorted by price (cheapest first):")
-        for i, (machine_type, zone, price) in enumerate(priced_instances):
-            self._logger.debug(
-                f"  [{i+1:3d}] {machine_type:20s} in {zone:15s}: ${price['total_price']:10.6f}/hour"
-            )
-
-        selected_type, selected_zone, selected_price = priced_instances[0]
-        price = selected_price["total_price"]
-        self._logger.debug(
-            f"Selected {selected_type} in {selected_zone} at ${price:.6f} per hour "
-            f"{' (spot)' if constraints["use_spot"] else '(on demand)'}"
-        )
-
-        return selected_type, selected_zone, price
 
     async def get_available_instance_types(
         self, constraints: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Dict[str, Any]]:
         """Get available instance types with their specifications.
-
 
         Args:
             constraints: Dictionary of constraints to filter instance types by. Constraints
@@ -277,17 +169,17 @@ class GCPComputeInstanceManager(InstanceManager):
                 "description": description of the instance type
                 "url": URL to the instance type details
         """
-        self._logger.debug("Listing available Compute Engine instance types")
-
         if constraints is None:
             constraints = {}
 
         # GCP instance types are per-zone
         zone = await self._get_default_zone()
 
+        self._logger.debug(f"Listing available Compute Engine instance types in zone {zone}")
+        self._logger.debug(f"Constraints: {constraints}")
+
         # List instance types in the zone
         request = compute_v1.ListMachineTypesRequest(project=self._project_id, zone=zone)
-
         machine_types = self._machine_type_client.list(request=request)
 
         instance_types = {}
@@ -301,14 +193,16 @@ class GCPComputeInstanceManager(InstanceManager):
                 if not match_ok:
                     continue
 
-            # GB - This is derived by looking at the pricing ables; beware!
-            one_local_ssd_size = 375
             local_ssd_size = 0
             if "local ssd" in machine_type.description.lower():
-                # Write a regex to extract the size from the description: 32 vCPUs, 256 GB RAM, 6 local SSD
+                # Write a regex to extract the size from the description:
+                # "32 vCPUs, 256 GB RAM, 6 local SSD"
                 match = re.search(r", (\d+) local ssd", machine_type.description.lower())
                 if match:
-                    local_ssd_size = int(match.group(1)) * one_local_ssd_size
+                    local_ssd_size = int(match.group(1)) * self._ONE_LOCAL_SSD_SIZE
+            import pprint
+
+            pprint.pprint(machine_type)
             instance_info = {
                 "name": machine_type.name,
                 "vcpu": machine_type.guest_cpus,
@@ -316,7 +210,7 @@ class GCPComputeInstanceManager(InstanceManager):
                 "architecture": machine_type.architecture,
                 "storage_gb": 0,  # GCP separates storage from instance type
                 "local_ssd_gb": local_ssd_size,  # Except for dedicated SSDs
-                "supports_spot": True,  # TODO: Check if this is correct
+                "supports_spot": True,  # There is no other informationa available
                 "description": machine_type.description,
                 # https://www.googleapis.com/compute/v1/projects/[project]/zones/
                 # [zone]/machineTypes/[name]
@@ -412,25 +306,78 @@ class GCPComputeInstanceManager(InstanceManager):
                 break
 
         if not compute_service:
-            self._logger.warning("Could not find compute service in billing catalog")
-            return None
-
-        self._logger.debug(f"Found compute service: {compute_service.display_name}")
+            raise RuntimeError(
+                f"Could not find compute service '{service_name}' in billing catalog"
+            )
 
         # Get SKUs for the service
+        self._logger.debug("Retrieving all SKUs for compute service")
         sku_request = billing.ListSkusRequest(parent=compute_service.name)
         self._billing_compute_skus = list(self._billing_client.list_skus(request=sku_request))
 
         return self._billing_compute_skus
 
+    def _extract_pricing_info(
+        self, machine_family: str, sku: Any, expected_unit: str, component_name: str
+    ) -> Optional[Any]:
+        """
+        Extract pricing information from a SKU.
+
+        Args:
+            sku: The SKU object containing pricing information
+            expected_unit: Expected usage unit (e.g., 'h', 'GiBy.h', 'GiBy.mo')
+            component_name: Name of the component (e.g., 'core', 'ram', 'local SSD')
+
+        Returns:
+            Pricing tier information if successful, None if any validation fails
+        """
+        pricing_info = list(sku.pricing_info)
+        if len(pricing_info) == 0:
+            self._logger.warning(
+                f"No pricing info found for {machine_family} {component_name} SKU "
+                f'"{sku.description}"; these instance types will be ignored'
+            )
+            return None
+        if len(pricing_info) > 1:
+            self._logger.warning(
+                f"Multiple pricing info found for {machine_family} {component_name} SKU "
+                f'"{sku.description}"; these instance types will be ignored'
+            )
+            return None
+
+        usage_unit = pricing_info[0].pricing_expression.usage_unit
+        if usage_unit != expected_unit:
+            self._logger.warning(
+                f'{machine_family} {component_name} SKU "{sku.description}" '
+                f"has unknown pricing unit: {usage_unit}; these instance types will be ignored"
+            )
+            return None
+
+        pricing_tier = list(pricing_info[0].pricing_expression.tiered_rates)
+        if len(pricing_tier) == 0:
+            self._logger.warning(
+                f"No tiered rates found for {machine_family} {component_name} SKU "
+                f'"{sku.description}"; these instance types will be ignored'
+            )
+            return None
+        if len(pricing_tier) > 1:
+            self._logger.warning(
+                f"Multiple tiered rates found for {machine_family} {component_name} SKU "
+                f'"{sku.description}"; these instance types will be ignored'
+            )
+            return None
+
+        return pricing_tier[0]
+
     async def get_instance_pricing(
         self, instance_types: Dict[str, Dict[str, Any]], use_spot: bool = False
-    ) -> Dict[str, Dict[str, float | None]]:
+    ) -> Dict[str, Dict[str, float | None] | None]:
         """
         Get the hourly price for one or more specific instance types.
 
         Note that GCP pricing is per-region (not per-zone) for both on-demand and spot instances
-        so we return the pricing for the region followed by a wildcard for the zone.
+        so we return the pricing for the region followed by a wildcard for the zone like
+        us-central1-*.
 
         Args:
             instance_types: A dictionary mapping instance type to a dictionary of instance type
@@ -448,15 +395,15 @@ class GCPComputeInstanceManager(InstanceManager):
             Plus the original instance type info keyed by availability zone. If any price is not
             available, it is set to None.
         """
+        if len(instance_types) == 0:
+            self._logger.debug("No instance types provided")
+            return {}
+
         self._logger.debug(
             f"Getting pricing for {len(instance_types)} instance types (spot: {use_spot})"
         )
 
         ret = {}
-
-        if len(instance_types) == 0:
-            self._logger.warning("No instance types provided")
-            return ret
 
         # Lookup pricing for each instance type
         for machine_type, machine_info in instance_types.items():
@@ -468,6 +415,9 @@ class GCPComputeInstanceManager(InstanceManager):
             # This could look like "n1-standard-1" or "c4a-highmem-72-lssd"
             machine_name_parts = machine_type.split("-")
             machine_family = machine_name_parts[0]
+            # Normally the size of the machine type (e.g. -64) is at the end of the name, but
+            # machine types ending in -lssd are a special case. Here the size is at the second to
+            # last position. Also we have to infer the size of the local SSD.
             is_lssd = False
             if machine_name_parts[-1] == "lssd":
                 is_lssd = True
@@ -485,16 +435,15 @@ class GCPComputeInstanceManager(InstanceManager):
             # vCPUs and memory, so we just cache the pricing for the machine family and use that for
             # all instance types in the family.
             if (machine_family_for_cache, use_spot) in self._instance_pricing_cache:
+                # Cache hit!
                 ret_val = self._instance_pricing_cache[(machine_family_for_cache, use_spot)]
-                if ret_val is None:
+                if ret_val is None:  # No pricing info available
                     ret[machine_type] = None
                     continue
                 ret_val = copy.deepcopy(ret_val)  # Since we're going to mutate it
                 zone_val = ret_val.get(f"{self._region}-*")
                 if zone_val is None:
-                    self._logger.error(f"Internal error while finding pricing: region has changed")
-                    ret[machine_type] = {}
-                    continue
+                    raise RuntimeError(f"Internal error while finding pricing: region has changed")
                 # Add the instance type info to the return value
                 zone_val.update(machine_info)
                 # Update the pricing info with the new vCPU and memory info
@@ -515,6 +464,8 @@ class GCPComputeInstanceManager(InstanceManager):
                 ret[machine_type] = ret_val
                 continue
 
+            # Cache miss! Now we search through all the SKUs to find the ones we need.
+
             core_sku = None
             ram_sku = None
             local_disk_sku = None
@@ -522,71 +473,88 @@ class GCPComputeInstanceManager(InstanceManager):
             # Save None to mark we tried, even if we don't eventually find a match
             self._instance_pricing_cache[(machine_family_for_cache, use_spot)] = None
 
-            # Find matching SKU for the instance type in this region
-            # TODO This is kind of a hack because we are figuring out which SKU to use based on
+            # Find matching SKU for the instance type in this region.
+            # This is kind of a hack because we are figuring out which SKU to use based on
             # its description, but there's nothing else we can do. However, there may be errors
             # here if there are descriptions that we don't parse correctly.
             for sku in await self._get_billing_compute_skus():
                 sku_description = sku.description.lower()
+
+                # We don't like SKUs that are for various types of reserved instances
                 if (
                     "sole tenancy" in sku_description
                     or "custom" in sku_description
                     or "commitment" in sku_description
                 ):
                     continue
-                if self._region not in sku.service_regions:
-                    continue
-                # Check if this SKU matches our instance type and region
-                if f"{machine_family} " not in sku_description:
+
+                # Skip if this SKU doesn't match our instance type and region
+                if (
+                    self._region not in sku.service_regions
+                    or f"{machine_family} " not in sku_description
+                ):
                     continue
                 # print(sku)
+
+                # Skip if this SKU is for local SSDs and our instance type doesn't have them
                 if "local ssd" in sku_description and not is_lssd:
                     continue
+
+                # Skip if this SKU is for preemptible instances and we don't want preemptible
+                # instances, or if it's for non-preemptible instances and we do want preemptible
+                # instances
                 if ("preemptible" in sku_description and not use_spot) or (
                     "preemptible" not in sku_description and use_spot
                 ):
                     continue
+
+                # Save the SKU for core, ram, and local SSD
                 if "instance core" in sku_description:
                     if core_sku is not None:
                         self._logger.warning(
                             f"Multiple core SKUs found for {machine_family} in region "
-                            f"{self._region}:"
+                            f"{self._region} (choosing first one):"
                         )
                         self._logger.warning(f"  {core_sku.description}")
                         self._logger.warning(f"  {sku.description}")
-                    core_sku = sku
+                    else:
+                        core_sku = sku
                     # print(sku)
                 elif "instance ram" in sku_description:
                     if ram_sku is not None:
                         self._logger.warning(
                             f"Multiple ram SKUs found for {machine_family} in region "
-                            f"{self._region}:"
+                            f"{self._region} (choosing first one):"
                         )
                         self._logger.warning(f"  {ram_sku.description}")
                         self._logger.warning(f"  {sku.description}")
-                    ram_sku = sku
+                    else:
+                        ram_sku = sku
                     # print(sku)
                 elif "local ssd" in sku_description:
                     if local_disk_sku is not None:
                         self._logger.warning(
                             f"Multiple local SSD SKUs found for {machine_family} in region "
-                            f"{self._region}:"
+                            f"{self._region} (choosing first one):"
                         )
                         self._logger.warning(f"  {local_disk_sku.description}")
                         self._logger.warning(f"  {sku.description}")
-                    local_disk_sku = sku
+                    else:
+                        local_disk_sku = sku
                     # print(sku)
             if core_sku is None:
                 self._logger.warning(
-                    f"No core SKU found for instance type {machine_family} in region {self._region}"
+                    f"No core SKU found for instance family {machine_family} in region "
+                    f"{self._region}; ignoring these instance types"
                 )
-                ret[machine_type] = {}
+                ret[machine_type] = None
                 continue
             if ram_sku is None:
                 self._logger.warning(
-                    f"No ram SKU found for instance type {machine_family} in region {self._region}"
+                    f"No ram SKU found for instance family {machine_family} in region "
+                    f"{self._region}; ignoring these instance types"
                 )
-                ret[machine_type] = {}
+                ret[machine_type] = None
                 continue
             # It's OK for there to be no local disk SKU
 
@@ -595,108 +563,27 @@ class GCPComputeInstanceManager(InstanceManager):
             if local_disk_sku is not None:
                 self._logger.debug(f'Matching LSSD SKU found: "{local_disk_sku.description}"')
 
-            # Extract price info - we do it this weird way because the pricing info data structure
-            # isn't subscriptable
-            cpu_pricing_info = list(core_sku.pricing_info)
-            if len(cpu_pricing_info) == 0:
-                self._logger.warning(f'No pricing info found for core SKU "{core_sku.description}"')
-                ret[machine_type] = {}
+            # Extract price info for CPU
+            cpu_pricing_info = self._extract_pricing_info(machine_family, core_sku, "h", "core")
+            if cpu_pricing_info is None:
+                ret[machine_type] = None
                 continue
-            if len(cpu_pricing_info) > 1:
-                self._logger.warning(
-                    f'Multiple pricing info found for core SKU "{core_sku.description}"'
-                )
-                ret[machine_type] = {}
-                continue
-            cpu_pricing_unit = cpu_pricing_info[0].pricing_expression.usage_unit
-            if cpu_pricing_unit != "h":
-                self._logger.warning(
-                    f'Core SKU "{core_sku.description}" has unknown pricing unit: {cpu_pricing_unit}'
-                )
-                ret[machine_type] = {}
-                continue
-            cpu_pricing_tier = list(cpu_pricing_info[0].pricing_expression.tiered_rates)
-            if len(cpu_pricing_tier) == 0:
-                self._logger.warning(f'No tiered rates found for core SKU "{core_sku.description}"')
-                ret[machine_type] = {}
-                continue
-            if len(cpu_pricing_tier) > 1:
-                self._logger.warning(
-                    f'Multiple tiered rates found for core SKU "{core_sku.description}"'
-                )
-                ret[machine_type] = {}
-                continue
-            cpu_pricing_info = cpu_pricing_tier[0]
 
-            ram_pricing_info = list(ram_sku.pricing_info)
-            if len(ram_pricing_info) == 0:
-                self._logger.warning(f'No pricing info found for ram SKU "{ram_sku.description}"')
-                ret[machine_type] = {}
+            # Extract price info for RAM
+            ram_pricing_info = self._extract_pricing_info(machine_family, ram_sku, "GiBy.h", "ram")
+            if ram_pricing_info is None:
+                ret[machine_type] = None
                 continue
-            if len(ram_pricing_info) > 1:
-                self._logger.warning(
-                    f'Multiple pricing info found for ram SKU "{ram_sku.description}"'
-                )
-                ret[machine_type] = {}
-                continue
-            ram_pricing_unit = ram_pricing_info[0].pricing_expression.usage_unit
-            if ram_pricing_unit != "GiBy.h":
-                self._logger.warning(
-                    f'Ram SKU "{ram_sku.description}" has unknown pricing unit: {ram_pricing_unit}'
-                )
-                ret[machine_type] = {}
-                continue
-            ram_pricing_tier = list(ram_pricing_info[0].pricing_expression.tiered_rates)
-            if len(ram_pricing_tier) == 0:
-                self._logger.warning(f'No tiered rates found for ram SKU "{ram_sku.description}"')
-                ret[machine_type] = {}
-                continue
-            if len(ram_pricing_tier) > 1:
-                self._logger.warning(
-                    f'Multiple tiered rates found for ram SKU "{ram_sku.description}"'
-                )
-                ret[machine_type] = {}
-                continue
-            ram_pricing_info = ram_pricing_tier[0]
 
+            # Extract price info for local SSD if present
             local_disk_pricing_info = None
             if local_disk_sku is not None:
-                local_disk_pricing_info = list(local_disk_sku.pricing_info)
-                if len(local_disk_pricing_info) == 0:
-                    self._logger.warning(
-                        f'No pricing info found for local SSD SKU "{local_disk_sku.description}"'
-                    )
-                    ret[machine_type] = {}
-                    continue
-                if len(local_disk_pricing_info) > 1:
-                    self._logger.warning(
-                        f'Multiple pricing info found for local SSD SKU "{local_disk_sku.description}"'
-                    )
-                    ret[machine_type] = {}
-                    continue
-                local_disk_pricing_unit = local_disk_pricing_info[0].pricing_expression.usage_unit
-                if local_disk_pricing_unit != "GiBy.mo":
-                    self._logger.warning(
-                        f'Local SSD SKU "{local_disk_sku.description}" has unknown pricing unit: {local_disk_pricing_unit}'
-                    )
-                    ret[machine_type] = {}
-                    continue
-                local_disk_pricing_tier = list(
-                    local_disk_pricing_info[0].pricing_expression.tiered_rates
+                local_disk_pricing_info = self._extract_pricing_info(
+                    machine_family, local_disk_sku, "GiBy.mo", "local SSD"
                 )
-                if len(local_disk_pricing_tier) == 0:
-                    self._logger.warning(
-                        f'No tiered rates found for local SSD SKU "{local_disk_sku.description}"'
-                    )
-                    ret[machine_type] = {}
+                if local_disk_pricing_info is None:
+                    ret[machine_type] = None
                     continue
-                if len(local_disk_pricing_tier) > 1:
-                    self._logger.warning(
-                        f'Multiple tiered rates found for local SSD SKU "{local_disk_sku.description}"'
-                    )
-                    ret[machine_type] = {}
-                    continue
-                local_disk_pricing_info = local_disk_pricing_tier[0]
 
             per_cpu_price = cpu_pricing_info.unit_price.nanos / 1e9
             per_gb_ram_price = ram_pricing_info.unit_price.nanos / 1e9
@@ -717,7 +604,7 @@ class GCPComputeInstanceManager(InstanceManager):
                     self._logger.warning(
                         f"Local SSD SKU found for non-LSSD instance type: {machine_type}"
                     )
-                    ret[machine_type] = {}
+                    ret[machine_type] = None
                     continue
                 per_gb_local_disk_price = (
                     local_disk_pricing_info.unit_price.nanos / 1e9 / 730.5
@@ -725,19 +612,23 @@ class GCPComputeInstanceManager(InstanceManager):
                 local_disk_price = per_gb_local_disk_price * machine_info["local_ssd_gb"]
                 total_price += local_disk_price
                 self._logger.debug(
-                    f"Local SSD price: ${per_gb_local_disk_price:.6f}/GB/hour ({local_disk_price:.6f}/hour)"
+                    f"Local SSD price: ${per_gb_local_disk_price:.6f}/GB/hour "
+                    f"({local_disk_price:.6f}/hour)"
                 )
             elif is_lssd:
                 self._logger.warning(
                     f"No local SSD SKU found for LSSD instance type {machine_type} "
                     f"in region {self._region}"
                 )
-                ret[machine_type] = {}
+                ret[machine_type] = None
                 continue
 
             per_gb_storage_price = 0
             storage_price = 0
 
+            # Round off the total price to 6 decimal places to avoid floating point
+            # precision issues
+            total_price = round(total_price, 6)
             self._logger.debug(f"Total price: ${total_price:.6f}/hour")
 
             ret_val = {
@@ -761,6 +652,96 @@ class GCPComputeInstanceManager(InstanceManager):
             ret[machine_type] = ret_val
 
         return ret
+
+    async def get_optimal_instance_type(
+        self, constraints: Optional[Dict[str, Any]] = None
+    ) -> Tuple[str, str, float]:
+        """
+        Get the most cost-effective GCP instance type that meets the constraints.
+
+        Args:
+            constraints: Dictionary of constraints to filter instance types by. Constraints
+                include::
+                    "instance_types": List of regex patterns to filter instance types by name
+                    "min_cpu": Minimum number of vCPUs
+                    "max_cpu": Maximum number of vCPUs
+                    "min_total_memory": Minimum total memory in GB
+                    "max_total_memory": Maximum total memory in GB
+                    "min_memory_per_cpu": Minimum memory per vCPU in GB
+                    "max_memory_per_cpu": Maximum memory per vCPU in GB
+                    "min_local_ssd": Minimum amount of local SSD storage in GB
+                    "max_local_ssd": Maximum amount of local SSD storage in GB
+                    "min_local_ssd_per_cpu": Minimum amount of local SSD storage per vCPU
+                    "max_local_ssd_per_cpu": Maximum amount of local SSD storage per vCPU
+                    "min_storage": Minimum amount of other storage in GB
+                    "max_storage": Maximum amount of other storage in GB
+                    "min_storage_per_cpu": Minimum amount of other storage per vCPU
+                    "max_storage_per_cpu": Maximum amount of other storage per vCPU
+                    "use_spot": Whether to use spot instances
+
+        Returns:
+            Tuple of:
+                - GCP instance type name (e.g., 'n1-standard-2')
+                - Zone in which the instance type is cheapest
+                - Price of the instance type in USD/hour
+        """
+        self._logger.debug(
+            f"Getting optimal instance type in region {self._region} and zone " f"{self._zone}"
+        )
+        self._logger.debug(f"Constraints: {constraints}")
+
+        avail_instance_types = await self.get_available_instance_types(constraints)
+        self._logger.debug(
+            f"Found {len(avail_instance_types)} available instance types in region "
+            f"{self._region} and zone {self._zone}"
+        )
+
+        if not avail_instance_types:
+            raise ValueError("No instance type meets requirements")
+
+        pricing_data = await self.get_instance_pricing(
+            avail_instance_types, constraints["use_spot"]
+        )
+
+        # Rearrange the pricing data into a dictionary of (machine_type, zone) -> price
+        zone_pricing_data = {}
+        for machine_type, price in pricing_data.items():
+            if price is None:
+                self._logger.debug(f"No pricing data found for {machine_type}; ignoring")
+                continue
+            for zone, price_in_zone in price.items():
+                zone_pricing_data[(machine_type, zone)] = price_in_zone
+
+        if len(zone_pricing_data) == 0:
+            raise ValueError("No pricing data found for any instance types")
+
+        # Select instance with the lowest price
+        priced_instances = [
+            (machine_type, zone, price) for (machine_type, zone), price in zone_pricing_data.items()
+        ]
+        print(priced_instances)
+        priced_instances.sort(
+            key=lambda x: (
+                x[2]["total_price"],
+                -x[2]["vcpu"],
+            )
+        )  # Sort by price, then by decreasing vCPU (this gives us the cheapest instance type with
+        # the most vCPUs)
+
+        self._logger.debug("Instance types sorted by price (cheapest first):")
+        for i, (machine_type, zone, price) in enumerate(priced_instances):
+            self._logger.debug(
+                f"  [{i+1:3d}] {machine_type:20s} in {zone:15s}: ${price['total_price']:10.6f}/hour"
+            )
+
+        selected_type, selected_zone, selected_price = priced_instances[0]
+        price = selected_price["total_price"]
+        self._logger.debug(
+            f"Selected {selected_type} in {selected_zone} at ${price:.6f} per hour "
+            f"{' (spot)' if constraints["use_spot"] else '(on demand)'}"
+        )
+
+        return selected_type, selected_zone, price
 
     async def start_instance(
         self,
@@ -847,6 +828,17 @@ class GCPComputeInstanceManager(InstanceManager):
                 "on_host_maintenance": "TERMINATE",
             }
 
+        service_accounts = []
+        if self._service_account:
+            service_accounts.append(
+                {
+                    "email": self._service_account,
+                    # Using the cloud-platform scope allows the instance to access
+                    # all GCP services that are available to the service account
+                    "scopes": ["https://www.googleapis.com/auth/cloud-platform"],
+                }
+            )
+
         # Add network tags so we can find these instances later
         tags = {
             "items": [self._job_id_to_tag(job_id)],
@@ -860,8 +852,8 @@ class GCPComputeInstanceManager(InstanceManager):
             "network_interfaces": [network_interface],
             "metadata": metadata,
             "scheduling": scheduling,
+            "service_accounts": service_accounts,
             "tags": tags,
-            # "tags": [f"{self._JOB_ID_TAG_PREFIX}{job_id}"],
         }
 
         # Create the instance
@@ -1028,7 +1020,7 @@ class GCPComputeInstanceManager(InstanceManager):
             instance_info = {
                 "id": instance.name,
                 "type": instance_type,
-                "state": self.STATUS_MAP.get(instance.status, "unknown"),
+                "state": self._STATUS_MAP.get(instance.status, "unknown"),
                 "creation_time": instance.creation_timestamp,
                 "zone": instance.zone.split("/")[-1],  # Extract zone name from URL
             }
@@ -1086,7 +1078,7 @@ class GCPComputeInstanceManager(InstanceManager):
                 project=self._project_id, zone=self._zone, instance=instance_id
             )
 
-            return self.STATUS_MAP.get(instance.status, "unknown")
+            return self._STATUS_MAP.get(instance.status, "unknown")
 
         except NotFound:
             return "not_found"
@@ -1278,7 +1270,7 @@ class GCPComputeInstanceManager(InstanceManager):
         self._logger.info(f"Found {len(all_images)} available images")
         return all_images
 
-    async def _wait_for_operation(self, operation, zone: str, verbose_name: str) -> None:
+    async def _wait_for_operation(self, operation, zone: str, verbose_name: str) -> Any:
         """
         Wait for a Compute Engine operation to complete.
 
@@ -1301,7 +1293,8 @@ class GCPComputeInstanceManager(InstanceManager):
             for warning in operation.warnings:
                 self._logger.warning(f" - {warning.code}: {warning.message}")
 
-        return
+        self._logger.info(f"Operation {operation.name} completed with result: {result}")
+        return result
 
     async def get_available_regions(self, prefix: Optional[str] = None) -> Dict[str, Any]:
         """

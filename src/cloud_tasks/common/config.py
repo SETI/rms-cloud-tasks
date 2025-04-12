@@ -73,6 +73,7 @@ class GCPConfig(ProviderConfig, validate_assignment = True):
     region: Optional[constr(min_length=1)] = None
     zone: Optional[constr(min_length=1)] = None
     credentials_file: Optional[constr(min_length=1)] = None
+    service_account: Optional[constr(min_length=1)] = None
 
 
 class AzureConfig(ProviderConfig, validate_assignment = True):

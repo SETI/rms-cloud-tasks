@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from cloud_tasks.common.config import ProviderConfig
 
@@ -49,6 +49,66 @@ class InstanceManager(ABC):
                 "supports_spot": whether the instance type supports spot pricing
                 "description": description of the instance type
                 "url": URL to the instance type details
+        """
+        pass
+
+    @abstractmethod
+    async def get_instance_pricing(
+        self, instance_types: Dict[str, Dict[str, Any]], use_spot: bool = False
+    ) -> Dict[str, Dict[str, float | None] | None]:
+        """
+        Get the hourly price for one or more specific instance types.
+
+        Args:
+            instance_types: A dictionary mapping instance type to a dictionary of instance type
+                specifications as returned by get_available_instance_types().
+            use_spot: Whether to use spot pricing
+
+        Returns:
+            A dictionary mapping instance type to a dictionary of hourly price in USD::
+                "cpu_price": Total price of CPU in USD/hour
+                "per_cpu_price": Price of CPU in USD/vCPU/hour
+                "mem_price": Total price of RAM in USD/hour
+                "mem_per_gb_price": Price of RAM in USD/GB/hour
+                "total_price": Total price of instance in USD/hour
+                "zone": availability zone
+            Plus the original instance type info keyed by availability zone. If any price is not
+            available, it is set to None.
+        """
+        pass
+
+    @abstractmethod
+    async def get_optimal_instance_type(
+        self, constraints: Optional[Dict[str, Any]] = None
+    ) -> Tuple[str, str, float]:
+        """
+        Get the most cost-effective instance type that meets the constraints.
+
+        Args:
+            constraints: Dictionary of constraints to filter instance types by. Constraints
+                include::
+                    "instance_types": List of regex patterns to filter instance types by name
+                    "min_cpu": Minimum number of vCPUs
+                    "max_cpu": Maximum number of vCPUs
+                    "min_total_memory": Minimum total memory in GB
+                    "max_total_memory": Maximum total memory in GB
+                    "min_memory_per_cpu": Minimum memory per vCPU in GB
+                    "max_memory_per_cpu": Maximum memory per vCPU in GB
+                    "min_local_ssd": Minimum amount of local SSD storage in GB
+                    "max_local_ssd": Maximum amount of local SSD storage in GB
+                    "min_local_ssd_per_cpu": Minimum amount of local SSD storage per vCPU
+                    "max_local_ssd_per_cpu": Maximum amount of local SSD storage per vCPU
+                    "min_storage": Minimum amount of other storage in GB
+                    "max_storage": Maximum amount of other storage in GB
+                    "min_storage_per_cpu": Minimum amount of other storage per vCPU
+                    "max_storage_per_cpu": Maximum amount of other storage per vCPU
+                    "use_spot": Whether to use spot instances
+
+        Returns:
+            Tuple of:
+                - GCP instance type name (e.g., 'n1-standard-2')
+                - Zone in which the instance type is cheapest
+                - Price of the instance type in USD/hour
         """
         pass
 
