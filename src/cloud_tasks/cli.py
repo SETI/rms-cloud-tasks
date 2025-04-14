@@ -818,7 +818,7 @@ async def list_images_cmd(args: argparse.Namespace, config: Config) -> None:
         images = await instance_manager.list_available_images()
 
         if not images:
-            print(f"No images found for provider {args.provider}")
+            print(f"No images found")
             return
 
         # Apply filters if specified
@@ -923,12 +923,12 @@ async def list_images_cmd(args: argparse.Namespace, config: Config) -> None:
                     print()
 
         elif args.provider == "gcp":
-            print(f"{'Family':<35} {'Name':<50} {'Project':<20} {'Source':<6}")
+            print(f"{'Family':<35} {'Name':<50} {'Project':<21} {'Source':<6}")
             print("-" * 114)
             for img in images:
                 print(
                     f"{img.get('family', 'N/A')[:33]:<35} {img.get('name', 'N/A')[:48]:<50} "
-                    f"{img.get('project', 'N/A')[:18]:<20} {img.get('source', 'N/A'):<6}"
+                    f"{img.get('project', 'N/A')[:19]:<21} {img.get('source', 'N/A'):<6}"
                 )
                 if args.detail:
                     print(f"{img.get('description', 'N/A')}")
@@ -1029,7 +1029,9 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
 
         # Try to get pricing information where available
         print("Retrieving pricing information...")
-        pricing_data = await instance_manager.get_instance_pricing(instances, args.use_spot)
+        pricing_data = await instance_manager.get_instance_pricing(
+            instances, use_spot=args.use_spot
+        )
 
         pricing_data_list = []
         for zone_pricing in pricing_data.values():
@@ -1060,9 +1062,9 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
                 "local_ssd_gb": "local_ssd_gb",
                 "lssd": "local_ssd_gb",
                 "ssd": "local_ssd_gb",
-                "storage": "storage_gb",
-                "storage_gb": "storage_gb",
-                "disk": "storage_gb",
+                "boot_disk": "boot_disk_gb",
+                "boot_disk_gb": "boot_disk_gb",
+                "disk": "boot_disk_gb",
                 "cpu_price": "cpu_price",
                 "cp": "cpu_price",
                 "per_cpu_price": "cpu_price",
@@ -1076,14 +1078,16 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
                 "local_ssd_per_gb_price": "local_ssd_per_gb_price",
                 "lssd_per_gb_price": "local_ssd_per_gb_price",
                 "ssd_price": "local_ssd_price",
-                "storage_price": "storage_price",
-                "disk_price": "storage_price",
-                "storage_per_gb_price": "storage_per_gb_price",
-                "disk_per_gb_price": "storage_per_gb_price",
+                "boot_disk_price": "boot_disk_price",
+                "disk_price": "boot_disk_price",
+                "boot_disk_per_gb_price": "boot_disk_per_gb_price",
+                "disk_per_gb_price": "boot_disk_per_gb_price",
                 "total_price": "total_price",
                 "p": "total_price",
                 "tp": "total_price",
                 "cost": "total_price",
+                "total_price_per_cpu": "total_price_per_cpu",
+                "tp_per_cpu": "total_price_per_cpu",
                 "description": "description",
                 "d": "description",
                 "desc": "description",
@@ -1112,8 +1116,8 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
             pricing_data_list.sort(key=lambda x: (x["vcpu"], x["mem_gb"], x["name"], x["zone"]))
 
         # Limit results if specified - applied after sorting
-        if args.limit and len(pricing_data) > args.limit:
-            pricing_data = pricing_data[: args.limit]
+        if args.limit and len(pricing_data_list) > args.limit:
+            pricing_data_list = pricing_data_list[: args.limit]
 
         # Display results with pricing if available
         print()
@@ -1128,7 +1132,10 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
             header += (
                 f"{'$/vCPU/Hr':>10} {'Mem $/GB/Hr':>12} {'LSSD $/GB/Hr':>13} {'Disk $/GB/Hr':>13} "
             )
-        header += f"{'Total $/Hr':>11} {'Zone':>12}"
+        header += f"{'Total $/Hr':>11} "
+        if args.detail:
+            header += f"{'Total $/vCPU/Hr':>11} "
+        header += f"{'Zone':>12}"
         if args.detail:
             header += f"               {'Description':>10}"
             underline += "-" * 100
@@ -1136,37 +1143,29 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
         print(header)
         print(underline)
         for price_data in pricing_data_list:
-            if math.isinf(price_data["per_cpu_price"]):
-                cpu_price_str = "N/A"
-            else:
-                cpu_price_str = f"${price_data['per_cpu_price']:.4f}"
-
-            if math.isinf(price_data["mem_per_gb_price"]):
-                mem_price_str = "N/A"
-            else:
-                mem_price_str = f"${price_data['mem_per_gb_price']:.4f}"
-
-            if math.isinf(price_data["total_price"]):
-                total_price_str = "N/A"
-            else:
-                total_price_str = f"${price_data['total_price']:.4f}"
-
+            cpu_price_str = f"${price_data['per_cpu_price']:.4f}"
+            mem_price_str = f"${price_data['mem_per_gb_price']:.4f}"
+            total_price_str = f"${price_data['total_price']:.4f}"
+            total_price_per_cpu_str = f"${price_data['total_price_per_cpu']:.4f}"
             local_ssd_price_str = f"${price_data['local_ssd_per_gb_price']:.8f}"
-            storage_gb_price_str = f"${price_data['storage_per_gb_price']:.4f}"
+            boot_disk_price_str = f"${price_data['boot_disk_per_gb_price']:.4f}"
 
             val = (
                 f"{price_data['name']:<24} {price_data['architecture']:>10} {price_data['vcpu']:>4} "
                 f"{price_data['mem_gb']:>10.1f} {price_data['local_ssd_gb']:>10} "
-                f"{price_data['storage_gb']:>10} "
+                f"{price_data['boot_disk_gb']:>10} "
             )
             if args.detail:
                 val += (
                     f"{cpu_price_str:>10} {mem_price_str:>12} "
-                    f"{local_ssd_price_str:>13} {storage_gb_price_str:>13} "
+                    f"{local_ssd_price_str:>13} {boot_disk_price_str:>13} "
                 )
-            val += f"{total_price_str:>11}  {price_data['zone']:<25} "
+            val += f"{total_price_str:>11} "
             if args.detail:
-                val += f"{price_data['description'][:60]:<60}"
+                val += f"    {total_price_per_cpu_str:>11} "
+            val += f" {price_data['zone']:<25} "
+            if args.detail:
+                val += f"{price_data['description'][:60]}"
             print(val)
 
     except Exception as e:
@@ -1191,18 +1190,16 @@ async def list_regions_cmd(args: argparse.Namespace, config: Config) -> None:
 
         if not regions:
             if args.prefix:
-                print(f"No regions found with prefix '{args.prefix}' for provider {args.provider}")
+                print(f"No regions found with prefix '{args.prefix}'")
             else:
-                print(f"No regions found for provider {args.provider}")
+                print(f"No regions found")
             return
 
         # Display results
         if args.prefix:
-            print(
-                f"Found {len(regions)} regions for {args.provider} (filtered by prefix: {args.prefix})"
-            )
+            print(f"Found {len(regions)} regions (filtered by prefix: {args.prefix})")
         else:
-            print(f"Found {len(regions)} regions for {args.provider}:")
+            print(f"Found {len(regions)} regions:")
         print()
 
         print(f"{'Region':<25} {'Description':<40}")
@@ -1349,24 +1346,24 @@ def add_instance_args(parser: argparse.ArgumentParser) -> None:
         help="Filter instance types by maximum local-SSD storage per vCPU",
     )
     parser.add_argument(
-        "--min-storage",
+        "--min-boot-disk",
         type=float,
-        help="Filter instance types by minimum non-local-SSD storage (GB)",
+        help="Filter instance types by minimum boot disk storage (GB)",
     )
     parser.add_argument(
-        "--max-storage",
+        "--max-boot-disk",
         type=float,
-        help="Filter instance types by maximum non-local-SSD storage (GB)",
+        help="Filter instance types by maximum boot disk storage (GB)",
     )
     parser.add_argument(
-        "--min-storage-per-cpu",
+        "--min-boot-disk-per-cpu",
         type=float,
-        help="Filter instance types by minimum non-local-SSD storage (GB) per vCPU",
+        help="Filter instance types by minimum boot disk storage (GB) per vCPU",
     )
     parser.add_argument(
-        "--max-storage-per-cpu",
+        "--max-boot-disk-per-cpu",
         type=float,
-        help="Filter instance types by maximum non-local-SSD storage (GB) per vCPU",
+        help="Filter instance types by maximum boot disk storage (GB) per vCPU",
     )
     parser.add_argument(
         "--instance-types",
@@ -1567,7 +1564,7 @@ def main():
         "name, vcpu, mem, local_ssd, storage, "
         "vcpu_price, mem_price, local_ssd_price, storage_price, "
         "price_per_cpu, mem_per_gb_price, local_ssd_per_gb_price, storage_per_gb_price, "
-        "total_price, zone, description. "
+        "total_price, total_price_per_cpu, zone, description. "
         'Prefix with "-" for descending order. '
         'Partial field names like "ram" or "mem" for "mem_gb" or "v" for "vcpu" are supported.',
     )

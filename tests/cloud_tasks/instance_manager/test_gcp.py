@@ -1,13 +1,12 @@
 """Unit tests for the GCP Compute Engine instance manager."""
 
-import asyncio
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, Tuple
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import pytest_asyncio
 from google.api_core.exceptions import NotFound  # type: ignore
-from google.cloud import compute_v1, billing
+from google.cloud import billing
 from google.oauth2.credentials import Credentials
 
 from cloud_tasks.common.config import GCPConfig
@@ -54,7 +53,7 @@ def mock_instance_types() -> Dict[str, Dict[str, Any]]:
             "vcpu": 2,
             "mem_gb": 7.5,
             "local_ssd_gb": 0,
-            "storage_gb": 0,
+            "boot_disk_gb": 0,
             "architecture": "x86_64",
             "supports_spot": True,
             "description": "2 vCPUs, 7.5 GB RAM",
@@ -64,7 +63,7 @@ def mock_instance_types() -> Dict[str, Dict[str, Any]]:
             "vcpu": 4,
             "mem_gb": 16,
             "local_ssd_gb": 750,  # 2 * 375 GB
-            "storage_gb": 0,
+            "boot_disk_gb": 0,
             "architecture": "x86_64",
             "supports_spot": True,
             "description": "4 vCPUs, 16 GB RAM, 2 local SSD",
@@ -161,10 +160,10 @@ async def test_get_available_instance_types_no_constraints(
         "max_local_ssd": None,
         "min_local_ssd_per_cpu": None,
         "max_local_ssd_per_cpu": None,
-        "min_storage": None,
-        "max_storage": None,
-        "min_storage_per_cpu": None,
-        "max_storage_per_cpu": None,
+        "min_boot_disk": None,
+        "max_boot_disk": None,
+        "min_boot_disk_per_cpu": None,
+        "max_boot_disk_per_cpu": None,
         "use_spot": False,
     }
 
@@ -209,10 +208,10 @@ async def test_get_available_instance_types_with_cpu_constraints(
         "max_local_ssd": None,
         "min_local_ssd_per_cpu": None,
         "max_local_ssd_per_cpu": None,
-        "min_storage": None,
-        "max_storage": None,
-        "min_storage_per_cpu": None,
-        "max_storage_per_cpu": None,
+        "min_boot_disk": None,
+        "max_boot_disk": None,
+        "min_boot_disk_per_cpu": None,
+        "max_boot_disk_per_cpu": None,
         "use_spot": False,
     }
 
@@ -243,10 +242,10 @@ async def test_get_available_instance_types_with_memory_constraints(
         "max_local_ssd": None,
         "min_local_ssd_per_cpu": None,
         "max_local_ssd_per_cpu": None,
-        "min_storage": None,
-        "max_storage": None,
-        "min_storage_per_cpu": None,
-        "max_storage_per_cpu": None,
+        "min_boot_disk": None,
+        "max_boot_disk": None,
+        "min_boot_disk_per_cpu": None,
+        "max_boot_disk_per_cpu": None,
         "use_spot": False,
     }
 
@@ -277,10 +276,10 @@ async def test_get_available_instance_types_with_instance_type_filter(
         "max_local_ssd": None,
         "min_local_ssd_per_cpu": None,
         "max_local_ssd_per_cpu": None,
-        "min_storage": None,
-        "max_storage": None,
-        "min_storage_per_cpu": None,
-        "max_storage_per_cpu": None,
+        "min_boot_disk": None,
+        "max_boot_disk": None,
+        "min_boot_disk_per_cpu": None,
+        "max_boot_disk_per_cpu": None,
         "use_spot": False,
     }
 
@@ -311,10 +310,10 @@ async def test_get_available_instance_types_with_no_matches(
         "max_local_ssd": None,
         "min_local_ssd_per_cpu": None,
         "max_local_ssd_per_cpu": None,
-        "min_storage": None,
-        "max_storage": None,
-        "min_storage_per_cpu": None,
-        "max_storage_per_cpu": None,
+        "min_boot_disk": None,
+        "max_boot_disk": None,
+        "min_boot_disk_per_cpu": None,
+        "max_boot_disk_per_cpu": None,
         "use_spot": False,
     }
 
@@ -343,10 +342,10 @@ async def test_get_available_instance_types_with_memory_per_cpu_constraints(
         "max_local_ssd": None,
         "min_local_ssd_per_cpu": None,
         "max_local_ssd_per_cpu": None,
-        "min_storage": None,
-        "max_storage": None,
-        "min_storage_per_cpu": None,
-        "max_storage_per_cpu": None,
+        "min_boot_disk": None,
+        "max_boot_disk": None,
+        "min_boot_disk_per_cpu": None,
+        "max_boot_disk_per_cpu": None,
         "use_spot": False,
     }
 
@@ -498,8 +497,8 @@ async def test_get_instance_pricing_basic(
     assert pricing["mem_per_gb_price"] == 0.50
     assert pricing["local_ssd_price"] == 0  # No local SSD
     assert pricing["local_ssd_per_gb_price"] == 0
-    assert pricing["storage_price"] == 0  # No additional storage
-    assert pricing["storage_per_gb_price"] == 0
+    assert pricing["boot_disk_price"] == 0  # No additional storage
+    assert pricing["boot_disk_per_gb_price"] == 0
     assert pricing["total_price"] == 5.75  # $2.00 + $3.75
     assert pricing["zone"] == f"{gcp_instance_manager._region}-*"
 
@@ -508,7 +507,7 @@ async def test_get_instance_pricing_basic(
     assert pricing["vcpu"] == 2
     assert pricing["mem_gb"] == 7.5
     assert pricing["local_ssd_gb"] == 0
-    assert pricing["storage_gb"] == 0
+    assert pricing["boot_disk_gb"] == 0
     assert pricing["architecture"] == "x86_64"
     assert pricing["supports_spot"] == True
 
@@ -564,8 +563,8 @@ async def test_get_instance_pricing_with_local_ssd(
     assert pricing["mem_per_gb_price"] == 0.50
     assert pricing["local_ssd_price"] == pytest.approx(127.5, rel=1e-6)  # $0.17 * 750 GB
     assert pricing["local_ssd_per_gb_price"] == pytest.approx(0.17, rel=1e-6)  # $0.17/GB/hour
-    assert pricing["storage_price"] == 0  # No additional storage
-    assert pricing["storage_per_gb_price"] == 0
+    assert pricing["boot_disk_price"] == 0  # No additional storage
+    assert pricing["boot_disk_per_gb_price"] == 0
     assert pricing["total_price"] == pytest.approx(139.5, rel=1e-6)  # $4.0 + $8.0 + $127.5
     assert pricing["zone"] == f"{gcp_instance_manager._region}-*"
 
@@ -574,7 +573,7 @@ async def test_get_instance_pricing_with_local_ssd(
     assert pricing["vcpu"] == 4
     assert pricing["mem_gb"] == 16
     assert pricing["local_ssd_gb"] == 750
-    assert pricing["storage_gb"] == 0
+    assert pricing["boot_disk_gb"] == 0
     assert pricing["architecture"] == "x86_64"
     assert pricing["supports_spot"] == True
 
@@ -618,8 +617,8 @@ async def test_get_instance_pricing_spot_instance(
     assert pricing["mem_per_gb_price"] == 0.50
     assert pricing["local_ssd_price"] == 0
     assert pricing["local_ssd_per_gb_price"] == 0
-    assert pricing["storage_price"] == 0
-    assert pricing["storage_per_gb_price"] == 0
+    assert pricing["boot_disk_price"] == 0
+    assert pricing["boot_disk_per_gb_price"] == 0
     assert pricing["total_price"] == 5.75
     assert pricing["zone"] == f"{gcp_instance_manager._region}-*"
 
@@ -628,7 +627,7 @@ async def test_get_instance_pricing_spot_instance(
     assert pricing["vcpu"] == 2
     assert pricing["mem_gb"] == 7.5
     assert pricing["local_ssd_gb"] == 0
-    assert pricing["storage_gb"] == 0
+    assert pricing["boot_disk_gb"] == 0
     assert pricing["architecture"] == "x86_64"
     assert pricing["supports_spot"] == True
 
@@ -651,8 +650,8 @@ async def test_get_instance_pricing_cache_hit(
             "mem_per_gb_price": 0.50,
             "local_ssd_price": 0,
             "local_ssd_per_gb_price": 0,
-            "storage_price": 0,
-            "storage_per_gb_price": 0,
+            "boot_disk_price": 0,
+            "boot_disk_per_gb_price": 0,
             "total_price": 5.75,
             "zone": f"{gcp_instance_manager._region}-*",
         }
@@ -676,8 +675,8 @@ async def test_get_instance_pricing_cache_hit(
     assert pricing["mem_per_gb_price"] == 0.50
     assert pricing["local_ssd_price"] == 0
     assert pricing["local_ssd_per_gb_price"] == 0
-    assert pricing["storage_price"] == 0
-    assert pricing["storage_per_gb_price"] == 0
+    assert pricing["boot_disk_price"] == 0
+    assert pricing["boot_disk_per_gb_price"] == 0
     assert pricing["total_price"] == 5.75
     assert pricing["zone"] == f"{gcp_instance_manager._region}-*"
 
@@ -686,7 +685,7 @@ async def test_get_instance_pricing_cache_hit(
     assert pricing["vcpu"] == 2
     assert pricing["mem_gb"] == 7.5
     assert pricing["local_ssd_gb"] == 0
-    assert pricing["storage_gb"] == 0
+    assert pricing["boot_disk_gb"] == 0
     assert pricing["architecture"] == "x86_64"
     assert pricing["supports_spot"] == True
 
@@ -714,10 +713,10 @@ async def test_get_optimal_instance_type_basic(
         "max_local_ssd": None,
         "min_local_ssd_per_cpu": None,
         "max_local_ssd_per_cpu": None,
-        "min_storage": None,
-        "max_storage": None,
-        "min_storage_per_cpu": None,
-        "max_storage_per_cpu": None,
+        "min_boot_disk": None,
+        "max_boot_disk": None,
+        "min_boot_disk_per_cpu": None,
+        "max_boot_disk_per_cpu": None,
         "use_spot": False,
     }
 
@@ -736,13 +735,15 @@ async def test_get_optimal_instance_type_basic(
     gcp_instance_manager._billing_compute_skus = [core_sku, ram_sku]
 
     # Act
-    instance_type, zone, price = await gcp_instance_manager.get_optimal_instance_type(constraints)
+    selected_price_info = await gcp_instance_manager.get_optimal_instance_type(constraints)
 
     # Assert
     # n1-standard-2 should be chosen as it's cheaper
-    assert instance_type == "n1-standard-2"
-    assert zone == f"{gcp_instance_manager._region}-*"
-    assert price == pytest.approx(5.75)  # 2 cores * $1.00 + 7.5GB * $0.50
+    assert selected_price_info["name"] == "n1-standard-2"
+    assert selected_price_info["zone"] == f"{gcp_instance_manager._region}-*"
+    assert selected_price_info["total_price"] == pytest.approx(
+        5.75
+    )  # 2 cores * $1.00 + 7.5GB * $0.50
 
 
 @pytest.mark.asyncio
@@ -765,10 +766,10 @@ async def test_get_optimal_instance_type_no_matches(
         "max_local_ssd": None,
         "min_local_ssd_per_cpu": None,
         "max_local_ssd_per_cpu": None,
-        "min_storage": None,
-        "max_storage": None,
-        "min_storage_per_cpu": None,
-        "max_storage_per_cpu": None,
+        "min_boot_disk": None,
+        "max_boot_disk": None,
+        "min_boot_disk_per_cpu": None,
+        "max_boot_disk_per_cpu": None,
         "use_spot": False,
     }
 
@@ -797,10 +798,10 @@ async def test_get_optimal_instance_type_spot_instance(
         "max_local_ssd": None,
         "min_local_ssd_per_cpu": None,
         "max_local_ssd_per_cpu": None,
-        "min_storage": None,
-        "max_storage": None,
-        "min_storage_per_cpu": None,
-        "max_storage_per_cpu": None,
+        "min_boot_disk": None,
+        "max_boot_disk": None,
+        "min_boot_disk_per_cpu": None,
+        "max_boot_disk_per_cpu": None,
         "use_spot": True,
     }
 
@@ -828,12 +829,14 @@ async def test_get_optimal_instance_type_spot_instance(
     gcp_instance_manager._billing_compute_skus = [core_sku, ram_sku]
 
     # Act
-    instance_type, zone, price = await gcp_instance_manager.get_optimal_instance_type(constraints)
+    selected_price_info = await gcp_instance_manager.get_optimal_instance_type(constraints)
 
     # Assert
-    assert instance_type == "n1-standard-2"
-    assert zone == f"{gcp_instance_manager._region}-*"
-    assert price == pytest.approx(1.725)  # (2 cores * $0.30 + 7.5GB * $0.15)
+    assert selected_price_info["name"] == "n1-standard-2"
+    assert selected_price_info["zone"] == f"{gcp_instance_manager._region}-*"
+    assert selected_price_info["total_price"] == pytest.approx(
+        1.725
+    )  # (2 cores * $0.30 + 7.5GB * $0.15)
 
 
 @pytest.mark.asyncio
@@ -856,10 +859,10 @@ async def test_get_optimal_instance_type_with_memory_constraints(
         "max_local_ssd": None,
         "min_local_ssd_per_cpu": None,
         "max_local_ssd_per_cpu": None,
-        "min_storage": None,
-        "max_storage": None,
-        "min_storage_per_cpu": None,
-        "max_storage_per_cpu": None,
+        "min_boot_disk": None,
+        "max_boot_disk": None,
+        "min_boot_disk_per_cpu": None,
+        "max_boot_disk_per_cpu": None,
         "use_spot": False,
     }
 
@@ -897,12 +900,14 @@ async def test_get_optimal_instance_type_with_memory_constraints(
     gcp_instance_manager._billing_compute_skus = [core_sku, ram_sku, local_ssd_sku]
 
     # Act
-    instance_type, zone, price = await gcp_instance_manager.get_optimal_instance_type(constraints)
+    selected_price_info = await gcp_instance_manager.get_optimal_instance_type(constraints)
 
     # Assert
-    assert instance_type == "n2-standard-4-lssd"
-    assert zone == f"{gcp_instance_manager._region}-*"
-    assert price == pytest.approx(4.80)  # 4 cores * $0.40 + 16GB * $0.20
+    assert selected_price_info["name"] == "n2-standard-4-lssd"
+    assert selected_price_info["zone"] == f"{gcp_instance_manager._region}-*"
+    assert selected_price_info["total_price"] == pytest.approx(
+        4.80
+    )  # 4 cores * $0.40 + 16GB * $0.20
 
 
 @pytest.mark.asyncio
@@ -925,10 +930,10 @@ async def test_get_optimal_instance_type_with_local_ssd_constraint(
         "max_local_ssd": None,
         "min_local_ssd_per_cpu": None,
         "max_local_ssd_per_cpu": None,
-        "min_storage": None,
-        "max_storage": None,
-        "min_storage_per_cpu": None,
-        "max_storage_per_cpu": None,
+        "min_boot_disk": None,
+        "max_boot_disk": None,
+        "min_boot_disk_per_cpu": None,
+        "max_boot_disk_per_cpu": None,
         "use_spot": False,
     }
 
@@ -966,12 +971,14 @@ async def test_get_optimal_instance_type_with_local_ssd_constraint(
     gcp_instance_manager._billing_compute_skus = [core_sku, ram_sku, local_ssd_sku]
 
     # Act
-    instance_type, zone, price = await gcp_instance_manager.get_optimal_instance_type(constraints)
+    selected_price_info = await gcp_instance_manager.get_optimal_instance_type(constraints)
 
     # Assert
-    assert instance_type == "n2-standard-4-lssd"
-    assert zone == f"{gcp_instance_manager._region}-*"
-    assert price == pytest.approx(132.3)  # 4 cores * $0.40 + 16GB * $0.20 + 750GB * $0.17
+    assert selected_price_info["name"] == "n2-standard-4-lssd"
+    assert selected_price_info["zone"] == f"{gcp_instance_manager._region}-*"
+    assert selected_price_info["total_price"] == pytest.approx(
+        132.3
+    )  # 4 cores * $0.40 + 16GB * $0.20 + 750GB * $0.17
 
 
 @pytest.mark.asyncio
@@ -994,10 +1001,10 @@ async def test_get_optimal_instance_type_prefer_more_cpus(
         "max_local_ssd": None,
         "min_local_ssd_per_cpu": None,
         "max_local_ssd_per_cpu": None,
-        "min_storage": None,
-        "max_storage": None,
-        "min_storage_per_cpu": None,
-        "max_storage_per_cpu": None,
+        "min_boot_disk": None,
+        "max_boot_disk": None,
+        "min_boot_disk_per_cpu": None,
+        "max_boot_disk_per_cpu": None,
         "use_spot": False,
     }
 
@@ -1065,14 +1072,14 @@ async def test_get_optimal_instance_type_prefer_more_cpus(
     ]
 
     # Act
-    instance_type, zone, price = await gcp_instance_manager.get_optimal_instance_type(constraints)
+    selected_price_info = await gcp_instance_manager.get_optimal_instance_type(constraints)
 
     # Assert
     # n2-standard-4-lssd should be chosen because it has more CPUs (4 vs 2)
     # even though it has the same price
-    assert instance_type == "n2-standard-4-lssd"
-    assert zone == f"{gcp_instance_manager._region}-*"
-    assert price == pytest.approx(5.75, rel=1e-2)
+    assert selected_price_info["name"] == "n2-standard-4-lssd"
+    assert selected_price_info["zone"] == f"{gcp_instance_manager._region}-*"
+    assert selected_price_info["total_price"] == pytest.approx(5.75, rel=1e-2)
 
 
 # Tests for the start_instance method
@@ -1145,25 +1152,23 @@ async def test_start_instance_basic(
                 # Check the instance resource configuration
                 instance_config = call_args[1]["instance_resource"]
                 assert (
-                    instance_config["name"]
+                    instance_config.name
                     == f"{gcp_instance_manager._JOB_ID_TAG_PREFIX}{job_id}-mock-uuid"
                 )
                 assert (
-                    instance_config["machine_type"]
+                    instance_config.machine_type
                     == f"zones/{gcp_instance_manager._zone}/machineTypes/{instance_type}"
                 )
 
                 # Check metadata (startup script)
-                assert instance_config["metadata"]["items"][0]["key"] == "startup-script"
-                assert instance_config["metadata"]["items"][0]["value"] == startup_script
+                assert instance_config.metadata.items[0].key == "startup-script"
+                assert instance_config.metadata.items[0].value == startup_script
 
-                # Check that on-demand scheduling was used (not spot)
-                assert instance_config["scheduling"] == {}
+                # Check scheduling (not preemptible)
+                assert not instance_config.scheduling.preemptible
 
                 # Verify tags for job identification
-                assert instance_config["tags"]["items"] == [
-                    gcp_instance_manager._job_id_to_tag(job_id)
-                ]
+                assert instance_config.tags.items == [gcp_instance_manager._job_id_to_tag(job_id)]
 
                 # Verify wait_for_operation was called
                 mock_wait.assert_called_once()
@@ -1228,11 +1233,9 @@ async def test_start_instance_spot(
                 instance_config = call_args[1]["instance_resource"]
 
                 # Check that spot scheduling was used
-                assert instance_config["scheduling"] == {
-                    "preemptible": True,
-                    "automatic_restart": False,
-                    "on_host_maintenance": "TERMINATE",
-                }
+                assert instance_config.scheduling.preemptible == True
+                assert instance_config.scheduling.automatic_restart == False
+                assert instance_config.scheduling.on_host_maintenance == "TERMINATE"
 
 
 @pytest.mark.asyncio
@@ -1276,7 +1279,7 @@ async def test_start_instance_with_service_account(
                 mock_wait.return_value = mock_result
 
                 # Act
-                instance_id = await gcp_instance_manager.start_instance(
+                instance_id, zone = await gcp_instance_manager.start_instance(
                     instance_type=instance_type,
                     boot_disk_size=20,
                     startup_script=startup_script,
@@ -1291,9 +1294,9 @@ async def test_start_instance_with_service_account(
                 call_args = gcp_instance_manager._compute_client.insert.call_args
                 instance_config = call_args[1]["instance_resource"]
 
-                assert len(instance_config["service_accounts"]) == 1
-                assert instance_config["service_accounts"][0]["email"] == service_account
-                assert instance_config["service_accounts"][0]["scopes"] == [
+                assert len(instance_config.service_accounts) == 1
+                assert instance_config.service_accounts[0].email == service_account
+                assert instance_config.service_accounts[0].scopes == [
                     "https://www.googleapis.com/auth/cloud-platform"
                 ]
 
@@ -1329,7 +1332,7 @@ async def test_start_instance_with_custom_image_uri(
             mock_wait.return_value = mock_result
 
             # Act
-            instance_id = await gcp_instance_manager.start_instance(
+            instance_id, zone = await gcp_instance_manager.start_instance(
                 instance_type=instance_type,
                 boot_disk_size=20,
                 startup_script=startup_script,
@@ -1344,7 +1347,7 @@ async def test_start_instance_with_custom_image_uri(
             call_args = gcp_instance_manager._compute_client.insert.call_args
             instance_config = call_args[1]["instance_resource"]
 
-            assert instance_config["disks"][0]["initialize_params"]["source_image"] == custom_image
+            assert instance_config.disks[0].initialize_params.source_image == custom_image
             # _get_image_from_family should not have been called since we provided a full image URI
 
 
@@ -1393,7 +1396,7 @@ async def test_start_instance_with_random_zone(
                     mock_wait.return_value = mock_result
 
                     # Act
-                    instance_id = await gcp_instance_manager.start_instance(
+                    instance_id, zone = await gcp_instance_manager.start_instance(
                         instance_type=instance_type,
                         boot_disk_size=20,
                         startup_script=startup_script,
@@ -1484,8 +1487,12 @@ async def test_terminate_instance_basic(
             instance=instance_id,
         )
 
-        # Verify _wait_for_operation was called with operation.name
-        mock_wait.assert_called_once_with(mock_operation.name)
+        # Verify _wait_for_operation was called with the correct arguments
+        mock_wait.assert_called_once_with(
+            mock_operation.name,
+            gcp_instance_manager._zone,
+            f"Termination of instance {instance_id}",
+        )
 
 
 @pytest.mark.asyncio

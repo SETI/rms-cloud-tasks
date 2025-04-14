@@ -32,10 +32,10 @@ class InstanceManager(ABC):
                     "max_local_ssd": Maximum amount of local SSD storage in GB
                     "min_local_ssd_per_cpu": Minimum amount of local SSD storage per vCPU
                     "max_local_ssd_per_cpu": Maximum amount of local SSD storage per vCPU
-                    "min_storage": Minimum amount of other storage in GB
-                    "max_storage": Maximum amount of other storage in GB
-                    "min_storage_per_cpu": Minimum amount of other storage per vCPU
-                    "max_storage_per_cpu": Maximum amount of other storage per vCPU
+                    "min_boot_disk": Minimum amount of boot disk storage in GB
+                    "max_boot_disk": Maximum amount of boot disk storage in GB
+                    "min_boot_disk_per_cpu": Minimum amount of boot disk storage per vCPU
+                    "max_boot_disk_per_cpu": Maximum amount of boot disk storage per vCPU
                     "use_spot": Whether to filter for spot-capable instance types
 
         Returns:
@@ -44,7 +44,7 @@ class InstanceManager(ABC):
                 "vcpu": number of vCPUs
                 "mem_gb": amount of RAM in GB
                 "local_ssd_gb": amount of local SSD storage in GB
-                "storage_gb": amount of other storage in GB
+                "boot_disk_gb": amount of boot disk storage in GB
                 "architecture": architecture of the instance type
                 "supports_spot": whether the instance type supports spot pricing
                 "description": description of the instance type
@@ -71,6 +71,7 @@ class InstanceManager(ABC):
                 "mem_price": Total price of RAM in USD/hour
                 "mem_per_gb_price": Price of RAM in USD/GB/hour
                 "total_price": Total price of instance in USD/hour
+                "total_price_per_cpu": Total price of instance in USD/vCPU/hour
                 "zone": availability zone
             Plus the original instance type info keyed by availability zone. If any price is not
             available, it is set to None.
@@ -80,7 +81,7 @@ class InstanceManager(ABC):
     @abstractmethod
     async def get_optimal_instance_type(
         self, constraints: Optional[Dict[str, Any]] = None
-    ) -> Tuple[str, str, float]:
+    ) -> Dict[str, float | str | None]:
         """
         Get the most cost-effective instance type that meets the constraints.
 
@@ -115,6 +116,7 @@ class InstanceManager(ABC):
     @abstractmethod
     async def start_instance(
         self,
+        *,
         instance_type: str,
         boot_disk_size: int,  # GB
         startup_script: str,
@@ -122,7 +124,7 @@ class InstanceManager(ABC):
         use_spot: bool,
         image: str,
         zone: Optional[str] = None,
-    ) -> str:
+    ) -> Tuple[str, str]:
         """
         Start a new instance and return its ID.
 
@@ -152,7 +154,7 @@ class InstanceManager(ABC):
 
     @abstractmethod
     async def list_running_instances(
-        self, tag_filter: Optional[Dict[str, str]] = None
+        self, job_id: Optional[str] = None, include_non_job: bool = False
     ) -> List[Dict[str, Any]]:
         """List currently running instances, optionally filtered by tags."""
         pass

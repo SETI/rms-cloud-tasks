@@ -33,10 +33,10 @@ class RunConfig(BaseModel, validate_assignment = True):
     max_local_ssd: Optional[NonNegativeFloat] = None
     min_local_ssd_per_cpu: Optional[NonNegativeFloat] = None
     max_local_ssd_per_cpu: Optional[NonNegativeFloat] = None
-    min_storage: Optional[NonNegativeFloat] = None
-    max_storage: Optional[NonNegativeFloat] = None
-    min_storage_per_cpu: Optional[NonNegativeFloat] = None
-    max_storage_per_cpu: Optional[NonNegativeFloat] = None
+    min_boot_disk: Optional[NonNegativeFloat] = None
+    max_boot_disk: Optional[NonNegativeFloat] = None
+    min_boot_disk_per_cpu: Optional[NonNegativeFloat] = None
+    max_boot_disk_per_cpu: Optional[NonNegativeFloat] = None
     instance_types: Optional[List[str] | str] = None  # Overriden by provider config
 
     # Pricing options

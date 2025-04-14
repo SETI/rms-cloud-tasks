@@ -6,7 +6,6 @@ import asyncio
 import logging
 import time
 from typing import Any, Dict, List, Optional, Set
-import datetime
 
 from cloud_tasks.instance_manager.instance_manager import InstanceManager
 from cloud_tasks.queue_manager import create_queue
@@ -21,6 +20,8 @@ class InstanceOrchestrator:
     Determines when to scale up (start new instances) and down (terminate instances).
     """
 
+    _DEFAULT_BOOT_DISK_SIZE_PER_CPU_GB = 10
+
     def __init__(self, config: Config):
         """
         Initialize the instance orchestrator.
@@ -28,12 +29,10 @@ class InstanceOrchestrator:
         Args:
             config: Configuration object containing all settings.
         """
-        self._config = config
-
         self._logger = logging.getLogger(__name__)
+        self._logger.debug(f"Initializing InstanceOrchestrator")
 
-        self._logger.info(f"Initializing InstanceOrchestrator")
-
+        self._config = config
         self._provider = self._config.provider
 
         provider_config = self._config.get_provider_config()
@@ -49,7 +48,7 @@ class InstanceOrchestrator:
         # Extract run configuration (assuming config.run is populated)
         self._run_config = self._config.run
         if not self._run_config:
-            raise ValueError("Run configuration section ('run:') is missing.")
+            raise ValueError("Run configuration section is missing - this should not happen")
 
         # TODO: Add scale_up/down_thresholds to RunConfig?
         # self._scale_up_threshold = 10  # Default or fetch from config if added
@@ -65,8 +64,7 @@ class InstanceOrchestrator:
         # Will be initialized in start()
         self._instance_manager: Optional[InstanceManager] = None
         self._task_queue: Optional[TaskQueue] = None
-        self._running_instances: Set[str] = set()
-        self._optimal_instance_type = None
+        self._optimal_instance_info = None
         self._optimal_instance_zone = None
         self._optimal_instance_price = None
 
@@ -106,20 +104,33 @@ class InstanceOrchestrator:
         self._logger.info("  Requirements:")
         self._logger.info(f"    CPUs: {self._run_config.min_cpu} to {self._run_config.max_cpu}")
         self._logger.info(
-            f"    Memory: {self._run_config.min_total_memory} to {self._run_config.max_total_memory} GB"
+            f"    Memory: {self._run_config.min_total_memory} to "
+            f"{self._run_config.max_total_memory} GB"
         )
         self._logger.info(
-            f"    Memory per CPU: {self._run_config.min_memory_per_cpu} to {self._run_config.max_memory_per_cpu} GB"
+            f"    Memory per CPU: {self._run_config.min_memory_per_cpu} to "
+            f"{self._run_config.max_memory_per_cpu} GB"
         )
         self._logger.info(
-            f"    Local SSD: {self._run_config.min_local_ssd} to {self._run_config.max_local_ssd} GB"
+            f"    Local SSD: {self._run_config.min_local_ssd} to "
+            f"{self._run_config.max_local_ssd} GB"
         )
         self._logger.info(
-            f"    Disk per CPU: {self._run_config.min_local_ssd_per_cpu} to {self._run_config.max_local_ssd_per_cpu} GB"
+            f"    Local SSD per CPU: {self._run_config.min_local_ssd_per_cpu} to "
+            f"{self._run_config.max_local_ssd_per_cpu} GB"
+        )
+        self._logger.info(
+            f"    Boot disk: {self._run_config.min_boot_disk} to "
+            f"{self._run_config.max_boot_disk} GB"
+        )
+        self._logger.info(
+            f"    Boot disk per CPU: {self._run_config.min_boot_disk_per_cpu} to "
+            f"{self._run_config.max_boot_disk_per_cpu} GB"
         )
         self._logger.info(f"    CPUs per task: {self._run_config.cpus_per_task}")
         self._logger.info(
-            f"    Tasks per instance: {self._run_config.min_tasks_per_instance} to {self._run_config.max_tasks_per_instance}"
+            f"    Tasks per instance: {self._run_config.min_tasks_per_instance} to "
+            f"{self._run_config.max_tasks_per_instance}"
         )
         self._logger.info(f"    Instance types: {self._run_config.instance_types}")
         self._logger.info(f"  Image: {self._run_config.image}")
@@ -136,10 +147,6 @@ class InstanceOrchestrator:
     @property
     def task_queue(self) -> TaskQueue:
         return self._task_queue
-
-    @property
-    def num_running_instances(self) -> int:
-        return len(self._running_instances)
 
     @property
     def running(self) -> bool:
@@ -163,7 +170,13 @@ class InstanceOrchestrator:
         supplement = f"""\
 export RMS_CLOUD_RUN_JOB_ID={self._job_id}
 export RMS_CLOUD_RUN_QUEUE_NAME={self._queue_name}
-export RMS_CLOUD_RUN_INSTANCE_TYPE={self._optimal_instance_type}
+export RMS_CLOUD_RUN_INSTANCE_TYPE={self._optimal_instance_info["name"]}
+export RMS_CLOUD_RUN_INSTANCE_NUM_VCPUS={self._optimal_instance_info["vcpu"]}
+export RMS_CLOUD_RUN_INSTANCE_MEM_GB={self._optimal_instance_info["mem_gb"]}
+export RMS_CLOUD_RUN_INSTANCE_SSD_GB={self._optimal_instance_info["local_ssd"]}
+export RMS_CLOUD_RUN_INSTANCE_BOOT_DISK_GB={self._optimal_instance_boot_disk_size}
+export RMS_CLOUD_RUN_INSTANCE_IS_SPOT={self._run_config.use_spot}
+export RMS_CLOUD_RUN_INSTANCE_PRICE={self._optimal_instance_info["total_price"]}
 """
         # TODO: Implement creation of startup script
         # If a custom startup script is provided, use it
@@ -212,8 +225,8 @@ export RMS_CLOUD_RUN_INSTANCE_TYPE={self._optimal_instance_type}
                 )
 
         # Get optimal instance type based on requirements from config
-        instance_type, instance_zone, instance_price = (
-            await self._instance_manager.get_optimal_instance_type(vars(self._run_config))
+        instance_info = await self._instance_manager.get_optimal_instance_type(
+            vars(self._run_config)
         )
         self._logger.info(
             f"Selected instance type: {instance_type} in {instance_zone} "

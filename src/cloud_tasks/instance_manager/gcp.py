@@ -31,7 +31,7 @@ from .instance_manager import InstanceManager
 # - If "zone" is not provided and is not otherwise specified, a random zone will be chosen.
 # - Compute Engine instances are tagged with "rmscr-<job_id>".
 # - There are no instance types that have non-SSD storage so the values returned from
-#   get_available_instance_types() will always have "storage_gb" set to 0.
+#   get_available_instance_types() will always have "boot_disk_gb" set to 0.
 # - Compute Engine instance types are per-zone, and if a zone is not specified the default
 #   zone for the region will be used. This is the first zone returned by GCP for the region.
 # - "service_account" is optional, but if not provided the instance will not have any
@@ -173,10 +173,10 @@ class GCPComputeInstanceManager(InstanceManager):
                     "max_local_ssd": Maximum amount of local SSD storage in GB
                     "min_local_ssd_per_cpu": Minimum amount of local SSD storage per vCPU
                     "max_local_ssd_per_cpu": Maximum amount of local SSD storage per vCPU
-                    "min_storage": Minimum amount of other storage in GB
-                    "max_storage": Maximum amount of other storage in GB
-                    "min_storage_per_cpu": Minimum amount of other storage per vCPU
-                    "max_storage_per_cpu": Maximum amount of other storage per vCPU
+                    "min_boot_disk": Minimum amount of boot disk storage in GB
+                    "max_boot_disk": Maximum amount of boot disk storage in GB
+                    "min_boot_disk_per_cpu": Minimum amount of boot disk storage per vCPU
+                    "max_boot_disk_per_cpu": Maximum amount of boot disk storage per vCPU
                     "use_spot": Whether to filter for spot-capable instance types
 
         Returns:
@@ -185,7 +185,7 @@ class GCPComputeInstanceManager(InstanceManager):
                 "vcpu": number of vCPUs
                 "mem_gb": amount of RAM in GB
                 "local_ssd_gb": amount of local SSD storage in GB
-                "storage_gb": amount of other storage in GB
+                "boot_disk_gb": amount of boot disk storage in GB
                 "architecture": architecture of the instance type
                 "supports_spot": whether the instance type supports spot pricing
                 "description": description of the instance type
@@ -230,8 +230,8 @@ class GCPComputeInstanceManager(InstanceManager):
                 "architecture": (
                     machine_type.architecture if machine_type.architecture else "x86_64"
                 ),
-                "storage_gb": 0,  # GCP separates storage from instance type
                 "local_ssd_gb": local_ssd_size,  # Except for dedicated SSDs
+                "boot_disk_gb": 0,  # GCP separates storage from instance type
                 "supports_spot": True,  # There is no other informationa available
                 "description": machine_type.description,
                 # https://www.googleapis.com/compute/v1/projects/[project]/zones/
@@ -286,24 +286,24 @@ class GCPComputeInstanceManager(InstanceManager):
                     <= cast(float, constraints["max_local_ssd_per_cpu"])
                 )
                 and (
-                    constraints["min_storage"] is None
-                    or cast(float, instance_info["storage_gb"])
-                    >= cast(float, constraints["min_storage"])
+                    constraints["min_boot_disk"] is None
+                    or cast(float, instance_info["boot_disk_gb"])
+                    >= cast(float, constraints["min_boot_disk"])
                 )
                 and (
-                    constraints["max_storage"] is None
-                    or cast(float, instance_info["storage_gb"])
-                    <= cast(float, constraints["max_storage"])
+                    constraints["max_boot_disk"] is None
+                    or cast(float, instance_info["boot_disk_gb"])
+                    <= cast(float, constraints["max_boot_disk"])
                 )
                 and (
-                    constraints["min_storage_per_cpu"] is None
-                    or cast(float, instance_info["storage_gb"]) / cast(int, instance_info["vcpu"])
-                    >= cast(float, constraints["min_storage_per_cpu"])
+                    constraints["min_boot_disk_per_cpu"] is None
+                    or cast(float, instance_info["boot_disk_gb"]) / cast(int, instance_info["vcpu"])
+                    >= cast(float, constraints["min_boot_disk_per_cpu"])
                 )
                 and (
-                    constraints["max_storage_per_cpu"] is None
-                    or cast(float, instance_info["storage_gb"]) / cast(int, instance_info["vcpu"])
-                    <= cast(float, constraints["max_storage_per_cpu"])
+                    constraints["max_boot_disk_per_cpu"] is None
+                    or cast(float, instance_info["boot_disk_gb"]) / cast(int, instance_info["vcpu"])
+                    <= cast(float, constraints["max_boot_disk_per_cpu"])
                 )
                 and (
                     not constraints["use_spot"]
@@ -419,6 +419,7 @@ class GCPComputeInstanceManager(InstanceManager):
                 "mem_price": Total price of RAM in USD/hour
                 "mem_per_gb_price": Price of RAM in USD/GB/hour
                 "total_price": Total price of instance in USD/hour
+                "total_price_per_cpu": Total price of instance in USD/vCPU/hour
                 "zone": availability zone
             Plus the original instance type info keyed by availability zone. If any price is not
             available, it is set to None.
@@ -478,17 +479,18 @@ class GCPComputeInstanceManager(InstanceManager):
                 per_cpu_price = cast(float, zone_val["per_cpu_price"])
                 per_gb_ram_price = cast(float, zone_val["mem_per_gb_price"])
                 per_gb_local_ssd_price = cast(float, zone_val["local_ssd_per_gb_price"])
-                per_gb_storage_price = cast(float, zone_val["storage_per_gb_price"])
+                per_gb_boot_disk_price = cast(float, zone_val["boot_disk_per_gb_price"])
                 cpu_price = per_cpu_price * machine_info["vcpu"]
                 ram_price = per_gb_ram_price * machine_info["mem_gb"]
                 local_ssd_price = per_gb_local_ssd_price * machine_info["local_ssd_gb"]
-                storage_price = per_gb_storage_price * machine_info["storage_gb"]
-                total_price = cpu_price + ram_price + local_ssd_price + storage_price
+                boot_disk_price = per_gb_boot_disk_price * machine_info["boot_disk_gb"]
+                total_price = cpu_price + ram_price + local_ssd_price + boot_disk_price
                 zone_val["cpu_price"] = round(cpu_price, 6)
                 zone_val["mem_price"] = round(ram_price, 6)
                 zone_val["local_ssd_price"] = round(local_ssd_price, 6)
-                zone_val["storage_price"] = round(storage_price, 6)
+                zone_val["boot_disk_price"] = round(boot_disk_price, 6)
                 zone_val["total_price"] = round(total_price, 6)
+                zone_val["total_price_per_cpu"] = round(total_price / machine_info["vcpu"], 6)
                 ret[machine_type] = ret_val
                 continue
 
@@ -651,8 +653,8 @@ class GCPComputeInstanceManager(InstanceManager):
                 ret[machine_type] = None
                 continue
 
-            per_gb_storage_price = 0
-            storage_price = 0
+            per_gb_boot_disk_price = 0
+            boot_disk_price = 0
 
             # Round off the total price to 6 decimal places to avoid floating point
             # precision issues
@@ -667,9 +669,12 @@ class GCPComputeInstanceManager(InstanceManager):
                     "mem_per_gb_price": round(per_gb_ram_price, 6),  # Per-GB price
                     "local_ssd_price": round(local_disk_price, 6),  # Local SSD price
                     "local_ssd_per_gb_price": round(per_gb_local_disk_price, 6),  # Per-GB price
-                    "storage_price": round(storage_price, 6),  # Storage price
-                    "storage_per_gb_price": round(per_gb_storage_price, 6),  # Per-GB price
+                    "boot_disk_price": round(boot_disk_price, 6),  # Boot disk price
+                    "boot_disk_per_gb_price": round(per_gb_boot_disk_price, 6),  # Per-GB price
                     "total_price": round(total_price, 6),  # Total price
+                    "total_price_per_cpu": round(
+                        total_price / machine_info["vcpu"], 6
+                    ),  # Total price per CPU
                     "zone": f"{self._region}-*",
                 }
             }
@@ -683,7 +688,7 @@ class GCPComputeInstanceManager(InstanceManager):
 
     async def get_optimal_instance_type(
         self, constraints: Optional[Dict[str, Any]] = None
-    ) -> Tuple[str, str, float]:
+    ) -> Dict[str, float | str | None]:
         """
         Get the most cost-effective GCP instance type that meets the constraints.
 
@@ -708,10 +713,7 @@ class GCPComputeInstanceManager(InstanceManager):
                     "use_spot": Whether to use spot instances
 
         Returns:
-            Tuple of:
-                - GCP instance type name (e.g., 'n1-standard-2')
-                - Zone in which the instance type is cheapest
-                - Price of the instance type in USD/hour
+            Dictionary of instance type pricing info as would be returned by get_instance_pricing
         """
         if constraints is None:
             constraints = {}
@@ -756,13 +758,13 @@ class GCPComputeInstanceManager(InstanceManager):
             (machine_type, zone, price_info)
             for (machine_type, zone), price_info in zone_pricing_data.items()
         ]
-        # Sort by price, then by decreasing vCPU (this gives us the cheapest instance type
-        # with the most vCPUs). We round the price to 2 decimal places so that small differences
-        # in price don't make us choose an instance with fewer vCPUs that would otherwise cost
-        # the same.
+        # Sort by price per vCPU, then by decreasing vCPU (this gives us the cheapest
+        # instance type with the most vCPUs). We round the price to 2 decimal places so
+        # that small differences in price don't make us choose an instance with fewer
+        # vCPUs that would otherwise cost the same.
         priced_instances.sort(
             key=lambda x: (
-                round(x[2]["total_price"], 2),
+                round(cast(float, x[2]["total_price_per_cpu"]), 2),
                 -cast(int, x[2]["vcpu"]),
             )
         )
@@ -780,7 +782,7 @@ class GCPComputeInstanceManager(InstanceManager):
             f"{' (spot)' if constraints["use_spot"] else '(on demand)'}"
         )
 
-        return selected_type, selected_zone, cast(float, total_price)
+        return selected_price_info
 
     async def start_instance(
         self,
@@ -889,16 +891,16 @@ class GCPComputeInstanceManager(InstanceManager):
         }
 
         # Prepare the instance configuration
-        inst_config = {
-            "name": instance_id,
-            "machine_type": f"zones/{zone}/machineTypes/{instance_type}",
-            "disks": [disk_config],
-            "network_interfaces": [network_interface],
-            "metadata": metadata,
-            "scheduling": scheduling,
-            "service_accounts": service_accounts,
-            "tags": tags,
-        }
+        inst_config = compute_v1.Instance(
+            name=instance_id,
+            machine_type=f"zones/{zone}/machineTypes/{instance_type}",
+            disks=[disk_config],
+            network_interfaces=[network_interface],
+            metadata=metadata,
+            scheduling=scheduling,
+            service_accounts=service_accounts,
+            tags=tags,
+        )
 
         # Create the instance
         try:
@@ -937,6 +939,9 @@ class GCPComputeInstanceManager(InstanceManager):
         if zone is None:
             zone = self._zone
 
+        if zone is None:
+            raise ValueError("Zone is required")
+
         self._logger.debug(f"Terminating instance {instance_id} in zone {zone}")
 
         try:
@@ -945,7 +950,9 @@ class GCPComputeInstanceManager(InstanceManager):
             )
 
             # Wait for the operation to complete asynchronously
-            await self._wait_for_operation(operation.name)
+            await self._wait_for_operation(
+                operation.name, zone, f"Termination of instance {instance_id}"
+            )
             self._logger.debug(f"Instance {instance_id} terminated successfully")
         except NotFound:
             self._logger.warning(
@@ -1239,7 +1246,7 @@ class GCPComputeInstanceManager(InstanceManager):
                         filtered_images.append(image)
 
                 # Group filtered images by family
-                family_images = {}
+                family_images: Dict[str, List[compute_v1.Image]] = {}
                 for image in filtered_images:
                     if image.family:
                         if image.family not in family_images:
@@ -1301,7 +1308,7 @@ class GCPComputeInstanceManager(InstanceManager):
             )
 
         # Sort by creation date
-        all_images.sort(key=lambda x: x.get("creation_date", ""), reverse=True)
+        all_images.sort(key=lambda x: x.get("creation_date", ""), reverse=True)  # type: ignore
 
         self._logger.info(f"Found {len(all_images)} available images")
         return all_images
