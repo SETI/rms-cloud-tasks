@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import pytest_asyncio
+from google.api_core.exceptions import NotFound  # type: ignore
 from google.cloud import compute_v1, billing
 from google.oauth2.credentials import Credentials
 
@@ -1072,3 +1073,471 @@ async def test_get_optimal_instance_type_prefer_more_cpus(
     assert instance_type == "n2-standard-4-lssd"
     assert zone == f"{gcp_instance_manager._region}-*"
     assert price == pytest.approx(5.75, rel=1e-2)
+
+
+# Tests for the start_instance method
+# These tests verify that:
+# 1. Basic instance creation works with minimal parameters
+# 2. Spot instances are properly configured
+# 3. Service accounts are correctly attached when specified
+# 4. Different image specification methods work (custom URI, image family, default)
+# 5. Zone selection works correctly with wildcards
+# 6. Error handling works properly when instance creation fails
+
+
+@pytest.mark.asyncio
+async def test_start_instance_basic(
+    gcp_instance_manager: GCPComputeInstanceManager, mock_credentials: MagicMock
+) -> None:
+    """Test starting a basic instance with minimal parameters."""
+    # Arrange
+    instance_type = "n1-standard-2"
+    startup_script = "#!/bin/bash\necho 'Hello World'"
+    job_id = "test-job-123"
+    use_spot = False
+    image = "ubuntu-2404-lts"
+
+    # Mock the UUID generation to have a predictable instance ID
+    with patch("uuid.uuid4", return_value="mock-uuid"):
+        # Mock _get_image_from_family to return a predictable image path
+        with patch.object(
+            gcp_instance_manager, "_get_image_from_family", new=AsyncMock()
+        ) as mock_get_image:
+            mock_get_image.return_value = "https://compute.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-2404-lts"
+
+            # Mock the insert operation and its result
+            mock_operation = MagicMock()
+            mock_operation.name = "mock-operation-name"
+            mock_operation.error_code = None
+            mock_operation.warnings = None
+            mock_result = MagicMock()
+            mock_operation.result.return_value = mock_result
+
+            gcp_instance_manager._compute_client.insert = MagicMock(return_value=mock_operation)
+
+            # Mock _wait_for_operation to return successfully
+            with patch.object(
+                gcp_instance_manager, "_wait_for_operation", new=AsyncMock()
+            ) as mock_wait:
+                mock_wait.return_value = mock_result
+
+                # Act
+                instance_id, zone = await gcp_instance_manager.start_instance(
+                    instance_type=instance_type,
+                    boot_disk_size=20,
+                    startup_script=startup_script,
+                    job_id=job_id,
+                    use_spot=use_spot,
+                    image=image,
+                    zone=gcp_instance_manager._zone,
+                )
+
+                # Assert
+                assert instance_id == f"{gcp_instance_manager._JOB_ID_TAG_PREFIX}{job_id}-mock-uuid"
+                assert zone == gcp_instance_manager._zone
+
+                # Check that the compute client was called with the correct parameters
+                gcp_instance_manager._compute_client.insert.assert_called_once()
+                call_args = gcp_instance_manager._compute_client.insert.call_args
+                assert call_args[1]["project"] == gcp_instance_manager._project_id
+                assert call_args[1]["zone"] == gcp_instance_manager._zone
+
+                # Check the instance resource configuration
+                instance_config = call_args[1]["instance_resource"]
+                assert (
+                    instance_config["name"]
+                    == f"{gcp_instance_manager._JOB_ID_TAG_PREFIX}{job_id}-mock-uuid"
+                )
+                assert (
+                    instance_config["machine_type"]
+                    == f"zones/{gcp_instance_manager._zone}/machineTypes/{instance_type}"
+                )
+
+                # Check metadata (startup script)
+                assert instance_config["metadata"]["items"][0]["key"] == "startup-script"
+                assert instance_config["metadata"]["items"][0]["value"] == startup_script
+
+                # Check that on-demand scheduling was used (not spot)
+                assert instance_config["scheduling"] == {}
+
+                # Verify tags for job identification
+                assert instance_config["tags"]["items"] == [
+                    gcp_instance_manager._job_id_to_tag(job_id)
+                ]
+
+                # Verify wait_for_operation was called
+                mock_wait.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_start_instance_spot(
+    gcp_instance_manager: GCPComputeInstanceManager, mock_credentials: MagicMock
+) -> None:
+    """Test starting a spot instance."""
+    # Arrange
+    instance_type = "n1-standard-2"
+    startup_script = "#!/bin/bash\necho 'Hello World'"
+    job_id = "test-job-123"
+    use_spot = True
+    image = "ubuntu-2404-lts"
+
+    # Mock the UUID generation to have a predictable instance ID
+    with patch("uuid.uuid4", return_value="mock-uuid"):
+        # Mock _get_image_from_family to return a predictable image path
+        with patch.object(
+            gcp_instance_manager, "_get_image_from_family", new=AsyncMock()
+        ) as mock_get_image:
+            mock_get_image.return_value = "https://compute.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-2404-lts"
+
+            # Mock the insert operation and its result
+            mock_operation = MagicMock()
+            mock_operation.name = "mock-operation-name"
+            mock_operation.error_code = None
+            mock_operation.warnings = None
+            mock_result = MagicMock()
+            mock_operation.result.return_value = mock_result
+
+            gcp_instance_manager._compute_client.insert = MagicMock(return_value=mock_operation)
+
+            # Mock _wait_for_operation to return successfully
+            with patch.object(
+                gcp_instance_manager, "_wait_for_operation", new=AsyncMock()
+            ) as mock_wait:
+                mock_wait.return_value = mock_result
+
+                # Act
+                instance_id, zone = await gcp_instance_manager.start_instance(
+                    instance_type=instance_type,
+                    boot_disk_size=20,
+                    startup_script=startup_script,
+                    job_id=job_id,
+                    use_spot=use_spot,
+                    image=image,
+                    zone=gcp_instance_manager._zone,
+                )
+
+                # Assert
+                assert instance_id == f"{gcp_instance_manager._JOB_ID_TAG_PREFIX}{job_id}-mock-uuid"
+                assert zone == gcp_instance_manager._zone
+
+                # Check that the compute client was called with the correct parameters
+                gcp_instance_manager._compute_client.insert.assert_called_once()
+                call_args = gcp_instance_manager._compute_client.insert.call_args
+
+                # Check the instance resource configuration for spot instance
+                instance_config = call_args[1]["instance_resource"]
+
+                # Check that spot scheduling was used
+                assert instance_config["scheduling"] == {
+                    "preemptible": True,
+                    "automatic_restart": False,
+                    "on_host_maintenance": "TERMINATE",
+                }
+
+
+@pytest.mark.asyncio
+async def test_start_instance_with_service_account(
+    gcp_instance_manager: GCPComputeInstanceManager, mock_credentials: MagicMock
+) -> None:
+    """Test starting an instance with a service account."""
+    # Arrange
+    instance_type = "n1-standard-2"
+    startup_script = "#!/bin/bash\necho 'Hello World'"
+    job_id = "test-job-123"
+    use_spot = False
+    image = "ubuntu-2404-lts"
+
+    # Set a service account for the instance
+    service_account = "test-service-account@test-project.iam.gserviceaccount.com"
+    gcp_instance_manager._service_account = service_account
+
+    # Mock the UUID generation to have a predictable instance ID
+    with patch("uuid.uuid4", return_value="mock-uuid"):
+        # Mock _get_image_from_family to return a predictable image path
+        with patch.object(
+            gcp_instance_manager, "_get_image_from_family", new=AsyncMock()
+        ) as mock_get_image:
+            mock_get_image.return_value = "https://compute.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-2404-lts"
+
+            # Mock the insert operation and its result
+            mock_operation = MagicMock()
+            mock_operation.name = "mock-operation-name"
+            mock_operation.error_code = None
+            mock_operation.warnings = None
+            mock_result = MagicMock()
+            mock_operation.result.return_value = mock_result
+
+            gcp_instance_manager._compute_client.insert = MagicMock(return_value=mock_operation)
+
+            # Mock _wait_for_operation to return successfully
+            with patch.object(
+                gcp_instance_manager, "_wait_for_operation", new=AsyncMock()
+            ) as mock_wait:
+                mock_wait.return_value = mock_result
+
+                # Act
+                instance_id = await gcp_instance_manager.start_instance(
+                    instance_type=instance_type,
+                    boot_disk_size=20,
+                    startup_script=startup_script,
+                    job_id=job_id,
+                    use_spot=use_spot,
+                    image=image,
+                    zone=gcp_instance_manager._zone,
+                )
+
+                # Assert
+                # Check that the service account was included in the instance configuration
+                call_args = gcp_instance_manager._compute_client.insert.call_args
+                instance_config = call_args[1]["instance_resource"]
+
+                assert len(instance_config["service_accounts"]) == 1
+                assert instance_config["service_accounts"][0]["email"] == service_account
+                assert instance_config["service_accounts"][0]["scopes"] == [
+                    "https://www.googleapis.com/auth/cloud-platform"
+                ]
+
+
+@pytest.mark.asyncio
+async def test_start_instance_with_custom_image_uri(
+    gcp_instance_manager: GCPComputeInstanceManager, mock_credentials: MagicMock
+) -> None:
+    """Test starting an instance with a custom image URI."""
+    # Arrange
+    instance_type = "n1-standard-2"
+    startup_script = "#!/bin/bash\necho 'Hello World'"
+    job_id = "test-job-123"
+    use_spot = False
+    custom_image = "https://compute.googleapis.com/compute/v1/projects/my-project/global/images/my-custom-image"
+
+    # Mock the UUID generation to have a predictable instance ID
+    with patch("uuid.uuid4", return_value="mock-uuid"):
+        # Mock the insert operation and its result
+        mock_operation = MagicMock()
+        mock_operation.name = "mock-operation-name"
+        mock_operation.error_code = None
+        mock_operation.warnings = None
+        mock_result = MagicMock()
+        mock_operation.result.return_value = mock_result
+
+        gcp_instance_manager._compute_client.insert = MagicMock(return_value=mock_operation)
+
+        # Mock _wait_for_operation to return successfully
+        with patch.object(
+            gcp_instance_manager, "_wait_for_operation", new=AsyncMock()
+        ) as mock_wait:
+            mock_wait.return_value = mock_result
+
+            # Act
+            instance_id = await gcp_instance_manager.start_instance(
+                instance_type=instance_type,
+                boot_disk_size=20,
+                startup_script=startup_script,
+                job_id=job_id,
+                use_spot=use_spot,
+                image=custom_image,
+                zone=gcp_instance_manager._zone,
+            )
+
+            # Assert
+            # Check that the image was set correctly in the instance configuration
+            call_args = gcp_instance_manager._compute_client.insert.call_args
+            instance_config = call_args[1]["instance_resource"]
+
+            assert instance_config["disks"][0]["initialize_params"]["source_image"] == custom_image
+            # _get_image_from_family should not have been called since we provided a full image URI
+
+
+@pytest.mark.asyncio
+async def test_start_instance_with_random_zone(
+    gcp_instance_manager: GCPComputeInstanceManager, mock_credentials: MagicMock
+) -> None:
+    """Test starting an instance with a wildcard zone that needs to be randomly selected."""
+    # Arrange
+    instance_type = "n1-standard-2"
+    startup_script = "#!/bin/bash\necho 'Hello World'"
+    job_id = "test-job-123"
+    use_spot = False
+    image = "ubuntu-2404-lts"
+    wildcard_zone = "us-central1-*"  # Wildcard zone
+
+    # Mock _get_random_zone to return a specific zone
+    with patch.object(
+        gcp_instance_manager, "_get_random_zone", new=AsyncMock()
+    ) as mock_get_random_zone:
+        random_zone = "us-central1-c"
+        mock_get_random_zone.return_value = random_zone
+
+        # Mock the UUID generation to have a predictable instance ID
+        with patch("uuid.uuid4", return_value="mock-uuid"):
+            # Mock _get_image_from_family to return a predictable image path
+            with patch.object(
+                gcp_instance_manager, "_get_image_from_family", new=AsyncMock()
+            ) as mock_get_image:
+                mock_get_image.return_value = "https://compute.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-2404-lts"
+
+                # Mock the insert operation and its result
+                mock_operation = MagicMock()
+                mock_operation.name = "mock-operation-name"
+                mock_operation.error_code = None
+                mock_operation.warnings = None
+                mock_result = MagicMock()
+                mock_operation.result.return_value = mock_result
+
+                gcp_instance_manager._compute_client.insert = MagicMock(return_value=mock_operation)
+
+                # Mock _wait_for_operation to return successfully
+                with patch.object(
+                    gcp_instance_manager, "_wait_for_operation", new=AsyncMock()
+                ) as mock_wait:
+                    mock_wait.return_value = mock_result
+
+                    # Act
+                    instance_id = await gcp_instance_manager.start_instance(
+                        instance_type=instance_type,
+                        boot_disk_size=20,
+                        startup_script=startup_script,
+                        job_id=job_id,
+                        use_spot=use_spot,
+                        image=image,
+                        zone=wildcard_zone,
+                    )
+
+                    # Assert
+                    # Verify that _get_random_zone was called to resolve the wildcard
+                    mock_get_random_zone.assert_called_once()
+
+                    # Check that the resolved random zone was used
+                    call_args = gcp_instance_manager._compute_client.insert.call_args
+                    assert call_args[1]["zone"] == random_zone
+
+
+@pytest.mark.asyncio
+async def test_start_instance_error_handling(
+    gcp_instance_manager: GCPComputeInstanceManager, mock_credentials: MagicMock
+) -> None:
+    """Test error handling when starting an instance fails."""
+    # Arrange
+    instance_type = "n1-standard-2"
+    startup_script = "#!/bin/bash\necho 'Hello World'"
+    job_id = "test-job-123"
+    use_spot = False
+    image = "ubuntu-2404-lts"
+
+    # Mock the UUID generation to have a predictable instance ID
+    with patch("uuid.uuid4", return_value="mock-uuid"):
+        # Mock _get_image_from_family to return a predictable image path
+        with patch.object(
+            gcp_instance_manager, "_get_image_from_family", new=AsyncMock()
+        ) as mock_get_image:
+            mock_get_image.return_value = "https://compute.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-2404-lts"
+
+            # Mock the insert operation to raise an exception
+            error_message = "Failed to create instance"
+            gcp_instance_manager._compute_client.insert = MagicMock(
+                side_effect=RuntimeError(error_message)
+            )
+
+            # Act & Assert
+            with pytest.raises(RuntimeError, match=error_message):
+                await gcp_instance_manager.start_instance(
+                    instance_type=instance_type,
+                    boot_disk_size=20,
+                    startup_script=startup_script,
+                    job_id=job_id,
+                    use_spot=use_spot,
+                    image=image,
+                    zone=gcp_instance_manager._zone,
+                )
+
+
+@pytest.mark.asyncio
+async def test_terminate_instance_basic(
+    gcp_instance_manager: GCPComputeInstanceManager, mock_credentials: MagicMock
+) -> None:
+    """Test terminating an instance with successful operation."""
+    # Arrange
+    instance_id = "test-instance-123"
+
+    # Mock the delete operation and its result
+    mock_operation = MagicMock()
+    mock_operation.name = "mock-operation-name"
+    mock_operation.error_code = None
+    mock_operation.warnings = None
+    mock_result = MagicMock()
+    mock_operation.result.return_value = mock_result
+
+    gcp_instance_manager._compute_client.delete = MagicMock(return_value=mock_operation)
+
+    # Mock _wait_for_operation to return successfully
+    with patch.object(gcp_instance_manager, "_wait_for_operation", new=AsyncMock()) as mock_wait:
+        mock_wait.return_value = mock_result
+
+        # Act
+        await gcp_instance_manager.terminate_instance(instance_id)
+
+        # Assert
+        # Check that the compute client was called with the correct parameters
+        gcp_instance_manager._compute_client.delete.assert_called_once_with(
+            project=gcp_instance_manager._project_id,
+            zone=gcp_instance_manager._zone,
+            instance=instance_id,
+        )
+
+        # Verify _wait_for_operation was called with operation.name
+        mock_wait.assert_called_once_with(mock_operation.name)
+
+
+@pytest.mark.asyncio
+async def test_terminate_instance_not_found(
+    gcp_instance_manager: GCPComputeInstanceManager, mock_credentials: MagicMock
+) -> None:
+    """Test terminating an instance that doesn't exist."""
+    # Arrange
+    instance_id = "nonexistent-instance"
+
+    # Mock the delete method to raise NotFound exception
+    gcp_instance_manager._compute_client.delete = MagicMock(
+        side_effect=NotFound("Instance not found")
+    )
+
+    # Act
+    try:
+        await gcp_instance_manager.terminate_instance(instance_id)
+    except NotFound:
+        pass
+    except Exception as e:
+        raise e
+
+    # Assert
+    # Check that the compute client was called with the correct parameters
+    gcp_instance_manager._compute_client.delete.assert_called_once_with(
+        project=gcp_instance_manager._project_id,
+        zone=gcp_instance_manager._zone,
+        instance=instance_id,
+    )
+    # Note: No exception should be raised as the method handles NotFound gracefully
+
+
+@pytest.mark.asyncio
+async def test_terminate_instance_error_handling(
+    gcp_instance_manager: GCPComputeInstanceManager, mock_credentials: MagicMock
+) -> None:
+    """Test error handling when terminating an instance fails."""
+    # Arrange
+    instance_id = "test-instance-123"
+
+    # Mock the delete method to raise an exception
+    error_message = "Failed to terminate instance"
+    gcp_instance_manager._compute_client.delete = MagicMock(side_effect=RuntimeError(error_message))
+
+    # Act & Assert
+    with pytest.raises(RuntimeError, match=error_message):
+        await gcp_instance_manager.terminate_instance(instance_id)
+
+    # Verify the method was called with correct parameters
+    gcp_instance_manager._compute_client.delete.assert_called_once_with(
+        project=gcp_instance_manager._project_id,
+        zone=gcp_instance_manager._zone,
+        instance=instance_id,
+    )

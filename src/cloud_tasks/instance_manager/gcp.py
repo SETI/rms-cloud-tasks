@@ -20,6 +20,26 @@ from cloud_tasks.common.config import GCPConfig
 from .instance_manager import InstanceManager
 
 
+# Notes:
+# - If "credentials_file" is not provided, the default application credentials will be
+#   used.
+# - If "project_id" is not provided, and "credentials_file" is provided, the project ID
+#   will be extracted from the credentials file.
+# - "project_id" is required if application default credentials are not used.
+# - If "region" is not provided, it will be extracted from the zone. If zone is also not
+#   provided, it is an error.
+# - If "zone" is not provided and is not otherwise specified, a random zone will be chosen.
+# - Compute Engine instances are tagged with "rmscr-<job_id>".
+# - There are no instance types that have non-SSD storage so the values returned from
+#   get_available_instance_types() will always have "storage_gb" set to 0.
+# - Compute Engine instance types are per-zone, and if a zone is not specified the default
+#   zone for the region will be used. This is the first zone returned by GCP for the region.
+# - "service_account" is optional, but if not provided the instance will not have any
+#   credentials.
+# - Zone names can end with a wildcard "-*" to indicate that the instance can be started
+#   in any zone in the region.
+
+
 class GCPComputeInstanceManager(InstanceManager):
     """Google Cloud Compute Engine implementation of the InstanceManager interface."""
 
@@ -38,7 +58,7 @@ class GCPComputeInstanceManager(InstanceManager):
         "SUSPENDED": "stopped",
     }
 
-    # GB - This is derived by looking at the pricing tables; beware!
+    # This is derived by looking at the pricing tables; beware!
     _ONE_LOCAL_SSD_SIZE = 375  # Size of one local SSD in GB
 
     def __init__(self, gcp_config: GCPConfig):
@@ -50,7 +70,7 @@ class GCPComputeInstanceManager(InstanceManager):
                 be used.
 
         Raises:
-            ValueError: If required configuration is missing
+            RuntimeError: If required configuration is missing
         """
         super().__init__(gcp_config)
 
@@ -91,12 +111,12 @@ class GCPComputeInstanceManager(InstanceManager):
             except Exception as e:
                 raise RuntimeError(
                     f"Error getting default credentials: {e}. "
-                    "Please ensure you're authenticated with 'gcloud auth application-default login' "
-                    "or provide a credentials_file entry in the GCP configuration."
+                    "Please ensure you're authenticated with 'gcloud auth application-default "
+                    "login' or provide a credentials_file entry in the GCP configuration."
                 )
 
         if self._project_id is None:
-            raise RuntimeError("Missing required GCP configuration: project_id")
+            raise RuntimeError("Missing required GCP configuration 'project_id'")
 
         # Initialize region/zone from config if provided
         self._region = gcp_config.region
@@ -202,14 +222,14 @@ class GCPComputeInstanceManager(InstanceManager):
                 match = re.search(r", (\d+) local ssd", machine_type.description.lower())
                 if match:
                     local_ssd_size = int(match.group(1)) * self._ONE_LOCAL_SSD_SIZE
-            import pprint
 
-            pprint.pprint(machine_type)
             instance_info = {
                 "name": machine_type.name,
                 "vcpu": machine_type.guest_cpus,
                 "mem_gb": machine_type.memory_mb / 1024.0,
-                "architecture": machine_type.architecture,
+                "architecture": (
+                    machine_type.architecture if machine_type.architecture else "x86_64"
+                ),
                 "storage_gb": 0,  # GCP separates storage from instance type
                 "local_ssd_gb": local_ssd_size,  # Except for dedicated SSDs
                 "supports_spot": True,  # There is no other informationa available
@@ -736,15 +756,18 @@ class GCPComputeInstanceManager(InstanceManager):
             (machine_type, zone, price_info)
             for (machine_type, zone), price_info in zone_pricing_data.items()
         ]
+        # Sort by price, then by decreasing vCPU (this gives us the cheapest instance type
+        # with the most vCPUs). We round the price to 2 decimal places so that small differences
+        # in price don't make us choose an instance with fewer vCPUs that would otherwise cost
+        # the same.
         priced_instances.sort(
             key=lambda x: (
-                x[2]["total_price"],
+                round(x[2]["total_price"], 2),
                 -cast(int, x[2]["vcpu"]),
             )
-        )  # Sort by price, then by decreasing vCPU (this gives us the cheapest instance type with
-        # the most vCPUs)
+        )
 
-        self._logger.debug("Instance types sorted by price (cheapest first):")
+        self._logger.debug("Instance types sorted by price (cheapest and most vCPUs first):")
         for i, (machine_type, zone, price_info) in enumerate(priced_instances):
             self._logger.debug(
                 f"  [{i+1:3d}] {machine_type:20s} in {zone:15s}: ${price_info['total_price']:10.6f}/hour"
@@ -763,24 +786,28 @@ class GCPComputeInstanceManager(InstanceManager):
         self,
         *,
         instance_type: str,
+        boot_disk_size: int,  # GB
         startup_script: str,
         job_id: str,
         use_spot: bool,
         image: str,
         zone: Optional[str] = None,
-    ) -> str:
+    ) -> Tuple[str, str]:
         """
         Start a new GCP Compute Engine instance.
 
         Args:
             instance_type: GCP instance type (e.g., 'n1-standard-1')
-            startup_script: Base64-encoded startup script
+            startup_script: The startup script
             job_id: Job ID to use for the instance
             use_spot: Whether to use a spot instance
-            image: Custom image to use (if provided)
+            image: Image to use
+            zone: Zone to use for the instance; if not specified use the default zone,
+                or if none choose a random zone
 
         Returns:
-            ID of the started instance
+            A tuple containing the ID of the started instance and the zone it was started
+            in
         """
         if not self._compute_client:
             raise RuntimeError("GCP Compute Engine client not initialized")
@@ -791,8 +818,8 @@ class GCPComputeInstanceManager(InstanceManager):
         instance_id = f"{self._JOB_ID_TAG_PREFIX}{job_id}-{str(uuid.uuid4())}"
 
         if zone is not None and self._zone is not None and zone != self._zone:
-            self._logger.warning(f"Overriding default zone {self._zone} with {zone}")
-        if zone is not None and zone[-2:] == "-*":
+            self._logger.debug(f"Overriding default zone {self._zone} with {zone}")
+        if zone is None or (zone is not None and zone[-2:] == "-*"):
             random_zone = await self._get_random_zone()
             self._logger.debug(
                 f"Zone {zone} for optimal instance type is a wildcard zone, using "
@@ -810,7 +837,7 @@ class GCPComputeInstanceManager(InstanceManager):
                 # Assuming it's a family name in ubuntu-os-cloud
                 source_image = await self._get_image_from_family(image)
         else:
-            # Get default Ubuntu 24.04 LTS image
+            # Get default image
             source_image = await self._get_default_image()
 
         # Encode the startup script as metadata
@@ -824,7 +851,7 @@ class GCPComputeInstanceManager(InstanceManager):
             "auto_delete": True,
             "initialize_params": {
                 "source_image": source_image,
-                "disk_size_gb": 10,  # Default size, can be increased as needed
+                "disk_size_gb": boot_disk_size,
             },
         }
 
@@ -891,7 +918,7 @@ class GCPComputeInstanceManager(InstanceManager):
             self._logger.info(
                 f"Instance {instance_id} created successfully " f"({instance_type} in zone {zone}"
             )
-            return instance_id
+            return instance_id, zone
         except Exception as e:
             self._logger.error(
                 f"Failed to create {'spot' if use_spot else 'on-demand'} instance: {e}",
@@ -899,16 +926,18 @@ class GCPComputeInstanceManager(InstanceManager):
             )
             raise
 
-    async def terminate_instance(self, instance_id: str) -> None:
+    async def terminate_instance(self, instance_id: str, zone: Optional[str] = None) -> None:
         """
         Terminate a Compute Engine instance by ID.
 
         Args:
             instance_id: Instance name
+            zone: The zone the instance is in; if not specified use the default zone
         """
-        self._logger.info(
-            f"Terminating instance {instance_id} in project {self._project_id}, zone {self._zone}"
-        )
+        if zone is None:
+            zone = self._zone
+
+        self._logger.debug(f"Terminating instance {instance_id} in zone {zone}")
 
         try:
             operation = self._compute_client.delete(
@@ -917,11 +946,12 @@ class GCPComputeInstanceManager(InstanceManager):
 
             # Wait for the operation to complete asynchronously
             await self._wait_for_operation(operation.name)
-            self._logger.info(f"Instance {instance_id} terminated successfully")
+            self._logger.debug(f"Instance {instance_id} terminated successfully")
         except NotFound:
             self._logger.warning(
-                f"Instance {instance_id} not found in project {self._project_id}, zone {self._zone}"
+                f"Instance {instance_id} not found in project {self._project_id}, zone {zone}"
             )
+            raise
         except Exception as e:
             self._logger.error(
                 f"Error terminating instance {instance_id} in project {self._project_id}: {e}"
@@ -1080,26 +1110,6 @@ class GCPComputeInstanceManager(InstanceManager):
 
         return instances
 
-    async def get_instance_status(self, instance_id: str) -> str:
-        """
-        Get the current status of a Compute Engine instance.
-
-        Args:
-            instance_id: Instance name
-
-        Returns:
-            Standardized status string
-        """
-        try:
-            instance = self._compute_client.get(
-                project=self._project_id, zone=self._zone, instance=instance_id
-            )
-
-            return self._STATUS_MAP.get(instance.status, "unknown")
-
-        except NotFound:
-            return "not_found"
-
     async def _get_image_from_family(
         self, family_name: str, project: str = "ubuntu-os-cloud"
     ) -> str:
@@ -1169,7 +1179,16 @@ class GCPComputeInstanceManager(InstanceManager):
         Returns common public OS images and the user's own custom images.
 
         Returns:
-            List of dictionaries with image information
+            List of dictionaries with image information. The dictionaries have the following keys::
+                "id": Image ID
+                "name": Image name
+                "description": Image description
+                "family": Image family
+                "creation_date": Image creation date
+                "source": Source of the image (GCP or User)
+                "project": Project the image belongs to
+                "self_link": Image self link
+                "status": Image status
         """
         self._logger.info("Listing available Compute Engine images")
 
@@ -1359,19 +1378,28 @@ class GCPComputeInstanceManager(InstanceManager):
         )
         return region_dict
 
-    async def _get_default_zone(self) -> str:
+    async def _get_default_zone(self, region: Optional[str] = None) -> str:
         """
         Get the default zone for the region.
+
+        Args:
+            region: Region to get the default zone for; if not specified use the default region
+
+        Returns:
+            The default zone for the region
         """
         if self._zone:
             self._logger.debug(f"Using specified zone {self._zone}")
             return self._zone
 
-        self._logger.debug(f"Getting default zone for region {self._region}")
+        if region is None:
+            region = self._region
+
+        self._logger.debug(f"Getting default zone for region {region}")
 
         # Create the request to list zones
         request = compute_v1.ListZonesRequest(
-            project=self._project_id, filter=f"name eq {self._region}-.*"
+            project=self._project_id, filter=f"name eq {region}-.*"
         )
         zones = list(self._zones_client.list(request=request))
 
@@ -1379,19 +1407,28 @@ class GCPComputeInstanceManager(InstanceManager):
         self._logger.debug(f"Default zone is {zones[0].name}")
         return zones[0].name
 
-    async def _get_random_zone(self) -> str:
+    async def _get_random_zone(self, region: Optional[str] = None) -> str:
         """
         Get a random zone for the region.
+
+        Args:
+            region: Region to get a random zone for; if not specified use the default region
+
+        Returns:
+            A random zone for the region
         """
         if self._zone:
             self._logger.debug(f"Using specified zone {self._zone}")
             return self._zone
 
-        self._logger.debug(f"Getting default zone for region {self._region}")
+        if region is None:
+            region = self._region
+
+        self._logger.debug(f"Getting default zone for region {region}")
 
         # Create the request to list zones
         request = compute_v1.ListZonesRequest(
-            project=self._project_id, filter=f"name eq {self._region}-.*"
+            project=self._project_id, filter=f"name eq {region}-.*"
         )
         zones = list(self._zones_client.list(request=request))
 

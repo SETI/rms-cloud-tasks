@@ -87,6 +87,9 @@ class InstanceOrchestrator:
         # Set check interval for scaling loop
         self._check_interval_seconds = 60  # Check scaling every minute
 
+        # Maximum number of instances to create in parallel
+        self._start_instance_max_threads = 10
+
         self._logger.info("Orchestrator configured for:")
         self._logger.info(f"  Provider: {self._provider}")
         self._logger.info(f"  Region: {self._region}")
@@ -124,6 +127,7 @@ class InstanceOrchestrator:
         self._logger.info(
             f"  Instance termination delay: {self._instance_termination_delay_seconds} seconds"
         )
+        self._logger.info(f"  Max parallel instance creations: {self._start_instance_max_threads}")
 
         self._logger.info(f"  Startup script:")
         for line in self._run_config.startup_script.replace("\r", "").strip().split("\n"):
@@ -404,25 +408,42 @@ export RMS_CLOUD_RUN_INSTANCE_TYPE={self._optimal_instance_type}
         startup_script = self._generate_worker_startup_script()
 
         async with self._instance_creation_lock:
-            # Start instances
+            # Create a list to store instance IDs
             instance_ids = []
-            for _ in range(count):
-                try:
-                    instance_id = await self._instance_manager.start_instance(
-                        instance_type=self._optimal_instance_type,
-                        startup_script=startup_script,
-                        job_id=self._job_id,
-                        use_spot=self._run_config.use_spot,
-                        image=self._run_config.image,
-                        zone=self._optimal_instance_zone,
-                    )
-                    instance_ids.append(instance_id)
-                    self._logger.info(
-                        f"Started {'spot' if self._run_config.use_spot else 'on-demand'} instance {instance_id}"
-                    )
-                except Exception as e:
-                    self._logger.error(f"Failed to start instance: {e}", exc_info=True)
 
+            # Create a semaphore to limit concurrent instance creations
+            semaphore = asyncio.Semaphore(self._start_instance_max_threads)
+
+            # Define the function to start a single instance with semaphore control
+            async def start_single_instance():
+                async with semaphore:
+                    try:
+                        instance_id = await self._instance_manager.start_instance(
+                            instance_type=self._optimal_instance_type,
+                            startup_script=startup_script,
+                            job_id=self._job_id,
+                            use_spot=self._run_config.use_spot,
+                            image=self._run_config.image,
+                            zone=self._optimal_instance_zone,
+                        )
+                        self._logger.info(
+                            f"Started {'spot' if self._run_config.use_spot else 'on-demand'} instance {instance_id}"
+                        )
+                        return instance_id
+                    except Exception as e:
+                        self._logger.error(f"Failed to start instance: {e}", exc_info=True)
+                        return None
+
+            # Create and gather all instance creation tasks
+            tasks = [start_single_instance() for _ in range(count)]
+            results = await asyncio.gather(*tasks)
+
+            # Filter out None results (failed instance creations)
+            instance_ids = [instance_id for instance_id in results if instance_id is not None]
+
+            self._logger.info(
+                f"Successfully provisioned {len(instance_ids)} of {count} requested instances"
+            )
             return instance_ids
 
     async def terminate_all_instances(self) -> None:
