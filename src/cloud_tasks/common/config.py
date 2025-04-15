@@ -192,7 +192,7 @@ class Config(BaseModel, validate_assignment = True):
         if provider_config.queue_name is None:
             job_id = provider_config.job_id
             if job_id is not None:
-                provider_config.queue_name = f"rms-cloud-run-{job_id}"
+                provider_config.queue_name = f"rms-cloud-tasks-{job_id}"
 
         return provider_config
 

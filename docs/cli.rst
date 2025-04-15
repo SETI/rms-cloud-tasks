@@ -10,7 +10,7 @@ Most commands support these common options:
 
 .. code-block:: none
 
-   --config CONFIG         Path to configuration file (default: cloud_run_config.yaml)
+   --config CONFIG         Path to configuration file (default: cloud_tasks_config.yaml)
    --provider {aws,gcp,azure}  Cloud provider
    --queue-name QUEUE_NAME  Name of the task queue
    --verbose, -v           Enable verbose output
@@ -37,7 +37,7 @@ Example:
 .. code-block:: bash
 
    python -m cloud_tasks.cli load_queue \
-     --config cloud_run_config.yaml \
+     --config cloud_tasks_config.yaml \
      --provider aws \
      --queue-name my-task-queue \
      --tasks tasks.json
@@ -61,7 +61,7 @@ Example:
 .. code-block:: bash
 
    python -m cloud_tasks.cli show_queue \
-     --config cloud_run_config.yaml \
+     --config cloud_tasks_config.yaml \
      --provider aws \
      --queue-name my-task-queue \
      --detail
@@ -85,7 +85,7 @@ Example:
 .. code-block:: bash
 
    python -m cloud_tasks.cli purge_queue \
-     --config cloud_run_config.yaml \
+     --config cloud_tasks_config.yaml \
      --provider aws \
      --queue-name my-task-queue \
      --force
@@ -109,7 +109,7 @@ Example:
 .. code-block:: bash
 
    python -m cloud_tasks.cli delete_queue \
-     --config cloud_run_config.yaml \
+     --config cloud_tasks_config.yaml \
      --provider aws \
      --queue-name my-task-queue \
      --force
@@ -137,7 +137,7 @@ Example:
 .. code-block:: bash
 
    python -m cloud_tasks.cli list_regions \
-     --config cloud_run_config.yaml \
+     --config cloud_tasks_config.yaml \
      --provider aws \
      --prefix us- \
      --zones \
@@ -165,7 +165,7 @@ Example:
 .. code-block:: bash
 
    python -m cloud_tasks.cli list_images \
-     --config cloud_run_config.yaml \
+     --config cloud_tasks_config.yaml \
      --provider aws \
      --filter "ubuntu" \
      --limit 10 \
@@ -206,7 +206,7 @@ Example:
 .. code-block:: bash
 
    python -m cloud_tasks.cli list_instance_types \
-     --config cloud_run_config.yaml \
+     --config cloud_tasks_config.yaml \
      --provider aws \
      --min-cpu 2 \
      --min-total-memory 4 \
@@ -235,7 +235,7 @@ Example:
 .. code-block:: bash
 
    python -m cloud_tasks.cli list_running_instances \
-     --config cloud_run_config.yaml \
+     --config cloud_tasks_config.yaml \
      --provider aws \
      --job-id my-job-id \
      --verbose

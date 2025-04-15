@@ -557,7 +557,7 @@ class AWSEC2InstanceManager(InstanceManager):
             ami_id = await self._get_default_ami()
 
         # Convert tags dictionary to AWS format
-        aws_tags = [{"Key": "rms-cloud-run-job-id", "Value": job_id}]
+        aws_tags = [{"Key": "rms-cloud-tasks-job-id", "Value": job_id}]
 
         # Prepare instance run parameters
         run_params = {
@@ -656,7 +656,7 @@ class AWSEC2InstanceManager(InstanceManager):
 
         if job_id:
             self._logger.debug(f"Listing running instances with job_id filter '{job_id}'")
-            filters.append({"Name": "tag:rms_cloud_run_job_id", "Values": [job_id]})
+            filters.append({"Name": "tag:rms_cloud_tasks_job_id", "Values": [job_id]})
         else:
             self._logger.debug("Listing running instances")
 
@@ -677,7 +677,7 @@ class AWSEC2InstanceManager(InstanceManager):
 
                 if "Tags" in instance:
                     for tag in instance["Tags"]:
-                        if tag["Key"] == "rms_cloud_run_job_id":
+                        if tag["Key"] == "rms_cloud_tasks_job_id":
                             inst_job_id = tag["Value"]
                             if job_id and inst_job_id != job_id:
                                 self._logger.debug(

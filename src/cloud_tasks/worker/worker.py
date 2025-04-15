@@ -48,47 +48,47 @@ class Worker:
         """
         self._user_worker_function = user_worker_function
 
-        self._provider = os.getenv("RMS_CLOUD_RUN_PROVIDER")
+        self._provider = os.getenv("RMS_CLOUD_TASKS_PROVIDER")
         if self._provider is None:
-            logger.error("RMS_CLOUD_RUN_PROVIDER environment variable is not set")
+            logger.error("RMS_CLOUD_TASKS_PROVIDER environment variable is not set")
             sys.exit(1)
         self._provider = self._provider.upper()
         logger.info(f"Provider: {self._provider}")
 
-        self._job_id = os.getenv("RMS_CLOUD_RUN_JOB_ID")
+        self._job_id = os.getenv("RMS_CLOUD_TASKS_JOB_ID")
         if self._job_id is None:
-            logger.error("RMS_CLOUD_RUN_JOB_ID environment variable is not set")
+            logger.error("RMS_CLOUD_TASKS_JOB_ID environment variable is not set")
             sys.exit(1)
         logger.info(f"Job ID: {self._job_id}")
-        self._queue_name = os.getenv("RMS_CLOUD_RUN_QUEUE_NAME")
+        self._queue_name = os.getenv("RMS_CLOUD_TASKS_QUEUE_NAME")
         if self._queue_name is None:
-            logger.error("RMS_CLOUD_RUN_QUEUE_NAME environment variable is not set")
+            logger.error("RMS_CLOUD_TASKS_QUEUE_NAME environment variable is not set")
             sys.exit(1)
         logger.info(f"Queue name: {self._queue_name}")
 
-        self._project_id = os.getenv("RMS_CLOUD_RUN_PROJECT_ID")  # Optional - only for GCP
+        self._project_id = os.getenv("RMS_CLOUD_TASKS_PROJECT_ID")  # Optional - only for GCP
         logger.info(f"Project ID: {self._project_id}")
 
-        if os.getenv("RMS_CLOUD_RUN_NUM_TASKS_PER_INSTANCE") is not None:
-            self._tasks_per_worker = int(os.getenv("RMS_CLOUD_RUN_NUM_TASKS_PER_INSTANCE"))
+        if os.getenv("RMS_CLOUD_TASKS_NUM_TASKS_PER_INSTANCE") is not None:
+            self._tasks_per_worker = int(os.getenv("RMS_CLOUD_TASKS_NUM_TASKS_PER_INSTANCE"))
             logger.info(
-                f"Tasks per worker (RMS_CLOUD_RUN_NUM_TASKS_PER_INSTANCE): {self._tasks_per_worker}"
+                f"Tasks per worker (RMS_CLOUD_TASKS_NUM_TASKS_PER_INSTANCE): {self._tasks_per_worker}"
             )
-        elif os.getenv("RMS_CLOUD_RUN_INSTANCE_NUM_VCPUS") is not None:
-            self._tasks_per_worker = int(os.getenv("RMS_CLOUD_RUN_INSTANCE_NUM_VCPUS"))
+        elif os.getenv("RMS_CLOUD_TASKS_INSTANCE_NUM_VCPUS") is not None:
+            self._tasks_per_worker = int(os.getenv("RMS_CLOUD_TASKS_INSTANCE_NUM_VCPUS"))
             logger.info(
-                f"Tasks per worker (RMS_CLOUD_RUN_INSTANCE_NUM_VCPUS): {self._tasks_per_worker}"
+                f"Tasks per worker (RMS_CLOUD_TASKS_INSTANCE_NUM_VCPUS): {self._tasks_per_worker}"
             )
         else:
             self._tasks_per_worker = 1
             logger.info(f"Tasks per worker (default): {self._tasks_per_worker}")
 
         self._visibility_timeout_seconds = int(
-            os.getenv("RMS_CLOUD_RUN_VISIBILITY_TIMEOUT_SECONDS", 30)
+            os.getenv("RMS_CLOUD_TASKS_VISIBILITY_TIMEOUT_SECONDS", 30)
         )
         logger.info(f"Visibility timeout: {self._visibility_timeout_seconds} seconds")
 
-        self._shutdown_grace_period = int(os.getenv("RMS_CLOUD_RUN_SHUTDOWN_GRACE_PERIOD", 120))
+        self._shutdown_grace_period = int(os.getenv("RMS_CLOUD_TASKS_SHUTDOWN_GRACE_PERIOD", 120))
         logger.info(f"Shutdown grace period: {self._shutdown_grace_period} seconds")
 
         # State tracking

@@ -53,7 +53,7 @@ azure:
   client_id: YOUR_AZURE_CLIENT_ID
   client_secret: YOUR_AZURE_CLIENT_SECRET
   location: eastus
-  resource_group: cloud-run-rg
+  resource_group: cloud-tasks-rg
   # Provider-specific overrides (optional)
   image: Canonical:UbuntuServer:24_04-lts:latest
   # Azure-specific startup script

@@ -433,13 +433,13 @@ async def list_running_instances_cmd(args: argparse.Namespace, config: Config) -
         # Get list of running instances
         tag_filter = {}
         if args.job_id:
-            tag_filter["rms_cloud_run_job_id"] = args.job_id
+            tag_filter["rms_cloud_tasks_job_id"] = args.job_id
             print(f"Listing instances with job ID: {args.job_id}\n")
         else:
             if args.all_instances:
-                print("Listing all instances including ones not created by cloud run\n")
+                print("Listing all instances including ones not created by cloud tasks\n")
             else:
-                print("Listing all instances created by cloud run\n")
+                print("Listing all instances created by cloud tasks\n")
 
         try:
             # # For GCP, pass the region parameter explicitly
@@ -1253,7 +1253,7 @@ def add_common_args(
 ) -> None:
     """Add common arguments to all command parsers."""
     parser.add_argument(
-        "--config", default="cloud_run_config.yaml", help="Path to configuration file"
+        "--config", default="cloud_tasks_config.yaml", help="Path to configuration file"
     )
     parser.add_argument("--provider", choices=["aws", "gcp", "azure"], help="Cloud provider")
     if include_queue_name:
@@ -1466,7 +1466,7 @@ def main():
     list_running_instances_parser.add_argument(
         "--all-instances",
         action="store_true",
-        help="Show all instances including ones that were not created by cloud run",
+        help="Show all instances including ones that were not created by cloud tasks",
     )
     list_running_instances_parser.add_argument(
         "--include-terminated",

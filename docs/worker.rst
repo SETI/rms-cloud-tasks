@@ -32,7 +32,7 @@ Here's a simple example of how to implement a worker:
        worker = MyTaskWorker(
            provider="aws",
            queue_name="my-task-queue",
-           config_file="cloud_run_config.yaml"
+           config_file="cloud_tasks_config.yaml"
        )
        worker.run()
 

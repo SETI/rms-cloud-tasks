@@ -3,7 +3,7 @@ requires = ["setuptools>=61.0", "setuptools_scm[toml]", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "rms-cloud-run"
+name = "rms-cloud-tasks"
 dynamic = ["version"]
 description = "A scalable, multi-cloud task processing system"
 readme = "README.md"
@@ -46,19 +46,19 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/SETI/rms-cloud-run"
-Repository = "https://github.com/SETI/rms-cloud-run"
-Source = "https://github.com/SETI/rms-cloud-run"
-Issues = "https://github.com/SETI/rms-cloud-run/issues"
+Homepage = "https://github.com/SETI/rms-cloud-tasks"
+Repository = "https://github.com/SETI/rms-cloud-tasks"
+Source = "https://github.com/SETI/rms-cloud-tasks"
+Issues = "https://github.com/SETI/rms-cloud-tasks/issues"
 
 [project.scripts]
-cloud-run = "cloud_tasks.cli:main"
+cloud-tasks = "cloud_tasks.cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
 
 #[tool.setuptools.package-data]
-#"rms-cloud-run" = ["py.typed"]
+#"rms-cloud-tasks" = ["py.typed"]
 
 [tool.setuptools_scm]
 local_scheme = "no-local-version"

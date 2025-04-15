@@ -50,21 +50,21 @@ Here's a quick example of using the Cloud Tasks CLI to load tasks into a queue:
 
    # Load tasks from a JSON file into an AWS queue
    python -m cloud_tasks.cli load_queue \
-     --config cloud_run_config.yaml \
+     --config cloud_tasks_config.yaml \
      --provider aws \
      --queue-name my-task-queue \
      --tasks tasks.json
 
    # Show the current status of a queue
    python -m cloud_tasks.cli show_queue \
-     --config cloud_run_config.yaml \
+     --config cloud_tasks_config.yaml \
      --provider aws \
      --queue-name my-task-queue \
      --detail
 
    # List available regions for a provider
    python -m cloud_tasks.cli list_regions \
-     --config cloud_run_config.yaml \
+     --config cloud_tasks_config.yaml \
      --provider aws \
      --zones \
      --detail
