@@ -87,6 +87,7 @@ class InstanceOrchestrator:
         self._check_interval_seconds = 60  # Check scaling every minute
 
         # Maximum number of instances to create in parallel
+        self._min_instances = self._run_config.min_instances
         self._start_instance_max_threads = 10
 
         self._logger.info("Orchestrator configured for:")
@@ -397,9 +398,13 @@ export RMS_CLOUD_RUN_SHUTDOWN_GRACE_PERIOD=120
                 new_price = self._optimal_instance_info["total_price"] * desired_instances
                 total_cpus = self._optimal_instance_info["vcpu"] * desired_instances
                 simultaneous_tasks = int(total_cpus / self._run_config.cpus_per_task)
+                price_str = f"*** ESTIMATED PRICE: ${new_price:.2f}/hour ***"
+                hdr_str = "*" * len(price_str)
+                self._logger.info(hdr_str)
+                self._logger.info(price_str)
+                self._logger.info(hdr_str)
                 self._logger.info(
-                    f"*** ESTIMATED PRICE: ${new_price:.2f}/hour *** for "
-                    f"{total_cpus} vCPUs running {simultaneous_tasks} simultaneous tasks"
+                    f"{total_cpus} vCPUs running {simultaneous_tasks} " "simultaneous tasks"
                 )
 
                 try:

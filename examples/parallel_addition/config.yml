@@ -19,4 +19,5 @@ gcp:
     pip install -e .
     pip install -r examples/parallel_addition/requirements.txt
     export ADDITION_OUTPUT_DIR=gs://rfrench-test-bucket/addition-results
+    export ADDITION_TASK_DELAY=1
     python3 examples/parallel_addition/worker_addition.py

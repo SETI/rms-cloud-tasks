@@ -10,6 +10,7 @@ import logging
 import os
 import multiprocessing
 import socket
+import time
 from typing import Any, Dict, Tuple
 
 # Import the cloud task adapter
@@ -38,7 +39,7 @@ def process_task(task_id: str, task_data: Dict[str, Any]) -> Tuple[bool, Any]:
         num2 = task_data.get("num2")
 
         if num1 is None or num2 is None:
-            # We still return True because we don't want to retry the tasks
+            # We still return True because we don't want to retry the task
             return True, "Missing required parameters"
 
         result = num1 + num2
@@ -53,9 +54,15 @@ def process_task(task_id: str, task_data: Dict[str, Any]) -> Tuple[bool, Any]:
             f.write(f"Process {process_id} on {hostname} ({worker_id})\n")
             f.write(f"Task {task_id}: {num1} + {num2} = {result}\n")
 
+        task_delay = os.getenv("ADDITION_TASK_DELAY")
+        if task_delay is not None:
+            delay = float(task_delay)
+            time.sleep(delay)
+
         return True, output_file
 
     except Exception as e:
+        # We still return True because we don't want to retry the task
         return False, str(e)
 
 

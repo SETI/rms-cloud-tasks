@@ -334,6 +334,9 @@ async def manage_pool_cmd(args: argparse.Namespace, config: Config) -> None:
         logger.info("Starting orchestrator")
         await orchestrator.start()
 
+        while True:
+            await asyncio.sleep(5)  # Shorter sleep for responsiveness
+
         # Monitor job progress (using orchestrator's task_queue)
         try:
             queue_depth = await orchestrator.task_queue.get_queue_depth()
@@ -351,7 +354,7 @@ async def manage_pool_cmd(args: argparse.Namespace, config: Config) -> None:
             with tqdm(total=initial_queue_depth, desc="Processing tasks") as pbar:
                 last_depth = queue_depth
 
-                while queue_depth > 0 or orchestrator.num_running_instances > 0:
+                while queue_depth > 0:  # TODO or orchestrator.num_running_instances > 0:
                     # Check if the orchestrator is still running
                     if not orchestrator.running:
                         logger.info("Orchestrator stopped, exiting monitor loop.")
@@ -384,7 +387,7 @@ async def manage_pool_cmd(args: argparse.Namespace, config: Config) -> None:
                         logger.info(f"Queue depth: {queue_depth}, Instances: {instances_info}")
 
                     # Exit condition if queue is empty and no minimum instances required
-                    if queue_depth == 0 and orchestrator.min_instances == 0:
+                    if queue_depth == 0:  # TODO and orchestrator.min_instances == 0:
                         logger.info("Queue is empty and min_instances is 0, finishing up.")
                         # Wait briefly for any final processing or scaling down
                         await asyncio.sleep(orchestrator.check_interval_seconds)
