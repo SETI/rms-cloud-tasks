@@ -5,6 +5,7 @@ click
 json-stream
 pydantic
 pyyaml
+shortuuid
 tqdm
 
 # Type checking and linting

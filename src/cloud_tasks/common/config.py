@@ -10,8 +10,8 @@ from pydantic import BaseModel, NonNegativeFloat, NonNegativeInt,constr, Field
 
 
 class ProviderConfig(BaseModel):
-    job_id: Optional[constr(min_length=1)] = None
-    queue_name: Optional[constr(min_length=1)] = None
+    job_id: Optional[constr(min_length=1, max_length=24)] = None
+    queue_name: Optional[constr(min_length=1, max_length=24)] = None
     instance_types: Optional[List[str] | str] = None
     startup_script: Optional[str] = None
     startup_script_file: Optional[constr(min_length=1)] = None

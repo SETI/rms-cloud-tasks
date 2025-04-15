@@ -1278,24 +1278,19 @@ def add_common_args(
 
 def add_instance_pool_args(parser: argparse.ArgumentParser) -> None:
     """Add instance pool management specific arguments."""
-    parser.add_argument(
-        "--max-instances", type=int, default=5, help="Maximum number of compute instances"
-    )
-    parser.add_argument(
-        "--min-instances", type=int, default=1, help="Minimum number of compute instances"
-    )
+    parser.add_argument("--max-instances", type=int, help="Maximum number of compute instances")
+    parser.add_argument("--min-instances", type=int, help="Minimum number of compute instances")
     parser.add_argument("--image", help="Custom VM image to use (overrides config)")
     parser.add_argument(
         "--startup-script-file", help="Path to custom startup script file (overrides config)"
     )
-    parser.add_argument("--cpus-per-task", type=int, default=1, help="Number of vCPUs per task")
+    parser.add_argument("--cpus-per-task", type=int, help="Number of vCPUs per task")
     parser.add_argument(
-        "--min-tasks-per-instance", type=int, default=1, help="Minimum number of tasks per instance"
+        "--min-tasks-per-instance", type=int, help="Minimum number of tasks per instance"
     )
     parser.add_argument(
         "--max-tasks-per-instance",
         type=int,
-        default=10,
         help="Maximum number of tasks per instance",
     )
 
@@ -1402,9 +1397,7 @@ def main():
     load_queue_parser.add_argument(
         "--start-task", type=int, help="Skip tasks until this task number (1-based indexing)"
     )
-    load_queue_parser.add_argument(
-        "--limit", type=int, default=None, help="Maximum number of tasks to enqueue"
-    )
+    load_queue_parser.add_argument("--limit", type=int, help="Maximum number of tasks to enqueue")
     load_queue_parser.add_argument(
         "--max-concurrent-tasks",
         type=int,

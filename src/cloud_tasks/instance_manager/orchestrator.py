@@ -71,7 +71,7 @@ class InstanceOrchestrator:
 
         # Empty queue tracking for scale-down
         self._empty_queue_since = None
-        self._instance_termination_delay_seconds = 300  # 5 minutes
+        self._instance_termination_delay_seconds = 30  # 5 minutes XXX
         self._scaling_task = None
 
         # Initialize lock for instance creation
@@ -87,7 +87,8 @@ class InstanceOrchestrator:
         self._check_interval_seconds = 60  # Check scaling every minute
 
         # Maximum number of instances to create in parallel
-        self._min_instances = self._run_config.min_instances
+        self._min_instances = self._run_config.min_instances or 0
+        self._max_instances = self._run_config.max_instances
         self._start_instance_max_threads = 10
 
         self._logger.info("Orchestrator configured for:")
@@ -97,7 +98,8 @@ class InstanceOrchestrator:
         self._logger.info(f"  Job ID: {self._job_id}")
         self._logger.info(f"  Queue: {self._queue_name}")
         self._logger.info(
-            f"  Instance scaling: {self._run_config.min_instances} to {self._run_config.max_instances}"
+            f"  Instance scaling: {self._run_config.min_instances} to "
+            f"{self._run_config.max_instances}"
         )
         if self._run_config.use_spot:
             self._logger.info(f"  Pricing: Spot instances")
@@ -140,6 +142,7 @@ class InstanceOrchestrator:
         self._logger.info(
             f"  Instance termination delay: {self._instance_termination_delay_seconds} seconds"
         )
+        self._logger.info(f"  # Instances: {self._min_instances} to {self._max_instances}")
         self._logger.info(f"  Max parallel instance creations: {self._start_instance_max_threads}")
 
         self._logger.info(f"  Startup script:")
@@ -211,7 +214,7 @@ export RMS_CLOUD_RUN_SHUTDOWN_GRACE_PERIOD=120
 
         This initializes the instance manager and begins monitoring.
         """
-        self._logger.info(
+        self._logger.debug(
             f"Starting InstanceOrchestrator for {self._provider} (Job ID: {self._job_id})"
         )
 
@@ -235,12 +238,21 @@ export RMS_CLOUD_RUN_SHUTDOWN_GRACE_PERIOD=120
         instance_info = await self._instance_manager.get_optimal_instance_type(
             vars(self._run_config)
         )
-        self._logger.info(
-            f"Selected instance type: {instance_info['name']} in {instance_info['zone']} "
-            f"at ${instance_info['total_price']:.6f}/hour"
-        )
 
         self._optimal_instance_info = instance_info
+
+        self._logger.info(
+            f"|| Selected instance type: {instance_info['name']} in {instance_info['zone']} "
+            f"at ${instance_info['total_price']:.6f}/hour"
+        )
+        local_ssd_str = (
+            f"{instance_info['local_ssd_gb']} GB local SSD"
+            if instance_info["local_ssd_gb"]
+            else "no local SSD"
+        )
+        self._logger.info(
+            f"||  {instance_info['vcpu']} vCPUs, {instance_info['mem_gb']} GB RAM, {local_ssd_str}"
+        )
 
         # Derive the boot disk size from the constraints and the number of vCPUs in the
         # optimal instance
@@ -267,7 +279,7 @@ export RMS_CLOUD_RUN_SHUTDOWN_GRACE_PERIOD=120
             )
             boot_disk_size = self._DEFAULT_BOOT_DISK_SIZE_PER_CPU_GB * instance_info["vcpu"]
         else:
-            self._logger.info(f"Derived boot disk size: {boot_disk_size} GB")
+            self._logger.info(f"|| Derived boot disk size: {boot_disk_size} GB")
         self._optimal_instance_boot_disk_size = boot_disk_size
 
         # Derive the number of tasks per instance from the constraints and the number of vCPUs in the
@@ -281,7 +293,7 @@ export RMS_CLOUD_RUN_SHUTDOWN_GRACE_PERIOD=120
             num_tasks = max(num_tasks, self._run_config.min_tasks_per_instance)
         if self._run_config.max_tasks_per_instance is not None:
             num_tasks = min(num_tasks, self._run_config.max_tasks_per_instance)
-        self._logger.info(f"Derived number of tasks per instance: {num_tasks}")
+        self._logger.info(f"|| Derived number of tasks per instance: {num_tasks}")
         self._optimal_instance_num_tasks = num_tasks
 
         # Begin monitoring
@@ -309,12 +321,12 @@ export RMS_CLOUD_RUN_SHUTDOWN_GRACE_PERIOD=120
         """
         Check if we need to scale up or down based on queue depth.
         """
-        self._logger.info("Checking if scaling is needed")
+        self._logger.debug("Checking if scaling is needed")
 
         # Get current queue depth
         try:
             queue_depth = await self.task_queue.get_queue_depth()
-            self._logger.info(f"Current queue depth: {queue_depth}")
+            self._logger.debug(f"Current queue depth: {queue_depth}")
         except Exception as e:
             self._logger.error(f"Failed to get queue depth: {e}", exc_info=True)
             self._logger.error("Cannot make scaling decisions without queue depth information")
@@ -326,7 +338,7 @@ export RMS_CLOUD_RUN_SHUTDOWN_GRACE_PERIOD=120
             running_count = len([i for i in current_instances if i["state"] == "running"])
             starting_count = len([i for i in current_instances if i["state"] == "starting"])
 
-            self._logger.info(
+            self._logger.debug(
                 f"Current instances: {running_count} running, {starting_count} starting"
             )
 
@@ -351,22 +363,43 @@ export RMS_CLOUD_RUN_SHUTDOWN_GRACE_PERIOD=120
                 self._empty_queue_since is not None
                 and float(time.time()) - self._empty_queue_since
                 > self._instance_termination_delay_seconds
-                and total_instances > self._run_config.min_instances
+                and total_instances > self._min_instances
             ):
                 # Calculate how many instances to terminate
-                instances_to_terminate = total_instances - self._run_config.min_instances
+                instances_to_terminate = total_instances - self._min_instances
                 self._logger.info(
                     f"Queue has been empty for {float(time.time()) - self._empty_queue_since}s, "
                     f"terminating {instances_to_terminate} instances"
                 )
 
-                # Terminate instances
-                terminate_count = 0
-                for instance in current_instances:
-                    if instance["state"] == "running" and terminate_count < instances_to_terminate:
-                        await self._instance_manager.terminate_instance(instance["id"])
-                        self._logger.info(f"Terminated instance: {instance['id']}")
-                        terminate_count += 1
+                # Create a semaphore to limit concurrent terminations
+                semaphore = asyncio.Semaphore(self._start_instance_max_threads)
+
+                # Define the function to terminate a single instance with semaphore control
+                async def terminate_single_instance(instance):
+                    async with semaphore:
+                        try:
+                            self._logger.info(f"Terminating instance: {instance['id']}")
+                            await self._instance_manager.terminate_instance(
+                                instance["id"], instance["zone"]
+                            )
+                            self._logger.info(f"Terminated instance: {instance['id']}")
+                            return True
+                        except Exception as e:
+                            self._logger.error(
+                                f"Failed to terminate instance {instance['id']}: {e}", exc_info=True
+                            )
+                            return False
+
+                # Filter running instances and create termination tasks
+                running_instances = [i for i in current_instances if i["state"] == "running"]
+                instances_to_terminate = running_instances[:instances_to_terminate]
+                tasks = [terminate_single_instance(instance) for instance in instances_to_terminate]
+                results = await asyncio.gather(*tasks)
+
+                # Count successful terminations
+                terminate_count = sum(1 for result in results if result)
+                self._logger.info(f"Successfully terminated {terminate_count} instances")
         else:
             # Queue is not empty, reset timer
             if self._empty_queue_since is not None:
@@ -374,20 +407,12 @@ export RMS_CLOUD_RUN_SHUTDOWN_GRACE_PERIOD=120
             self._empty_queue_since = None
 
             # Calculate desired number of instances based on queue depth and tasks per instance
-            desired_instances = int(
-                min(
-                    self._run_config.max_instances,
-                    max(
-                        self._run_config.min_instances,
-                        (queue_depth + self._run_config.cpus_per_task - 1)
-                        // self._run_config.cpus_per_task,
-                    ),
-                )
-            )
-
-            self._logger.info(
-                f"Calculated desired instances: {desired_instances} based on queue_depth={queue_depth} and tasks_per_instance={self._run_config.cpus_per_task}"
-            )
+            cpus_per_task = self._run_config.cpus_per_task or 1
+            desired_instances = int((queue_depth + cpus_per_task - 1) // cpus_per_task)
+            if self._min_instances is not None:
+                desired_instances = max(desired_instances, self._min_instances)
+            if self._max_instances is not None:
+                desired_instances = min(desired_instances, self._max_instances)
 
             # Scale up if needed
             if total_instances < desired_instances:
@@ -397,8 +422,8 @@ export RMS_CLOUD_RUN_SHUTDOWN_GRACE_PERIOD=120
                 )
                 new_price = self._optimal_instance_info["total_price"] * desired_instances
                 total_cpus = self._optimal_instance_info["vcpu"] * desired_instances
-                simultaneous_tasks = int(total_cpus / self._run_config.cpus_per_task)
-                price_str = f"*** ESTIMATED PRICE: ${new_price:.2f}/hour ***"
+                simultaneous_tasks = int(total_cpus / cpus_per_task)
+                price_str = f"*** ESTIMATED TOTAL PRICE: ${new_price:.2f}/hour ***"
                 hdr_str = "*" * len(price_str)
                 self._logger.info(hdr_str)
                 self._logger.info(price_str)
@@ -409,18 +434,10 @@ export RMS_CLOUD_RUN_SHUTDOWN_GRACE_PERIOD=120
 
                 try:
                     new_instance_ids = await self.provision_instances(instances_to_add)
-                    if new_instance_ids:
-                        self._logger.info(
-                            f"Successfully provisioned {len(new_instance_ids)} new instances"
-                        )
-                    else:
-                        self._logger.warning(
-                            "No instances were provisioned despite scaling request"
-                        )
                 except Exception as e:
                     self._logger.error(f"Failed to provision instances: {e}", exc_info=True)
             else:
-                self._logger.info(
+                self._logger.debug(
                     f"No scaling needed. Current: {total_instances}, Desired: {desired_instances}"
                 )
 
@@ -489,7 +506,7 @@ export RMS_CLOUD_RUN_SHUTDOWN_GRACE_PERIOD=120
             async def start_single_instance():
                 async with semaphore:
                     try:
-                        instance_id = await self._instance_manager.start_instance(
+                        instance_id, zone = await self._instance_manager.start_instance(
                             instance_type=self._optimal_instance_info["name"],
                             boot_disk_size=self._optimal_instance_boot_disk_size,
                             startup_script=startup_script,
@@ -499,7 +516,8 @@ export RMS_CLOUD_RUN_SHUTDOWN_GRACE_PERIOD=120
                             zone=self._optimal_instance_info["zone"],
                         )
                         self._logger.info(
-                            f"Started {'spot' if self._run_config.use_spot else 'on-demand'} instance {instance_id}"
+                            f"Started {'spot' if self._run_config.use_spot else 'on-demand'} "
+                            f"instance '{instance_id}' in zone '{zone}'"
                         )
                         return instance_id
                     except Exception as e:
@@ -556,8 +574,8 @@ export RMS_CLOUD_RUN_SHUTDOWN_GRACE_PERIOD=120
                 "details": instances,
             },
             "settings": {
-                "max_instances": self._run_config.max_instances,
-                "min_instances": self._run_config.min_instances,
+                "max_instances": self._max_instances,
+                "min_instances": self._min_instances,
                 "cpus_per_task": self._run_config.cpus_per_task,
             },
             "is_running": self.running,

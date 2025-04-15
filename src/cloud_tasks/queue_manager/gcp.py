@@ -76,8 +76,8 @@ class GCPPubSubQueue(TaskQueue):
             self._project_id, self._subscription_name
         )
 
-        self._logger.info(f"Topic path: {self._topic_path}")
-        self._logger.info(f"Subscription path: {self._subscription_path}")
+        self._logger.debug(f"Topic path: {self._topic_path}")
+        self._logger.debug(f"Subscription path: {self._subscription_path}")
 
         # Check if topic exists
         self._topic_exists = False

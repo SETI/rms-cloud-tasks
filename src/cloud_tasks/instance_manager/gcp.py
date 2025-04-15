@@ -7,8 +7,8 @@ import copy
 import logging
 import random
 import re
+import shortuuid
 from typing import Any, Dict, List, Optional, Tuple, cast
-import uuid
 
 from google.api_core.exceptions import NotFound  # type: ignore
 from google.auth import default as get_default_credentials
@@ -19,6 +19,7 @@ from cloud_tasks.common.config import GCPConfig
 
 from .instance_manager import InstanceManager
 
+shortuuid.set_alphabet("abcdefghijklmnopqrstuvwxyz0123456789")
 
 # Notes:
 # - If "credentials_file" is not provided, the default application credentials will be
@@ -817,7 +818,7 @@ class GCPComputeInstanceManager(InstanceManager):
         self._logger.debug(f"Starting new instance with type: {instance_type}, spot: {use_spot}")
 
         # Generate a unique name for the instance
-        instance_id = f"{self._JOB_ID_TAG_PREFIX}{job_id}-{str(uuid.uuid4())}"
+        instance_id = f"{self._JOB_ID_TAG_PREFIX}{job_id}-{str(shortuuid.uuid())}"
 
         if zone is not None and self._zone is not None and zone != self._zone:
             self._logger.debug(f"Overriding default zone {self._zone} with {zone}")
@@ -912,13 +913,13 @@ class GCPComputeInstanceManager(InstanceManager):
             )
 
             # Wait for the create operation to complete
-            self._logger.info(
+            self._logger.debug(
                 f"Creating {'spot' if use_spot else 'on-demand'} instance "
                 f"{instance_id} ({instance_type})"
             )
             await self._wait_for_operation(operation, zone, f"Creation of instance {instance_id}")
-            self._logger.info(
-                f"Instance {instance_id} created successfully " f"({instance_type} in zone {zone}"
+            self._logger.debug(
+                f"Instance {instance_id} created successfully " f"({instance_type} in zone {zone})"
             )
             return instance_id, zone
         except Exception as e:
@@ -946,12 +947,12 @@ class GCPComputeInstanceManager(InstanceManager):
 
         try:
             operation = self._compute_client.delete(
-                project=self._project_id, zone=self._zone, instance=instance_id
+                project=self._project_id, zone=zone, instance=instance_id
             )
 
             # Wait for the operation to complete asynchronously
             await self._wait_for_operation(
-                operation.name, zone, f"Termination of instance {instance_id}"
+                operation, zone, f"Termination of instance {instance_id}"
             )
             self._logger.debug(f"Instance {instance_id} terminated successfully")
         except NotFound:
@@ -1322,7 +1323,7 @@ class GCPComputeInstanceManager(InstanceManager):
         """
         self._logger.debug(f"Waiting for operation {operation.name} to complete")
 
-        result = operation.result(timeout=30)  # TODO
+        result = operation.result(timeout=120)  # TODO
 
         if operation.error_code:
             self._logger.error(
@@ -1336,7 +1337,7 @@ class GCPComputeInstanceManager(InstanceManager):
             for warning in operation.warnings:
                 self._logger.warning(f" - {warning.code}: {warning.message}")
 
-        self._logger.info(f"Operation {operation.name} completed with result: {result}")
+        self._logger.debug(f"Operation {operation.name} completed with result: {result}")
         return result
 
     async def get_available_regions(self, prefix: Optional[str] = None) -> Dict[str, Any]:

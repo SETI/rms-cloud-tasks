@@ -15,6 +15,7 @@ dependencies = [
   "json-stream",
   "pydantic",
   "pyyaml",
+  "shortuuid",
   "tqdm",
   "boto3",
   "google-cloud-pubsub",
