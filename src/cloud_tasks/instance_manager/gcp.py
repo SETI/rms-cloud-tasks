@@ -173,10 +173,10 @@ class GCPComputeInstanceManager(InstanceManager):
                     "max_local_ssd": Maximum amount of local SSD storage in GB
                     "min_local_ssd_per_cpu": Minimum amount of local SSD storage per vCPU
                     "max_local_ssd_per_cpu": Maximum amount of local SSD storage per vCPU
-                    "min_boot_disk": Minimum amount of boot disk storage in GB
-                    "max_boot_disk": Maximum amount of boot disk storage in GB
-                    "min_boot_disk_per_cpu": Minimum amount of boot disk storage per vCPU
-                    "max_boot_disk_per_cpu": Maximum amount of boot disk storage per vCPU
+                    "min_boot_disk": Minimum amount of boot disk storage in GB (ignored)
+                    "max_boot_disk": Maximum amount of boot disk storage in GB (ignored)
+                    "min_boot_disk_per_cpu": Minimum amount of boot disk storage per vCPU (ignored)
+                    "max_boot_disk_per_cpu": Maximum amount of boot disk storage per vCPU (ignored)
                     "use_spot": Whether to filter for spot-capable instance types
 
         Returns:
@@ -285,26 +285,26 @@ class GCPComputeInstanceManager(InstanceManager):
                     or cast(float, instance_info["local_ssd_gb"]) / cast(int, instance_info["vcpu"])
                     <= cast(float, constraints["max_local_ssd_per_cpu"])
                 )
-                and (
-                    constraints["min_boot_disk"] is None
-                    or cast(float, instance_info["boot_disk_gb"])
-                    >= cast(float, constraints["min_boot_disk"])
-                )
-                and (
-                    constraints["max_boot_disk"] is None
-                    or cast(float, instance_info["boot_disk_gb"])
-                    <= cast(float, constraints["max_boot_disk"])
-                )
-                and (
-                    constraints["min_boot_disk_per_cpu"] is None
-                    or cast(float, instance_info["boot_disk_gb"]) / cast(int, instance_info["vcpu"])
-                    >= cast(float, constraints["min_boot_disk_per_cpu"])
-                )
-                and (
-                    constraints["max_boot_disk_per_cpu"] is None
-                    or cast(float, instance_info["boot_disk_gb"]) / cast(int, instance_info["vcpu"])
-                    <= cast(float, constraints["max_boot_disk_per_cpu"])
-                )
+                # and (
+                #     constraints["min_boot_disk"] is None
+                #     or cast(float, instance_info["boot_disk_gb"])
+                #     >= cast(float, constraints["min_boot_disk"])
+                # )
+                # and (
+                #     constraints["max_boot_disk"] is None
+                #     or cast(float, instance_info["boot_disk_gb"])
+                #     <= cast(float, constraints["max_boot_disk"])
+                # )
+                # and (
+                #     constraints["min_boot_disk_per_cpu"] is None
+                #     or cast(float, instance_info["boot_disk_gb"]) / cast(int, instance_info["vcpu"])
+                #     >= cast(float, constraints["min_boot_disk_per_cpu"])
+                # )
+                # and (
+                #     constraints["max_boot_disk_per_cpu"] is None
+                #     or cast(float, instance_info["boot_disk_gb"]) / cast(int, instance_info["vcpu"])
+                #     <= cast(float, constraints["max_boot_disk_per_cpu"])
+                # )
                 and (
                     not constraints["use_spot"]
                     or (constraints["use_spot"] and instance_info["supports_spot"])
@@ -764,7 +764,7 @@ class GCPComputeInstanceManager(InstanceManager):
         # vCPUs that would otherwise cost the same.
         priced_instances.sort(
             key=lambda x: (
-                round(cast(float, x[2]["total_price_per_cpu"]), 2),
+                round(cast(float, x[2]["total_price"]), 2),
                 -cast(int, x[2]["vcpu"]),
             )
         )

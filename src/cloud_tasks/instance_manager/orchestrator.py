@@ -36,6 +36,7 @@ class InstanceOrchestrator:
         self._provider = self._config.provider
 
         provider_config = self._config.get_provider_config()
+        self._provider_config = provider_config
         if not provider_config.job_id:
             raise ValueError("job_id must be specified")
         self._job_id = provider_config.job_id
@@ -167,8 +168,14 @@ class InstanceOrchestrator:
         Returns:
             Shell script for instance startup
         """
+        if self._provider == "GCP":
+            gcp_supplement = f"""\
+export RMS_CLOUD_RUN_PROJECT_ID={self._provider_config.project_id}
+"""
+
         supplement = f"""\
 export RMS_CLOUD_RUN_PROVIDER={self._provider}
+{gcp_supplement}
 export RMS_CLOUD_RUN_JOB_ID={self._job_id}
 export RMS_CLOUD_RUN_QUEUE_NAME={self._queue_name}
 export RMS_CLOUD_RUN_INSTANCE_TYPE={self._optimal_instance_info["name"]}
@@ -181,26 +188,22 @@ export RMS_CLOUD_RUN_INSTANCE_PRICE={self._optimal_instance_info["total_price"]}
 export RMS_CLOUD_RUN_NUM_TASKS_PER_INSTANCE={self._optimal_instance_num_tasks}
 export RMS_CLOUD_RUN_SHUTDOWN_GRACE_PERIOD=120
 """
-        # TODO: Implement creation of startup script
-        # If a custom startup script is provided, use it
-        if self._run_config.startup_script:
-            ss = self._run_config.startup_script.strip()
-            ss = ss.replace("\r", "")  # Remove any Windows line endings
-            if ss.startswith("#!"):
-                # Insert supplement after the shebang line
-                ss_lines = ss.split("\n", 1)[1]
-                if not ss_lines[0].endswith("/bash"):
-                    msg = "Startup script uses shell other than bash; this is not supported"
-                    self._logger.error(msg)
-                    raise RuntimeError(msg)
-                ss = f"{ss_lines[0]}\n{supplement}\n{'\n'.join(ss_lines[1:])}"
-            else:
-                ss = f"{supplement}\n{ss}"
-            return ss
+        if not self._run_config.startup_script:
+            raise RuntimeError("No startup script provided")
 
-        msg = "No startup script provided"
-        self._logger.error(msg)
-        raise RuntimeError(msg)
+        ss = self._run_config.startup_script.strip()
+        ss = ss.replace("\r", "")  # Remove any Windows line endings
+        if ss.startswith("#!"):
+            # Insert supplement after the shebang line
+            ss_lines = ss.split("\n", 1)[1]
+            if not ss_lines[0].endswith("/bash"):
+                msg = "Startup script uses shell other than bash; this is not supported"
+                self._logger.error(msg)
+                raise RuntimeError(msg)
+            ss = f"{ss_lines[0]}\n{supplement}\n{'\n'.join(ss_lines[1:])}"
+        else:
+            ss = f"{supplement}\n{ss}"
+        return ss
 
     async def start(self) -> None:
         """Start the orchestrator.
@@ -390,6 +393,13 @@ export RMS_CLOUD_RUN_SHUTDOWN_GRACE_PERIOD=120
                 instances_to_add = desired_instances - total_instances
                 self._logger.info(
                     f"Scaling up: Adding {instances_to_add} instances (from {total_instances} to {desired_instances})"
+                )
+                new_price = self._optimal_instance_info["total_price"] * desired_instances
+                total_cpus = self._optimal_instance_info["vcpu"] * desired_instances
+                simultaneous_tasks = int(total_cpus / self._run_config.cpus_per_task)
+                self._logger.info(
+                    f"*** ESTIMATED PRICE: ${new_price:.2f}/hour *** for "
+                    f"{total_cpus} vCPUs running {simultaneous_tasks} simultaneous tasks"
                 )
 
                 try:
