@@ -9,8 +9,18 @@ description = "A scalable, multi-cloud task processing system"
 readme = "README.md"
 requires-python = ">=3.8"
 dependencies = [
-  "cspyce",
-  "numpy"
+  "aiohttp",
+  "asyncio",
+  "click",
+  "json-stream",
+  "pydantic",
+  "pyyaml",
+  "tqdm",
+  "boto3",
+  "google-cloud-pubsub",
+  "google-cloud-storage",
+  "google-cloud-compute",
+  "google-cloud-billing"
 ]
 license = {text = "Apache-2.0"}
 maintainers = [

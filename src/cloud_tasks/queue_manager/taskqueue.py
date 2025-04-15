@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from cloud_tasks.common.config import ProviderConfig
 
@@ -7,7 +7,7 @@ from cloud_tasks.common.config import ProviderConfig
 class TaskQueue(ABC):
     """Base interface for task queue operations."""
 
-    def __init__(self, config: ProviderConfig) -> None:
+    def __init__(self, config: Optional[ProviderConfig] = None, **kwargs: Any) -> None:
         """Initialize the task queue with configuration."""
         pass
 

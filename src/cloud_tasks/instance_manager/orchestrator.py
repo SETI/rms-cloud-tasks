@@ -65,8 +65,8 @@ class InstanceOrchestrator:
         self._instance_manager: Optional[InstanceManager] = None
         self._task_queue: Optional[TaskQueue] = None
         self._optimal_instance_info = None
-        self._optimal_instance_zone = None
-        self._optimal_instance_price = None
+        self._optimal_instance_boot_disk_size = None
+        self._optimal_instance_num_tasks = None
 
         # Empty queue tracking for scale-down
         self._empty_queue_since = None
@@ -168,15 +168,18 @@ class InstanceOrchestrator:
             Shell script for instance startup
         """
         supplement = f"""\
+export RMS_CLOUD_RUN_PROVIDER={self._provider}
 export RMS_CLOUD_RUN_JOB_ID={self._job_id}
 export RMS_CLOUD_RUN_QUEUE_NAME={self._queue_name}
 export RMS_CLOUD_RUN_INSTANCE_TYPE={self._optimal_instance_info["name"]}
 export RMS_CLOUD_RUN_INSTANCE_NUM_VCPUS={self._optimal_instance_info["vcpu"]}
 export RMS_CLOUD_RUN_INSTANCE_MEM_GB={self._optimal_instance_info["mem_gb"]}
-export RMS_CLOUD_RUN_INSTANCE_SSD_GB={self._optimal_instance_info["local_ssd"]}
+export RMS_CLOUD_RUN_INSTANCE_SSD_GB={self._optimal_instance_info["local_ssd_gb"]}
 export RMS_CLOUD_RUN_INSTANCE_BOOT_DISK_GB={self._optimal_instance_boot_disk_size}
 export RMS_CLOUD_RUN_INSTANCE_IS_SPOT={self._run_config.use_spot}
 export RMS_CLOUD_RUN_INSTANCE_PRICE={self._optimal_instance_info["total_price"]}
+export RMS_CLOUD_RUN_NUM_TASKS_PER_INSTANCE={self._optimal_instance_num_tasks}
+export RMS_CLOUD_RUN_SHUTDOWN_GRACE_PERIOD=120
 """
         # TODO: Implement creation of startup script
         # If a custom startup script is provided, use it
@@ -229,13 +232,53 @@ export RMS_CLOUD_RUN_INSTANCE_PRICE={self._optimal_instance_info["total_price"]}
             vars(self._run_config)
         )
         self._logger.info(
-            f"Selected instance type: {instance_type} in {instance_zone} "
-            f"at ${instance_price:.6f}/hour"
+            f"Selected instance type: {instance_info['name']} in {instance_info['zone']} "
+            f"at ${instance_info['total_price']:.6f}/hour"
         )
 
-        self._optimal_instance_type = instance_type
-        self._optimal_instance_zone = instance_zone
-        self._optimal_instance_price = instance_price
+        self._optimal_instance_info = instance_info
+
+        # Derive the boot disk size from the constraints and the number of vCPUs in the
+        # optimal instance
+        boot_disk_size = self._run_config.min_boot_disk
+        if boot_disk_size is None:
+            boot_disk_size = self._run_config.max_boot_disk
+        if self._run_config.min_boot_disk_per_cpu is not None:
+            if boot_disk_size is None:
+                boot_disk_size = self._run_config.min_boot_disk_per_cpu * instance_info["vcpu"]
+            else:
+                boot_disk_size = max(
+                    self._run_config.min_boot_disk_per_cpu * instance_info["vcpu"], boot_disk_size
+                )
+        if self._run_config.max_boot_disk_per_cpu is not None:
+            if boot_disk_size is None:
+                boot_disk_size = self._run_config.max_boot_disk_per_cpu * instance_info["vcpu"]
+            else:
+                boot_disk_size = min(
+                    self._run_config.max_boot_disk_per_cpu * instance_info["vcpu"], boot_disk_size
+                )
+        if boot_disk_size is None:
+            self._logger.warning(
+                f"No boot disk size constraints provided; using default of {self._DEFAULT_BOOT_DISK_SIZE_PER_CPU_GB} GB per CPU",
+            )
+            boot_disk_size = self._DEFAULT_BOOT_DISK_SIZE_PER_CPU_GB * instance_info["vcpu"]
+        else:
+            self._logger.info(f"Derived boot disk size: {boot_disk_size} GB")
+        self._optimal_instance_boot_disk_size = boot_disk_size
+
+        # Derive the number of tasks per instance from the constraints and the number of vCPUs in the
+        # optimal instance
+        if self._run_config.cpus_per_task is None:
+            num_tasks = instance_info["vcpu"]  # Default to one task per vCPU
+        else:
+            num_tasks = int(instance_info["vcpu"] // self._run_config.cpus_per_task)
+        # Enforce min/max constraints
+        if self._run_config.min_tasks_per_instance is not None:
+            num_tasks = max(num_tasks, self._run_config.min_tasks_per_instance)
+        if self._run_config.max_tasks_per_instance is not None:
+            num_tasks = min(num_tasks, self._run_config.max_tasks_per_instance)
+        self._logger.info(f"Derived number of tasks per instance: {num_tasks}")
+        self._optimal_instance_num_tasks = num_tasks
 
         # Begin monitoring
         self._running = True
@@ -432,12 +475,13 @@ export RMS_CLOUD_RUN_INSTANCE_PRICE={self._optimal_instance_info["total_price"]}
                 async with semaphore:
                     try:
                         instance_id = await self._instance_manager.start_instance(
-                            instance_type=self._optimal_instance_type,
+                            instance_type=self._optimal_instance_info["name"],
+                            boot_disk_size=self._optimal_instance_boot_disk_size,
                             startup_script=startup_script,
                             job_id=self._job_id,
                             use_spot=self._run_config.use_spot,
                             image=self._run_config.image,
-                            zone=self._optimal_instance_zone,
+                            zone=self._optimal_instance_info["zone"],
                         )
                         self._logger.info(
                             f"Started {'spot' if self._run_config.use_spot else 'on-demand'} instance {instance_id}"

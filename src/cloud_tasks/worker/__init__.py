@@ -7,12 +7,8 @@ cloud provider integration, allowing any worker to process tasks from
 cloud-based queues.
 """
 
-from cloud_tasks.worker.cloud_adapter import (
-    CloudTaskAdapter,
-    run_cloud_worker
-)
+from cloud_tasks.worker.worker import Worker
 
 __all__ = [
-    'CloudTaskAdapter',
-    'run_cloud_worker',
+    "Worker",
 ]

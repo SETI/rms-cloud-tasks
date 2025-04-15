@@ -10,8 +10,15 @@ from pydantic import BaseModel, NonNegativeFloat, NonNegativeInt,constr, Field
 
 
 class ProviderConfig(BaseModel):
-    pass
+    job_id: Optional[constr(min_length=1)] = None
+    queue_name: Optional[constr(min_length=1)] = None
+    instance_types: Optional[List[str] | str] = None
+    startup_script: Optional[str] = None
+    startup_script_file: Optional[constr(min_length=1)] = None
+    image: Optional[constr(min_length=1)] = None
 
+    region: Optional[constr(min_length=1)] = None
+    zone: Optional[constr(min_length=1)] = None
 
 class RunConfig(BaseModel, validate_assignment = True):
     # Number of instances
@@ -49,41 +56,17 @@ class RunConfig(BaseModel, validate_assignment = True):
 
 
 class AWSConfig(ProviderConfig, validate_assignment = True):
-    job_id: Optional[constr(min_length=1)] = None
-    queue_name: Optional[constr(min_length=1)] = None
-    instance_types: Optional[List[str] | str] = None
-    startup_script: Optional[str] = None
-    startup_script_file: Optional[constr(min_length=1)] = None
-    image: Optional[constr(min_length=1)] = None
-
     access_key: Optional[constr(min_length=1)] = None
     secret_key: Optional[constr(min_length=1)] = None
-    region: Optional[constr(min_length=1)] = None
 
 
 class GCPConfig(ProviderConfig, validate_assignment = True):
-    job_id: Optional[constr(min_length=1)] = None
-    queue_name: Optional[constr(min_length=1)] = None
-    instance_types: Optional[List[str] | str] = None
-    startup_script: Optional[constr(min_length=1)] = None
-    startup_script_file: Optional[constr(min_length=1)] = None
-    image: Optional[constr(min_length=1)] = None
-
     project_id: Optional[constr(min_length=1)] = None
-    region: Optional[constr(min_length=1)] = None
-    zone: Optional[constr(min_length=1)] = None
     credentials_file: Optional[constr(min_length=1)] = None
     service_account: Optional[constr(min_length=1)] = None
 
 
 class AzureConfig(ProviderConfig, validate_assignment = True):
-    job_id: Optional[constr(min_length=1)] = None
-    queue_name: Optional[constr(min_length=1)] = None
-    instance_types: Optional[List[str] | str] = None
-    startup_script: Optional[constr(min_length=1)] = None
-    startup_script_file: Optional[constr(min_length=1)] = None
-    image: Optional[constr(min_length=1)] = None
-
     subscription_id: Optional[str] = None
     tenant_id: Optional[str] = None
     client_id: Optional[str] = None

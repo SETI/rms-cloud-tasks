@@ -55,7 +55,7 @@ class InstanceManager(ABC):
     @abstractmethod
     async def get_instance_pricing(
         self, instance_types: Dict[str, Dict[str, Any]], *, use_spot: bool = False
-    ) -> Dict[str, Dict[str, Dict[str, float | str | None]] | None]:
+    ) -> Dict[str, Dict[str, Dict[str, float | str | None]]]:
         """
         Get the hourly price for one or more specific instance types.
 
@@ -138,7 +138,8 @@ class InstanceManager(ABC):
                 or if none choose a random zone
 
         Returns:
-            ID of the started instance
+            A tuple containing the ID of the started instance and the zone it was started
+            in
         """
         pass
 
@@ -159,6 +160,7 @@ class InstanceManager(ABC):
         """List currently running instances, optionally filtered by tags."""
         pass
 
+    @abstractmethod
     async def list_available_images(self) -> List[Dict[str, Any]]:
         """
         List available VM images.
@@ -167,6 +169,7 @@ class InstanceManager(ABC):
         Returns:
             List of dictionaries with image information
         """
+        pass
 
     @abstractmethod
     async def get_available_regions(self) -> Dict[str, Any]:

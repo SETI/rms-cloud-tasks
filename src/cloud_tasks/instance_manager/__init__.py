@@ -33,9 +33,9 @@ async def create_instance_manager(config: Config) -> InstanceManager:
         case "GCP":
             from .gcp import GCPComputeInstanceManager
             instance_manager = GCPComputeInstanceManager(cast(GCPConfig, provider_config))
-        case "AZURE":
-            from .azure import AzureVMInstanceManager
-            instance_manager = AzureVMInstanceManager(cast(AzureConfig, provider_config))
+        # case "AZURE": TODO
+        #     from .azure import AzureVMInstanceManager
+        #     instance_manager = AzureVMInstanceManager(cast(AzureConfig, provider_config))
         case _:
             raise ValueError(f"Unsupported instance provider: {provider}")
 

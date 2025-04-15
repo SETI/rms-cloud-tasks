@@ -399,7 +399,7 @@ class GCPComputeInstanceManager(InstanceManager):
 
     async def get_instance_pricing(
         self, instance_types: Dict[str, Dict[str, Any]], *, use_spot: bool = False
-    ) -> Dict[str, Dict[str, Dict[str, float | str | None]] | None]:
+    ) -> Dict[str, Dict[str, Dict[str, float | str | None]]]:
         """
         Get the hourly price for one or more specific instance types.
 
@@ -432,7 +432,7 @@ class GCPComputeInstanceManager(InstanceManager):
             f"Getting pricing for {len(instance_types)} instance types (spot: {use_spot})"
         )
 
-        ret: Dict[str, Dict[str, Dict[str, float | str | None]] | None] = {}
+        ret: Dict[str, Dict[str, Dict[str, float | str | None]]] = {}
 
         # Lookup pricing for each instance type
         for machine_type, machine_info in instance_types.items():
@@ -467,7 +467,7 @@ class GCPComputeInstanceManager(InstanceManager):
                 # Cache hit!
                 ret_val = self._instance_pricing_cache[(machine_family_for_cache, use_spot)]
                 if ret_val is None:  # No pricing info available
-                    ret[machine_type] = None
+                    ret[machine_type] = {}
                     continue
                 ret_val = copy.deepcopy(ret_val)  # Since we're going to mutate it
                 zone_val = ret_val.get(f"{self._region}-*")
@@ -577,14 +577,14 @@ class GCPComputeInstanceManager(InstanceManager):
                     f"No core SKU found for instance family {machine_family} in region "
                     f"{self._region}; ignoring these instance types"
                 )
-                ret[machine_type] = None
+                ret[machine_type] = {}
                 continue
             if ram_sku is None:
                 self._logger.warning(
                     f"No ram SKU found for instance family {machine_family} in region "
                     f"{self._region}; ignoring these instance types"
                 )
-                ret[machine_type] = None
+                ret[machine_type] = {}
                 continue
             # It's OK for there to be no local disk SKU
 
@@ -596,13 +596,13 @@ class GCPComputeInstanceManager(InstanceManager):
             # Extract price info for CPU
             cpu_pricing_info = self._extract_pricing_info(machine_family, core_sku, "h", "core")
             if cpu_pricing_info is None:
-                ret[machine_type] = None
+                ret[machine_type] = {}
                 continue
 
             # Extract price info for RAM
             ram_pricing_info = self._extract_pricing_info(machine_family, ram_sku, "GiBy.h", "ram")
             if ram_pricing_info is None:
-                ret[machine_type] = None
+                ret[machine_type] = {}
                 continue
 
             # Extract price info for local SSD if present
@@ -612,7 +612,7 @@ class GCPComputeInstanceManager(InstanceManager):
                     machine_family, local_disk_sku, "GiBy.mo", "local SSD"
                 )
                 if local_disk_pricing_info is None:
-                    ret[machine_type] = None
+                    ret[machine_type] = {}
                     continue
 
             per_cpu_price = cast(float, cpu_pricing_info.unit_price.nanos / 1e9)
@@ -634,7 +634,7 @@ class GCPComputeInstanceManager(InstanceManager):
                     self._logger.warning(
                         f"Local SSD SKU found for non-LSSD instance type: {machine_type}"
                     )
-                    ret[machine_type] = None
+                    ret[machine_type] = {}
                     continue
                 per_gb_local_disk_price = (
                     local_disk_pricing_info.unit_price.nanos / 1e9 / 730.5
@@ -650,7 +650,7 @@ class GCPComputeInstanceManager(InstanceManager):
                     f"No local SSD SKU found for LSSD instance type {machine_type} "
                     f"in region {self._region}"
                 )
-                ret[machine_type] = None
+                ret[machine_type] = {}
                 continue
 
             per_gb_boot_disk_price = 0

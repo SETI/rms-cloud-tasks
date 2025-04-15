@@ -6,7 +6,7 @@ import json
 import logging
 import time
 import asyncio
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from google.cloud import pubsub_v1  # type: ignore
 from google.api_core import exceptions as gcp_exceptions
@@ -19,27 +19,39 @@ from .taskqueue import TaskQueue
 class GCPPubSubQueue(TaskQueue):
     """Google Cloud Pub/Sub implementation of the TaskQueue interface."""
 
-    def __init__(self, gcp_config: GCPConfig) -> None:
+    def __init__(
+        self,
+        gcp_config: Optional[GCPConfig] = None,
+        queue_name: Optional[str] = None,
+        **kwargs: Any,
+    ) -> None:
         """
         Initialize the Pub/Sub queue with configuration.
 
         Args:
             config: GCP configuration
         """
-        super().__init__(gcp_config)
-        self._queue_name = gcp_config.queue_name
+        if queue_name is not None:
+            self._queue_name = queue_name
+        else:
+            self._queue_name = gcp_config.queue_name
+
         if self._queue_name is None:
             raise ValueError("Queue name is required")
 
         self._logger = logging.getLogger(__name__)
 
-        self._project_id = gcp_config.project_id
+        if "project_id" in kwargs and kwargs["project_id"] is not None:
+            self._project_id = kwargs["project_id"]
+        else:
+            self._project_id = gcp_config.project_id
+
         self._logger.info(
             f"Initializing GCP Pub/Sub queue '{self._queue_name}' with project ID "
             f"'{self._project_id}'"
         )
 
-        credentials_file = gcp_config.credentials_file
+        credentials_file = gcp_config.credentials_file if gcp_config is not None else None
 
         # If credentials file provided, use it
         if credentials_file:

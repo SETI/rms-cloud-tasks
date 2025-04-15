@@ -7,7 +7,7 @@ import datetime
 import json
 import logging
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple, cast
 
 import boto3  # type: ignore
 from botocore.exceptions import ClientError  # type: ignore
@@ -63,6 +63,7 @@ class AWSEC2InstanceManager(InstanceManager):
 
         # Initialize with specified region
         self._region = aws_config.region
+        self._zone = aws_config.zone
 
         # TODO How do we know what the default region is so we can log it?
 
@@ -168,10 +169,10 @@ class AWSEC2InstanceManager(InstanceManager):
                     "max_local_ssd": Maximum amount of local SSD storage in GB
                     "min_local_ssd_per_cpu": Minimum amount of local SSD storage per vCPU
                     "max_local_ssd_per_cpu": Maximum amount of local SSD storage per vCPU
-                    "min_storage": Minimum amount of other storage in GB
-                    "max_storage": Maximum amount of other storage in GB
-                    "min_storage_per_cpu": Minimum amount of other storage per vCPU
-                    "max_storage_per_cpu": Maximum amount of other storage per vCPU
+                    "min_boot_disk": Minimum amount of boot disk storage in GB
+                    "max_boot_disk": Maximum amount of boot disk storage in GB
+                    "min_boot_disk_per_cpu": Minimum amount of boot disk storage per vCPU
+                    "max_boot_disk_per_cpu": Maximum amount of boot disk storage per vCPU
                     "use_spot": Whether to filter for spot-capable instance types
 
         Returns:
@@ -180,7 +181,7 @@ class AWSEC2InstanceManager(InstanceManager):
                 "vcpu": number of vCPUs
                 "mem_gb": amount of RAM in GB
                 "local_ssd_gb": amount of local SSD storage in GB
-                "storage_gb": amount of other storage in GB
+                "boot_disk_gb": amount of boot disk storage in GB
                 "architecture": architecture of the instance type
                 "supports_spot": whether the instance type supports spot pricing
                 "description": description of the instance type
@@ -218,7 +219,7 @@ class AWSEC2InstanceManager(InstanceManager):
                     "mem_gb": instance_type["MemoryInfo"]["SizeInMiB"] / 1024.0,
                     "architecture": instance_type["ProcessorInfo"]["SupportedArchitectures"][0],
                     "local_ssd_gb": 0,  # AWS separates storage from instance type
-                    "storage_gb": 0,  # AWS separates storage from instance type
+                    "boot_disk_gb": 0,  # AWS separates storage from instance type
                     "supports_spot": "spot" in instance_type["SupportedUsageClasses"],
                     "description": instance_type["InstanceType"],
                     "url": None,
@@ -276,22 +277,22 @@ class AWSEC2InstanceManager(InstanceManager):
                         <= constraints["max_local_ssd_per_cpu"]
                     )
                     and (
-                        constraints["min_storage"] is None
-                        or instance_info["storage_gb"] >= constraints["min_storage"]
+                        constraints["min_boot_disk"] is None
+                        or instance_info["boot_disk_gb"] >= constraints["min_boot_disk"]
                     )
                     and (
-                        constraints["max_storage"] is None
-                        or instance_info["storage_gb"] <= constraints["max_storage"]
+                        constraints["max_boot_disk"] is None
+                        or instance_info["boot_disk_gb"] <= constraints["max_boot_disk"]
                     )
                     and (
-                        constraints["min_storage_per_cpu"] is None
-                        or instance_info["storage_gb"] / instance_info["vcpu"]
-                        >= constraints["min_storage_per_cpu"]
+                        constraints["min_boot_disk_per_cpu"] is None
+                        or instance_info["boot_disk_gb"] / instance_info["vcpu"]
+                        >= constraints["min_boot_disk_per_cpu"]
                     )
                     and (
-                        constraints["max_storage_per_cpu"] is None
-                        or instance_info["storage_gb"] / instance_info["vcpu"]
-                        <= constraints["max_storage_per_cpu"]
+                        constraints["max_boot_disk_per_cpu"] is None
+                        or instance_info["boot_disk_gb"] / instance_info["vcpu"]
+                        <= constraints["max_boot_disk_per_cpu"]
                     )
                     and (
                         not constraints["use_spot"]
@@ -303,8 +304,8 @@ class AWSEC2InstanceManager(InstanceManager):
         return instance_types
 
     async def get_instance_pricing(
-        self, instance_types: Dict[str, Dict[str, Any]], use_spot: bool = False
-    ) -> Dict[str, Dict[str, float | None]]:
+        self, instance_types: Dict[str, Dict[str, Any]], *, use_spot: bool = False
+    ) -> Dict[str, Dict[str, Dict[str, float | str | None]]]:
         """
         Get the hourly price for one or more specific instance types.
 
@@ -331,7 +332,7 @@ class AWSEC2InstanceManager(InstanceManager):
             f"Getting pricing for {len(instance_types)} instance types (spot: {use_spot})"
         )
 
-        ret = {}
+        ret: Dict[str, Dict[str, Dict[str, float | str | None]]] = {}
 
         if len(instance_types) == 0:
             self._logger.warning("No instance types provided")
@@ -364,8 +365,8 @@ class AWSEC2InstanceManager(InstanceManager):
                     "mem_per_gb_price": 0.0,  # Per-GB price (we don't have this)
                     "local_ssd_price": 0.0,  # Local SSD price (we don't have this)
                     "local_ssd_per_gb_price": 0.0,  # Local SSD per-GB price (we don't have this)
-                    "storage_price": 0.0,  # Storage price (we don't have this)
-                    "storage_per_gb_price": 0.0,  # Storage per-GB price (we don't have this)
+                    "boot_disk_price": 0.0,  # Storage price (we don't have this)
+                    "boot_disk_per_gb_price": 0.0,  # Storage per-GB price (we don't have this)
                     "total_price": float(price["SpotPrice"]),  # Total price
                     "zone": price["AvailabilityZone"],
                     **instance_types[price["InstanceType"]],
@@ -377,7 +378,7 @@ class AWSEC2InstanceManager(InstanceManager):
 
         else:
             # Non-spot pricing
-            pricing_dict = {}  # inst_name -> pricing_data
+            pricing_dict: Dict[str, Dict[str, Any] | None] = {}  # inst_name -> pricing_data
             filter_list = [
                 {"Type": "TERM_MATCH", "Field": "operatingSystem", "Value": "Linux"},
                 {"Type": "TERM_MATCH", "Field": "regionCode", "Value": self._region},
@@ -429,7 +430,7 @@ class AWSEC2InstanceManager(InstanceManager):
                         # We're missing pricing data for a huge chunk, so just give up
                         self._logger.error("No pricing data found - aborting")
                         for inst_name in instance_types:
-                            ret[inst_name] = None
+                            ret[inst_name] = {}
                         return ret
                     for price_item in response["PriceList"]:
                         price_data = json.loads(price_item)
@@ -447,7 +448,7 @@ class AWSEC2InstanceManager(InstanceManager):
                 price_data = pricing_dict.get(inst_name)
                 if price_data is None:
                     self._logger.warning(f"Could not find pricing data for {inst_name}")
-                    ret[inst_name] = None
+                    ret[inst_name] = {}
                     continue
                 attributes = price_data.get("product", {}).get("attributes", {})
                 if attributes is None:
@@ -477,8 +478,8 @@ class AWSEC2InstanceManager(InstanceManager):
                                     "mem_per_gb_price": 0.0,  # Per-GB price (we don't have this)
                                     "local_ssd_price": 0.0,  # Local SSD price (we don't have this)
                                     "local_ssd_per_gb_price": 0.0,  # Local SSD per-GB price (we don't have this)
-                                    "storage_price": 0.0,  # Storage price (we don't have this)
-                                    "storage_per_gb_price": 0.0,  # Storage per-GB price (we don't have this)
+                                    "boot_disk_price": 0.0,  # Storage price (we don't have this)
+                                    "boot_disk_per_gb_price": 0.0,  # Storage per-GB price (we don't have this)
                                     "total_price": price,  # Total price
                                     "zone": f"{self._region}-*",
                                     **inst_info,
@@ -489,18 +490,21 @@ class AWSEC2InstanceManager(InstanceManager):
                         break
                 if inst_name not in ret:
                     self._logger.warning(f"Could not find pricing data for {inst_name}")
-                    ret[inst_name] = None
+                    ret[inst_name] = {}
 
         return ret
 
     async def start_instance(
         self,
+        *,
         instance_type: str,
-        user_data: str,
-        tags: Dict[str, str],
-        use_spot: bool = False,
-        custom_image: Optional[str] = None,
-    ) -> str:
+        boot_disk_size: int,  # GB
+        startup_script: str,
+        job_id: str,
+        use_spot: bool,
+        image: str,
+        zone: Optional[str] = None,
+    ) -> Tuple[str, str]:
         """
         Start a new EC2 instance.
 
@@ -512,24 +516,25 @@ class AWSEC2InstanceManager(InstanceManager):
             custom_image: Custom AMI ID or name to use
 
         Returns:
-            EC2 instance ID
+            A tuple containing the ID of the started instance and the zone it was started
+            in
         """
         self._logger.info(
             f"Creating {'spot' if use_spot else 'on-demand'} instance of type {instance_type}"
         )
 
         # Get a default AMI or use custom image
-        if custom_image:
+        if image:
             # If it looks like an AMI ID, use it directly
-            if custom_image.startswith("ami-"):
-                ami_id = custom_image
+            if image.startswith("ami-"):
+                ami_id = image
                 self._logger.info(f"Using custom AMI: {ami_id}")
             else:
                 # Otherwise, search for an AMI by name
                 try:
                     response = self._ec2_client.describe_images(
                         Filters=[
-                            {"Name": "name", "Values": [custom_image]},
+                            {"Name": "name", "Values": [image]},
                             {"Name": "state", "Values": ["available"]},
                         ]
                     )
@@ -541,11 +546,9 @@ class AWSEC2InstanceManager(InstanceManager):
                             reverse=True,
                         )
                         ami_id = images[0]["ImageId"]
-                        self._logger.info(f"Found AMI {ami_id} for name: {custom_image}")
+                        self._logger.info(f"Found AMI {ami_id} for name: {image}")
                     else:
-                        self._logger.warning(
-                            f"No AMI found for name: {custom_image}, using default"
-                        )
+                        self._logger.warning(f"No AMI found for name: {image}, using default")
                         ami_id = await self._get_default_ami()
                 except Exception as e:
                     self._logger.error(f"Error finding AMI by name: {e}")
@@ -554,7 +557,7 @@ class AWSEC2InstanceManager(InstanceManager):
             ami_id = await self._get_default_ami()
 
         # Convert tags dictionary to AWS format
-        aws_tags = [{"Key": key, "Value": value} for key, value in tags.items()]
+        aws_tags = [{"Key": "rms-cloud-run-job-id", "Value": job_id}]
 
         # Prepare instance run parameters
         run_params = {
@@ -562,7 +565,7 @@ class AWSEC2InstanceManager(InstanceManager):
             "InstanceType": instance_type,
             "MinCount": 1,
             "MaxCount": 1,
-            "UserData": user_data,
+            "UserData": startup_script,
             "TagSpecifications": [{"ResourceType": "instance", "Tags": aws_tags}],
             "NetworkInterfaces": [
                 {"DeviceIndex": 0, "AssociatePublicIpAddress": True, "DeleteOnTermination": True}
@@ -578,7 +581,7 @@ class AWSEC2InstanceManager(InstanceManager):
                 "LaunchSpecification": {
                     "ImageId": ami_id,
                     "InstanceType": instance_type,
-                    "UserData": base64.b64encode(user_data.encode()).decode("utf-8"),
+                    "UserData": base64.b64encode(startup_script.encode()).decode("utf-8"),
                     "NetworkInterfaces": [
                         {
                             "DeviceIndex": 0,
@@ -621,17 +624,18 @@ class AWSEC2InstanceManager(InstanceManager):
             response = self._ec2_client.run_instances(**run_params)
             instance_id = response["Instances"][0]["InstanceId"]
             self._logger.info(f"Created on-demand instance: {instance_id}")
-            return instance_id
+            return instance_id, response["Instances"][0]["Placement"]["AvailabilityZone"]
         except Exception as e:
             self._logger.error(f"Failed to create instance: {e}")
             raise
 
-    async def terminate_instance(self, instance_id: str) -> None:
+    async def terminate_instance(self, instance_id: str, zone: Optional[str] = None) -> None:
         """
         Terminate an EC2 instance by ID.
 
         Args:
             instance_id: EC2 instance ID
+            zone: Availability zone to terminate the instance in; not used for AWS
         """
         self._ec2_client.terminate_instances(InstanceIds=[instance_id])
 
@@ -726,229 +730,101 @@ class AWSEC2InstanceManager(InstanceManager):
             raise
 
     async def get_optimal_instance_type(
-        self,
-        cpu_required: int,
-        memory_required_gb: int,
-        disk_required_gb: int,
-        use_spot: bool = False,
-    ) -> str:
+        self, constraints: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, float | str | None]:
         """
-        Get the most cost-effective EC2 instance type that meets requirements.
-        If no region was specified during initialization, this method will also
-        find and use the cheapest region.
+        Get the most cost-effective EC2 instance type that meets the constraints.
 
         Args:
-            cpu_required: Minimum number of vCPUs
-            memory_required_gb: Minimum amount of memory in GB
-            disk_required_gb: Minimum amount of disk space in GB
-            use_spot: Whether to use spot instance pricing
+            constraints: Dictionary of constraints to filter instance types by. Constraints
+                include::
+                    "instance_types": List of regex patterns to filter instance types by name
+                    "min_cpu": Minimum number of vCPUs
+                    "max_cpu": Maximum number of vCPUs
+                    "min_total_memory": Minimum total memory in GB
+                    "max_total_memory": Maximum total memory in GB
+                    "min_memory_per_cpu": Minimum memory per vCPU in GB
+                    "max_memory_per_cpu": Maximum memory per vCPU in GB
+                    "min_local_ssd": Minimum amount of local SSD storage in GB
+                    "max_local_ssd": Maximum amount of local SSD storage in GB
+                    "min_local_ssd_per_cpu": Minimum amount of local SSD storage per vCPU
+                    "max_local_ssd_per_cpu": Maximum amount of local SSD storage per vCPU
+                    "min_storage": Minimum amount of other storage in GB
+                    "max_storage": Maximum amount of other storage in GB
+                    "min_storage_per_cpu": Minimum amount of other storage per vCPU
+                    "max_storage_per_cpu": Maximum amount of other storage per vCPU
+                    "use_spot": Whether to use spot instances
 
         Returns:
-            EC2 instance type (e.g., 't3.micro')
+            Dictionary of instance type pricing info as would be returned by get_instance_pricing
         """
-        self._logger.info(
-            f"Finding optimal instance type with: CPU={cpu_required}, Memory={memory_required_gb}GB, "
-            f"Disk={disk_required_gb}GB, Spot={use_spot}"
-        )
-
-        # If no region was specified, find the cheapest one
-        if not self._region:
-            self._logger.info("No region specified, searching for cheapest region...")
-            self._region = await self.find_cheapest_region()
-
-            # Reinitialize clients with the new region
-            self._ec2 = boto3.resource("ec2", region_name=self._region, **self._credentials)
-            self._ec2_client = boto3.client("ec2", region_name=self._region, **self._credentials)
-            self._logger.info(f"Selected region {self._region} for lowest cost")
-        else:
-            self._logger.info(f"Using specified region {self._region}")
-
-        # Get available instance types
-        instance_types = await self.list_available_instance_types()
-        self._logger.debug(
-            f"Found {len(instance_types)} available instance types in region {self._region}"
-        )
-
-        # Filter to instance types that meet requirements
-        eligible_instances = []
-        for instance in instance_types:
-            if instance["vcpu"] >= cpu_required and instance["memory_gb"] >= memory_required_gb:
-                # We don't filter on disk since EBS volumes can be attached
-                eligible_instances.append(instance)
+        if constraints is None:
+            constraints = {}
 
         self._logger.debug(
-            f"Found {len(eligible_instances)} instance types that meet requirements:"
+            f"Getting optimal instance type in region {self._region} and zone " f"{self._zone}"
         )
-        for idx, instance in enumerate(eligible_instances):
-            self._logger.debug(
-                f"  [{idx+1}] {instance['name']}: {instance['vcpu']} vCPU, {instance['memory_gb']:.2f} GB memory"
-            )
+        self._logger.debug(f"Constraints: {constraints}")
 
-        # Filter by instance_types if specified in configuration
-        if self._instance_type:
-            filtered_instances = []
-            for instance in eligible_instances:
-                instance_name = instance["name"]
-                # Check if instance matches any prefix or exact name
-                for instance_type_pattern in self._instance_type:
-                    if (
-                        instance_name.startswith(instance_type_pattern)
-                        or instance_name == instance_type_pattern
-                    ):
-                        filtered_instances.append(instance)
-                        break
-
-            # Update eligible instances with filtered list
-            if filtered_instances:
-                eligible_instances = filtered_instances
-                self._logger.debug(
-                    f"Filtered to {len(eligible_instances)} instance types based on instance_types configuration:"
-                )
-                for idx, instance in enumerate(eligible_instances):
-                    self._logger.debug(
-                        f"  [{idx+1}] {instance['name']}: {instance['vcpu']} vCPU, {instance['memory_gb']:.2f} GB memory"
-                    )
-            else:
-                error_msg = f"No instances match the instance_types patterns: {self._instance_type}. Available instances meeting requirements: {[i['name'] for i in eligible_instances]}"
-                self._logger.error(error_msg)
-                raise ValueError(error_msg)
-
-        if not eligible_instances:
-            msg = f"No instance type meets requirements: {cpu_required} vCPU, {memory_required_gb} GB memory"
-            self._logger.error(msg)
-            raise ValueError(msg)
-
-        # Use AWS Pricing API to get current prices
-        pricing_data = {}
+        avail_instance_types = await self.get_available_instance_types(constraints)
         self._logger.debug(
-            f"Retrieving pricing data for {len(eligible_instances)} eligible instance types..."
+            f"Found {len(avail_instance_types)} available instance types in region {self._region}"
         )
 
-        for instance in eligible_instances:
-            instance_type = instance["name"]
-            self._logger.debug(f"Getting pricing for instance type: {instance_type}")
+        if not avail_instance_types:
+            raise ValueError("No instance type meets requirements")
 
-            try:
-                if use_spot:
-                    # Get spot price history
-                    current_time = datetime.datetime.now()
-                    start_time = current_time - datetime.timedelta(hours=1)
+        pricing_data = await self.get_instance_pricing(
+            avail_instance_types, use_spot=constraints["use_spot"]
+        )
 
-                    self._logger.debug(
-                        f"Retrieving spot price history for {instance_type} from {start_time} to {current_time}"
-                    )
-
-                    spot_response = self._ec2_client.describe_spot_price_history(
-                        InstanceTypes=[instance_type],
-                        ProductDescriptions=["Linux/UNIX"],
-                        StartTime=start_time,
-                        EndTime=current_time,
-                        MaxResults=10,
-                    )
-
-                    if spot_response["SpotPriceHistory"]:
-                        self._logger.debug(
-                            f"Found {len(spot_response['SpotPriceHistory'])} spot price records for {instance_type}"
-                        )
-
-                        # Log all spot prices found
-                        for spot_price in spot_response["SpotPriceHistory"]:
-                            self._logger.debug(
-                                f"  Spot price: ${float(spot_price['SpotPrice']):.6f} in {spot_price['AvailabilityZone']} at {spot_price['Timestamp']}"
-                            )
-
-                        # Use the most recent spot price
-                        price = float(spot_response["SpotPriceHistory"][0]["SpotPrice"])
-                        pricing_data[instance_type] = price
-                        self._logger.debug(
-                            f"  Selected spot price for {instance_type}: ${price:.6f}"
-                        )
-                    else:
-                        self._logger.debug(f"No spot price history found for {instance_type}")
-                else:
-                    # Get on-demand price
-                    self._logger.debug(
-                        f"Retrieving on-demand price for {instance_type} in region {self._region}"
-                    )
-
-                    response = self._pricing_client.get_products(
-                        ServiceCode="AmazonEC2",
-                        Filters=[
-                            {"Type": "TERM_MATCH", "Field": "instanceType", "Value": instance_type},
-                            {"Type": "TERM_MATCH", "Field": "regionCode", "Value": self._region},
-                            {"Type": "TERM_MATCH", "Field": "operatingSystem", "Value": "Linux"},
-                            {"Type": "TERM_MATCH", "Field": "tenancy", "Value": "Shared"},
-                            {"Type": "TERM_MATCH", "Field": "capacitystatus", "Value": "Used"},
-                        ],
-                        MaxResults=10,
-                    )
-
-                    if response["PriceList"]:
-                        self._logger.debug(f"Found pricing data for {instance_type}")
-                        price_data = json.loads(response["PriceList"][0])
-
-                        # Log the product details
-                        product = price_data.get("product", {})
-                        attributes = product.get("attributes", {})
-                        self._logger.debug(
-                            f"  Product: {attributes.get('instanceType')} - {attributes.get('instanceFamily')}"
-                        )
-
-                        # Extract actual price
-                        on_demand = price_data["terms"]["OnDemand"]
-                        price_dimensions = list(on_demand.values())[0]["priceDimensions"]
-                        price = float(list(price_dimensions.values())[0]["pricePerUnit"]["USD"])
-                        pricing_data[instance_type] = price
-                        self._logger.debug(f"  On-demand price for {instance_type}: ${price:.6f}")
-                    else:
-                        self._logger.debug(f"No pricing data found for {instance_type}")
-            except Exception as e:
-                self._logger.warning(f"Error getting pricing for {instance_type}: {e}")
+        # Rearrange the pricing data into a dictionary of (machine_type, zone) -> price
+        zone_pricing_data = {}
+        for machine_type, price in pricing_data.items():
+            if price is None:
+                self._logger.debug(f"No pricing data found for {machine_type}; ignoring")
                 continue
+            for zone, price_in_zone in price.items():
+                if price_in_zone is None:
+                    self._logger.debug(
+                        f"No pricing data found for {machine_type} in zone {zone}; ignoring"
+                    )
+                    continue
+                zone_pricing_data[(machine_type, zone)] = price_in_zone
 
-        # Log the complete pricing data found
-        if pricing_data:
-            self._logger.debug("Retrieved pricing data for the following instance types:")
-            for instance_type, price in pricing_data.items():
-                self._logger.debug(f"  {instance_type}: ${price:.6f} per hour")
-        else:
-            self._logger.warning("Could not retrieve any pricing data from AWS API")
-
-        # If we couldn't get pricing from API, fall back to our heuristic
-        if not pricing_data:
-            self._logger.warning(
-                "Could not get pricing data from AWS API, falling back to heuristic"
-            )
-            # Sort by vCPU + memory as a simple cost heuristic
-            eligible_instances.sort(key=lambda x: x["vcpu"] + x["memory_gb"])
-            selected_type = eligible_instances[0]["name"]
-            self._logger.info(f"Selected {selected_type} based on heuristic (lowest vCPU + memory)")
-            return selected_type
+        if len(zone_pricing_data) == 0:
+            raise ValueError("No pricing data found for any instance types")
 
         # Select instance with the lowest price
-        priced_instances = [(instance_type, price) for instance_type, price in pricing_data.items()]
-        if not priced_instances:
-            self._logger.warning(
-                "No pricing data found for eligible instance types, falling back to heuristic"
+        priced_instances = [
+            (machine_type, zone, price_info)
+            for (machine_type, zone), price_info in zone_pricing_data.items()
+        ]
+        # Sort by price per vCPU, then by decreasing vCPU (this gives us the cheapest
+        # instance type with the most vCPUs). We round the price to 2 decimal places so
+        # that small differences in price don't make us choose an instance with fewer
+        # vCPUs that would otherwise cost the same.
+        priced_instances.sort(
+            key=lambda x: (
+                round(cast(float, x[2]["total_price_per_cpu"]), 2),
+                -cast(int, x[2]["vcpu"]),
             )
-            eligible_instances.sort(key=lambda x: x["vcpu"] + x["memory_gb"])
-            selected_type = eligible_instances[0]["name"]
-            self._logger.info(f"Selected {selected_type} based on heuristic (lowest vCPU + memory)")
-            return selected_type
-
-        priced_instances.sort(key=lambda x: x[1])  # Sort by price
-
-        # Debug log for all priced instances in order
-        self._logger.debug("Instance types sorted by price (cheapest first):")
-        for i, (instance_type, price) in enumerate(priced_instances):
-            self._logger.debug(f"  {i+1}. {instance_type}: ${price:.6f}/hour")
-
-        selected_type = priced_instances[0][0]
-        price = priced_instances[0][1]
-        self._logger.info(
-            f"Selected {selected_type} at ${price:.4f} per hour in {self._region}{' (spot)' if use_spot else ''}"
         )
-        return selected_type
+
+        self._logger.debug("Instance types sorted by price (cheapest and most vCPUs first):")
+        for i, (machine_type, zone, price_info) in enumerate(priced_instances):
+            self._logger.debug(
+                f"  [{i+1:3d}] {machine_type:20s} in {zone:15s}: ${price_info['total_price']:10.6f}/hour"
+            )
+
+        selected_type, selected_zone, selected_price_info = priced_instances[0]
+        total_price = selected_price_info["total_price"]
+        self._logger.debug(
+            f"Selected {selected_type} in {selected_zone} at ${total_price:.6f} per hour "
+            f"{' (spot)' if constraints["use_spot"] else '(on demand)'}"
+        )
+
+        return selected_price_info
 
     async def _get_default_ami(self) -> str:
         """
