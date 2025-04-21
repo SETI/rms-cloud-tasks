@@ -8,6 +8,7 @@ import logging
 import random
 import re
 import shortuuid
+import threading
 from typing import Any, Dict, List, Optional, Tuple, cast
 
 from google.api_core.exceptions import NotFound  # type: ignore
@@ -55,8 +56,9 @@ class GCPComputeInstanceManager(InstanceManager):
         "STAGING": "starting",
         "RUNNING": "running",
         "STOPPING": "stopping",
-        "TERMINATED": "terminated",
+        "SUSPENDING": "stopping",
         "SUSPENDED": "stopped",
+        "TERMINATED": "terminated",
     }
 
     # This is derived by looking at the pricing tables; beware!
@@ -87,6 +89,9 @@ class GCPComputeInstanceManager(InstanceManager):
                 # If a single string was provided, convert to a list
                 self._instance_types = [self._instance_types]
             self._logger.debug(f"Instance types restricted to patterns: {self._instance_types}")
+
+        # Add thread-local storage for compute client
+        self._thread_local = threading.local()
 
         # Handle credentials - use provided service account file or default application credentials
         if gcp_config.credentials_file:
@@ -136,7 +141,6 @@ class GCPComputeInstanceManager(InstanceManager):
         self._service_account = gcp_config.service_account
 
         # Initialize clients
-        self._compute_client = compute_v1.InstancesClient(credentials=self._credentials)
         self._zones_client = compute_v1.ZonesClient(credentials=self._credentials)
         self._regions_client = compute_v1.RegionsClient(credentials=self._credentials)
         self._machine_type_client = compute_v1.MachineTypesClient(credentials=self._credentials)
@@ -152,6 +156,14 @@ class GCPComputeInstanceManager(InstanceManager):
             f"region '{self._region}', zone '{self._zone}'"
         )
 
+    def _get_compute_client(self):
+        """Get or create a thread-local compute client."""
+        if not hasattr(self._thread_local, "compute_client"):
+            self._thread_local.compute_client = compute_v1.InstancesClient(
+                credentials=self._credentials
+            )
+        return self._thread_local.compute_client
+
     def _job_id_to_tag(self, job_id: str) -> str:
         return f"{self._JOB_ID_TAG_PREFIX}{job_id}"
 
@@ -164,6 +176,7 @@ class GCPComputeInstanceManager(InstanceManager):
             constraints: Dictionary of constraints to filter instance types by. Constraints
                 include::
                     "instance_types": List of regex patterns to filter instance types by name
+                    "architecture": Architecture (X86_64 or ARM64)
                     "min_cpu": Minimum number of vCPUs
                     "max_cpu": Maximum number of vCPUs
                     "min_total_memory": Minimum total memory in GB
@@ -207,7 +220,7 @@ class GCPComputeInstanceManager(InstanceManager):
 
         instance_types = {}
         for machine_type in machine_types:
-            if constraints["instance_types"]:
+            if "instance_types" in constraints and constraints["instance_types"]:
                 match_ok = False
                 for type_filter in constraints["instance_types"]:
                     if re.match(type_filter, machine_type.name):
@@ -229,7 +242,7 @@ class GCPComputeInstanceManager(InstanceManager):
                 "vcpu": machine_type.guest_cpus,
                 "mem_gb": machine_type.memory_mb / 1024.0,
                 "architecture": (
-                    machine_type.architecture if machine_type.architecture else "x86_64"
+                    machine_type.architecture.upper() if machine_type.architecture else "X86_64"
                 ),
                 "local_ssd_gb": local_ssd_size,  # Except for dedicated SSDs
                 "boot_disk_gb": 0,  # GCP separates storage from instance type
@@ -241,50 +254,64 @@ class GCPComputeInstanceManager(InstanceManager):
             }
 
             if (
-                (constraints["min_cpu"] is None or instance_info["vcpu"] >= constraints["min_cpu"])
-                and (
-                    constraints["max_cpu"] is None
-                    or cast(int, instance_info["vcpu"]) <= cast(int, constraints["max_cpu"])
+                (
+                    "architecture" not in constraints
+                    or constraints["architecture"] is None
+                    or instance_info["architecture"] == constraints["architecture"]
                 )
                 and (
-                    constraints["min_total_memory"] is None
-                    or cast(float, instance_info["mem_gb"])
-                    >= cast(float, constraints["min_total_memory"])
+                    "min_cpu" not in constraints
+                    or constraints["min_cpu"] is None
+                    or instance_info["vcpu"] >= constraints["min_cpu"]
                 )
                 and (
-                    constraints["max_total_memory"] is None
-                    or cast(float, instance_info["mem_gb"])
-                    <= cast(float, constraints["max_total_memory"])
+                    "max_cpu" not in constraints
+                    or constraints["max_cpu"] is None
+                    or instance_info["vcpu"] <= constraints["max_cpu"]
                 )
                 and (
-                    constraints["min_memory_per_cpu"] is None
-                    or cast(float, instance_info["mem_gb"]) / cast(int, instance_info["vcpu"])
-                    >= cast(float, constraints["min_memory_per_cpu"])
+                    "min_total_memory" not in constraints
+                    or constraints["min_total_memory"] is None
+                    or instance_info["mem_gb"] >= constraints["min_total_memory"]
                 )
                 and (
-                    constraints["max_memory_per_cpu"] is None
-                    or cast(float, instance_info["mem_gb"]) / cast(int, instance_info["vcpu"])
-                    <= cast(float, constraints["max_memory_per_cpu"])
+                    "max_total_memory" not in constraints
+                    or constraints["max_total_memory"] is None
+                    or instance_info["mem_gb"] <= constraints["max_total_memory"]
                 )
                 and (
-                    constraints["min_local_ssd"] is None
-                    or cast(float, instance_info["local_ssd_gb"])
-                    >= cast(float, constraints["min_local_ssd"])
+                    "min_memory_per_cpu" not in constraints
+                    or constraints["min_memory_per_cpu"] is None
+                    or instance_info["mem_gb"] / instance_info["vcpu"]
+                    >= constraints["min_memory_per_cpu"]
                 )
                 and (
-                    constraints["max_local_ssd"] is None
-                    or cast(float, instance_info["local_ssd_gb"])
-                    <= cast(float, constraints["max_local_ssd"])
+                    "max_memory_per_cpu" not in constraints
+                    or constraints["max_memory_per_cpu"] is None
+                    or instance_info["mem_gb"] / instance_info["vcpu"]
+                    <= constraints["max_memory_per_cpu"]
                 )
                 and (
-                    constraints["min_local_ssd_per_cpu"] is None
-                    or cast(float, instance_info["local_ssd_gb"]) / cast(int, instance_info["vcpu"])
-                    >= cast(float, constraints["min_local_ssd_per_cpu"])
+                    "min_local_ssd" not in constraints
+                    or constraints["min_local_ssd"] is None
+                    or instance_info["local_ssd_gb"] >= constraints["min_local_ssd"]
                 )
                 and (
-                    constraints["max_local_ssd_per_cpu"] is None
-                    or cast(float, instance_info["local_ssd_gb"]) / cast(int, instance_info["vcpu"])
-                    <= cast(float, constraints["max_local_ssd_per_cpu"])
+                    "max_local_ssd" not in constraints
+                    or constraints["max_local_ssd"] is None
+                    or instance_info["local_ssd_gb"] <= constraints["max_local_ssd"]
+                )
+                and (
+                    "min_local_ssd_per_cpu" not in constraints
+                    or constraints["min_local_ssd_per_cpu"] is None
+                    or instance_info["local_ssd_gb"] / instance_info["vcpu"]
+                    >= constraints["min_local_ssd_per_cpu"]
+                )
+                and (
+                    "max_local_ssd_per_cpu" not in constraints
+                    or constraints["max_local_ssd_per_cpu"] is None
+                    or instance_info["local_ssd_gb"] / instance_info["vcpu"]
+                    <= constraints["max_local_ssd_per_cpu"]
                 )
                 # and (
                 #     constraints["min_boot_disk"] is None
@@ -307,8 +334,9 @@ class GCPComputeInstanceManager(InstanceManager):
                 #     <= cast(float, constraints["max_boot_disk_per_cpu"])
                 # )
                 and (
-                    not constraints["use_spot"]
-                    or (constraints["use_spot"] and instance_info["supports_spot"])
+                    "use_spot" not in constraints
+                    or constraints["use_spot"] is None
+                    or instance_info["supports_spot"]
                 )
             ):
                 instance_types[machine_type.name] = instance_info
@@ -697,6 +725,7 @@ class GCPComputeInstanceManager(InstanceManager):
             constraints: Dictionary of constraints to filter instance types by. Constraints
                 include::
                     "instance_types": List of regex patterns to filter instance types by name
+                    "architecture": Architecture (X86_64 or ARM64)
                     "min_cpu": Minimum number of vCPUs
                     "max_cpu": Maximum number of vCPUs
                     "min_total_memory": Minimum total memory in GB
@@ -812,10 +841,10 @@ class GCPComputeInstanceManager(InstanceManager):
             A tuple containing the ID of the started instance and the zone it was started
             in
         """
-        if not self._compute_client:
-            raise RuntimeError("GCP Compute Engine client not initialized")
-
         self._logger.debug(f"Starting new instance with type: {instance_type}, spot: {use_spot}")
+
+        # Get thread-local compute client
+        compute_client = self._get_compute_client()
 
         # Generate a unique name for the instance
         instance_id = f"{self._JOB_ID_TAG_PREFIX}{job_id}-{str(shortuuid.uuid())}"
@@ -906,7 +935,7 @@ class GCPComputeInstanceManager(InstanceManager):
         # Create the instance
         try:
             operation = await asyncio.to_thread(
-                self._compute_client.insert,
+                compute_client.insert,
                 project=self._project_id,
                 zone=zone,
                 instance_resource=inst_config,
@@ -946,7 +975,7 @@ class GCPComputeInstanceManager(InstanceManager):
         self._logger.debug(f"Terminating instance {instance_id} in zone {zone}")
 
         try:
-            operation = self._compute_client.delete(
+            operation = self._get_compute_client().delete(
                 project=self._project_id, zone=zone, instance=instance_id
             )
 
@@ -977,7 +1006,7 @@ class GCPComputeInstanceManager(InstanceManager):
             include_non_job: Include instances that do not have a job_id tag
 
         Returns:
-            List of instance dictionaries with id, type, state, and creation_time
+            List of instance dictionaries with id, type, state, creation_time, and zone.
 
         Raises:
             ValueError: If no zone or region is specified and listing all zones fails
@@ -996,7 +1025,7 @@ class GCPComputeInstanceManager(InstanceManager):
             request = compute_v1.ListInstancesRequest(project=self._project_id, zone=self._zone)
 
             try:
-                instances_list = self._compute_client.list(request=request)
+                instances_list = self._get_compute_client().list(request=request)
                 instances.extend(
                     self._standardize_instance_data(instances_list, job_id, include_non_job)
                 )
@@ -1035,7 +1064,7 @@ class GCPComputeInstanceManager(InstanceManager):
                     )
 
                     try:
-                        instances_list = self._compute_client.list(request=request)
+                        instances_list = self._get_compute_client().list(request=request)
                         instances.extend(
                             self._standardize_instance_data(instances_list, job_id, include_non_job)
                         )
@@ -1080,6 +1109,10 @@ class GCPComputeInstanceManager(InstanceManager):
                 "zone": instance.zone.split("/")[-1],  # Extract zone name from URL
             }
 
+            if instance_info["state"] == "unknown":
+                self._logger.error(
+                    f"Unknown instance state for instance {instance.name}: {instance.status}"
+                )
             if instance.tags and instance.tags.items:
                 for tag in instance.tags.items:
                     if tag.startswith(self._JOB_ID_TAG_PREFIX):

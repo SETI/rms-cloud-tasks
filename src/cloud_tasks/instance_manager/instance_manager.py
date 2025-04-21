@@ -22,6 +22,7 @@ class InstanceManager(ABC):
             constraints: Dictionary of constraints to filter instance types by. Constraints
                 include::
                     "instance_types": List of regex patterns to filter instance types by name
+                    "architecture": Architecture (X86_64 or ARM64)
                     "min_cpu": Minimum number of vCPUs
                     "max_cpu": Maximum number of vCPUs
                     "min_total_memory": Minimum total memory in GB
@@ -89,6 +90,7 @@ class InstanceManager(ABC):
             constraints: Dictionary of constraints to filter instance types by. Constraints
                 include::
                     "instance_types": List of regex patterns to filter instance types by name
+                    "architecture": Architecture (X86_64 or ARM64)
                     "min_cpu": Minimum number of vCPUs
                     "max_cpu": Maximum number of vCPUs
                     "min_total_memory": Minimum total memory in GB

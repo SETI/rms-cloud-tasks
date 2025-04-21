@@ -6,7 +6,7 @@ gcp:
   queue_name: parallel-addition-queue
   job_id: parallel-addition-job
   image: https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-2204-jammy-v20250409
-  service_account: rms-cloud-tasks@rfrench.iam.gserviceaccount.com
+  service_account: rms-cloud-run@rfrench.iam.gserviceaccount.com
   startup_script: |
     apt-get update -y
     apt-get install -y python3 python3-pip python3-venv git
