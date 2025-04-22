@@ -339,7 +339,9 @@ class Worker:
                             if self._use_new_process:
                                 # Start a new process for this task
                                 process_id = (
-                                    self._num_tasks_processed.value + self._num_tasks_failed.value
+                                    self._num_tasks_processed.value
+                                    + self._num_tasks_failed.value
+                                    + self._num_active_tasks.value
                                 )
                                 p = Process(
                                     target=self._worker_process_main,

@@ -273,7 +273,7 @@ async def purge_queue_cmd(args: argparse.Namespace, config: Config) -> None:
     # Verify the queue is now empty
     new_depth = await task_queue.get_queue_depth()
     if new_depth == 0:
-        print(f"Queue '{queue_name}' has been emptied. Removed " f"{queue_depth} message(s).")
+        print(f"Queue '{queue_name}' has been emptied. Removed {queue_depth} message(s).")
     else:
         print(f"WARNING: Queue purge operation completed but {new_depth} messages still remain.")
         print("Some messages may be in flight or locked by consumers.")

@@ -532,8 +532,10 @@ export RMS_CLOUD_WORKER_USE_NEW_PROCESS={self._run_config.worker_use_new_process
                 available_price = None
 
             self._logger.debug(
-                f"Available instances {available_instances}, cpus {available_cpus}, "
-                f"price {available_price}"
+                "Available instances "
+                f"{'N/A' if available_instances is None else available_instances}, "
+                f"cpus {'N/A' if available_cpus is None else available_cpus}, "
+                f"price {'N/A' if available_price is None else available_price}"
             )
 
             # Find the minimum of the three budgets - this gives us the maximum number of instances
