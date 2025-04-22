@@ -91,6 +91,11 @@ class Worker:
         self._shutdown_grace_period = int(os.getenv("RMS_CLOUD_TASKS_SHUTDOWN_GRACE_PERIOD", 120))
         logger.info(f"Shutdown grace period: {self._shutdown_grace_period} seconds")
 
+        # Check if we should use new process for each task
+        self._use_new_process = os.getenv("RMS_CLOUD_WORKER_USE_NEW_PROCESS", "False").lower()
+        self._use_new_process = self._use_new_process not in ("false", "0")
+        logger.info(f"Use new process per task: {self._use_new_process}")
+
         # State tracking
         self._running = False
         self._task_queue: Any = None
@@ -128,8 +133,6 @@ class Worker:
         """Start the worker processes and result handler."""
         logger.info(f"Starting worker for {self._provider.upper()} queue '{self._queue_name}'")
 
-        # Import the task queue module. We only import the required module to avoid unneeded
-        # dependencies.
         try:
             # Create and initialize the task queue
             self._task_queue = await create_queue(
@@ -141,8 +144,9 @@ class Worker:
 
         self._running = True
 
-        # Start worker processes
-        self._start_worker_processes()
+        if not self._use_new_process:
+            # Start worker processes if using process pool
+            self._start_worker_processes()
 
         # Start the result handler in the main process
         asyncio.create_task(self._handle_results())
@@ -174,6 +178,7 @@ class Worker:
                     self._shutdown_event,
                     self._termination_event,
                     self._num_active_tasks,
+                    False,  # is_single_task
                 ),
             )
             p.daemon = True
@@ -321,15 +326,41 @@ class Worker:
                     continue
 
                 # Only fetch new tasks if we have capacity
-                if self._num_active_tasks.value < self._tasks_per_worker:
+                max_concurrent = self._tasks_per_worker if not self._use_new_process else 1
+                if self._num_active_tasks.value < max_concurrent:
                     # Receive tasks
                     tasks = await self._task_queue.receive_tasks(
-                        max_count=min(5, self._tasks_per_worker - self._num_active_tasks.value),
+                        max_count=min(5, max_concurrent - self._num_active_tasks.value),
                         visibility_timeout_seconds=self._visibility_timeout_seconds,
                     )
 
                     if tasks:
                         for task in tasks:
+                            if self._use_new_process:
+                                # Start a new process for this task
+                                process_id = (
+                                    self._num_tasks_processed.value + self._num_tasks_failed.value
+                                )
+                                p = Process(
+                                    target=self._worker_process_main,
+                                    args=(
+                                        process_id,
+                                        self._user_worker_function,
+                                        self._task_queue_mp,
+                                        self._result_queue,
+                                        self._shutdown_event,
+                                        self._termination_event,
+                                        self._num_active_tasks,
+                                        True,  # is_single_task
+                                    ),
+                                )
+                                p.daemon = True
+                                p.start()
+                                self._processes.append(p)
+                                logger.info(
+                                    f"Started single-task process #{process_id} (PID: {p.pid})"
+                                )
+
                             # Put task on the worker queue
                             self._task_queue_mp.put(task)
                             with self._num_active_tasks.get_lock():
@@ -357,6 +388,7 @@ class Worker:
         shutdown_event: MP_Event,
         termination_event: MP_Event,
         active_tasks: MP_Value,
+        is_single_task: bool,
     ) -> None:
         """Main function for worker processes."""
         # Set up logging for this process
@@ -378,6 +410,9 @@ class Worker:
                         task = task_queue.get(timeout=1)
                     except Exception:
                         # No task available or timeout
+                        if is_single_task:
+                            # If this is a single-task process and no task is available, exit
+                            break
                         continue
 
                     # Extract task info
@@ -410,15 +445,21 @@ class Worker:
                     except Exception as e:
                         logger.error(f"Error executing task {task_id}: {e}")
                         # Send failure back to main process
-                        result_queue.put((process_id, task_id, False, str(e)))
+                        result_queue.put((process_id, task_id, ack_id, False, str(e)))
 
                     finally:
                         # Update active task count
                         with active_tasks.get_lock():
                             active_tasks.value -= 1
 
+                        if is_single_task:
+                            # If this is a single-task process, exit after processing
+                            break
+
                 except Exception as e:
                     logger.error(f"Unhandled error in worker process: {e}")
+                    if is_single_task:
+                        break
                     time.sleep(1)
 
             logger.info(f"Worker process #{process_id} shutting down")
