@@ -7,7 +7,7 @@ Worker API Reference
 Introduction
 -----------
 
-The Cloud Tasks Worker API provides a framework for implementing workers that process tasks from cloud provider queues. This API abstracts away the complexities of cloud-specific implementations, allowing you to focus on your task processing logic.
+The Cloud Tasks Worker API provides a framework for implementing workers that process tasks from cloud provider queues. Workers run on compute instances and process tasks from the queue in parallel using Python's multiprocessing capabilities.
 
 Basic Usage
 ----------
@@ -18,76 +18,106 @@ Here's a simple example of how to implement a worker:
 
    from cloud_tasks.worker import Worker
 
-   class MyTaskWorker(Worker):
-       async def process_task(self, task_id, task_data):
-           """Process a single task."""
+   def process_task(task_id: str, task_data: dict) -> tuple[bool, str]:
+       """Process a single task.
+
+       Args:
+           task_id: Unique identifier for the task
+           task_data: Dictionary containing task data
+
+       Returns:
+           Tuple of (success: bool, result: str)
+           - success: True if task processed successfully, False otherwise
+           - result: String describing the result or error message
+       """
+       try:
            print(f"Processing task {task_id}")
            # Your processing logic here
            print(f"Task data: {task_data}")
-           # Return results if needed
-           return {"status": "success", "processed_at": "2023-01-01T12:00:00Z"}
+           return True, "Task completed successfully"
+       except Exception as e:
+           return False, str(e)
 
-   # Run the worker
+   # Create and start the worker
    if __name__ == "__main__":
-       worker = MyTaskWorker(
-           provider="aws",
-           queue_name="my-task-queue",
-           config_file="cloud_tasks_config.yaml"
-       )
-       worker.run()
+       worker = Worker(process_task)
+       asyncio.run(worker.start())
 
-Worker Configuration
+Environment Variables
 ------------------
 
-The worker can be configured using the following parameters:
+The worker is configured using the following environment variables:
 
-- `provider`: The cloud provider to use (aws, gcp, azure)
-- `queue_name`: The name of the queue to process
-- `config_file`: Path to the configuration file
-- `poll_interval`: How often to check for new tasks in seconds
-- `batch_size`: Maximum number of tasks to process in parallel
-- `visibility_timeout`: How long to keep tasks invisible to other workers
+Required Variables
+~~~~~~~~~~~~~~~~
 
-Advanced Worker Features
-----------------------
+- ``RMS_CLOUD_TASKS_PROVIDER``: Cloud provider (AWS, GCP, or AZURE)
+- ``RMS_CLOUD_TASKS_JOB_ID``: Unique identifier for the job
+- ``RMS_CLOUD_TASKS_QUEUE_NAME``: Name of the task queue to process
 
-Task Handling
-~~~~~~~~~~~~
+Optional Variables
+~~~~~~~~~~~~~~~
 
-The worker provides the following task handling capabilities:
+- ``RMS_CLOUD_TASKS_PROJECT_ID``: Project ID (required for GCP only)
+- ``RMS_CLOUD_TASKS_NUM_TASKS_PER_INSTANCE``: Number of concurrent tasks to process (defaults to number of vCPUs)
+- ``RMS_CLOUD_TASKS_INSTANCE_NUM_VCPUS``: Number of vCPUs available on the instance
+- ``RMS_CLOUD_TASKS_VISIBILITY_TIMEOUT_SECONDS``: How long tasks remain invisible after being claimed (default: 30)
+- ``RMS_CLOUD_TASKS_SHUTDOWN_GRACE_PERIOD``: Time in seconds to wait for tasks to complete during shutdown (default: 120)
+- ``RMS_CLOUD_WORKER_USE_NEW_PROCESS``: Whether to use a new process for each task (default: False)
 
-- Automatic task acknowledgement after successful processing
-- Error handling and retry mechanisms
-- Dead letter queue support
-- Task prioritization
-- Batch processing
+Instance Information Variables (Set Automatically)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Health Checks
-~~~~~~~~~~~
+- ``RMS_CLOUD_TASKS_INSTANCE_TYPE``: Type of the compute instance
+- ``RMS_CLOUD_TASKS_INSTANCE_MEM_GB``: Memory available in GB
+- ``RMS_CLOUD_TASKS_INSTANCE_SSD_GB``: Local SSD storage in GB
+- ``RMS_CLOUD_TASKS_INSTANCE_BOOT_DISK_GB``: Boot disk size in GB
+- ``RMS_CLOUD_TASKS_INSTANCE_IS_SPOT``: Whether running on spot/preemptible instance
+- ``RMS_CLOUD_TASKS_INSTANCE_PRICE``: Price per hour for the instance
 
-Workers can implement health checks to monitor their status:
+Worker Features
+-------------
 
-.. code-block:: python
+Parallel Processing
+~~~~~~~~~~~~~~~~
 
-   class MyTaskWorker(Worker):
-       async def health_check(self):
-           """Implement custom health check logic."""
-           # Check resources, connections, etc.
-           return {"status": "healthy", "queue_name": self.queue_name}
+The worker uses Python's multiprocessing to achieve true parallelism:
+
+- Creates one worker process per vCPU (or as specified by ``RMS_CLOUD_TASKS_NUM_TASKS_PER_INSTANCE``)
+- Each process handles one task at a time
+- Tasks are distributed automatically among processes
+- Results are collected and reported back to the main process
+
+Task Processing
+~~~~~~~~~~~~~
+
+Tasks are processed with the following guarantees:
+
+- Automatic visibility timeout management
+- Task acknowledgement after successful processing
+- Failed task handling and reporting
+- Graceful shutdown with task completion
+- Spot instance termination handling
+
+Health Checks and Monitoring
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The worker includes built-in monitoring features:
+
+- Automatic spot/preemptible instance termination detection
+- Active task count tracking
+- Task success/failure statistics
+- Process health monitoring
 
 Graceful Shutdown
 ~~~~~~~~~~~~~~~
 
-Workers can implement graceful shutdown logic:
+The worker implements graceful shutdown handling:
 
-.. code-block:: python
-
-   class MyTaskWorker(Worker):
-       async def shutdown(self):
-           """Clean up resources before shutting down."""
-           print("Worker shutting down...")
-           # Close connections, flush logs, etc.
-           await super().shutdown()
+- Catches SIGTERM and SIGINT signals
+- Allows in-progress tasks to complete
+- Configurable grace period for task completion
+- Proper process cleanup and termination
 
 API Reference
 -----------
@@ -98,25 +128,63 @@ Worker Class
 .. code-block:: python
 
    class Worker:
-       def __init__(self, provider, queue_name, config_file=None, **kwargs):
-           """Initialize the worker."""
+       def __init__(self, user_worker_function: Callable[[str, Dict[str, Any]], Tuple[bool, str]]):
+           """Initialize the worker.
+
+           Args:
+               user_worker_function: Function to process tasks. Should accept task_id (str) and
+                   task_data (dict) arguments and return a tuple of (success: bool, result: str).
+           """
            pass
 
-       async def process_task(self, task_id, task_data):
-           """Process a single task. Must be implemented by subclasses."""
-           raise NotImplementedError("Subclasses must implement process_task method")
+       async def start(self) -> None:
+           """Start the worker and begin processing tasks.
 
-       async def run(self):
-           """Start the worker and begin processing tasks."""
+           This method will:
+           1. Initialize the task queue connection
+           2. Start worker processes
+           3. Begin task processing
+           4. Run until shutdown is requested
+           """
            pass
 
-       async def health_check(self):
-           """Perform a health check. Can be overridden by subclasses."""
-           pass
+Error Handling
+------------
 
-       async def shutdown(self):
-           """Clean up resources and gracefully shut down."""
-           pass
+The worker implements comprehensive error handling:
+
+- Task processing errors are caught and reported
+- Failed tasks are properly acknowledged
+- Process crashes are detected and handled
+- Queue connection errors are handled with retries
+- Graceful degradation on cloud API failures
+
+Best Practices
+------------
+
+1. **Task Processing Function**
+   - Keep the function stateless
+   - Handle all exceptions
+   - Return clear success/failure status
+   - Include informative result messages
+
+2. **Resource Management**
+   - Close file handles and connections
+   - Clean up temporary files
+   - Release system resources
+   - Monitor memory usage
+
+3. **Error Handling**
+   - Log errors with sufficient context
+   - Include stack traces for debugging
+   - Return meaningful error messages
+   - Handle both expected and unexpected errors
+
+4. **Performance**
+   - Optimize CPU-intensive operations
+   - Minimize memory allocations
+   - Use appropriate batch sizes
+   - Monitor processing times
 
 Future Enhancements
 -----------------

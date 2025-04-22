@@ -1,7 +1,8 @@
 Cloud Tasks Documentation
 ========================
 
-Welcome to Cloud Tasks documentation. Cloud Tasks is a framework for running distributed tasks on cloud providers with automatic instance management.
+Welcome to Cloud Tasks documentation. Cloud Tasks is a framework for running distributed
+tasks on cloud providers with automatic instance management.
 
 .. toctree::
    :maxdepth: 2
@@ -15,11 +16,10 @@ Introduction
 
 Cloud Tasks is a powerful framework that allows you to:
 
-- Run tasks on AWS, GCP, or Azure with a unified API
-- Automatically scale worker instances based on queue depth
+- Run tasks on AWS, GCP, or Azure with a unified API (NOTE: Azure is support is not
+  currently functional)
 - Use cost-effective instance selection using cloud provider pricing APIs
 - Support spot/preemptible instances to reduce costs
-- Implement intelligent region selection to minimize costs
 - Handle graceful shutdown for spot instance termination
 - Leverage flexible task queueing and processing
 - Use simple worker implementation
@@ -33,7 +33,7 @@ You can install Cloud Tasks using pip:
 
    pip install cloud-tasks
 
-For development:
+For development of `cloud-tasks` features, clone the repository and install in development mode:
 
 .. code-block:: bash
 
@@ -44,7 +44,8 @@ For development:
 Quick Start
 ----------
 
-Here's a quick example of using the Cloud Tasks CLI to load tasks into a queue:
+Here's a quick example of using the Cloud Tasks CLI to load tasks into a queue and create
+a pool of instances:
 
 .. code-block:: bash
 
@@ -63,26 +64,31 @@ Here's a quick example of using the Cloud Tasks CLI to load tasks into a queue:
      --detail
 
    # List available regions for a provider
-   python -m cloud_tasks.cli list_regions \
+   python -m cloud_tasks.cli manage_pool \
      --config cloud_tasks_config.yaml \
      --provider aws \
-     --zones \
-     --detail
+     --job-id my-job-id \
+     --min-instances 2 \
+     --max-instances 4 \
+     --instance-types "t3 m5"
 
 Configuration
 ------------
 
-Cloud Tasks uses a YAML configuration file that supports both global defaults and provider-specific settings:
+Cloud Tasks uses a YAML configuration file that supports both global defaults and
+provider-specific settings. Provider-specific settings override global defaults. Command
+line options override all configuration file settings.
 
 .. code-block:: yaml
 
    # Global defaults for all providers
    run:
-     cpu: 2                 # Default CPU cores per instance
-     memory_gb: 4           # Default memory in GB per instance
-     disk_gb: 20            # Default disk space in GB per instance
-     image: ubuntu-2404-lts # Default VM image to use
-     startup_script: |      # Default startup script
+     min-cpu: 2                 # Min vCPUs per instance
+     max-cpu: 4                 # Optional: maximum vCPUs per instance
+     min-memory-gb: 4           # Required memory in GB per instance
+     min-disk-gb: 20            # Required disk space in GB per instance
+     image: ubuntu-2404-lts # Required VM image to use
+     startup_script: |      # Optional startup script
        #!/bin/bash
        apt-get update -y
        apt-get install -y python3 python3-pip git

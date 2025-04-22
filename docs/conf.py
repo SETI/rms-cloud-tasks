@@ -19,8 +19,8 @@ sys.path.insert(0, os.path.abspath(".."))
 # -- Project information -----------------------------------------------------
 
 project = "Cloud Tasks"
-copyright = "2023, Cloud Tasks Team"
-author = "Cloud Tasks Team"
+copyright = "2025, Robert S. French"
+author = "Robert S. French"
 
 # The full version, including alpha/beta/rc tags
 release = "0.1.0"

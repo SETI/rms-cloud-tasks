@@ -74,11 +74,10 @@ await orchestrator.start()
 ### Command Line Interface
 
 ```bash
-# Run a job on AWS using spot instances in a specific region
+# Run a job with automatic instance management
 python -m src.cloud_tasks.cli run \
   --provider aws \
   --job-id my-processing-job \
-  --input-file tasks.json \
   --queue-name my-task-queue \
   --cpu 2 \
   --memory 4 \
@@ -86,20 +85,18 @@ python -m src.cloud_tasks.cli run \
   --min-instances 1 \
   --max-instances 10 \
   --use-spot \
-  --region us-west-2
+  --region us-west-2 \
+  --config config.yaml \
+  --startup-script-file setup.sh \
+  --instance-types "t3 m5" \
+  --image ami-123456 \
+  --task-timeout 3600 \
+  --instance-timeout 7200
 
-# Run a job on AWS using spot instances with automatic region selection (cheapest)
-python -m src.cloud_tasks.cli run \
-  --provider aws \
-  --job-id my-processing-job \
-  --input-file tasks.json \
-  --queue-name my-task-queue \
-  --cpu 2 \
-  --memory 4 \
-  --disk 20 \
-  --min-instances 1 \
-  --max-instances 10 \
-  --use-spot
+# List available regions for a provider
+python -m src.cloud_tasks.cli list_regions \
+  --config config.yaml \
+  --provider aws
 
 # List available VM images for a provider
 python -m src.cloud_tasks.cli list_images \
@@ -108,7 +105,7 @@ python -m src.cloud_tasks.cli list_images \
   --sort-by "name,source"
 
 # List available instance types with pricing information
-python -m src.cloud_tasks.cli list_instances \
+python -m src.cloud_tasks.cli list_instance_types \
   --config config.yaml \
   --provider aws \
   --instance-types "t3 m5" \
@@ -123,18 +120,52 @@ python -m src.cloud_tasks.cli list_running_instances \
   --provider aws \
   --job-id optional-job-id-filter
 
-# Show the current depth of a queue
-python -m src.cloud_tasks.cli show_queue_depth \
+# Show queue information
+python -m src.cloud_tasks.cli show_queue \
   --config config.yaml \
   --provider aws \
   --queue-name my-task-queue \
-  --verbose  # Optional: peek at the first message in the queue
+  --verbose  # Optional: show more detailed information
 
-# Empty a queue by removing all messages
-python -m src.cloud_tasks.cli empty_queue \
+# Load tasks into a queue
+python -m src.cloud_tasks.cli load_queue \
+  --config config.yaml \
+  --provider aws \
+  --queue-name my-task-queue \
+  --input-file tasks.json
+
+# Purge all messages from a queue
+python -m src.cloud_tasks.cli purge_queue \
   --config config.yaml \
   --provider aws \
   --queue-name my-task-queue
+
+# Delete a queue
+python -m src.cloud_tasks.cli delete_queue \
+  --config config.yaml \
+  --provider aws \
+  --queue-name my-task-queue
+
+# Check status of a job
+python -m src.cloud_tasks.cli status \
+  --config config.yaml \
+  --provider aws \
+  --job-id my-job-id
+
+# Manage instance pool
+python -m src.cloud_tasks.cli manage_pool \
+  --config config.yaml \
+  --provider aws \
+  --job-id my-job-id \
+  --min-instances 1 \
+  --max-instances 10
+
+# Stop a job and terminate its instances
+python -m src.cloud_tasks.cli stop \
+  --config config.yaml \
+  --provider aws \
+  --job-id my-job-id \
+  --force  # Optional: force stop without confirmation
 ```
 
 ## Monitoring and Management Commands
