@@ -326,7 +326,7 @@ class Worker:
                     continue
 
                 # Only fetch new tasks if we have capacity
-                max_concurrent = self._tasks_per_worker if not self._use_new_process else 1
+                max_concurrent = self._tasks_per_worker
                 if self._num_active_tasks.value < max_concurrent:
                     # Receive tasks
                     tasks = await self._task_queue.receive_tasks(
