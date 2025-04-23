@@ -8,6 +8,8 @@ import pytest_asyncio
 from google.api_core.exceptions import NotFound  # type: ignore
 from google.cloud import billing
 from google.oauth2.credentials import Credentials
+import uuid as _uuid  # Import uuid module with alias to avoid conflicts
+import asyncio
 
 from cloud_tasks.common.config import GCPConfig
 from cloud_tasks.instance_manager.gcp import GCPComputeInstanceManager
@@ -54,7 +56,7 @@ def mock_instance_types() -> Dict[str, Dict[str, Any]]:
             "mem_gb": 7.5,
             "local_ssd_gb": 0,
             "boot_disk_gb": 0,
-            "architecture": "x86_64",
+            "architecture": "X86_64",
             "supports_spot": True,
             "description": "2 vCPUs, 7.5 GB RAM",
         },
@@ -64,7 +66,7 @@ def mock_instance_types() -> Dict[str, Dict[str, Any]]:
             "mem_gb": 16,
             "local_ssd_gb": 750,  # 2 * 375 GB
             "boot_disk_gb": 0,
-            "architecture": "x86_64",
+            "architecture": "X86_64",
             "supports_spot": True,
             "description": "4 vCPUs, 16 GB RAM, 2 local SSD",
         },
@@ -92,7 +94,7 @@ def mock_machine_type() -> MagicMock:
     machine.description = "2 vCPUs, 7.5 GB RAM"
     machine.guest_cpus = 2
     machine.memory_mb = 7680  # 7.5 GB in MB
-    machine.architecture = "x86_64"
+    machine.architecture = "X86_64"
     machine.self_link = "https://compute.googleapis.com/compute/v1/projects/test-project/zones/us-central1-a/machineTypes/n1-standard-2"
     return machine
 
@@ -105,7 +107,7 @@ def mock_machine_type_with_ssd() -> MagicMock:
     machine.description = "4 vCPUs, 16 GB RAM, 2 local SSD"
     machine.guest_cpus = 4
     machine.memory_mb = 16384  # 16 GB in MB
-    machine.architecture = "x86_64"
+    machine.architecture = "X86_64"
     machine.self_link = "https://compute.googleapis.com/compute/v1/projects/test-project/zones/us-central1-a/machineTypes/n2-standard-4-lssd"
     return machine
 
@@ -127,16 +129,14 @@ async def gcp_instance_manager(
     mock_default_credentials: Tuple[MagicMock, str],
 ) -> GCPComputeInstanceManager:
     """Create a GCP instance manager with mocked dependencies."""
-    with patch("google.auth.default", return_value=mock_default_credentials), patch(
-        "google.cloud.compute_v1.InstancesClient", return_value=MagicMock()
-    ), patch("google.cloud.compute_v1.ZonesClient", return_value=MagicMock()), patch(
-        "google.cloud.compute_v1.RegionsClient", return_value=MagicMock()
-    ), patch(
-        "google.cloud.compute_v1.MachineTypesClient", return_value=mock_machine_types_client
-    ), patch(
-        "google.cloud.compute_v1.ImagesClient", return_value=MagicMock()
-    ), patch(
-        "google.cloud.billing.CloudCatalogClient", return_value=MagicMock()
+    with (
+        patch("google.auth.default", return_value=mock_default_credentials),
+        patch("google.cloud.compute_v1.InstancesClient", return_value=MagicMock()),
+        patch("google.cloud.compute_v1.ZonesClient", return_value=MagicMock()),
+        patch("google.cloud.compute_v1.RegionsClient", return_value=MagicMock()),
+        patch("google.cloud.compute_v1.MachineTypesClient", return_value=mock_machine_types_client),
+        patch("google.cloud.compute_v1.ImagesClient", return_value=MagicMock()),
+        patch("google.cloud.billing.CloudCatalogClient", return_value=MagicMock()),
     ):
         manager = GCPComputeInstanceManager(gcp_config)
         return manager
@@ -180,14 +180,14 @@ async def test_get_available_instance_types_no_constraints(
     assert n1_instance["vcpu"] == 2
     assert n1_instance["mem_gb"] == 7.5
     assert n1_instance["local_ssd_gb"] == 0
-    assert n1_instance["architecture"] == "x86_64"
+    assert n1_instance["architecture"] == "X86_64"
 
     # Verify n2-standard-4-lssd instance details
     n2_instance = result["n2-standard-4-lssd"]
     assert n2_instance["vcpu"] == 4
     assert n2_instance["mem_gb"] == 16
     assert n2_instance["local_ssd_gb"] == 750  # 2 * 375 GB
-    assert n2_instance["architecture"] == "x86_64"
+    assert n2_instance["architecture"] == "X86_64"
 
 
 @pytest.mark.asyncio
@@ -508,7 +508,7 @@ async def test_get_instance_pricing_basic(
     assert pricing["mem_gb"] == 7.5
     assert pricing["local_ssd_gb"] == 0
     assert pricing["boot_disk_gb"] == 0
-    assert pricing["architecture"] == "x86_64"
+    assert pricing["architecture"] == "X86_64"
     assert pricing["supports_spot"] == True
 
 
@@ -574,7 +574,7 @@ async def test_get_instance_pricing_with_local_ssd(
     assert pricing["mem_gb"] == 16
     assert pricing["local_ssd_gb"] == 750
     assert pricing["boot_disk_gb"] == 0
-    assert pricing["architecture"] == "x86_64"
+    assert pricing["architecture"] == "X86_64"
     assert pricing["supports_spot"] == True
 
 
@@ -628,7 +628,7 @@ async def test_get_instance_pricing_spot_instance(
     assert pricing["mem_gb"] == 7.5
     assert pricing["local_ssd_gb"] == 0
     assert pricing["boot_disk_gb"] == 0
-    assert pricing["architecture"] == "x86_64"
+    assert pricing["architecture"] == "X86_64"
     assert pricing["supports_spot"] == True
 
 
@@ -686,7 +686,7 @@ async def test_get_instance_pricing_cache_hit(
     assert pricing["mem_gb"] == 7.5
     assert pricing["local_ssd_gb"] == 0
     assert pricing["boot_disk_gb"] == 0
-    assert pricing["architecture"] == "x86_64"
+    assert pricing["architecture"] == "X86_64"
     assert pricing["supports_spot"] == True
 
     # Verify the billing client was not called
@@ -1105,7 +1105,8 @@ async def test_start_instance_basic(
     image = "ubuntu-2404-lts"
 
     # Mock the UUID generation to have a predictable instance ID
-    with patch("uuid.uuid4", return_value="mock-uuid"):
+    mock_uuid = _uuid.UUID("12345678-1234-5678-1234-567812345678")
+    with patch("uuid.uuid4", return_value=mock_uuid):
         # Mock _get_image_from_family to return a predictable image path
         with patch.object(
             gcp_instance_manager, "_get_image_from_family", new=AsyncMock()
@@ -1120,7 +1121,9 @@ async def test_start_instance_basic(
             mock_result = MagicMock()
             mock_operation.result.return_value = mock_result
 
-            gcp_instance_manager._compute_client.insert = MagicMock(return_value=mock_operation)
+            mock_compute_client = MagicMock()
+            mock_compute_client.insert = MagicMock(return_value=mock_operation)
+            gcp_instance_manager._get_compute_client = MagicMock(return_value=mock_compute_client)
 
             # Mock _wait_for_operation to return successfully
             with patch.object(
@@ -1140,21 +1143,18 @@ async def test_start_instance_basic(
                 )
 
                 # Assert
-                assert instance_id == f"{gcp_instance_manager._JOB_ID_TAG_PREFIX}{job_id}-mock-uuid"
+                assert instance_id.startswith(f"{gcp_instance_manager._JOB_ID_TAG_PREFIX}{job_id}-")
                 assert zone == gcp_instance_manager._zone
 
                 # Check that the compute client was called with the correct parameters
-                gcp_instance_manager._compute_client.insert.assert_called_once()
-                call_args = gcp_instance_manager._compute_client.insert.call_args
+                mock_compute_client.insert.assert_called_once()
+                call_args = mock_compute_client.insert.call_args
                 assert call_args[1]["project"] == gcp_instance_manager._project_id
                 assert call_args[1]["zone"] == gcp_instance_manager._zone
 
-                # Check the instance resource configuration
+                # Check instance resource configuration
                 instance_config = call_args[1]["instance_resource"]
-                assert (
-                    instance_config.name
-                    == f"{gcp_instance_manager._JOB_ID_TAG_PREFIX}{job_id}-mock-uuid"
-                )
+                assert instance_config.name == instance_id
                 assert (
                     instance_config.machine_type
                     == f"zones/{gcp_instance_manager._zone}/machineTypes/{instance_type}"
@@ -1187,7 +1187,8 @@ async def test_start_instance_spot(
     image = "ubuntu-2404-lts"
 
     # Mock the UUID generation to have a predictable instance ID
-    with patch("uuid.uuid4", return_value="mock-uuid"):
+    mock_uuid = _uuid.UUID("12345678-1234-5678-1234-567812345678")
+    with patch("uuid.uuid4", return_value=mock_uuid):
         # Mock _get_image_from_family to return a predictable image path
         with patch.object(
             gcp_instance_manager, "_get_image_from_family", new=AsyncMock()
@@ -1202,7 +1203,9 @@ async def test_start_instance_spot(
             mock_result = MagicMock()
             mock_operation.result.return_value = mock_result
 
-            gcp_instance_manager._compute_client.insert = MagicMock(return_value=mock_operation)
+            mock_compute_client = MagicMock()
+            mock_compute_client.insert = MagicMock(return_value=mock_operation)
+            gcp_instance_manager._get_compute_client = MagicMock(return_value=mock_compute_client)
 
             # Mock _wait_for_operation to return successfully
             with patch.object(
@@ -1222,17 +1225,15 @@ async def test_start_instance_spot(
                 )
 
                 # Assert
-                assert instance_id == f"{gcp_instance_manager._JOB_ID_TAG_PREFIX}{job_id}-mock-uuid"
+                assert instance_id.startswith(f"{gcp_instance_manager._JOB_ID_TAG_PREFIX}{job_id}-")
                 assert zone == gcp_instance_manager._zone
 
                 # Check that the compute client was called with the correct parameters
-                gcp_instance_manager._compute_client.insert.assert_called_once()
-                call_args = gcp_instance_manager._compute_client.insert.call_args
-
-                # Check the instance resource configuration for spot instance
-                instance_config = call_args[1]["instance_resource"]
+                mock_compute_client.insert.assert_called_once()
+                call_args = mock_compute_client.insert.call_args
 
                 # Check that spot scheduling was used
+                instance_config = call_args[1]["instance_resource"]
                 assert instance_config.scheduling.preemptible == True
                 assert instance_config.scheduling.automatic_restart == False
                 assert instance_config.scheduling.on_host_maintenance == "TERMINATE"
@@ -1255,7 +1256,8 @@ async def test_start_instance_with_service_account(
     gcp_instance_manager._service_account = service_account
 
     # Mock the UUID generation to have a predictable instance ID
-    with patch("uuid.uuid4", return_value="mock-uuid"):
+    mock_uuid = _uuid.UUID("12345678-1234-5678-1234-567812345678")
+    with patch("uuid.uuid4", return_value=mock_uuid):
         # Mock _get_image_from_family to return a predictable image path
         with patch.object(
             gcp_instance_manager, "_get_image_from_family", new=AsyncMock()
@@ -1270,7 +1272,9 @@ async def test_start_instance_with_service_account(
             mock_result = MagicMock()
             mock_operation.result.return_value = mock_result
 
-            gcp_instance_manager._compute_client.insert = MagicMock(return_value=mock_operation)
+            mock_compute_client = MagicMock()
+            mock_compute_client.insert = MagicMock(return_value=mock_operation)
+            gcp_instance_manager._get_compute_client = MagicMock(return_value=mock_compute_client)
 
             # Mock _wait_for_operation to return successfully
             with patch.object(
@@ -1290,8 +1294,11 @@ async def test_start_instance_with_service_account(
                 )
 
                 # Assert
+                assert instance_id.startswith(f"{gcp_instance_manager._JOB_ID_TAG_PREFIX}{job_id}-")
+                assert zone == gcp_instance_manager._zone
+
                 # Check that the service account was included in the instance configuration
-                call_args = gcp_instance_manager._compute_client.insert.call_args
+                call_args = mock_compute_client.insert.call_args
                 instance_config = call_args[1]["instance_resource"]
 
                 assert len(instance_config.service_accounts) == 1
@@ -1314,7 +1321,8 @@ async def test_start_instance_with_custom_image_uri(
     custom_image = "https://compute.googleapis.com/compute/v1/projects/my-project/global/images/my-custom-image"
 
     # Mock the UUID generation to have a predictable instance ID
-    with patch("uuid.uuid4", return_value="mock-uuid"):
+    mock_uuid = _uuid.UUID("12345678-1234-5678-1234-567812345678")
+    with patch("uuid.uuid4", return_value=mock_uuid):
         # Mock the insert operation and its result
         mock_operation = MagicMock()
         mock_operation.name = "mock-operation-name"
@@ -1323,7 +1331,9 @@ async def test_start_instance_with_custom_image_uri(
         mock_result = MagicMock()
         mock_operation.result.return_value = mock_result
 
-        gcp_instance_manager._compute_client.insert = MagicMock(return_value=mock_operation)
+        mock_compute_client = MagicMock()
+        mock_compute_client.insert = MagicMock(return_value=mock_operation)
+        gcp_instance_manager._get_compute_client = MagicMock(return_value=mock_compute_client)
 
         # Mock _wait_for_operation to return successfully
         with patch.object(
@@ -1343,8 +1353,11 @@ async def test_start_instance_with_custom_image_uri(
             )
 
             # Assert
+            assert instance_id.startswith(f"{gcp_instance_manager._JOB_ID_TAG_PREFIX}{job_id}-")
+            assert zone == gcp_instance_manager._zone
+
             # Check that the image was set correctly in the instance configuration
-            call_args = gcp_instance_manager._compute_client.insert.call_args
+            call_args = mock_compute_client.insert.call_args
             instance_config = call_args[1]["instance_resource"]
 
             assert instance_config.disks[0].initialize_params.source_image == custom_image
@@ -1372,7 +1385,8 @@ async def test_start_instance_with_random_zone(
         mock_get_random_zone.return_value = random_zone
 
         # Mock the UUID generation to have a predictable instance ID
-        with patch("uuid.uuid4", return_value="mock-uuid"):
+        mock_uuid = _uuid.UUID("12345678-1234-5678-1234-567812345678")
+        with patch("uuid.uuid4", return_value=mock_uuid):
             # Mock _get_image_from_family to return a predictable image path
             with patch.object(
                 gcp_instance_manager, "_get_image_from_family", new=AsyncMock()
@@ -1387,7 +1401,11 @@ async def test_start_instance_with_random_zone(
                 mock_result = MagicMock()
                 mock_operation.result.return_value = mock_result
 
-                gcp_instance_manager._compute_client.insert = MagicMock(return_value=mock_operation)
+                mock_compute_client = MagicMock()
+                mock_compute_client.insert = MagicMock(return_value=mock_operation)
+                gcp_instance_manager._get_compute_client = MagicMock(
+                    return_value=mock_compute_client
+                )
 
                 # Mock _wait_for_operation to return successfully
                 with patch.object(
@@ -1407,11 +1425,16 @@ async def test_start_instance_with_random_zone(
                     )
 
                     # Assert
+                    assert instance_id.startswith(
+                        f"{gcp_instance_manager._JOB_ID_TAG_PREFIX}{job_id}-"
+                    )
+                    assert zone == random_zone
+
                     # Verify that _get_random_zone was called to resolve the wildcard
                     mock_get_random_zone.assert_called_once()
 
                     # Check that the resolved random zone was used
-                    call_args = gcp_instance_manager._compute_client.insert.call_args
+                    call_args = mock_compute_client.insert.call_args
                     assert call_args[1]["zone"] == random_zone
 
 
@@ -1428,7 +1451,8 @@ async def test_start_instance_error_handling(
     image = "ubuntu-2404-lts"
 
     # Mock the UUID generation to have a predictable instance ID
-    with patch("uuid.uuid4", return_value="mock-uuid"):
+    mock_uuid = _uuid.UUID("12345678-1234-5678-1234-567812345678")
+    with patch("uuid.uuid4", return_value=mock_uuid):
         # Mock _get_image_from_family to return a predictable image path
         with patch.object(
             gcp_instance_manager, "_get_image_from_family", new=AsyncMock()
@@ -1437,9 +1461,9 @@ async def test_start_instance_error_handling(
 
             # Mock the insert operation to raise an exception
             error_message = "Failed to create instance"
-            gcp_instance_manager._compute_client.insert = MagicMock(
-                side_effect=RuntimeError(error_message)
-            )
+            mock_compute_client = MagicMock()
+            mock_compute_client.insert = MagicMock(side_effect=RuntimeError(error_message))
+            gcp_instance_manager._get_compute_client = MagicMock(return_value=mock_compute_client)
 
             # Act & Assert
             with pytest.raises(RuntimeError, match=error_message):
@@ -1470,7 +1494,9 @@ async def test_terminate_instance_basic(
     mock_result = MagicMock()
     mock_operation.result.return_value = mock_result
 
-    gcp_instance_manager._compute_client.delete = MagicMock(return_value=mock_operation)
+    mock_compute_client = MagicMock()
+    mock_compute_client.delete = MagicMock(return_value=mock_operation)
+    gcp_instance_manager._get_compute_client = MagicMock(return_value=mock_compute_client)
 
     # Mock _wait_for_operation to return successfully
     with patch.object(gcp_instance_manager, "_wait_for_operation", new=AsyncMock()) as mock_wait:
@@ -1481,7 +1507,7 @@ async def test_terminate_instance_basic(
 
         # Assert
         # Check that the compute client was called with the correct parameters
-        gcp_instance_manager._compute_client.delete.assert_called_once_with(
+        mock_compute_client.delete.assert_called_once_with(
             project=gcp_instance_manager._project_id,
             zone=gcp_instance_manager._zone,
             instance=instance_id,
@@ -1489,7 +1515,7 @@ async def test_terminate_instance_basic(
 
         # Verify _wait_for_operation was called with the correct arguments
         mock_wait.assert_called_once_with(
-            mock_operation.name,
+            mock_operation,  # Pass the operation object, not just its name
             gcp_instance_manager._zone,
             f"Termination of instance {instance_id}",
         )
@@ -1504,9 +1530,9 @@ async def test_terminate_instance_not_found(
     instance_id = "nonexistent-instance"
 
     # Mock the delete method to raise NotFound exception
-    gcp_instance_manager._compute_client.delete = MagicMock(
-        side_effect=NotFound("Instance not found")
-    )
+    mock_compute_client = MagicMock()
+    mock_compute_client.delete = MagicMock(side_effect=NotFound("Instance not found"))
+    gcp_instance_manager._get_compute_client = MagicMock(return_value=mock_compute_client)
 
     # Act
     try:
@@ -1518,7 +1544,7 @@ async def test_terminate_instance_not_found(
 
     # Assert
     # Check that the compute client was called with the correct parameters
-    gcp_instance_manager._compute_client.delete.assert_called_once_with(
+    mock_compute_client.delete.assert_called_once_with(
         project=gcp_instance_manager._project_id,
         zone=gcp_instance_manager._zone,
         instance=instance_id,
@@ -1536,15 +1562,682 @@ async def test_terminate_instance_error_handling(
 
     # Mock the delete method to raise an exception
     error_message = "Failed to terminate instance"
-    gcp_instance_manager._compute_client.delete = MagicMock(side_effect=RuntimeError(error_message))
+    mock_compute_client = MagicMock()
+    mock_compute_client.delete = MagicMock(side_effect=RuntimeError(error_message))
+    gcp_instance_manager._get_compute_client = MagicMock(return_value=mock_compute_client)
 
     # Act & Assert
     with pytest.raises(RuntimeError, match=error_message):
         await gcp_instance_manager.terminate_instance(instance_id)
 
     # Verify the method was called with correct parameters
-    gcp_instance_manager._compute_client.delete.assert_called_once_with(
+    mock_compute_client.delete.assert_called_once_with(
         project=gcp_instance_manager._project_id,
         zone=gcp_instance_manager._zone,
         instance=instance_id,
     )
+
+
+@pytest.mark.asyncio
+async def test_list_running_instances_basic(
+    gcp_instance_manager: GCPComputeInstanceManager, mock_credentials: MagicMock
+) -> None:
+    """Test listing running instances with no filters."""
+    # Arrange
+    mock_instance1 = MagicMock()
+    mock_instance1.name = "instance-1"
+    mock_instance1.machine_type = "zones/us-central1-a/machineTypes/n1-standard-2"
+    mock_instance1.status = "RUNNING"
+    mock_instance1.creation_timestamp = "2024-03-20T10:00:00.000-07:00"
+    mock_instance1.zone = "zones/us-central1-a"
+    mock_instance1.tags = MagicMock()
+    mock_instance1.tags.items = ["rmscr-job-123"]
+    mock_instance1.network_interfaces = [
+        MagicMock(network_i_p="10.0.0.2", access_configs=[MagicMock(nat_i_p="34.123.123.123")])
+    ]
+
+    mock_instance2 = MagicMock()
+    mock_instance2.name = "instance-2"
+    mock_instance2.machine_type = "zones/us-central1-a/machineTypes/n2-standard-4"
+    mock_instance2.status = "RUNNING"
+    mock_instance2.creation_timestamp = "2024-03-20T11:00:00.000-07:00"
+    mock_instance2.zone = "zones/us-central1-a"
+    mock_instance2.tags = MagicMock()
+    mock_instance2.tags.items = ["rmscr-job-456"]
+    mock_instance2.network_interfaces = [
+        MagicMock(network_i_p="10.0.0.3", access_configs=[MagicMock(nat_i_p="34.123.123.124")])
+    ]
+
+    # Mock the compute client's list method
+    mock_compute_client = MagicMock()
+    mock_compute_client.list.return_value = [mock_instance1, mock_instance2]
+    gcp_instance_manager._get_compute_client = MagicMock(return_value=mock_compute_client)
+
+    # Act
+    instances = await gcp_instance_manager.list_running_instances()
+
+    # Assert
+    assert len(instances) == 2
+
+    # Check first instance
+    assert instances[0]["id"] == "instance-1"
+    assert instances[0]["type"] == "n1-standard-2"
+    assert instances[0]["state"] == "running"
+    assert instances[0]["zone"] == "us-central1-a"
+    assert instances[0]["job_id"] == "job-123"
+    assert instances[0]["private_ip"] == "10.0.0.2"
+    assert instances[0]["public_ip"] == "34.123.123.123"
+
+    # Check second instance
+    assert instances[1]["id"] == "instance-2"
+    assert instances[1]["type"] == "n2-standard-4"
+    assert instances[1]["state"] == "running"
+    assert instances[1]["zone"] == "us-central1-a"
+    assert instances[1]["job_id"] == "job-456"
+    assert instances[1]["private_ip"] == "10.0.0.3"
+    assert instances[1]["public_ip"] == "34.123.123.124"
+
+
+@pytest.mark.asyncio
+async def test_list_running_instances_with_job_id(
+    gcp_instance_manager: GCPComputeInstanceManager, mock_credentials: MagicMock
+) -> None:
+    """Test listing instances filtered by job ID."""
+    # Arrange
+    mock_instance1 = MagicMock()
+    mock_instance1.name = "instance-1"
+    mock_instance1.machine_type = "zones/us-central1-a/machineTypes/n1-standard-2"
+    mock_instance1.status = "RUNNING"
+    mock_instance1.creation_timestamp = "2024-03-20T10:00:00.000-07:00"
+    mock_instance1.zone = "zones/us-central1-a"
+    mock_instance1.tags = MagicMock()
+    mock_instance1.tags.items = ["rmscr-job-123"]
+    mock_instance1.network_interfaces = [
+        MagicMock(network_i_p="10.0.0.2", access_configs=[MagicMock(nat_i_p="34.123.123.123")])
+    ]
+
+    mock_instance2 = MagicMock()
+    mock_instance2.name = "instance-2"
+    mock_instance2.machine_type = "zones/us-central1-a/machineTypes/n2-standard-4"
+    mock_instance2.status = "RUNNING"
+    mock_instance2.creation_timestamp = "2024-03-20T11:00:00.000-07:00"
+    mock_instance2.zone = "zones/us-central1-a"
+    mock_instance2.tags = MagicMock()
+    mock_instance2.tags.items = ["rmscr-job-456"]
+    mock_instance2.network_interfaces = [
+        MagicMock(network_i_p="10.0.0.3", access_configs=[MagicMock(nat_i_p="34.123.123.124")])
+    ]
+
+    # Mock the compute client's list method
+    mock_compute_client = MagicMock()
+    mock_compute_client.list.return_value = [mock_instance1, mock_instance2]
+    gcp_instance_manager._get_compute_client = MagicMock(return_value=mock_compute_client)
+
+    # Act
+    instances = await gcp_instance_manager.list_running_instances(job_id="job-123")
+
+    # Assert
+    assert len(instances) == 1
+    assert instances[0]["id"] == "instance-1"
+    assert instances[0]["job_id"] == "job-123"
+
+
+@pytest.mark.asyncio
+async def test_list_running_instances_include_non_job(
+    gcp_instance_manager: GCPComputeInstanceManager, mock_credentials: MagicMock
+) -> None:
+    """Test listing instances including non-job instances."""
+    # Arrange
+    mock_instance1 = MagicMock()
+    mock_instance1.name = "instance-1"
+    mock_instance1.machine_type = "zones/us-central1-a/machineTypes/n1-standard-2"
+    mock_instance1.status = "RUNNING"
+    mock_instance1.creation_timestamp = "2024-03-20T10:00:00.000-07:00"
+    mock_instance1.zone = "zones/us-central1-a"
+    mock_instance1.tags = MagicMock()
+    mock_instance1.tags.items = ["rmscr-job-123"]
+    mock_instance1.network_interfaces = [
+        MagicMock(network_i_p="10.0.0.2", access_configs=[MagicMock(nat_i_p="34.123.123.123")])
+    ]
+
+    mock_instance2 = MagicMock()
+    mock_instance2.name = "instance-2"
+    mock_instance2.machine_type = "zones/us-central1-a/machineTypes/n2-standard-4"
+    mock_instance2.status = "RUNNING"
+    mock_instance2.creation_timestamp = "2024-03-20T11:00:00.000-07:00"
+    mock_instance2.zone = "zones/us-central1-a"
+    mock_instance2.tags = MagicMock()
+    mock_instance2.tags.items = []  # No job tag
+    mock_instance2.network_interfaces = [
+        MagicMock(network_i_p="10.0.0.3", access_configs=[MagicMock(nat_i_p="34.123.123.124")])
+    ]
+
+    # Mock the compute client's list method
+    mock_compute_client = MagicMock()
+    mock_compute_client.list.return_value = [mock_instance1, mock_instance2]
+    gcp_instance_manager._get_compute_client = MagicMock(return_value=mock_compute_client)
+
+    # Act
+    instances = await gcp_instance_manager.list_running_instances(include_non_job=True)
+
+    # Assert
+    assert len(instances) == 2
+    assert instances[0]["id"] == "instance-1"
+    assert instances[0]["job_id"] == "job-123"
+    assert "job_id" not in instances[1]
+    assert instances[1]["id"] == "instance-2"
+
+
+@pytest.mark.asyncio
+async def test_list_running_instances_region_based(
+    gcp_instance_manager: GCPComputeInstanceManager, mock_credentials: MagicMock
+) -> None:
+    """Test listing instances across all zones in a region when no specific zone is set."""
+    # Arrange
+    # Clear the zone to force region-based listing
+    gcp_instance_manager._zone = None
+
+    # Mock zones in the region
+    mock_zone1 = MagicMock()
+    mock_zone1.name = "us-central1-a"
+    mock_zone2 = MagicMock()
+    mock_zone2.name = "us-central1-b"
+
+    # Mock the zones client to return our mock zones
+    gcp_instance_manager._zones_client.list.return_value = [mock_zone1, mock_zone2]
+
+    # Create mock instances for each zone
+    mock_instance1 = MagicMock()
+    mock_instance1.name = "instance-1"
+    mock_instance1.machine_type = "zones/us-central1-a/machineTypes/n1-standard-2"
+    mock_instance1.status = "RUNNING"
+    mock_instance1.creation_timestamp = "2024-03-20T10:00:00.000-07:00"
+    mock_instance1.zone = "zones/us-central1-a"
+    mock_instance1.tags = MagicMock()
+    mock_instance1.tags.items = ["rmscr-job-123"]
+    mock_instance1.network_interfaces = [
+        MagicMock(network_i_p="10.0.0.2", access_configs=[MagicMock(nat_i_p="34.123.123.123")])
+    ]
+
+    mock_instance2 = MagicMock()
+    mock_instance2.name = "instance-2"
+    mock_instance2.machine_type = "zones/us-central1-b/machineTypes/n2-standard-4"
+    mock_instance2.status = "RUNNING"
+    mock_instance2.creation_timestamp = "2024-03-20T11:00:00.000-07:00"
+    mock_instance2.zone = "zones/us-central1-b"
+    mock_instance2.tags = MagicMock()
+    mock_instance2.tags.items = ["rmscr-job-456"]
+    mock_instance2.network_interfaces = [
+        MagicMock(network_i_p="10.0.0.3", access_configs=[MagicMock(nat_i_p="34.123.123.124")])
+    ]
+
+    # Mock the compute client to return different instances for each zone
+    mock_compute_client = MagicMock()
+    mock_compute_client.list = MagicMock(side_effect=[[mock_instance1], [mock_instance2]])
+    gcp_instance_manager._get_compute_client = MagicMock(return_value=mock_compute_client)
+
+    # Act
+    instances = await gcp_instance_manager.list_running_instances()
+
+    # Assert
+    assert len(instances) == 2
+    assert instances[0]["id"] == "instance-1"
+    assert instances[0]["zone"] == "us-central1-a"
+    assert instances[1]["id"] == "instance-2"
+    assert instances[1]["zone"] == "us-central1-b"
+
+    # Verify that zones were listed
+    gcp_instance_manager._zones_client.list.assert_called_once()
+    # Verify that instances were listed in each zone
+    assert mock_compute_client.list.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_list_running_instances_zone_listing_error(
+    gcp_instance_manager: GCPComputeInstanceManager, mock_credentials: MagicMock
+) -> None:
+    """Test error handling when listing zones fails."""
+    # Arrange
+    gcp_instance_manager._zone = None  # Force region-based listing
+    error_msg = "Permission denied"
+    gcp_instance_manager._zones_client.list = MagicMock(side_effect=RuntimeError(error_msg))
+
+    # Act & Assert
+    with pytest.raises(ValueError, match=f"Error listing zones.*{error_msg}"):
+        await gcp_instance_manager.list_running_instances()
+
+
+@pytest.mark.asyncio
+async def test_list_running_instances_instance_listing_error(
+    gcp_instance_manager: GCPComputeInstanceManager, mock_credentials: MagicMock
+) -> None:
+    """Test handling when listing instances in a zone fails."""
+    # Arrange
+    gcp_instance_manager._zone = None  # Force region-based listing
+
+    # Mock zones in the region
+    mock_zone1 = MagicMock()
+    mock_zone1.name = "us-central1-a"
+    mock_zone2 = MagicMock()
+    mock_zone2.name = "us-central1-b"
+    gcp_instance_manager._zones_client.list.return_value = [mock_zone1, mock_zone2]
+
+    # Mock instance in first zone
+    mock_instance1 = MagicMock()
+    mock_instance1.name = "instance-1"
+    mock_instance1.machine_type = "zones/us-central1-a/machineTypes/n1-standard-2"
+    mock_instance1.status = "RUNNING"
+    mock_instance1.creation_timestamp = "2024-03-20T10:00:00.000-07:00"
+    mock_instance1.zone = "zones/us-central1-a"
+    mock_instance1.tags = MagicMock()
+    mock_instance1.tags.items = ["rmscr-job-123"]
+    mock_instance1.network_interfaces = [
+        MagicMock(network_i_p="10.0.0.2", access_configs=[MagicMock(nat_i_p="34.123.123.123")])
+    ]
+
+    # Mock the compute client to succeed for first zone but fail for second
+    mock_compute_client = MagicMock()
+    mock_compute_client.list = MagicMock(
+        side_effect=[[mock_instance1], RuntimeError("Failed to list instances")]
+    )
+    gcp_instance_manager._get_compute_client = MagicMock(return_value=mock_compute_client)
+
+    # Act
+    instances = await gcp_instance_manager.list_running_instances()
+
+    # Assert
+    # Should still get instances from the successful zone
+    assert len(instances) == 1
+    assert instances[0]["id"] == "instance-1"
+    assert instances[0]["zone"] == "us-central1-a"
+
+
+@pytest.mark.asyncio
+async def test_list_running_instances_unknown_status(
+    gcp_instance_manager: GCPComputeInstanceManager, mock_credentials: MagicMock
+) -> None:
+    """Test handling instances with unknown status."""
+    # Arrange
+    mock_instance = MagicMock()
+    mock_instance.name = "instance-1"
+    mock_instance.machine_type = "zones/us-central1-a/machineTypes/n1-standard-2"
+    mock_instance.status = "UNKNOWN_STATUS"  # Status not in _STATUS_MAP
+    mock_instance.creation_timestamp = "2024-03-20T10:00:00.000-07:00"
+    mock_instance.zone = "zones/us-central1-a"
+    mock_instance.tags = MagicMock()
+    mock_instance.tags.items = ["rmscr-job-123"]
+    mock_instance.network_interfaces = [
+        MagicMock(network_i_p="10.0.0.2", access_configs=[MagicMock(nat_i_p="34.123.123.123")])
+    ]
+
+    # Mock the compute client
+    mock_compute_client = MagicMock()
+    mock_compute_client.list.return_value = [mock_instance]
+    gcp_instance_manager._get_compute_client = MagicMock(return_value=mock_compute_client)
+
+    # Act
+    instances = await gcp_instance_manager.list_running_instances()
+
+    # Assert
+    assert len(instances) == 1
+    assert instances[0]["id"] == "instance-1"
+    assert instances[0]["state"] == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_list_running_instances_no_network_interfaces(
+    gcp_instance_manager: GCPComputeInstanceManager, mock_credentials: MagicMock
+) -> None:
+    """Test handling instances with no network interfaces."""
+    # Arrange
+    mock_instance = MagicMock()
+    mock_instance.name = "instance-1"
+    mock_instance.machine_type = "zones/us-central1-a/machineTypes/n1-standard-2"
+    mock_instance.status = "RUNNING"
+    mock_instance.creation_timestamp = "2024-03-20T10:00:00.000-07:00"
+    mock_instance.zone = "zones/us-central1-a"
+    mock_instance.tags = MagicMock()
+    mock_instance.tags.items = ["rmscr-job-123"]
+    mock_instance.network_interfaces = []  # No network interfaces
+
+    # Mock the compute client
+    mock_compute_client = MagicMock()
+    mock_compute_client.list.return_value = [mock_instance]
+    gcp_instance_manager._get_compute_client = MagicMock(return_value=mock_compute_client)
+
+    # Act
+    instances = await gcp_instance_manager.list_running_instances()
+
+    # Assert
+    assert len(instances) == 1
+    assert instances[0]["id"] == "instance-1"
+    assert "private_ip" not in instances[0]
+    assert "public_ip" not in instances[0]
+
+
+@pytest.mark.asyncio
+async def test_get_image_from_family(
+    gcp_instance_manager: GCPComputeInstanceManager, mock_credentials: MagicMock
+) -> None:
+    """Test getting image from a family."""
+    # Arrange
+    family_name = "ubuntu-2404-lts"
+    project = "ubuntu-os-cloud"
+
+    # Create mock image
+    mock_image = MagicMock()
+    mock_image.name = "ubuntu-2404-20240401"
+    mock_image.creation_timestamp = "2024-04-01T12:00:00.000-07:00"
+    mock_image.self_link = "https://compute.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-2404-20240401"
+
+    # Mock the images client - this needs to be a non-async method that returns the mock image directly
+    # because the implementation doesn't await the get_from_family call
+    gcp_instance_manager._images_client.get_from_family = MagicMock(return_value=mock_image)
+
+    # Act
+    image_uri = await gcp_instance_manager._get_image_from_family(family_name, project)
+
+    # Assert
+    assert image_uri == mock_image.self_link
+    gcp_instance_manager._images_client.get_from_family.assert_called_once()
+    request = gcp_instance_manager._images_client.get_from_family.call_args[1]["request"]
+    assert request.family == family_name
+    assert request.project == project
+
+
+@pytest.mark.asyncio
+async def test_get_image_from_family_error(
+    gcp_instance_manager: GCPComputeInstanceManager, mock_credentials: MagicMock
+) -> None:
+    """Test error handling when getting image from a family fails."""
+    # Arrange
+    family_name = "nonexistent-family"
+    project = "ubuntu-os-cloud"
+    error_message = "Family not found"
+
+    # Mock the images client to raise an exception - use MagicMock instead of AsyncMock
+    gcp_instance_manager._images_client.get_from_family = MagicMock(
+        side_effect=ValueError(error_message)
+    )
+
+    # Act & Assert
+    with pytest.raises(ValueError, match=f"Could not find image in family {family_name}"):
+        await gcp_instance_manager._get_image_from_family(family_name, project)
+
+
+@pytest.mark.asyncio
+async def test_get_default_image(
+    gcp_instance_manager: GCPComputeInstanceManager, mock_credentials: MagicMock
+) -> None:
+    """Test getting the default Ubuntu 24.04 LTS image."""
+    # Arrange
+    # Create mock images
+    mock_image1 = MagicMock()
+    mock_image1.name = "ubuntu-2404-20240401"
+    mock_image1.creation_timestamp = "2024-04-01T12:00:00.000-07:00"
+    mock_image1.self_link = "https://compute.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-2404-20240401"
+
+    mock_image2 = MagicMock()
+    mock_image2.name = "ubuntu-2404-20240501"
+    mock_image2.creation_timestamp = "2024-05-01T12:00:00.000-07:00"  # Newer image
+    mock_image2.self_link = "https://compute.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-2404-20240501"
+
+    # Mock the images client to return both images
+    gcp_instance_manager._images_client.list = MagicMock(return_value=[mock_image1, mock_image2])
+
+    # Act
+    image_uri = await gcp_instance_manager._get_default_image()
+
+    # Assert
+    assert image_uri == mock_image2.self_link  # Should return the newer image
+    gcp_instance_manager._images_client.list.assert_called_once()
+    request = gcp_instance_manager._images_client.list.call_args[1]["request"]
+    assert request.project == "ubuntu-os-cloud"
+    assert request.filter == "family = 'ubuntu-2404-lts'"
+
+
+@pytest.mark.asyncio
+async def test_get_default_image_no_images(
+    gcp_instance_manager: GCPComputeInstanceManager, mock_credentials: MagicMock
+) -> None:
+    """Test error handling when no default images are found."""
+    # Arrange
+    # Mock the images client to return an empty list
+    gcp_instance_manager._images_client.list = MagicMock(return_value=[])
+
+    # Act & Assert
+    with pytest.raises(ValueError, match="No Ubuntu 24.04 LTS image found"):
+        await gcp_instance_manager._get_default_image()
+
+
+@pytest.mark.asyncio
+async def test_list_available_images(
+    gcp_instance_manager: GCPComputeInstanceManager, mock_credentials: MagicMock
+) -> None:
+    """Test listing available images."""
+    # Arrange
+    # Create mock images for public projects
+    mock_ubuntu_image = MagicMock()
+    mock_ubuntu_image.id = "12345"
+    mock_ubuntu_image.name = "ubuntu-2404-20240501"
+    mock_ubuntu_image.description = "Ubuntu 24.04 LTS"
+    mock_ubuntu_image.family = "ubuntu-2404-lts"
+    mock_ubuntu_image.creation_timestamp = "2024-05-01T12:00:00.000-07:00"
+    mock_ubuntu_image.self_link = "https://compute.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-2404-20240501"
+    mock_ubuntu_image.status = "READY"
+    mock_ubuntu_image.deprecated = None
+
+    # Create a mock deprecated image
+    mock_deprecated_image = MagicMock()
+    mock_deprecated_image.id = "23456"
+    mock_deprecated_image.name = "ubuntu-2204-deprecated"
+    mock_deprecated_image.family = "ubuntu-2204-lts"
+    mock_deprecated_image.creation_timestamp = "2022-04-01T12:00:00.000-07:00"
+    mock_deprecated_image.deprecated = MagicMock()
+    mock_deprecated_image.deprecated.state = "DEPRECATED"
+
+    # Create mock images for user project
+    mock_custom_image = MagicMock()
+    mock_custom_image.id = "34567"
+    mock_custom_image.name = "custom-image"
+    mock_custom_image.description = "Custom user image"
+    mock_custom_image.family = "custom-family"
+    mock_custom_image.creation_timestamp = "2024-05-15T12:00:00.000-07:00"
+    mock_custom_image.self_link = (
+        "https://compute.googleapis.com/compute/v1/projects/test-project/global/images/custom-image"
+    )
+    mock_custom_image.status = "READY"
+
+    # Mock the images client to return different responses for different projects
+    def mock_list_images(**kwargs):
+        request = kwargs.get("request")
+        if request.project == "ubuntu-os-cloud":
+            return [mock_ubuntu_image, mock_deprecated_image]
+        elif request.project == "test-project":
+            return [mock_custom_image]
+        else:
+            return []
+
+    gcp_instance_manager._images_client.list = MagicMock(side_effect=mock_list_images)
+
+    # Act
+    images = await gcp_instance_manager.list_available_images()
+
+    # Assert
+    # We should get at least the Ubuntu image and the custom image
+    # The deprecated image should be filtered out
+    assert len(images) >= 2
+
+    # Find the Ubuntu image in the results
+    ubuntu_result = next((img for img in images if img["name"] == "ubuntu-2404-20240501"), None)
+    assert ubuntu_result is not None
+    assert ubuntu_result["id"] == "12345"
+    assert ubuntu_result["description"] == "Ubuntu 24.04 LTS"
+    assert ubuntu_result["family"] == "ubuntu-2404-lts"
+    assert ubuntu_result["source"] == "GCP"
+    assert ubuntu_result["project"] == "ubuntu-os-cloud"
+    assert ubuntu_result["status"] == "READY"
+
+    # Find the custom image in the results
+    custom_result = next((img for img in images if img["name"] == "custom-image"), None)
+    assert custom_result is not None
+    assert custom_result["id"] == "34567"
+    assert custom_result["description"] == "Custom user image"
+    assert custom_result["family"] == "custom-family"
+    assert custom_result["source"] == "User"
+    assert custom_result["project"] == "test-project"
+    assert custom_result["status"] == "READY"
+
+
+@pytest.mark.asyncio
+async def test_list_available_images_error_handling(
+    gcp_instance_manager: GCPComputeInstanceManager, mock_credentials: MagicMock
+) -> None:
+    """Test error handling when listing images."""
+
+    # Arrange
+    # Mock the images client to raise an exception for one project but succeed for another
+    def mock_list_images(**kwargs):
+        request = kwargs.get("request")
+        if request.project == "ubuntu-os-cloud":
+            # Create a mock image for ubuntu-os-cloud
+            mock_image = MagicMock()
+            mock_image.id = "12345"
+            mock_image.name = "ubuntu-2404-20240501"
+            mock_image.description = "Ubuntu 24.04 LTS"
+            mock_image.family = "ubuntu-2404-lts"
+            mock_image.creation_timestamp = "2024-05-01T12:00:00.000-07:00"
+            mock_image.self_link = "https://compute.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-2404-20240501"
+            mock_image.status = "READY"
+            mock_image.deprecated = None
+            return [mock_image]
+        else:
+            # Raise an exception for all other projects
+            raise RuntimeError(f"Error accessing project {request.project}")
+
+    gcp_instance_manager._images_client.list = MagicMock(side_effect=mock_list_images)
+
+    # Act
+    images = await gcp_instance_manager.list_available_images()
+
+    # Assert
+    # We should still get the Ubuntu image, even though other projects failed
+    assert len(images) == 1
+    assert images[0]["name"] == "ubuntu-2404-20240501"
+    assert images[0]["project"] == "ubuntu-os-cloud"
+
+
+@pytest.mark.asyncio
+async def test_wait_for_operation_success(
+    gcp_instance_manager: GCPComputeInstanceManager, mock_credentials: MagicMock
+) -> None:
+    """Test successful operation completion."""
+    # Arrange
+    mock_operation = MagicMock()
+    mock_operation.name = "mock-operation-name"
+    mock_operation.error_code = None
+    mock_operation.warnings = None
+    mock_result = MagicMock()
+    mock_operation.result.return_value = mock_result
+
+    # Act
+    result = await gcp_instance_manager._wait_for_operation(
+        mock_operation, "us-central1-a", "Test operation"
+    )
+
+    # Assert
+    assert result == mock_result
+    mock_operation.result.assert_called_once_with(timeout=120)
+
+
+@pytest.mark.asyncio
+async def test_wait_for_operation_with_error(
+    gcp_instance_manager: GCPComputeInstanceManager, mock_credentials: MagicMock
+) -> None:
+    """Test operation that fails with an error."""
+    # Arrange
+    mock_operation = MagicMock()
+    mock_operation.name = "mock-operation-name"
+    mock_operation.error_code = "RESOURCE_NOT_FOUND"
+    mock_operation.error_message = "The resource was not found"
+    mock_operation.exception = MagicMock(return_value=RuntimeError("Resource not found"))
+
+    # Act & Assert
+    with pytest.raises(RuntimeError, match="Resource not found"):
+        await gcp_instance_manager._wait_for_operation(
+            mock_operation, "us-central1-a", "Test operation"
+        )
+
+    mock_operation.result.assert_called_once_with(timeout=120)
+
+
+@pytest.mark.asyncio
+async def test_wait_for_operation_with_warnings(
+    gcp_instance_manager: GCPComputeInstanceManager, mock_credentials: MagicMock
+) -> None:
+    """Test operation that completes with warnings."""
+    # Arrange
+    mock_operation = MagicMock()
+    mock_operation.name = "mock-operation-name"
+    mock_operation.error_code = None
+
+    # Create mock warnings
+    mock_warning1 = MagicMock()
+    mock_warning1.code = "QUOTA_WARNING"
+    mock_warning1.message = "Approaching quota limit"
+
+    mock_warning2 = MagicMock()
+    mock_warning2.code = "PERFORMANCE_WARNING"
+    mock_warning2.message = "Instance may experience degraded performance"
+
+    mock_operation.warnings = [mock_warning1, mock_warning2]
+
+    mock_result = MagicMock()
+    mock_operation.result.return_value = mock_result
+
+    # Act
+    result = await gcp_instance_manager._wait_for_operation(
+        mock_operation, "us-central1-a", "Test operation"
+    )
+
+    # Assert
+    assert result == mock_result
+    mock_operation.result.assert_called_once_with(timeout=120)
+
+
+@pytest.mark.asyncio
+async def test_wait_for_operation_timeout(
+    gcp_instance_manager: GCPComputeInstanceManager, mock_credentials: MagicMock
+) -> None:
+    """Test operation that times out."""
+    # Arrange
+    mock_operation = MagicMock()
+    mock_operation.name = "mock-operation-name"
+    mock_operation.result = MagicMock(side_effect=TimeoutError("Operation timed out"))
+
+    # Act & Assert
+    with pytest.raises(TimeoutError, match="Operation timed out"):
+        await gcp_instance_manager._wait_for_operation(
+            mock_operation, "us-central1-a", "Test operation"
+        )
+
+    mock_operation.result.assert_called_once_with(timeout=120)
+
+
+@pytest.mark.asyncio
+async def test_wait_for_operation_cancellation(
+    gcp_instance_manager: GCPComputeInstanceManager, mock_credentials: MagicMock
+) -> None:
+    """Test operation that gets cancelled."""
+    # Arrange
+    mock_operation = MagicMock()
+    mock_operation.name = "mock-operation-name"
+    mock_operation.result = MagicMock(side_effect=asyncio.CancelledError())
+
+    # Act & Assert
+    with pytest.raises(asyncio.CancelledError):
+        await gcp_instance_manager._wait_for_operation(
+            mock_operation, "us-central1-a", "Test operation"
+        )
+
+    mock_operation.result.assert_called_once_with(timeout=120)

@@ -6,6 +6,7 @@ import pytest
 import sys
 import uuid
 import warnings
+import time
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 from google.api_core import exceptions as gcp_exceptions
@@ -21,9 +22,10 @@ from cloud_tasks.queue_manager.gcp import GCPPubSubQueue
 @pytest.fixture
 def mock_pubsub_client():
     """Create mocked Pub/Sub clients with all necessary method mocks."""
-    with patch("google.cloud.pubsub_v1.PublisherClient") as mock_publisher_cls, patch(
-        "google.cloud.pubsub_v1.SubscriberClient"
-    ) as mock_subscriber_cls:
+    with (
+        patch("google.cloud.pubsub_v1.PublisherClient") as mock_publisher_cls,
+        patch("google.cloud.pubsub_v1.SubscriberClient") as mock_subscriber_cls,
+    ):
         # Create the mock instances
         publisher = MagicMock()
         subscriber = MagicMock()
@@ -295,3 +297,357 @@ async def test_initialization(mock_pubsub_client, gcp_config):
     assert subscription_request["topic"] == "projects/test-project/topics/test-queue-topic"
     assert subscription_request["message_retention_duration"]["seconds"] == 7 * 24 * 60 * 60
     assert subscription_request["ack_deadline_seconds"] == 30
+
+
+@pytest.mark.asyncio
+async def test_delete_queue_success(gcp_queue, mock_pubsub_client):
+    """Test successful deletion of both subscription and topic."""
+    mock_publisher, mock_subscriber = mock_pubsub_client
+
+    # Reset the NotFound side effects since we want deletion to succeed
+    mock_subscriber.delete_subscription.side_effect = None
+    mock_publisher.delete_topic.side_effect = None
+
+    # Delete the queue
+    await gcp_queue.delete_queue()
+
+    # Verify subscription was deleted
+    mock_subscriber.delete_subscription.assert_called_with(
+        request={"subscription": gcp_queue._subscription_path}
+    )
+
+    # Verify topic was deleted
+    mock_publisher.delete_topic.assert_called_with(request={"topic": gcp_queue._topic_path})
+
+    # Verify internal state was updated
+    assert not gcp_queue._subscription_exists
+    assert not gcp_queue._topic_exists
+
+
+@pytest.mark.asyncio
+async def test_delete_queue_not_found(gcp_queue, mock_pubsub_client):
+    """Test deletion when queue components don't exist."""
+    mock_publisher, mock_subscriber = mock_pubsub_client
+
+    # Set up NotFound errors for both subscription and topic
+    mock_subscriber.delete_subscription.side_effect = gcp_exceptions.NotFound(
+        "Subscription not found"
+    )
+    mock_publisher.delete_topic.side_effect = gcp_exceptions.NotFound("Topic not found")
+
+    # Delete should succeed even if components don't exist
+    await gcp_queue.delete_queue()
+
+    # Verify deletion was attempted
+    mock_subscriber.delete_subscription.assert_called_with(
+        request={"subscription": gcp_queue._subscription_path}
+    )
+    mock_publisher.delete_topic.assert_called_with(request={"topic": gcp_queue._topic_path})
+
+    # Verify internal state was updated
+    assert not gcp_queue._subscription_exists
+    assert not gcp_queue._topic_exists
+
+
+@pytest.mark.asyncio
+async def test_delete_queue_partial_failure(gcp_queue, mock_pubsub_client):
+    """Test handling of errors during queue deletion."""
+    mock_publisher, mock_subscriber = mock_pubsub_client
+
+    # Set up subscription deletion to succeed but topic deletion to fail
+    mock_subscriber.delete_subscription.side_effect = None
+    mock_publisher.delete_topic.side_effect = gcp_exceptions.PermissionDenied("Permission denied")
+
+    # Set initial state
+    gcp_queue._subscription_exists = True
+    gcp_queue._topic_exists = True
+
+    # Attempt to delete the queue
+    with pytest.raises(gcp_exceptions.PermissionDenied):
+        await gcp_queue.delete_queue()
+
+    # Verify subscription deletion was attempted
+    mock_subscriber.delete_subscription.assert_called_with(
+        request={"subscription": gcp_queue._subscription_path}
+    )
+
+    # Verify topic deletion was attempted
+    mock_publisher.delete_topic.assert_called_with(request={"topic": gcp_queue._topic_path})
+
+    # Verify subscription state was updated
+    assert not gcp_queue._subscription_exists
+
+
+@pytest.mark.asyncio
+async def test_get_queue_depth_with_messages(gcp_queue, mock_pubsub_client):
+    """Test getting queue depth when messages are present."""
+    mock_publisher, mock_subscriber = mock_pubsub_client
+
+    # Create mock messages
+    messages = []
+    for i in range(5):
+        message = MagicMock()
+        message.ack_id = f"ack-id-{i}"
+        messages.append(message)
+
+    # Setup mock response
+    mock_response = MagicMock()
+    mock_response.received_messages = messages
+    mock_subscriber.pull.return_value = mock_response
+
+    # Get queue depth
+    depth = await gcp_queue.get_queue_depth()
+
+    # Verify depth matches number of messages
+    assert depth == 5
+
+    # Verify messages were returned to queue
+    mock_subscriber.modify_ack_deadline.assert_called_once()
+    args = mock_subscriber.modify_ack_deadline.call_args.kwargs["request"]
+    assert args["ack_ids"] == ["ack-id-0", "ack-id-1", "ack-id-2", "ack-id-3", "ack-id-4"]
+    assert args["ack_deadline_seconds"] == 0
+
+
+@pytest.mark.asyncio
+async def test_get_queue_depth_pull_error(gcp_queue, mock_pubsub_client):
+    """Test handling of pull errors during queue depth estimation."""
+    mock_publisher, mock_subscriber = mock_pubsub_client
+
+    # Setup pull to raise an error
+    mock_subscriber.pull.side_effect = gcp_exceptions.ServiceUnavailable("Service unavailable")
+
+    # Attempt to get queue depth
+    with pytest.raises(gcp_exceptions.ServiceUnavailable):
+        await gcp_queue.get_queue_depth()
+
+    # Verify pull was attempted
+    mock_subscriber.pull.assert_called_once()
+    assert (
+        mock_subscriber.pull.call_args.kwargs["request"]["subscription"]
+        == gcp_queue._subscription_path
+    )
+
+
+@pytest.mark.asyncio
+async def test_purge_queue_delete_error(gcp_queue, mock_pubsub_client):
+    """Test handling of errors during queue purging."""
+    mock_publisher, mock_subscriber = mock_pubsub_client
+
+    # Setup delete_subscription to raise an error
+    mock_subscriber.delete_subscription.side_effect = gcp_exceptions.PermissionDenied(
+        "Permission denied"
+    )
+
+    # Attempt to purge queue
+    with pytest.raises(gcp_exceptions.PermissionDenied):
+        await gcp_queue.purge_queue()
+
+    # Verify deletion was attempted
+    mock_subscriber.delete_subscription.assert_called_with(
+        request={"subscription": gcp_queue._subscription_path}
+    )
+
+    # Verify create was not called since delete failed
+    assert not mock_subscriber.create_subscription.called
+
+
+@pytest.mark.asyncio
+async def test_purge_queue_recreation_error(gcp_queue, mock_pubsub_client):
+    """Test handling of errors during queue recreation after purge."""
+    mock_publisher, mock_subscriber = mock_pubsub_client
+
+    # Setup create_subscription to raise an error
+    mock_subscriber.create_subscription.side_effect = gcp_exceptions.PermissionDenied(
+        "Permission denied"
+    )
+
+    # Attempt to purge queue
+    with pytest.raises(gcp_exceptions.PermissionDenied):
+        await gcp_queue.purge_queue()
+
+    # Verify deletion succeeded
+    mock_subscriber.delete_subscription.assert_called_with(
+        request={"subscription": gcp_queue._subscription_path}
+    )
+
+    # Verify creation was attempted with correct parameters
+    mock_subscriber.create_subscription.assert_called_once()
+    args = mock_subscriber.create_subscription.call_args.kwargs["request"]
+    assert args["name"] == gcp_queue._subscription_path
+    assert args["topic"] == gcp_queue._topic_path
+    assert args["message_retention_duration"]["seconds"] == 7 * 24 * 60 * 60
+    assert args["ack_deadline_seconds"] == 30
+
+
+@pytest.mark.asyncio
+async def test_purge_queue_with_delay(gcp_queue, mock_pubsub_client):
+    """Test queue purging with delay between delete and create."""
+    mock_publisher, mock_subscriber = mock_pubsub_client
+
+    # Track time of operations
+    delete_time = None
+    create_time = None
+
+    # Mock delete_subscription to record time
+    original_delete = mock_subscriber.delete_subscription
+
+    def delete_with_timestamp(*args, **kwargs):
+        nonlocal delete_time
+        delete_time = time.time()
+        return original_delete(*args, **kwargs)
+
+    mock_subscriber.delete_subscription = MagicMock(side_effect=delete_with_timestamp)
+
+    # Mock create_subscription to record time
+    original_create = mock_subscriber.create_subscription
+
+    def create_with_timestamp(*args, **kwargs):
+        nonlocal create_time
+        create_time = time.time()
+        return original_create(*args, **kwargs)
+
+    mock_subscriber.create_subscription = MagicMock(side_effect=create_with_timestamp)
+
+    # Purge queue
+    await gcp_queue.purge_queue()
+
+    # Verify operations happened with delay
+    assert delete_time is not None
+    assert create_time is not None
+    assert create_time - delete_time >= 2  # Should have at least 2 second delay
+
+
+@pytest.mark.asyncio
+async def test_get_queue_depth_modify_ack_error(gcp_queue, mock_pubsub_client):
+    """Test handling of errors when modifying ack deadline during queue depth check."""
+    mock_publisher, mock_subscriber = mock_pubsub_client
+
+    # Create mock messages
+    messages = []
+    for i in range(3):
+        message = MagicMock()
+        message.ack_id = f"ack-id-{i}"
+        messages.append(message)
+
+    # Setup mock response
+    mock_response = MagicMock()
+    mock_response.received_messages = messages
+    mock_subscriber.pull.return_value = mock_response
+
+    # Setup modify_ack_deadline to raise an error
+    mock_subscriber.modify_ack_deadline.side_effect = gcp_exceptions.ServiceUnavailable(
+        "Service unavailable"
+    )
+
+    # Attempt to get queue depth
+    with pytest.raises(gcp_exceptions.ServiceUnavailable):
+        await gcp_queue.get_queue_depth()
+
+    # Verify pull was successful
+    mock_subscriber.pull.assert_called_once()
+
+    # Verify modify_ack_deadline was attempted with correct parameters
+    mock_subscriber.modify_ack_deadline.assert_called_once()
+    args = mock_subscriber.modify_ack_deadline.call_args.kwargs["request"]
+    assert args["ack_ids"] == ["ack-id-0", "ack-id-1", "ack-id-2"]
+    assert args["ack_deadline_seconds"] == 0
+
+
+@pytest.mark.asyncio
+async def test_delete_queue_subscription_error_handling(gcp_queue, mock_pubsub_client):
+    """Test detailed error handling during subscription deletion."""
+    mock_publisher, mock_subscriber = mock_pubsub_client
+
+    # Test different error types
+    error_types = [
+        gcp_exceptions.ServiceUnavailable("Service unavailable"),
+        gcp_exceptions.DeadlineExceeded("Deadline exceeded"),
+        gcp_exceptions.Aborted("Operation aborted"),
+        gcp_exceptions.InternalServerError("Internal error"),
+    ]
+
+    for error in error_types:
+        # Reset mocks
+        mock_subscriber.delete_subscription.reset_mock()
+        mock_publisher.delete_topic.reset_mock()
+
+        # Setup error
+        mock_subscriber.delete_subscription.side_effect = error
+
+        # Attempt to delete queue
+        with pytest.raises(type(error)):
+            await gcp_queue.delete_queue()
+
+        # Verify deletion was attempted
+        mock_subscriber.delete_subscription.assert_called_once_with(
+            request={"subscription": gcp_queue._subscription_path}
+        )
+
+        # Verify topic deletion was not attempted
+        assert not mock_publisher.delete_topic.called
+
+
+@pytest.mark.asyncio
+async def test_delete_queue_topic_error_handling(gcp_queue, mock_pubsub_client):
+    """Test detailed error handling during topic deletion."""
+    mock_publisher, mock_subscriber = mock_pubsub_client
+
+    # Test different error types
+    error_types = [
+        gcp_exceptions.ServiceUnavailable("Service unavailable"),
+        gcp_exceptions.DeadlineExceeded("Deadline exceeded"),
+        gcp_exceptions.Aborted("Operation aborted"),
+        gcp_exceptions.InternalServerError("Internal error"),
+    ]
+
+    for error in error_types:
+        # Reset mocks
+        mock_subscriber.delete_subscription.reset_mock()
+        mock_publisher.delete_topic.reset_mock()
+
+        # Setup subscription deletion to succeed but topic deletion to fail
+        mock_subscriber.delete_subscription.side_effect = None
+        mock_publisher.delete_topic.side_effect = error
+
+        # Attempt to delete queue
+        with pytest.raises(type(error)):
+            await gcp_queue.delete_queue()
+
+        # Verify both operations were attempted
+        mock_subscriber.delete_subscription.assert_called_once_with(
+            request={"subscription": gcp_queue._subscription_path}
+        )
+        mock_publisher.delete_topic.assert_called_once_with(
+            request={"topic": gcp_queue._topic_path}
+        )
+
+
+@pytest.mark.asyncio
+async def test_delete_queue_concurrent_deletion(gcp_queue, mock_pubsub_client):
+    """Test handling of concurrent deletion scenarios."""
+    mock_publisher, mock_subscriber = mock_pubsub_client
+
+    # Simulate subscription already deleted between check and delete
+    def subscription_race_condition(*args, **kwargs):
+        raise gcp_exceptions.NotFound("Subscription was deleted concurrently")
+
+    mock_subscriber.delete_subscription.side_effect = subscription_race_condition
+
+    # Simulate topic already deleted between check and delete
+    def topic_race_condition(*args, **kwargs):
+        raise gcp_exceptions.NotFound("Topic was deleted concurrently")
+
+    mock_publisher.delete_topic.side_effect = topic_race_condition
+
+    # Delete should succeed even with concurrent deletions
+    await gcp_queue.delete_queue()
+
+    # Verify both deletion attempts were made
+    mock_subscriber.delete_subscription.assert_called_once_with(
+        request={"subscription": gcp_queue._subscription_path}
+    )
+    mock_publisher.delete_topic.assert_called_once_with(request={"topic": gcp_queue._topic_path})
+
+    # Verify internal state was updated
+    assert not gcp_queue._subscription_exists
+    assert not gcp_queue._topic_exists

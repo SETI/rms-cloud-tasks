@@ -6,8 +6,10 @@ import os
 from typing import Any, Dict, Optional, List, Literal, Union
 import yaml
 
+from filecache import FCPath
 from pydantic import (
     BaseModel,
+    ConfigDict,
     NonNegativeFloat,
     NonNegativeInt,
     PositiveFloat,
@@ -17,30 +19,15 @@ from pydantic import (
 )
 
 
-class ProviderConfig(BaseModel):
-    """Config options valid for all cloud providers"""
-
-    # regex up to 23 repetitions of [-a-z0-9]
-    job_id: Optional[constr(min_length=1, max_length=24, pattern="^[a-z][-a-z0-9]{0,23}$")] = None
-
-    queue_name: Optional[constr(min_length=1, max_length=24, pattern="^[a-z][-a-z0-9]{0,23}$")] = (
-        None
-    )
-    instance_types: Optional[List[str] | str] = None
-    startup_script: Optional[str] = None
-    startup_script_file: Optional[constr(min_length=1)] = None
-    image: Optional[constr(min_length=1)] = None
-
-    region: Optional[constr(min_length=1)] = None
-    zone: Optional[constr(min_length=1)] = None
-
-
 class RunConfig(BaseModel, validate_assignment=True):
     """Config options for selecting instances and running tasks"""
+
+    model_config = ConfigDict(extra="forbid")
 
     #
     # Constraints on number of instances
     #
+
     min_instances: Optional[NonNegativeInt] = None
     max_instances: Optional[PositiveInt] = None
 
@@ -72,6 +59,16 @@ class RunConfig(BaseModel, validate_assignment=True):
                 raise ValueError("min_tasks_per_instance must be less than max_tasks_per_instance")
         return self
 
+    min_simultaneous_tasks: Optional[PositiveInt] = None
+    max_simultaneous_tasks: Optional[PositiveInt] = None
+
+    @model_validator(mode="after")
+    def validate_min_max_simultaneous_tasks(self) -> "RunConfig":
+        if self.min_simultaneous_tasks is not None and self.max_simultaneous_tasks is not None:
+            if self.min_simultaneous_tasks > self.max_simultaneous_tasks:
+                raise ValueError("min_simultaneous_tasks must be less than max_simultaneous_tasks")
+        return self
+
     min_total_price_per_hour: Optional[NonNegativeFloat] = None
     max_total_price_per_hour: Optional[NonNegativeFloat] = None
 
@@ -89,6 +86,7 @@ class RunConfig(BaseModel, validate_assignment=True):
     #
     # Constraints on instance attributes
     #
+
     # Memory and disk are in GB
     architecture: Optional[Literal["x86_64", "arm64", "X86_64", "ARM64"]] = "X86_64"
     min_cpu: Optional[NonNegativeInt] = None
@@ -192,8 +190,23 @@ class RunConfig(BaseModel, validate_assignment=True):
     worker_use_new_process: Optional[bool] = False
 
 
+class ProviderConfig(RunConfig, validate_assignment=True):
+    """Config options valid for all cloud providers"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    job_id: Optional[constr(min_length=1, max_length=24, pattern="^[a-z][-a-z0-9]{0,23}$")] = None
+    queue_name: Optional[constr(min_length=1, max_length=24, pattern="^[a-z][-a-z0-9]{0,23}$")] = (
+        None
+    )
+    region: Optional[constr(min_length=1)] = None
+    zone: Optional[constr(min_length=1)] = None
+
+
 class AWSConfig(ProviderConfig, validate_assignment=True):
     """Config options specific to AWS"""
+
+    model_config = ConfigDict(extra="forbid")
 
     access_key: Optional[constr(min_length=1)] = None
     secret_key: Optional[constr(min_length=1)] = None
@@ -202,6 +215,8 @@ class AWSConfig(ProviderConfig, validate_assignment=True):
 class GCPConfig(ProviderConfig, validate_assignment=True):
     """Config options specific to GCP"""
 
+    model_config = ConfigDict(extra="forbid")
+
     project_id: Optional[constr(min_length=1)] = None
     credentials_file: Optional[constr(min_length=1)] = None
     service_account: Optional[constr(min_length=1)] = None
@@ -209,6 +224,8 @@ class GCPConfig(ProviderConfig, validate_assignment=True):
 
 class AzureConfig(ProviderConfig, validate_assignment=True):
     """Config options specific to Azure"""
+
+    model_config = ConfigDict(extra="forbid")
 
     subscription_id: Optional[str] = None
     tenant_id: Optional[str] = None
@@ -226,6 +243,8 @@ class Config(BaseModel, validate_assignment=True):
         config.update_run_config_from_provider_config()
         config.validate_config()
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     provider: Optional[Literal["aws", "gcp", "azure", "AWS", "GCP", "AZURE"]] = None
     aws: Optional[AWSConfig] = None
@@ -269,32 +288,35 @@ class Config(BaseModel, validate_assignment=True):
         """Update run config with provider-specific config values."""
         match self.provider:
             case "AWS":
-                if self.aws.instance_types is not None:
-                    self.run.instance_types = self.aws.instance_types
-                if self.aws.startup_script is not None:
-                    self.run.startup_script = self.aws.startup_script
-                if self.aws.startup_script_file is not None:
-                    self.run.startup_script_file = self.aws.startup_script_file
-                if self.aws.image is not None:
-                    self.run.image = self.aws.image
+                run_vars = vars(self.run)
+                aws_vars = vars(self.aws)
+                for attr_name in run_vars:
+                    if (
+                        attr_name in aws_vars
+                        and attr_name in run_vars
+                        and aws_vars[attr_name] is not None
+                    ):
+                        setattr(self.run, attr_name, aws_vars[attr_name])
             case "GCP":
-                if self.gcp.instance_types is not None:
-                    self.run.instance_types = self.gcp.instance_types
-                if self.gcp.startup_script is not None:
-                    self.run.startup_script = self.gcp.startup_script
-                if self.gcp.startup_script_file is not None:
-                    self.run.startup_script_file = self.gcp.startup_script_file
-                if self.gcp.image is not None:
-                    self.run.image = self.gcp.image
+                run_vars = vars(self.run)
+                gcp_vars = vars(self.gcp)
+                for attr_name in run_vars:
+                    if (
+                        attr_name in gcp_vars
+                        and attr_name in run_vars
+                        and gcp_vars[attr_name] is not None
+                    ):
+                        setattr(self.run, attr_name, gcp_vars[attr_name])
             case "AZURE":
-                if self.azure.instance_types is not None:
-                    self.run.instance_types = self.azure.instance_types
-                if self.azure.startup_script is not None:
-                    self.run.startup_script = self.azure.startup_script
-                if self.azure.startup_script_file is not None:
-                    self.run.startup_script_file = self.azure.startup_script_file
-                if self.azure.image is not None:
-                    self.run.image = self.azure.image
+                run_vars = vars(self.run)
+                azure_vars = vars(self.azure)
+                for attr_name in run_vars:
+                    if (
+                        attr_name in azure_vars
+                        and attr_name in run_vars
+                        and azure_vars[attr_name] is not None
+                    ):
+                        setattr(self.run, attr_name, azure_vars[attr_name])
             case None:
                 raise ValueError("Provider must be specified")
             case _:
@@ -303,13 +325,7 @@ class Config(BaseModel, validate_assignment=True):
         if self.run.startup_script is not None and self.run.startup_script_file is not None:
             raise ValueError("Startup script and startup script file cannot both be provided")
         if self.run.startup_script_file is not None:
-            if not os.path.exists(self.run.startup_script_file):
-                raise FileNotFoundError(
-                    f"Startup script file not found: {self.run.startup_script_file}"
-                )
-
-            with open(self.run.startup_script_file, "r") as f:
-                self.run.startup_script = f.read()
+            self.run.startup_script = FCPath(self.run.startup_script_file).read_text()
 
     def validate_config(self) -> None:
         """Perform final validation of the configuration."""
@@ -349,12 +365,12 @@ class Config(BaseModel, validate_assignment=True):
         if provider_config.queue_name is None:
             job_id = provider_config.job_id
             if job_id is not None:
-                provider_config.queue_name = f"rms-cloud-tasks-{job_id}"
+                provider_config.queue_name = job_id
 
         return provider_config
 
 
-def load_config(config_file: str) -> Config:
+def load_config(config_file: Optional[str] = None) -> Config:
     """Load configuration from a YAML file.
 
     Args:
@@ -367,14 +383,17 @@ def load_config(config_file: str) -> Config:
         FileNotFoundError: If the file cannot be found
         ValueError: If the file cannot be loaded or is invalid
     """
-    if not os.path.exists(config_file):
-        raise FileNotFoundError(f"Configuration file not found: {config_file}")
+    if config_file:
+        if not os.path.exists(config_file):
+            raise FileNotFoundError(f"Configuration file not found: {config_file}")
 
-    with open(config_file, "r") as f:
-        config_dict = yaml.safe_load(f)
+        with FCPath(config_file).open(mode="r") as f:
+            config_dict = yaml.safe_load(f)
 
-    if not isinstance(config_dict, dict):
-        raise ValueError("Configuration file must contain a YAML dictionary")
+        if not isinstance(config_dict, dict):
+            raise ValueError("Configuration file must contain a YAML dictionary")
+    else:
+        config_dict = {}
 
     # This is annoying, but we do it so that the user doesn't have to specify all the sections
     # in the config file but later we actually have objects to manipulate.
@@ -392,5 +411,24 @@ def load_config(config_file: str) -> Config:
 
     if config.provider is not None:
         config.provider = config.provider.upper()
+
+    # If the startup script filename is provided in the config file, then any relative paths
+    # are relative to the config file location.
+    if config.run.startup_script_file is not None:
+        config.run.startup_script_file = FCPath(
+            FCPath(config_file).parent, config.run.startup_script_file
+        ).as_posix()
+    if config.aws.startup_script_file is not None:
+        config.aws.startup_script_file = FCPath(
+            FCPath(config_file).parent, config.aws.startup_script_file
+        ).as_posix()
+    if config.gcp.startup_script_file is not None:
+        config.gcp.startup_script_file = FCPath(
+            FCPath(config_file).parent, config.gcp.startup_script_file
+        ).as_posix()
+    if config.azure.startup_script_file is not None:
+        config.azure.startup_script_file = FCPath(
+            FCPath(config_file).parent, config.azure.startup_script_file
+        ).as_posix()
 
     return config

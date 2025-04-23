@@ -13,14 +13,15 @@ from tqdm import tqdm  # type: ignore
 from typing import Any, Dict, Iterable
 import yaml  # type: ignore
 
+from filecache import FCPath
 import pydantic
 
 from cloud_tasks.common.config import Config, load_config
+from cloud_tasks.common.logging_config import configure_logging
 from cloud_tasks.instance_manager import create_instance_manager
+from cloud_tasks.instance_manager.orchestrator import InstanceOrchestrator
 from cloud_tasks.queue_manager import create_queue
 
-from cloud_tasks.common.logging_config import configure_logging
-from cloud_tasks.instance_manager.orchestrator import InstanceOrchestrator
 
 # Use custom logging configuration
 configure_logging(level=logging.WARNING)
@@ -47,7 +48,7 @@ def yield_tasks_from_file(tasks_file: str) -> Iterable[Dict[str, Any]]:
         raise ValueError(
             f"Unsupported file format for tasks: {tasks_file}; must be .json, .yml, or .yaml"
         )
-    with open(tasks_file, "r") as fp:
+    with FCPath(tasks_file).open(mode="r") as fp:
         if tasks_file.endswith(".json"):
             for task in json_stream.load(fp):
                 yield json_stream.to_standard_types(task)  # Convert to a dict
@@ -91,10 +92,18 @@ async def load_queue_cmd(args: argparse.Namespace, config: Config) -> None:
         semaphore = asyncio.Semaphore(args.max_concurrent_tasks)
         pending_tasks = set()
 
+        load_failed_exception = None
+
         async def enqueue_task(task):
             """Helper function to enqueue a single task with semaphore control."""
+            nonlocal load_failed_exception
+            if load_failed_exception:
+                return
             async with semaphore:
-                await task_queue.send_task(task["id"], task["data"])
+                try:
+                    await task_queue.send_task(task["id"], task["data"])
+                except Exception as e:
+                    load_failed_exception = e
 
         with tqdm(desc="Enqueueing tasks") as pbar:
             for task in yield_tasks_from_file(args.tasks):
@@ -108,6 +117,9 @@ async def load_queue_cmd(args: argparse.Namespace, config: Config) -> None:
                     if tasks_remaining <= 0:
                         break
                     tasks_remaining -= 1
+
+                if load_failed_exception:
+                    raise load_failed_exception
 
                 logger.debug(f"Loading task: {task}")
 
@@ -1026,21 +1038,41 @@ def add_common_args(
     parser: argparse.ArgumentParser, include_queue_name: bool = True, include_job_id: bool = True
 ) -> None:
     """Add common arguments to all command parsers."""
-    parser.add_argument(
-        "--config", default="cloud_tasks_config.yaml", help="Path to configuration file"
-    )
+    parser.add_argument("--config", help="Path to configuration file")
+
+    # From main Config class
     parser.add_argument("--provider", choices=["aws", "gcp", "azure"], help="Cloud provider")
+
+    # From ProviderConfig class
+    if include_job_id:
+        parser.add_argument("--job-id", help="The job ID used to group tasks and compute instances")
     if include_queue_name:
         parser.add_argument(
             "--queue-name",
             help="The name of the task queue to use (derived from job ID if not provided)",
         )
-    if include_job_id:
-        parser.add_argument("--job-id", help="The job ID used to group tasks and compute instances")
     parser.add_argument(
         "--region", help="Specific region to use (derived from zone if not provided)"
     )
     parser.add_argument("--zone", help="Specific zone to use")
+
+    # AWS-specific arguments - from AWSConfig class
+    parser.add_argument("--access-key", help="AWS only: access key")
+    parser.add_argument("--secret-key", help="AWS only: secret key")
+
+    # GCP-specific arguments - from GCPConfig class
+    parser.add_argument("--project-id", help="GCP only: project name")
+    parser.add_argument(
+        "--credentials-file",
+        help="GCP only: Path to credentials file",
+    )
+    parser.add_argument(
+        "--service-account",
+        help="GCP only: The service account to use for the worker",
+    )
+
+    # TODO Add Azure-specific arguments here
+
     parser.add_argument(
         "--verbose",
         "-v",
@@ -1067,6 +1099,9 @@ def add_load_queue_args(parser: argparse.ArgumentParser) -> None:
 
 def add_instance_pool_args(parser: argparse.ArgumentParser) -> None:
     """Add instance pool management specific arguments."""
+
+    # From RunConfig class
+    # Constraints on number of instances
     parser.add_argument("--min-instances", type=int, help="Minimum number of compute instances")
     parser.add_argument("--max-instances", type=int, help="Maximum number of compute instances")
     parser.add_argument(
@@ -1079,6 +1114,25 @@ def add_instance_pool_args(parser: argparse.ArgumentParser) -> None:
         type=int,
         help="Filter instance types by maximum total number of vCPUs",
     )
+    parser.add_argument("--cpus-per-task", type=int, help="Number of vCPUs per task")
+    parser.add_argument(
+        "--min-tasks-per-instance", type=int, help="Minimum number of tasks per instance"
+    )
+    parser.add_argument(
+        "--max-tasks-per-instance",
+        type=int,
+        help="Maximum number of tasks per instance",
+    )
+    parser.add_argument(
+        "--min-simultaneous-tasks",
+        type=int,
+        help="Minimum number of simultaneous tasks in the entire system",
+    )
+    parser.add_argument(
+        "--max-simultaneous-tasks",
+        type=int,
+        help="Maximum number of simultaneous tasks in the entire system",
+    )
     parser.add_argument(
         "--min-total-price-per-hour",
         type=float,
@@ -1089,26 +1143,22 @@ def add_instance_pool_args(parser: argparse.ArgumentParser) -> None:
         type=float,
         help="Filter instance types by maximum total price per hour",
     )
-    parser.add_argument("--cpus-per-task", type=int, help="Number of vCPUs per task")
-    parser.add_argument(
-        "--min-tasks-per-instance", type=int, help="Minimum number of tasks per instance"
-    )
-    parser.add_argument(
-        "--max-tasks-per-instance",
-        type=int,
-        help="Maximum number of tasks per instance",
-    )
-    parser.add_argument("--image", help="VM image to use")
+
+    # Instance startup and run information
     parser.add_argument("--startup-script-file", help="Path to custom startup script file")
+    # We don't bother with --startup-script because any startup script is too long to be
+    # passed as a command line argument
+
     parser.add_argument(
         "--scaling-check-interval",
         type=int,
         help="Interval in seconds between scaling checks (default: 60)",
     )
+    parser.add_argument("--image", help="VM image to use")
     parser.add_argument(
         "--instance-termination-delay",
         type=int,
-        help="Delay in seconds before terminating instances after queue is empty(default: 60)",
+        help="Delay in seconds before terminating instances after queue is empty (default: 60)",
     )
     parser.add_argument(
         "--max-runtime",
@@ -1124,6 +1174,8 @@ def add_instance_pool_args(parser: argparse.ArgumentParser) -> None:
 
 def add_instance_args(parser: argparse.ArgumentParser) -> None:
     """Add compute instance-specific arguments."""
+    # From RunConfig class
+    # Constraints on instance types
     parser.add_argument(
         "--architecture",
         choices=["x86_64", "arm64", "X86_64", "ARM64"],
@@ -1302,7 +1354,8 @@ def main():
     # --- List running instances command ---
 
     list_running_instances_parser = subparsers.add_parser(
-        "list_running_instances", help="List currently running instances for the specified provider"
+        "list_running_instances",
+        help="List all currently running instances for the specified provider",
     )
     add_common_args(list_running_instances_parser, include_queue_name=False, include_job_id=False)
     list_running_instances_parser.add_argument("--job-id", help="Filter instances by job ID")

@@ -1,10 +1,10 @@
 Command Line Interface Reference
-===============================
+================================
 
 This page provides a comprehensive reference for the Cloud Tasks command-line interface.
 
 Common Options
-------------
+--------------
 
 Most commands support these common options:
 
@@ -16,7 +16,7 @@ Most commands support these common options:
    --verbose, -v           Enable verbose output (-v for warning, -vv for info, -vvv for debug)
 
 Job Management Commands
---------------------
+-----------------------
 
 run
 ~~~
@@ -150,7 +150,7 @@ Example:
      --force
 
 manage_pool
-~~~~~~~~~~
+~~~~~~~~~~~
 
 Adjust the instance pool size for a running job.
 
@@ -193,10 +193,10 @@ Example:
      --max-instances 10
 
 Queue Management Commands
------------------------
+-------------------------
 
 load_queue
-~~~~~~~~~
+~~~~~~~~~~
 
 Load tasks into a queue.
 
@@ -225,7 +225,7 @@ Example:
      --tasks tasks.json
 
 show_queue
-~~~~~~~~~
+~~~~~~~~~~
 
 Show information about a task queue.
 
@@ -251,7 +251,7 @@ Example:
      --verbose
 
 purge_queue
-~~~~~~~~~~
+~~~~~~~~~~~
 
 Remove all messages from a queue.
 
@@ -277,7 +277,7 @@ Example:
      --force
 
 delete_queue
-~~~~~~~~~~~
+~~~~~~~~~~~~
 
 Delete a queue and its infrastructure.
 
@@ -302,11 +302,72 @@ Example:
      --queue-name my-task-queue \
      --force
 
+show_queue_depth
+~~~~~~~~~~~~~~~~
+
+Display the current depth of a task queue.
+
+.. code-block:: none
+
+   python -m cloud_tasks.cli show_queue_depth
+     --config CONFIG
+     --provider {aws,gcp,azure}
+     --queue-name QUEUE_NAME
+     [--verbose]
+
+With the ``--verbose`` flag, the command will also attempt to peek at the first message in the queue without removing it, displaying its contents.
+
+Example:
+
+.. code-block:: bash
+
+   python -m cloud_tasks.cli show_queue_depth \
+     --config cloud_tasks_config.yaml \
+     --provider aws \
+     --queue-name my-task-queue
+
+empty_queue
+~~~~~~~~~~~
+
+Remove all messages from a queue.
+
+.. code-block:: none
+
+   python -m cloud_tasks.cli empty_queue
+     --config CONFIG
+     --provider {aws,gcp,azure}
+     --queue-name QUEUE_NAME
+     [--force]           Skip confirmation prompt
+     [--region REGION]   Specific region to use
+     [--zone ZONE]       Specific zone to use
+     [--verbose]
+
+This command:
+
+- Shows the current queue depth before emptying
+- Prompts for confirmation (unless ``--force`` is used)
+- Purges all messages from the queue
+- Verifies the queue is empty after the operation
+- Provides a warning if messages remain after purging (e.g., in-flight messages)
+
+.. warning::
+   Use this command with caution as it permanently deletes all messages in the queue.
+
+Example:
+
+.. code-block:: bash
+
+   python -m cloud_tasks.cli empty_queue \
+     --config cloud_tasks_config.yaml \
+     --provider aws \
+     --queue-name my-task-queue \
+     --force
+
 Information Commands
------------------
+--------------------
 
 list_regions
-~~~~~~~~~~~
+~~~~~~~~~~~~
 
 List available regions for a provider.
 
@@ -329,7 +390,7 @@ Example:
      --provider aws
 
 list_images
-~~~~~~~~~~
+~~~~~~~~~~~
 
 List available VM images.
 
@@ -357,7 +418,7 @@ Example:
      --sort-by "name,source"
 
 list_instance_types
-~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~
 
 List available instance types with pricing.
 
@@ -406,7 +467,7 @@ Example:
      --sort-by "price,vcpu"
 
 list_running_instances
-~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~
 
 List currently running instances.
 
@@ -424,6 +485,14 @@ List currently running instances.
      [--zone ZONE]       Specific zone to use
      [--verbose]
 
+This command displays:
+
+- Instance IDs, types, and states
+- Creation timestamps
+- Associated tags (like job ID and role)
+- Summary information (total instances, running vs. starting)
+- Detailed information in verbose mode (``--verbose``)
+
 Example:
 
 .. code-block:: bash
@@ -434,7 +503,7 @@ Example:
      --job-id my-job-id
 
 Exit Status
-----------
+-----------
 
 The CLI returns the following exit codes:
 
@@ -442,7 +511,7 @@ The CLI returns the following exit codes:
 * 1 - Error occurred during command execution
 
 Environment Variables
-------------------
+---------------------
 
 Cloud Tasks can use environment variables for credentials:
 
@@ -451,13 +520,14 @@ Cloud Tasks can use environment variables for credentials:
 - Azure: AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET
 
 Troubleshooting
--------------
+---------------
 
 Common Issues
-~~~~~~~~~~~
+~~~~~~~~~~~~~
 
 1. **Connection Errors**: Ensure your credentials and network settings are correct
 2. **Permission Denied**: Verify the provided credentials have sufficient permissions
 3. **Resource Not Found**: Check that the specified queues, regions, or resources exist
 
-For more detailed error messages, use the ``--verbose`` flag.
+.. note::
+   For more detailed error messages, use the ``--verbose`` flag.

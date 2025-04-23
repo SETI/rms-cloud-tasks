@@ -153,6 +153,10 @@ class InstanceOrchestrator:
             f"    Tasks per instance: {self._run_config.min_tasks_per_instance} to "
             f"{self._run_config.max_tasks_per_instance}"
         )
+        self._logger.info(
+            f"    Simultaneous tasks: {self._run_config.min_simultaneous_tasks} to "
+            f"{self._run_config.max_simultaneous_tasks}"
+        )
         if self._run_config.min_total_price_per_hour is not None:
             min_price_str = f"${self._run_config.min_total_price_per_hour:.2f}"
         else:
@@ -461,7 +465,24 @@ export RMS_CLOUD_WORKER_USE_NEW_PROCESS={self._run_config.worker_use_new_process
         return num_running, running_cpus, running_price, summary
 
     async def _check_scaling(self) -> None:
-        """Check if we need to scale up based on number of running instances."""
+        """Check if we need to scale up based on number of running instances.
+
+        The number of desired instances is determined from these config parameters:
+
+        - min_instances
+        - max_instances
+        - min_total_cpus
+        - max_total_cpus
+        - cpus_per_task
+        - min_simultaneous_tasks
+        - max_simultaneous_tasks
+        - min_total_price_per_hour
+        - max_total_price_per_hour
+
+        In each case the maximum value is used to compute the number of instances
+        and then the minimum value is used to verify that other constraints did
+        not limit the number of instances excessively.
+        """
         self._logger.info("Checking if scaling is needed...")
 
         # Get current queue depth
@@ -504,9 +525,47 @@ export RMS_CLOUD_WORKER_USE_NEW_PROCESS={self._run_config.worker_use_new_process
                     f"  More instances running than max allowed: {num_running} > "
                     f"{self._max_instances}"
                 )
-            # How many instances we can start
-            available_instances = max(self._max_instances - num_running, 0)
 
+            # Find the maximum number of instances allowed by looking at
+            # --max-instances and --max-simultaneous-tasks with --cpus-per-task
+            max_allowed_instances = self._max_instances
+            self._logger.debug(f"Starting with max allowed instances: {max_allowed_instances}")
+
+            # Derive the number of tasks per instance from the constraints and the number of vCPUs
+            # in the optimal instance
+            cpus_per_task = self._run_config.cpus_per_task or 1
+            tasks_per_instance = self._optimal_instance_num_tasks
+            tasks_running = int(running_cpus // cpus_per_task)
+            if self._run_config.max_simultaneous_tasks is not None:
+                if tasks_running > self._run_config.max_simultaneous_tasks:
+                    self._logger.warning(
+                        f"  More tasks running than max allowed: {tasks_running} > "
+                        f"{self._run_config.max_simultaneous_tasks}"
+                    )
+                    available_instances = 0
+                else:
+                    # The maximum number of instances is equal to the current number of
+                    # instances already running plus the number of instances that can be
+                    # started based on the unused number of simultaneous tasks
+                    new_instances_from_tasks = int(
+                        (self._run_config.max_simultaneous_tasks - tasks_running)
+                        * tasks_per_instance
+                    )
+                    new_max_allowed_instances = num_running + new_instances_from_tasks
+                    if new_max_allowed_instances < max_allowed_instances:
+                        max_allowed_instances = new_max_allowed_instances
+                        self._logger.debug(
+                            "Reducing max allowed instances based on max_simultaneous_tasks: "
+                            f"running tasks={tasks_running}, cpus_per_task={cpus_per_task}, "
+                            f"new tasks_per_instance={tasks_per_instance}, "
+                            f"new max allowed instances={max_allowed_instances}"
+                        )
+
+            # How many instances we can start
+            available_instances = max(max_allowed_instances - num_running, 0)
+
+            # Find the maximum number of vCPUs allowed by looking at
+            # --max-total-cpus
             if self._run_config.max_total_cpus is not None:
                 if running_cpus > self._run_config.max_total_cpus:
                     self._logger.warning(
@@ -519,6 +578,8 @@ export RMS_CLOUD_WORKER_USE_NEW_PROCESS={self._run_config.worker_use_new_process
             else:
                 available_cpus = None
 
+            # Find the maximum amount of money allowed by looking at
+            # --max-total-price-per-hour
             if self._run_config.max_total_price_per_hour is not None:
                 if running_price > self._run_config.max_total_price_per_hour:
                     self._logger.warning(
@@ -542,13 +603,23 @@ export RMS_CLOUD_WORKER_USE_NEW_PROCESS={self._run_config.worker_use_new_process
             # we can start
             instances_to_add = available_instances
             if available_cpus is not None:
-                instances_to_add = min(
-                    instances_to_add, available_cpus // self._optimal_instance_info["vcpu"]
-                )
+                new_instances_to_add = available_cpus // self._optimal_instance_info["vcpu"]
+                if new_instances_to_add < instances_to_add:
+                    instances_to_add = new_instances_to_add
+                    self._logger.debug(
+                        f"Reducing instances to add based on max_total_cpus: "
+                        f"available_cpus={available_cpus}, "
+                        f"instances_to_add={instances_to_add}"
+                    )
             if available_price is not None:
-                instances_to_add = min(
-                    instances_to_add, available_price // self._optimal_instance_info["total_price"]
-                )
+                new_instances_to_add = available_price // self._optimal_instance_info["total_price"]
+                if new_instances_to_add < instances_to_add:
+                    instances_to_add = new_instances_to_add
+                    self._logger.debug(
+                        f"Reducing instances to add based on max_total_price_per_hour: "
+                        f"available_price=${available_price:.2f}, "
+                        f"instances_to_add={instances_to_add}"
+                    )
 
             if instances_to_add > 0:
                 # Now see if we violated the minimum constraints
@@ -564,14 +635,21 @@ export RMS_CLOUD_WORKER_USE_NEW_PROCESS={self._run_config.worker_use_new_process
                         and instances_to_add * self._optimal_instance_info["total_price"]
                         < self._run_config.min_total_price_per_hour
                     )
+                    or (
+                        self._run_config.min_simultaneous_tasks is not None
+                        and tasks_running + instances_to_add * tasks_per_instance
+                        < self._run_config.min_simultaneous_tasks
+                    )
                 ):
                     self._logger.warning(
                         f"Violated minimum constraints: Max instances we can add is "
                         f"{instances_to_add} at "
-                        f"${instances_to_add * self._optimal_instance_info['total_price']:.2f}/hour, "
-                        f"but minimums are {self._min_instances} instances, "
+                        f"${instances_to_add * self._optimal_instance_info['total_price']:.2f}/hour "
+                        f"giving a total of {tasks_running + instances_to_add * tasks_per_instance} "
+                        f"simultaneous tasks, but minimums are {self._min_instances} instances, "
                         f"{self._run_config.min_total_cpus} vCPUs, "
-                        f"${self._run_config.min_total_price_per_hour:.2f}/hour"
+                        f"${self._run_config.min_total_price_per_hour:.2f}/hour, "
+                        f"{self._run_config.min_simultaneous_tasks} simultaneous tasks"
                     )
                 else:
                     self._logger.info(

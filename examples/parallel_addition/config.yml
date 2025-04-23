@@ -1,9 +1,6 @@
 provider: gcp
 
 gcp:
-  project_id: rfrench
-  region: us-central1
-  queue_name: parallel-addition-queue
   job_id: parallel-addition-job
   image: https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-2204-jammy-v20250409
   service_account: rms-cloud-run@rfrench.iam.gserviceaccount.com

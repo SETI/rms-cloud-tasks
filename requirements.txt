@@ -5,6 +5,7 @@ click
 json-stream
 pydantic
 pyyaml
+rms-filecache
 shortuuid
 tqdm
 
@@ -22,10 +23,10 @@ boto3
 # aiobotocore
 
 # GCP Support
+google-cloud-billing
+google-cloud-compute
 google-cloud-pubsub
 google-cloud-storage
-google-cloud-compute
-google-cloud-billing
 
 # Azure Support - disabled for now
 # azure-identity
@@ -43,5 +44,7 @@ pytest-asyncio
 pytest-mock
 
 # Documentation
+myst-parser
 sphinx
 sphinx-rtd-theme
+sphinxcontrib-napoleon

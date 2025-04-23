@@ -179,6 +179,10 @@ class GCPComputeInstanceManager(InstanceManager):
                     "architecture": Architecture (X86_64 or ARM64)
                     "min_cpu": Minimum number of vCPUs
                     "max_cpu": Maximum number of vCPUs
+                        Derived if not provided from:
+                            "cpus_per_task": Number of vCPUs per task
+                            "min_tasks_per_instance": Minimum number of tasks per instance
+                            "max_tasks_per_instance": Maximum number of tasks per instance
                     "min_total_memory": Minimum total memory in GB
                     "max_total_memory": Maximum total memory in GB
                     "min_memory_per_cpu": Minimum memory per vCPU in GB
@@ -253,63 +257,57 @@ class GCPComputeInstanceManager(InstanceManager):
                 "url": machine_type.self_link,
             }
 
+            # Derive min/max_cpu from cpus_per_task and min/max_tasks_per_instance
+            # if needed
+            min_cpu = constraints.get("min_cpu")
+            max_cpu = constraints.get("max_cpu")
+            if constraints.get("cpus_per_task") is not None:
+                cpus_per_task = constraints["cpus_per_task"]
+                if min_cpu is None and constraints.get("min_tasks_per_instance") is not None:
+                    min_cpu = cpus_per_task * constraints["min_tasks_per_instance"]
+                if max_cpu is None and constraints.get("max_tasks_per_instance") is not None:
+                    max_cpu = cpus_per_task * constraints["max_tasks_per_instance"]
+
             if (
                 (
-                    "architecture" not in constraints
-                    or constraints["architecture"] is None
+                    constraints.get("architecture") is None
                     or instance_info["architecture"] == constraints["architecture"]
                 )
+                and (min_cpu is None or instance_info["vcpu"] >= min_cpu)
+                and (max_cpu is None or instance_info["vcpu"] <= max_cpu)
                 and (
-                    "min_cpu" not in constraints
-                    or constraints["min_cpu"] is None
-                    or instance_info["vcpu"] >= constraints["min_cpu"]
-                )
-                and (
-                    "max_cpu" not in constraints
-                    or constraints["max_cpu"] is None
-                    or instance_info["vcpu"] <= constraints["max_cpu"]
-                )
-                and (
-                    "min_total_memory" not in constraints
-                    or constraints["min_total_memory"] is None
+                    constraints.get("min_total_memory") is None
                     or instance_info["mem_gb"] >= constraints["min_total_memory"]
                 )
                 and (
-                    "max_total_memory" not in constraints
-                    or constraints["max_total_memory"] is None
+                    constraints.get("max_total_memory") is None
                     or instance_info["mem_gb"] <= constraints["max_total_memory"]
                 )
                 and (
-                    "min_memory_per_cpu" not in constraints
-                    or constraints["min_memory_per_cpu"] is None
+                    constraints.get("min_memory_per_cpu") is None
                     or instance_info["mem_gb"] / instance_info["vcpu"]
                     >= constraints["min_memory_per_cpu"]
                 )
                 and (
-                    "max_memory_per_cpu" not in constraints
-                    or constraints["max_memory_per_cpu"] is None
+                    constraints.get("max_memory_per_cpu") is None
                     or instance_info["mem_gb"] / instance_info["vcpu"]
                     <= constraints["max_memory_per_cpu"]
                 )
                 and (
-                    "min_local_ssd" not in constraints
-                    or constraints["min_local_ssd"] is None
+                    constraints.get("min_local_ssd") is None
                     or instance_info["local_ssd_gb"] >= constraints["min_local_ssd"]
                 )
                 and (
-                    "max_local_ssd" not in constraints
-                    or constraints["max_local_ssd"] is None
+                    constraints.get("max_local_ssd") is None
                     or instance_info["local_ssd_gb"] <= constraints["max_local_ssd"]
                 )
                 and (
-                    "min_local_ssd_per_cpu" not in constraints
-                    or constraints["min_local_ssd_per_cpu"] is None
+                    constraints.get("min_local_ssd_per_cpu") is None
                     or instance_info["local_ssd_gb"] / instance_info["vcpu"]
                     >= constraints["min_local_ssd_per_cpu"]
                 )
                 and (
-                    "max_local_ssd_per_cpu" not in constraints
-                    or constraints["max_local_ssd_per_cpu"] is None
+                    constraints.get("max_local_ssd_per_cpu") is None
                     or instance_info["local_ssd_gb"] / instance_info["vcpu"]
                     <= constraints["max_local_ssd_per_cpu"]
                 )
@@ -789,12 +787,14 @@ class GCPComputeInstanceManager(InstanceManager):
             for (machine_type, zone), price_info in zone_pricing_data.items()
         ]
         # Sort by price per vCPU, then by decreasing vCPU (this gives us the cheapest
-        # instance type with the most vCPUs). We round the price to 2 decimal places so
-        # that small differences in price don't make us choose an instance with fewer
-        # vCPUs that would otherwise cost the same.
+        # instance type with the most vCPUs). Instead of using the price_per_vcpu field,
+        # we use the total_price field and divide by the number of vCPUs. This gives us a
+        # more accurate comparison of the cost of the instance including memory and disk.
+        # We round the price to 2 decimal places so that small differences in price don't
+        # make us choose an instance with fewer vCPUs that would otherwise cost the same.
         priced_instances.sort(
             key=lambda x: (
-                round(cast(float, x[2]["total_price"]), 2),
+                round(cast(float, x[2]["total_price"]) / x[2]["vcpu"], 2),
                 -cast(int, x[2]["vcpu"]),
             )
         )
@@ -802,7 +802,9 @@ class GCPComputeInstanceManager(InstanceManager):
         self._logger.debug("Instance types sorted by price (cheapest and most vCPUs first):")
         for i, (machine_type, zone, price_info) in enumerate(priced_instances):
             self._logger.debug(
-                f"  [{i+1:3d}] {machine_type:20s} in {zone:15s}: ${price_info['total_price']:10.6f}/hour"
+                f"  [{i+1:3d}] {machine_type:20s} in {zone:15s}: "
+                f"${price_info['total_price']:10.6f}/hour = "
+                f"${price_info['total_price'] / price_info['vcpu']:10.6f}/vCPU/hour"
             )
 
         selected_type, selected_zone, selected_price_info = priced_instances[0]
@@ -1443,6 +1445,9 @@ class GCPComputeInstanceManager(InstanceManager):
             project=self._project_id, filter=f"name eq {region}-.*"
         )
         zones = list(self._zones_client.list(request=request))
+
+        if len(zones) == 0:
+            raise ValueError(f"No zones found for region {region}")
 
         # Get the first zone in the list
         self._logger.debug(f"Default zone is {zones[0].name}")
