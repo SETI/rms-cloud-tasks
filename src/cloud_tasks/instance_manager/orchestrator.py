@@ -713,46 +713,37 @@ export RMS_CLOUD_WORKER_USE_NEW_PROCESS={self._run_config.worker_use_new_process
         startup_script = self._generate_worker_startup_script()
 
         async with self._instance_creation_lock:
+            # Create a semaphore to limit concurrent instance creations
+            semaphore = asyncio.Semaphore(self._start_instance_max_threads)
+
             # Define the synchronous function to run in threads
-            def start_single_instance_sync():
-                try:
-                    # Create a new event loop for this thread
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
+            async def start_single_instance():
+                async with semaphore:
                     try:
-                        # Run the async operation in the new loop
-                        instance_id, zone = loop.run_until_complete(
-                            self._instance_manager.start_instance(
-                                instance_type=self._optimal_instance_info["name"],
-                                boot_disk_size=self._optimal_instance_boot_disk_size,
-                                startup_script=startup_script,
-                                job_id=self._job_id,
-                                use_spot=self._run_config.use_spot,
-                                image=self._run_config.image,
-                                zone=self._optimal_instance_info["zone"],
-                            )
+                        # Run the async operation
+                        instance_id, zone = await self._instance_manager.start_instance(
+                            instance_type=self._optimal_instance_info["name"],
+                            boot_disk_size=self._optimal_instance_boot_disk_size,
+                            startup_script=startup_script,
+                            job_id=self._job_id,
+                            use_spot=self._run_config.use_spot,
+                            image=self._run_config.image,
+                            zone=self._optimal_instance_info["zone"],
                         )
                         self._logger.info(
                             f"Started {'spot' if self._run_config.use_spot else 'on-demand'} "
                             f"instance '{instance_id}' in zone '{zone}'"
                         )
                         return instance_id
-                    finally:
-                        # Clean up the loop
-                        loop.close()
-                except Exception as e:
-                    self._logger.error(f"Failed to start instance: {e}", exc_info=True)
-                    return None
+                    except Exception as e:
+                        self._logger.error(f"Failed to start instance: {e}", exc_info=True)
+                        return None
 
-            # Create futures for all instance creations
-            loop = asyncio.get_running_loop()
-            futures = [
-                loop.run_in_executor(self._thread_pool, start_single_instance_sync)
-                for _ in range(count)
-            ]
+            # Create tasks for all instance creations
+            tasks = [start_single_instance() for _ in range(count)]
 
-            # Wait for all futures to complete
-            results = await asyncio.gather(*futures)
+            # Wait for all tasks to complete
+            results = await asyncio.gather(*tasks)
 
             # Filter out None results (failed instance creations)
             instance_ids = [instance_id for instance_id in results if instance_id is not None]
@@ -766,41 +757,33 @@ export RMS_CLOUD_WORKER_USE_NEW_PROCESS={self._run_config.worker_use_new_process
         """Terminate all instances associated with this job."""
         self._logger.info("Terminating all instances")
 
+        # Create a semaphore to limit concurrent terminations
+        semaphore = asyncio.Semaphore(self._start_instance_max_threads)
+
         # Define the synchronous function to terminate a single instance
-        def terminate_single_instance_sync(instance):
-            try:
-                # Create a new event loop for this thread
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
+        async def terminate_single_instance(instance):
+            async with semaphore:
                 try:
-                    # Run the async operation in the new loop
                     self._logger.info(f"Terminating instance: {instance['id']}")
-                    loop.run_until_complete(
-                        self._instance_manager.terminate_instance(instance["id"], instance["zone"])
+                    await self._instance_manager.terminate_instance(
+                        instance["id"], instance["zone"]
                     )
                     self._logger.info(f"Terminated instance: {instance['id']}")
                     return True
-                finally:
-                    # Clean up the loop
-                    loop.close()
-            except Exception as e:
-                self._logger.error(
-                    f"Failed to terminate instance {instance['id']}: {e}", exc_info=True
-                )
-                return False
+                except Exception as e:
+                    self._logger.error(
+                        f"Failed to terminate instance {instance['id']}: {e}", exc_info=True
+                    )
+                    return False
 
         current_instances = await self.list_job_instances()
         running_instances = [i for i in current_instances if i["state"] == "running"]
 
-        # Create futures for all instance terminations
-        loop = asyncio.get_running_loop()
-        futures = [
-            loop.run_in_executor(self._thread_pool, terminate_single_instance_sync, instance)
-            for instance in running_instances
-        ]
+        # Create tasks for all instance terminations
+        tasks = [terminate_single_instance(instance) for instance in running_instances]
 
-        # Wait for all futures to complete
-        results = await asyncio.gather(*futures)
+        # Wait for all tasks to complete
+        results = await asyncio.gather(*tasks)
 
         # Count successful terminations
         terminate_count = sum(1 for result in results if result)

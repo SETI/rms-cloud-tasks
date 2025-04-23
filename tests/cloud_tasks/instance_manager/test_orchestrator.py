@@ -43,6 +43,21 @@ def mock_config():
     run_config.image = "ubuntu-2404-lts"
     run_config.startup_script = "#!/bin/bash\necho 'Hello World'"
 
+    # Add price-related attributes
+    run_config.min_total_price_per_hour = 0.0
+    run_config.max_total_price_per_hour = 100.0
+    run_config.min_boot_disk = 10
+    run_config.max_boot_disk = 100
+    run_config.min_boot_disk_per_cpu = 5
+    run_config.max_boot_disk_per_cpu = 20
+    run_config.min_total_cpus = 2
+    run_config.max_total_cpus = 16
+    run_config.min_simultaneous_tasks = 1
+    run_config.max_simultaneous_tasks = 8
+    run_config.instance_termination_delay = 300
+    run_config.scaling_check_interval = 60
+    run_config.worker_use_new_process = True
+
     # Setup config return values
     config.provider = "gcp"
     config.get_provider_config.return_value = provider_config
@@ -64,9 +79,16 @@ def orchestrator(mock_config):
             # Setup orchestrator for testing
             orchestrator._instance_manager = AsyncMock()
             orchestrator._task_queue = AsyncMock()
-            orchestrator._optimal_instance_type = "n1-standard-2"
-            orchestrator._optimal_instance_zone = "us-central1-a"
-            orchestrator._optimal_instance_price = 5.75
+            orchestrator._optimal_instance_info = {
+                "name": "n1-standard-2",
+                "vcpu": 2,
+                "mem_gb": 8,
+                "local_ssd_gb": 0,
+                "total_price": 5.75,
+                "zone": "us-central1-a",
+            }
+            orchestrator._optimal_instance_boot_disk_size = 20
+            orchestrator._optimal_instance_num_tasks = 2
 
             # Override start_instance_max_threads for testing
             orchestrator._start_instance_max_threads = 3
@@ -100,7 +122,8 @@ async def test_provision_instances_parallel(orchestrator):
         await asyncio.sleep(0.2)
 
         concurrent_starts -= 1
-        return f"instance-{len(start_times)}"
+        instance_id = f"instance-{len(start_times)}"
+        return instance_id, "us-central1-a"
 
     orchestrator._instance_manager.start_instance = AsyncMock(side_effect=delayed_start_instance)
 
@@ -110,7 +133,7 @@ async def test_provision_instances_parallel(orchestrator):
     )
 
     # Act
-    instance_ids = await orchestrator.provision_instances(instance_count)
+    instance_ids = await orchestrator._provision_instances(instance_count)
 
     # Assert
     assert len(instance_ids) == instance_count
@@ -150,7 +173,8 @@ async def test_provision_instances_handles_failures(orchestrator):
         call_count += 1
         if call_count % 2 == 0:
             raise RuntimeError("Instance creation failed")
-        return f"instance-{call_count}"
+        instance_id = f"instance-{call_count}"
+        return instance_id, "us-central1-a"
 
     orchestrator._instance_manager.start_instance = AsyncMock(side_effect=mock_start_instance)
 
@@ -160,7 +184,7 @@ async def test_provision_instances_handles_failures(orchestrator):
     )
 
     # Act
-    instance_ids = await orchestrator.provision_instances(instance_count)
+    instance_ids = await orchestrator._provision_instances(instance_count)
 
     # Assert
     # Should have 3 successful instances (odd-numbered calls: 1, 3, 5)
