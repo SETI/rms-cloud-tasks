@@ -1,19 +1,300 @@
 Command Line Interface Reference
 ================================
 
-This page provides a comprehensive reference for the Cloud Tasks command-line interface.
+This page provides a comprehensive reference for the Cloud Tasks command-line interface,
+``cloud_tasks``. Since many commands take similar options, we will start by listing the
+shared options and then reference them as needed.
 
 Common Options
 --------------
 
-Most commands support these common options:
+All commands support these common options:
+
+--config CONFIG        Path to configuration file (optional if no configuration file is needed)
+--provider PROVIDER    Cloud provider (aws, gcp, or azure), overrides configuration file
+--verbose, -v          Enable verbose output (-v for warning, -vv for info, -vvv for debug)
+
+Job-Specific Options
+---------------------
+
+In addition to the common options, each job-specific command has additional options that
+specify job-related information. They override any options in the configuration file (see
+:ref:`config_provider_specific_options`).
+
+--job-id JOB_ID            A unique identifier for the job
+--queue-name QUEUE_NAME    The name of the task queue to use (derived from job ID if not provided)
+
+Provider-Specific Options
+-------------------------
+
+In addition to the common options, each provider has additional options that are specific
+to that provider. They override any options in the configuration file (see
+:ref:`config_provider_specific_options`).
+
+AWS
+~~~
+
+--access-key ACCESS_KEY       The access key to use
+--secret-key SECRET_KEY       The secret key to use
+
+GCP
+~~~
+
+--project-id PROJECT_ID                The ID of the project to use [Required for most operations]
+--credentials-file CREDENTIALS_FILE    The path to a file containing the credentials to use; if not
+                                       specified, the default credentials will be used
+--service-account SERVICE_ACCOUNT      The service account to use; required for worker processes
+                                       on cloud-based instances to have access to system resources [Required when creating
+                                       instances]
+
+Azure
+~~~~~
+
+--subscription-id SUBSCRIPTION_ID    The ID of the subscription to use
+--tenant-id TENANT_ID                The ID of the tenant to use
+--client-id CLIENT_ID                The ID of the client to use
+--client-secret CLIENT_SECRET        The secret to use
+
+Instance Type Selection Options
+-------------------------------
+
+These options are used to constrain the instance types. They override any constraints
+in the configuration file (see :ref:`config_compute_instance_options`).
+
+--architecture ARCHITECTURE   The architecture to use; valid values are ``X86_64`` and ``ARM64``
+                              (defaults to ``X86_64``)
+--min-cpu N                   The minimum number of vCPUs per instance
+--max-cpu N                   The maximum number of vCPUs per instance
+--min-total-memory N          The minimum amount of memory in GB per instance
+--max-total-memory N          The maximum amount of memory in GB per instance
+--min-memory-per-cpu N        The minimum amount of memory per vCPU
+--max-memory-per-cpu N        The maximum amount of memory per vCPU
+--min-local-ssd N             The minimum amount of local extra SSD storage in GB per instance
+--max-local-ssd N             The maximum amount of local extra SSD storage in GB per instance
+--min-local-ssd-per-cpu N     The minimum amount of local extra SSD storage per vCPU
+--max-local-ssd-per-cpu N     The maximum amount of local extra SSD storage per vCPU
+--min-boot-disk N             The minimum amount of boot disk in GB per instance
+--max-boot-disk N             The maximum amount of boot disk in GB per instance
+--min-boot-disk-per-cpu N     The minimum amount of boot disk per vCPU
+--max-boot-disk-per-cpu N     The maximum amount of boot disk per vCPU
+--instance-types TYPES        A single instance type or list of instance types to use;
+                              instance types are specified using Python-style regular expressions
+                              (if no anchor character like ``^`` or ``$`` is specified, the given
+                              string will match any part of the instance type name)
+
+Number of Instances Options
+---------------------------
+
+These options are used to constrain the number of instances. They override any constraints
+in the configuration file (see :ref:`config_number_of_instances_options`).
+
+--min-instances N             The minimum number of instances to use (defaults to 1)
+--max-instances N             The maximum number of instances to use (defaults to 10)
+--min-total-cpus N            The minimum total number of vCPUs to use
+--max-total-cpus N            The maximum total number of vCPUs to use
+--cpus-per-task N             The number of vCPUs per task; this is also used to configure
+                              the worker process to limit the number of tasks that can be run
+                              simultaneously on a single instance
+--min-tasks-per-instance N    The minimum number of tasks per instance
+--max-tasks-per-instance N    The maximum number of tasks per instance
+--min-simultaneous-tasks N    The minimum number of tasks to run simultaneously
+--max-simultaneous-tasks N    The maximum number of tasks to run simultaneously
+--min-total-price-per-hour N  The minimum total price per hour to use
+--max-total-price-per-hour N  The maximum total price per hour to use
+
+VM Options
+----------
+
+These options are used to specify the type of VM to use. They override any options
+in the configuration file (see :ref:`config_vm_options`).
+
+--use-spot                    Use spot instances instead of on-demand instances
+
+Boot Options
+------------
+
+These options are used to specify the boot process. They override any options
+in the configuration file (see :ref:`config_boot_options`).
+
+--startup-script-file FILE    The path to a file containing the startup script
+--image IMAGE                 The image to use for the VM
+
+Worker and Manage Pool Options
+------------------------------
+
+These options are used to specify the worker and manage_pool processes. They override any
+options in the configuration file (see :ref:`config_worker_and_manage_pool_options`).
+
+--scaling-check-interval SECONDS       The interval to check for scaling opportunities
+                                       (defaults to 60)
+--instance-termination-delay SECONDS   The delay to wait before terminating an instance
+                                       (defaults to 60)
+--max-runtime SECONDS                  The maximum runtime for a task (defaults to 60)
+--worker-use-new-process               Use a new process for each task instead of reusing the
+                                       same process (defaults to ``False``)
+
+Information Commands
+--------------------
+
+list_regions
+~~~~~~~~~~~~
+
+List available regions, and optionally availability zones and other details, for a
+provider.
 
 .. code-block:: none
 
-   --config CONFIG         Path to configuration file (default: cloud_tasks_config.yaml)
-   --provider {aws,gcp,azure}  Cloud provider
-   --queue-name QUEUE_NAME  Name of the task queue
-   --verbose, -v           Enable verbose output (-v for warning, -vv for info, -vvv for debug)
+   cloud_tasks list_regions
+      [Common options]
+      [Additional options]
+
+Additional options:
+
+--prefix PREFIX      Filter regions by name prefix
+--zones              Show availability zones for each region
+--detail             Show additional provider-specific information
+
+Example:
+
+.. code-block:: none
+
+   $ cloud_tasks list_regions --provider gcp --detail --zones --prefix africa
+   Found 1 regions (filtered by prefix: africa)
+
+   Region                    Description
+   ----------------------------------------------------------------------------------------------------
+   africa-south1             africa-south1
+   Availability Zones: africa-south1-a, africa-south1-b, africa-south1-c
+   Endpoint: https://africa-south1-compute.googleapis.com
+   Status: UP
+
+list_images
+~~~~~~~~~~~
+
+List available VM images.
+
+.. code-block:: none
+
+   cloud_tasks list_images
+      [Common options]
+      [Additional options]
+
+Additional options:
+
+--user            Include user-created images; otherwise, only include system-provided
+                  public images
+--filter TEXT     Include only images containing ``TEXT`` in any field
+--sort-by FIELDS  Sort the result by one or more comma-separated fields; available fields
+                  are ``family``, ``name``, ``project``, ``source``. Prefix with ``-`` for
+                  descending order. Partial field names like ``fam`` for ``family`` or ``proj``
+                  for ``project`` are supported.
+--limit N         Limit the number of results to the first ``N`` after sorting
+--detail          Show detailed information
+
+Example:
+
+.. code-block:: none
+
+   $ cloud_tasks list_images --provider aws --filter sapcal --detail --sort-by=-name --limit 2
+   Retrieving images...
+   Found 2 filtered images for aws:
+
+   Name                                                                             Source
+   ------------------------------------------------------------------------------------------
+   suse-sles-15-sp6-sapcal-v20250409-hvm-ssd-x86_64                                 AWS
+   SUSE Linux Enterprise Server 15 SP6 for SAP CAL (HVM, 64-bit, SSD Backed)
+   ID: ami-09b43f66ab9cce59a
+   CREATION DATE: 2025-04-09T21:15:49.000Z    STATUS: available
+   URL: N/A
+
+   suse-sles-15-sp6-sapcal-v20250130-hvm-ssd-x86_64                                 AWS
+   SUSE Linux Enterprise Server 15 SP6 for SAP CAL (HVM, 64-bit, SSD Backed)
+   ID: ami-013778510a6146053
+   CREATION DATE: 2025-01-31T12:06:46.000Z    STATUS: available
+   URL: N/A
+
+
+   To use a custom image with the 'run' or 'manage_pool' commands, use the --image parameter.
+   For AWS, specify the AMI ID: --image ami-12345678
+
+list_instance_types
+~~~~~~~~~~~~~~~~~~~
+
+List available instance types with pricing.
+
+.. code-block:: none
+
+   cloud_tasks list_instance_types
+      [Common options]
+      [Instance type selection options]
+      [Additional options]
+
+Additional options:
+
+--region REGION   Region to use, overrides configuration file
+--filter TEXT     Include only images containing ``TEXT`` in any field
+--sort-by FIELDS  Sort the result by one or more comma-separated fields; available fields
+                  are ``name``, ``vcpu``, ``mem``, ``local_ssd``, ``storage``,
+                  ``vcpu_price``, ``mem_price``, ``local_ssd_price``, ``storage_price``,
+                  ``price_per_cpu``, ``mem_per_gb_price``, ``local_ssd_per_gb_price``,
+                  ``storage_per_gb_price``, ``total_price``, ``total_price_per_cpu``,
+                  ``zone``, ``description``. Prefix with ``-`` for descending order.
+                  Partial field names like ``ram`` or ``mem`` for ``mem_gb`` or ``v`` for
+                  ``vcpu`` are supported.
+--limit N         Limit the number of results to the first ``N`` after sorting
+--detail          Show detailed information
+
+Example:
+
+.. code-block:: none
+
+   $ cloud_tasks list_instance_types --provider gcp --region us-central1 --instance-types "n.-.*" --sort-by=-cpu,-mem --limit 5
+   Retrieving instance types...
+   Retrieving pricing information...
+
+   Instance Type                  Arch vCPU   Mem (GB)  LSSD (GB)  Disk (GB)  Total $/Hr         Zone
+   -----------------------------------------------------------------------------------------------------------
+   n1-ultramem-160              X86_64  160     3844.0          0          0    $21.3448  us-central1-*
+   n2-highmem-128               X86_64  128      864.0          0          0     $7.7070  us-central1-*
+   n2-standard-128              X86_64  128      512.0          0          0     $6.2156  us-central1-*
+   n1-megamem-96                X86_64   96     1433.6          0          0     $9.1088  us-central1-*
+   n2-highmem-96                X86_64   96      768.0          0          0     $6.2887  us-central1-*
+
+list_running_instances
+~~~~~~~~~~~~~~~~~~~~~~
+
+List currently running instances.
+
+.. code-block:: none
+
+   python -m cloud_tasks.cli list_running_instances
+     --config CONFIG
+     --provider {aws,gcp,azure}
+     [--job-id JOB_ID]    Filter by job ID
+     [--all-instances]    Show all instances including non-cloud-tasks ones
+     [--include-terminated] Include terminated instances
+     [--sort-by FIELDS]   Sort by comma-separated fields
+     [--detail]          Show detailed information
+     [--region REGION]   Specific region to use
+     [--zone ZONE]       Specific zone to use
+     [--verbose]
+
+This command displays:
+
+- Instance IDs, types, and states
+- Creation timestamps
+- Associated tags (like job ID and role)
+- Summary information (total instances, running vs. starting)
+- Detailed information in verbose mode (``--verbose``)
+
+Example:
+
+.. code-block:: bash
+
+   python -m cloud_tasks.cli list_running_instances \
+     --config cloud_tasks_config.yaml \
+     --provider aws \
+     --job-id my-job-id
 
 Job Management Commands
 -----------------------
@@ -363,144 +644,6 @@ Example:
      --queue-name my-task-queue \
      --force
 
-Information Commands
---------------------
-
-list_regions
-~~~~~~~~~~~~
-
-List available regions for a provider.
-
-.. code-block:: none
-
-   python -m cloud_tasks.cli list_regions
-     --config CONFIG
-     --provider {aws,gcp,azure}
-     [--prefix PREFIX]    Filter regions by name prefix
-     [--zones]           Show availability zones for each region
-     [--detail]          Show additional provider-specific information
-     [--verbose]
-
-Example:
-
-.. code-block:: bash
-
-   python -m cloud_tasks.cli list_regions \
-     --config cloud_tasks_config.yaml \
-     --provider aws
-
-list_images
-~~~~~~~~~~~
-
-List available VM images.
-
-.. code-block:: none
-
-   python -m cloud_tasks.cli list_images
-     --config CONFIG
-     --provider {aws,gcp,azure}
-     [--user]            Include user-created images
-     [--filter TEXT]     Filter images containing text
-     [--limit N]         Maximum number of results
-     [--sort-by FIELDS]  Comma-separated sort fields (e.g., "name,source")
-     [--detail]          Show detailed information
-     [--region REGION]   Specific region to use
-     [--zone ZONE]       Specific zone to use
-     [--verbose]
-
-Example:
-
-.. code-block:: bash
-
-   python -m cloud_tasks.cli list_images \
-     --config cloud_tasks_config.yaml \
-     --provider aws \
-     --sort-by "name,source"
-
-list_instance_types
-~~~~~~~~~~~~~~~~~~~
-
-List available instance types with pricing.
-
-.. code-block:: none
-
-   python -m cloud_tasks.cli list_instance_types
-     --config CONFIG
-     --provider {aws,gcp,azure}
-     [--instance-types TYPES]  Space-separated instance type families
-     [--size-filter FILTER]    Size filter in format "cpu:memory:disk"
-     [--limit N]               Maximum number of results
-     [--use-spot]             Show spot/preemptible pricing
-     [--sort-by FIELDS]       Comma-separated sort fields
-     [--filter TEXT]          Filter types containing text
-     [--detail]              Show detailed information
-     [--architecture {x86_64,arm64}] CPU architecture to use
-     [--min-cpu N]           Filter by min vCPUs
-     [--max-cpu N]           Filter by max vCPUs
-     [--min-total-memory N]  Filter by min total memory (GB)
-     [--max-total-memory N]  Filter by max total memory (GB)
-     [--min-memory-per-cpu N] Filter by min memory per vCPU (GB)
-     [--max-memory-per-cpu N] Filter by max memory per vCPU (GB)
-     [--min-local-ssd N]     Filter by min local SSD (GB)
-     [--max-local-ssd N]     Filter by max local SSD (GB)
-     [--min-local-ssd-per-cpu N] Filter by min local SSD per vCPU
-     [--max-local-ssd-per-cpu N] Filter by max local SSD per vCPU
-     [--min-boot-disk N]     Filter by min boot disk (GB)
-     [--max-boot-disk N]     Filter by max boot disk (GB)
-     [--min-boot-disk-per-cpu N] Filter by min boot disk per vCPU
-     [--max-boot-disk-per-cpu N] Filter by max boot disk per vCPU
-     [--region REGION]       Specific region to use
-     [--zone ZONE]           Specific zone to use
-     [--verbose]
-
-Example:
-
-.. code-block:: bash
-
-   python -m cloud_tasks.cli list_instance_types \
-     --config cloud_tasks_config.yaml \
-     --provider aws \
-     --instance-types "t3 m5" \
-     --size-filter "2:4:10" \
-     --limit 10 \
-     --use-spot \
-     --sort-by "price,vcpu"
-
-list_running_instances
-~~~~~~~~~~~~~~~~~~~~~~
-
-List currently running instances.
-
-.. code-block:: none
-
-   python -m cloud_tasks.cli list_running_instances
-     --config CONFIG
-     --provider {aws,gcp,azure}
-     [--job-id JOB_ID]    Filter by job ID
-     [--all-instances]    Show all instances including non-cloud-tasks ones
-     [--include-terminated] Include terminated instances
-     [--sort-by FIELDS]   Sort by comma-separated fields
-     [--detail]          Show detailed information
-     [--region REGION]   Specific region to use
-     [--zone ZONE]       Specific zone to use
-     [--verbose]
-
-This command displays:
-
-- Instance IDs, types, and states
-- Creation timestamps
-- Associated tags (like job ID and role)
-- Summary information (total instances, running vs. starting)
-- Detailed information in verbose mode (``--verbose``)
-
-Example:
-
-.. code-block:: bash
-
-   python -m cloud_tasks.cli list_running_instances \
-     --config cloud_tasks_config.yaml \
-     --provider aws \
-     --job-id my-job-id
 
 Exit Status
 -----------

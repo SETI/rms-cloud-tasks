@@ -27,8 +27,6 @@ class InstanceOrchestrator:
     """
 
     _DEFAULT_BOOT_DISK_SIZE_PER_CPU_GB = 10
-    _DEFAULT_MIN_INSTANCES = 0
-    _DEFAULT_MAX_INSTANCES = 10
 
     def __init__(self, config: Config):
         """
@@ -67,7 +65,7 @@ class InstanceOrchestrator:
         self._region = provider_config.region
         self._zone = provider_config.zone
 
-        if not provider_config.startup_script:
+        if self._run_config.startup_script is None:
             raise RuntimeError("startup_script is required")
 
         # Will be initialized in start()
@@ -98,8 +96,8 @@ class InstanceOrchestrator:
         self._scaling_check_interval = self._run_config.scaling_check_interval
 
         # Maximum number of instances to create in parallel
-        self._min_instances = self._run_config.min_instances or self._DEFAULT_MIN_INSTANCES
-        self._max_instances = self._run_config.max_instances or self._DEFAULT_MAX_INSTANCES
+        self._min_instances = self._run_config.min_instances
+        self._max_instances = self._run_config.max_instances
         self._start_instance_max_threads = 10
 
         # Initialize thread pool for parallel instance creation
@@ -224,6 +222,7 @@ export RMS_CLOUD_TASKS_INSTANCE_BOOT_DISK_GB={self._optimal_instance_boot_disk_s
 export RMS_CLOUD_TASKS_INSTANCE_IS_SPOT={self._run_config.use_spot}
 export RMS_CLOUD_TASKS_INSTANCE_PRICE={self._optimal_instance_info["total_price"]}
 export RMS_CLOUD_TASKS_NUM_TASKS_PER_INSTANCE={self._optimal_instance_num_tasks}
+export RMS_CLOUD_TASKS_MAX_RUNTIME={self._run_config.max_runtime}
 export RMS_CLOUD_TASKS_SHUTDOWN_GRACE_PERIOD=120
 export RMS_CLOUD_WORKER_USE_NEW_PROCESS={self._run_config.worker_use_new_process}
 """
@@ -235,6 +234,7 @@ export RMS_CLOUD_WORKER_USE_NEW_PROCESS={self._run_config.worker_use_new_process
         if ss.startswith("#!"):
             # Insert supplement after the shebang line
             ss_lines = ss.split("\n", 1)[1]
+            print(f"ss_lines: {ss_lines}")
             if not ss_lines[0].endswith("/bash"):
                 msg = "Startup script uses shell other than bash; this is not supported"
                 self._logger.error(msg)
@@ -529,7 +529,9 @@ export RMS_CLOUD_WORKER_USE_NEW_PROCESS={self._run_config.worker_use_new_process
             # Find the maximum number of instances allowed by looking at
             # --max-instances and --max-simultaneous-tasks with --cpus-per-task
             max_allowed_instances = self._max_instances
-            self._logger.debug(f"Starting with max allowed instances: {max_allowed_instances}")
+            self._logger.debug(
+                f"Initial constraint: max allowed instances: {max_allowed_instances}"
+            )
 
             # Derive the number of tasks per instance from the constraints and the number of vCPUs
             # in the optimal instance
@@ -549,7 +551,7 @@ export RMS_CLOUD_WORKER_USE_NEW_PROCESS={self._run_config.worker_use_new_process
                     # started based on the unused number of simultaneous tasks
                     new_instances_from_tasks = int(
                         (self._run_config.max_simultaneous_tasks - tasks_running)
-                        * tasks_per_instance
+                        / tasks_per_instance
                     )
                     new_max_allowed_instances = num_running + new_instances_from_tasks
                     if new_max_allowed_instances < max_allowed_instances:

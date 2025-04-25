@@ -7,17 +7,20 @@ It uses multiprocessing to achieve true parallelism across multiple CPU cores.
 
 import argparse
 import asyncio
-import importlib
 import json
+import json_stream
 import logging
-import multiprocessing
-from multiprocessing import Process, Queue, Event, Value, Manager
 import os
 import signal
 import sys
 import time
 import traceback
-from typing import Any, Dict, List, Optional, Tuple, Set, Awaitable, Callable, cast, Union
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Callable, Sequence
+import uuid
+import yaml
+from multiprocessing import Process, Queue, Manager, Event, Value
+
+from filecache import FCPath
 
 from cloud_tasks.common.logging_config import configure_logging
 from cloud_tasks.queue_manager import create_queue
@@ -29,72 +32,323 @@ MP_Queue = Any  # multiprocessing.Queue
 MP_Event = Any  # multiprocessing.Event
 MP_Value = Any  # multiprocessing.Value
 
-# Set up logging with proper microsecond support
 configure_logging(level=logging.INFO)
 
 logger = logging.getLogger(__name__)
 
 
+def _parse_args(args: Optional[Sequence[str]] = None) -> argparse.Namespace:
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(description="Worker for processing tasks from a queue")
+
+    parser.add_argument(
+        "--provider",
+        help="Cloud provider (AWS, GCP, or AZURE) [overrides $RMS_CLOUD_TASKS_PROVIDER]",
+    )
+    parser.add_argument(
+        "--project-id", help="Project ID (required for GCP) [overrides $RMS_CLOUD_TASKS_PROJECT_ID]"
+    )
+    parser.add_argument("--tasks", help="Path to JSON file containing tasks to process")
+    parser.add_argument("--job-id", help="Job ID [overrides $RMS_CLOUD_TASKS_JOB_ID]")
+    parser.add_argument(
+        "--queue-name",
+        help="Queue name [overrides $RMS_CLOUD_TASKS_QUEUE_NAME]; if not specified will be "
+        "derived from the job ID",
+    )
+    parser.add_argument(
+        "--instance-type", help="Instance type [overrides $RMS_CLOUD_TASKS_INSTANCE_TYPE]"
+    )
+    parser.add_argument(
+        "--num-cpus",
+        type=int,
+        help="Number of vCPUs on this computer [overrides $RMS_CLOUD_TASKS_INSTANCE_NUM_VCPUS]",
+    )
+    parser.add_argument(
+        "--memory",
+        type=float,
+        help="Memory in GB on this computer [overrides $RMS_CLOUD_TASKS_INSTANCE_MEM_GB]",
+    )
+    parser.add_argument(
+        "--local-ssd",
+        type=float,
+        help="Local SSD in GB on this computer [overrides $RMS_CLOUD_TASKS_INSTANCE_SSD_GB]",
+    )
+    parser.add_argument(
+        "--boot-disk",
+        type=float,
+        help="Boot disk size in GB on this computer "
+        "[overrides $RMS_CLOUD_TASKS_INSTANCE_BOOT_DISK_GB]",
+    )
+    parser.add_argument(
+        "--is-spot",
+        action="store_true",
+        help="Use spot instances [overrides $RMS_CLOUD_TASKS_INSTANCE_IS_SPOT]",
+    )
+    parser.add_argument(
+        "--price",
+        type=float,
+        help="Price per hour on this computer [overrides $RMS_CLOUD_TASKS_INSTANCE_PRICE]",
+    )
+    parser.add_argument(
+        "--num-simultaneous-tasks",
+        type=int,
+        help="Number of tasks that can be run simutaneously "
+        "[overrides $RMS_CLOUD_TASKS_NUM_TASKS_PER_INSTANCE]",
+    )
+    parser.add_argument(
+        "--max-runtime",
+        type=int,
+        default=30,
+        help="Maximum allowed runtime in seconds "
+        "[overrides $RMS_CLOUD_TASKS_MAX_RUNTIME]; used to determine queue visibility"
+        "timeout and to kill tasks that are running too long",
+    )
+    parser.add_argument(
+        "--shutdown-grace-period",
+        type=int,
+        default=120,
+        help="Shutdown grace period in seconds "
+        "[overrides $RMS_CLOUD_TASKS_SHUTDOWN_GRACE_PERIOD]",
+    )
+    parser.add_argument(
+        "--use-new-process",
+        action="store_true",
+        help="Use new process for each task [overrides $RMS_CLOUD_WORKER_USE_NEW_PROCESS]",
+    )
+
+    return parser.parse_args(args)
+
+
+class LocalTaskQueue:
+    """A local task queue that reads tasks from a JSON file."""
+
+    def __init__(self, tasks_file: str):
+        """Initialize the local task queue.
+
+        Args:
+            tasks_file: Path to JSON file containing tasks.
+        """
+        self._tasks_file = tasks_file
+        self._tasks_iter = self._yield_tasks_from_file(tasks_file)
+
+    def _yield_tasks_from_file(self, tasks_file: str) -> Iterable[Dict[str, Any]]:
+        """
+        Yield tasks from a JSON or YAML file as an iterator.
+
+        This function uses streaming to read tasks files so that very large files can be
+        processed without using a lot of memory or running slowly.
+
+        Parameters:
+            tasks_file: Path to the tasks file
+
+        Yields:
+            Task dictionaries (expected to have "id" and "data" keys)
+
+        Raises:
+            ValueError: If the file cannot be read
+        """
+        if not tasks_file.endswith((".json", ".yaml", ".yml")):
+            raise ValueError(
+                f"Unsupported file format for tasks: {tasks_file}; must be .json, .yml, or .yaml"
+            )
+        with FCPath(tasks_file).open(mode="r") as fp:
+            if tasks_file.endswith(".json"):
+                for task in json_stream.load(fp):
+                    yield json_stream.to_standard_types(task)  # Convert to a dict
+            else:
+                # See https://stackoverflow.com/questions/429162/how-to-process-a-yaml-stream-in-python
+                y = fp.readline()
+                cont = True
+                while cont:
+                    l = fp.readline()
+                    if len(l) == 0:
+                        cont = False
+                    elif l.startswith((" ", "-")):
+                        y = y + l
+                    elif len(y) > 0:
+                        yield yaml.load(y)
+                        y = l
+
+    async def receive_tasks(self, max_count: int, visibility_timeout: int) -> List[Dict[str, Any]]:
+        """Get a batch of tasks from the queue.
+
+        Args:
+            max_count: Maximum number of tasks to receive.
+            visibility_timeout: Not used for local queue.
+
+        Returns:
+            List of tasks.
+        """
+        tasks = []
+        for _ in range(max_count):
+            try:
+                task = next(self._tasks_iter)
+            except StopIteration:
+                return tasks
+            task["ack_id"] = str(uuid.uuid4())
+            tasks.append(task)
+        return tasks
+
+    async def complete_task(self, ack_id: str) -> None:
+        """Mark a task as completed.
+
+        Args:
+            ack_id: The acknowledgement ID of the task.
+        """
+        # For local queue, we don't need to do anything
+        pass
+
+    async def fail_task(self, ack_id: str) -> None:
+        """Mark a task as failed.
+
+        Args:
+            ack_id: The acknowledgement ID of the task.
+        """
+        # For local queue, we don't need to do anything
+        pass
+
+
 class Worker:
     """Worker class for processing tasks from queues using multiprocessing."""
 
-    def __init__(self, user_worker_function: Callable[[str, Dict[str, Any]], bool]):
+    def __init__(
+        self,
+        user_worker_function: Callable[[str, Dict[str, Any]], bool],
+        args: Optional[Sequence[str]] = None,
+    ):
         """
         Initialize the worker.
 
         Args:
             user_worker_function: The function to execute for each task. It will be called
                 with the task_id and task_data dictionary as arguments.
+            args: Optional list of command line arguments (sys.argv[1:]).
         """
         self._user_worker_function = user_worker_function
 
-        self._provider = os.getenv("RMS_CLOUD_TASKS_PROVIDER")
-        if self._provider is None:
-            logger.error("RMS_CLOUD_TASKS_PROVIDER environment variable is not set")
+        # Parse command line arguments if provided
+        parsed_args = _parse_args(args)
+
+        # Get provider from args or environment variable
+        self._provider = parsed_args.provider or os.getenv("RMS_CLOUD_TASKS_PROVIDER")
+        if self._provider is None and not parsed_args.tasks:
+            logger.error("Provider not specified via --provider or RMS_CLOUD_TASKS_PROVIDER")
             sys.exit(1)
-        self._provider = self._provider.upper()
+        if self._provider is not None:
+            self._provider = self._provider.upper()
         logger.info(f"Provider: {self._provider}")
 
-        self._job_id = os.getenv("RMS_CLOUD_TASKS_JOB_ID")
-        if self._job_id is None:
-            logger.error("RMS_CLOUD_TASKS_JOB_ID environment variable is not set")
-            sys.exit(1)
-        logger.info(f"Job ID: {self._job_id}")
-        self._queue_name = os.getenv("RMS_CLOUD_TASKS_QUEUE_NAME")
-        if self._queue_name is None:
-            logger.error("RMS_CLOUD_TASKS_QUEUE_NAME environment variable is not set")
-            sys.exit(1)
-        logger.info(f"Queue name: {self._queue_name}")
-
-        self._project_id = os.getenv("RMS_CLOUD_TASKS_PROJECT_ID")  # Optional - only for GCP
+        # Get project ID from args or environment variable (optional - only for GCP)
+        self._project_id = parsed_args.project_id or os.getenv("RMS_CLOUD_TASKS_PROJECT_ID")
         logger.info(f"Project ID: {self._project_id}")
 
-        if os.getenv("RMS_CLOUD_TASKS_NUM_TASKS_PER_INSTANCE") is not None:
-            self._tasks_per_worker = int(os.getenv("RMS_CLOUD_TASKS_NUM_TASKS_PER_INSTANCE"))
-            logger.info(
-                f"Tasks per worker (RMS_CLOUD_TASKS_NUM_TASKS_PER_INSTANCE): {self._tasks_per_worker}"
-            )
-        elif os.getenv("RMS_CLOUD_TASKS_INSTANCE_NUM_VCPUS") is not None:
-            self._tasks_per_worker = int(os.getenv("RMS_CLOUD_TASKS_INSTANCE_NUM_VCPUS"))
-            logger.info(
-                f"Tasks per worker (RMS_CLOUD_TASKS_INSTANCE_NUM_VCPUS): {self._tasks_per_worker}"
-            )
-        else:
-            self._tasks_per_worker = 1
-            logger.info(f"Tasks per worker (default): {self._tasks_per_worker}")
+        # Get job ID from args or environment variable
+        self._job_id = parsed_args.job_id or os.getenv("RMS_CLOUD_TASKS_JOB_ID")
+        if self._job_id is None and not parsed_args.tasks:
+            logger.error("Job ID not specified via --job-id or RMS_CLOUD_TASKS_JOB_ID")
+            sys.exit(1)
+        logger.info(f"Job ID: {self._job_id}")
 
-        self._visibility_timeout_seconds = int(
-            os.getenv("RMS_CLOUD_TASKS_VISIBILITY_TIMEOUT_SECONDS", 30)
+        # Get queue name from args or environment variable
+        self._queue_name = parsed_args.queue_name or os.getenv("RMS_CLOUD_TASKS_QUEUE_NAME")
+        if self._queue_name is None:
+            self._queue_name = self._job_id
+        logger.info(f"Queue name: {self._queue_name}")
+
+        # Get instance type from args or environment variable
+        self._instance_type = parsed_args.instance_type or os.getenv(
+            "RMS_CLOUD_TASKS_INSTANCE_TYPE"
         )
-        logger.info(f"Visibility timeout: {self._visibility_timeout_seconds} seconds")
+        logger.info(f"Instance type: {self._instance_type}")
 
-        self._shutdown_grace_period = int(os.getenv("RMS_CLOUD_TASKS_SHUTDOWN_GRACE_PERIOD", 120))
+        # Get number of vCPUs from args or environment variable
+        self._num_cpus = parsed_args.num_cpus
+        if self._num_cpus is None:
+            self._num_cpus = os.getenv("RMS_CLOUD_TASKS_INSTANCE_NUM_VCPUS")
+        if self._num_cpus is not None:
+            self._num_cpus = int(self._num_cpus)
+        logger.info(f"Num CPUs: {self._num_cpus}")
+
+        # Get memory from args or environment variable
+        self._memory_gb = parsed_args.memory
+        if self._memory_gb is None:
+            self._memory_gb = os.getenv("RMS_CLOUD_TASKS_INSTANCE_MEM_GB")
+        if self._memory_gb is not None:
+            self._memory_gb = float(self._memory_gb)
+        logger.info(f"Memory: {self._memory_gb} GB")
+
+        # Get local SSD from args or environment variable
+        self._local_ssd_gb = parsed_args.local_ssd
+        if self._local_ssd_gb is None:
+            self._local_ssd_gb = os.getenv("RMS_CLOUD_TASKS_INSTANCE_SSD_GB")
+        if self._local_ssd_gb is not None:
+            self._local_ssd_gb = float(self._local_ssd_gb)
+        logger.info(f"Local SSD: {self._local_ssd_gb} GB")
+
+        # Get boot disk size from args or environment variable
+        self._boot_disk_gb = parsed_args.boot_disk
+        if self._boot_disk_gb is None:
+            self._boot_disk_gb = os.getenv("RMS_CLOUD_TASKS_INSTANCE_BOOT_DISK_GB")
+        if self._boot_disk_gb is not None:
+            self._boot_disk_gb = float(self._boot_disk_gb)
+        logger.info(f"Boot disk size: {self._boot_disk_gb} GB")
+
+        # Get spot instance flag from args or environment variable
+        self._is_spot = parsed_args.is_spot
+        if self._is_spot is None:
+            self._is_spot = os.getenv("RMS_CLOUD_TASKS_INSTANCE_IS_SPOT")
+            if self._is_spot is not None:
+                self._is_spot = self._is_spot.lower() == "true"
+        logger.info(f"Spot instance: {self._is_spot}")
+
+        # Get price per hour from args or environment variable
+        self._price_per_hour = parsed_args.price
+        if self._price_per_hour is None:
+            self._price_per_hour = os.getenv("RMS_CLOUD_TASKS_INSTANCE_PRICE")
+        if self._price_per_hour is not None:
+            self._price_per_hour = float(self._price_per_hour)
+        logger.info(f"Price per hour: {self._price_per_hour}")
+
+        # Determine number of tasks per worker
+        self._num_simultaneous_tasks = parsed_args.num_simultaneous_tasks
+        if self._num_simultaneous_tasks is None:
+            self._num_simultaneous_tasks = os.getenv("RMS_CLOUD_TASKS_NUM_TASKS_PER_INSTANCE")
+        if self._num_simultaneous_tasks is not None:
+            self._num_simultaneous_tasks = int(self._num_simultaneous_tasks)
+            logger.info(f"Num simultaneous tasks: {self._num_simultaneous_tasks}")
+        else:
+            self._num_simultaneous_tasks = 1
+            logger.info(f"Num simultaneous tasks (default): {self._num_simultaneous_tasks}")
+
+        # Get maximum runtime from args or environment variable
+        self._max_runtime = parsed_args.max_runtime
+        if self._max_runtime is None:
+            self._max_runtime = os.getenv("RMS_CLOUD_TASKS_MAX_RUNTIME")
+        if self._max_runtime is not None:
+            self._max_runtime = int(self._max_runtime)
+        logger.info(f"Maximum runtime: {self._max_runtime} seconds")
+
+        # Get shutdown grace period from args or environment variable
+        self._shutdown_grace_period = (
+            parsed_args.shutdown_grace_period
+            if parsed_args.shutdown_grace_period is not None
+            else int(os.getenv("RMS_CLOUD_TASKS_SHUTDOWN_GRACE_PERIOD", 120))
+        )
         logger.info(f"Shutdown grace period: {self._shutdown_grace_period} seconds")
 
         # Check if we should use new process for each task
-        self._use_new_process = os.getenv("RMS_CLOUD_WORKER_USE_NEW_PROCESS", "False").lower()
-        self._use_new_process = self._use_new_process not in ("false", "0")
+        self._use_new_process = (
+            parsed_args.use_new_process
+            if parsed_args.use_new_process
+            else os.getenv("RMS_CLOUD_WORKER_USE_NEW_PROCESS", "False").lower()
+            not in ("false", "0")
+        )
         logger.info(f"Use new process per task: {self._use_new_process}")
+
+        # Check if we're using a local tasks file
+        self._tasks_file = parsed_args.tasks
+        if self._tasks_file:
+            logger.info(f"Using local tasks file: {self._tasks_file}")
 
         # State tracking
         self._running = False
@@ -131,16 +385,24 @@ class Worker:
 
     async def start(self) -> None:
         """Start the worker processes and result handler."""
-        logger.info(f"Starting worker for {self._provider.upper()} queue '{self._queue_name}'")
-
-        try:
-            # Create and initialize the task queue
-            self._task_queue = await create_queue(
-                provider=self._provider, queue_name=self._queue_name, project_id=self._project_id
-            )
-        except Exception as e:
-            logger.error(f"Error initializing task queue: {e}", exc_info=True)
-            sys.exit(1)
+        if self._tasks_file:
+            logger.info(f"Starting worker for local tasks file '{self._tasks_file}'")
+            try:
+                self._task_queue = LocalTaskQueue(self._tasks_file)
+            except Exception as e:
+                logger.error(f"Error initializing local task queue: {e}", exc_info=True)
+                sys.exit(1)
+        else:
+            logger.info(f"Starting worker for {self._provider.upper()} queue '{self._queue_name}'")
+            try:
+                self._task_queue = await create_queue(
+                    provider=self._provider,
+                    queue_name=self._queue_name,
+                    project_id=self._project_id,
+                )
+            except Exception as e:
+                logger.error(f"Error initializing task queue: {e}", exc_info=True)
+                sys.exit(1)
 
         self._running = True
 
@@ -151,7 +413,7 @@ class Worker:
         # Start the result handler in the main process
         asyncio.create_task(self._handle_results())
 
-        # Start the task feeder to get tasks from the cloud queue
+        # Start the task feeder to get tasks from the queue
         asyncio.create_task(self._feed_tasks_to_workers())
 
         # Start the termination check loop
@@ -167,7 +429,7 @@ class Worker:
 
     def _start_worker_processes(self) -> None:
         """Start worker processes for task processing."""
-        for i in range(self._tasks_per_worker):
+        for i in range(self._num_simultaneous_tasks):
             p = Process(
                 target=self._worker_process_main,
                 args=(
@@ -326,12 +588,12 @@ class Worker:
                     continue
 
                 # Only fetch new tasks if we have capacity
-                max_concurrent = self._tasks_per_worker
+                max_concurrent = self._num_simultaneous_tasks
                 if self._num_active_tasks.value < max_concurrent:
                     # Receive tasks
                     tasks = await self._task_queue.receive_tasks(
                         max_count=min(5, max_concurrent - self._num_active_tasks.value),
-                        visibility_timeout_seconds=self._visibility_timeout_seconds,
+                        visibility_timeout=self._max_runtime,
                     )
 
                     if tasks:
@@ -367,6 +629,7 @@ class Worker:
                             self._task_queue_mp.put(task)
                             with self._num_active_tasks.get_lock():
                                 self._num_active_tasks.value += 1
+                            print(task)
                             logger.debug(
                                 f"Queued task {task['task_id']}, active tasks: {self._num_active_tasks.value}"
                             )

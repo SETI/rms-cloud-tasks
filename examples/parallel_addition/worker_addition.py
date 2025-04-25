@@ -9,7 +9,9 @@ import asyncio
 import logging
 import os
 import multiprocessing
+import random
 import socket
+import sys
 import time
 from typing import Any, Dict, Tuple
 
@@ -57,6 +59,8 @@ def process_task(task_id: str, task_data: Dict[str, Any]) -> Tuple[bool, Any]:
         task_delay = os.getenv("ADDITION_TASK_DELAY")
         if task_delay is not None:
             delay = float(task_delay)
+            if delay < 0:  # Randomize
+                delay = random.uniform(0, abs(delay))
             time.sleep(delay)
 
         return True, output_file
@@ -67,7 +71,7 @@ def process_task(task_id: str, task_data: Dict[str, Any]) -> Tuple[bool, Any]:
 
 
 async def main():
-    worker = Worker(process_task)
+    worker = Worker(process_task, args=sys.argv[1:])
     await worker.start()
 
 

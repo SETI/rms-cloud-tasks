@@ -133,8 +133,8 @@ class GCPComputeInstanceManager(InstanceManager):
             # Extract region from zone (e.g., us-central1-a -> us-central1)
             self._region = "-".join(self._zone.split("-")[:-1])
             self._logger.info(f"Extracted region {self._region} from zone {self._zone}")
-        if not self._region:
-            raise RuntimeError("Missing required GCP configuration: region")
+        # if not self._region:
+        #     raise RuntimeError("Missing required GCP configuration: region")
         # It's OK for there to be no specific zone
 
         # Service account for authorization on worker instances
@@ -224,7 +224,7 @@ class GCPComputeInstanceManager(InstanceManager):
 
         instance_types = {}
         for machine_type in machine_types:
-            if "instance_types" in constraints and constraints["instance_types"]:
+            if constraints.get("instance_types") is not None:
                 match_ok = False
                 for type_filter in constraints["instance_types"]:
                     if re.match(type_filter, machine_type.name):
@@ -790,11 +790,11 @@ class GCPComputeInstanceManager(InstanceManager):
         # instance type with the most vCPUs). Instead of using the price_per_vcpu field,
         # we use the total_price field and divide by the number of vCPUs. This gives us a
         # more accurate comparison of the cost of the instance including memory and disk.
-        # We round the price to 2 decimal places so that small differences in price don't
+        # We round the price to 4 decimal places so that small differences in price don't
         # make us choose an instance with fewer vCPUs that would otherwise cost the same.
         priced_instances.sort(
             key=lambda x: (
-                round(cast(float, x[2]["total_price"]) / x[2]["vcpu"], 2),
+                round(cast(float, x[2]["total_price"]) / x[2]["vcpu"], 4),
                 -cast(int, x[2]["vcpu"]),
             )
         )

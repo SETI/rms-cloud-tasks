@@ -28,8 +28,8 @@ class RunConfig(BaseModel, validate_assignment=True):
     # Constraints on number of instances
     #
 
-    min_instances: Optional[NonNegativeInt] = None
-    max_instances: Optional[PositiveInt] = None
+    min_instances: Optional[NonNegativeInt] = 1
+    max_instances: Optional[PositiveInt] = 10
 
     @model_validator(mode="after")
     def validate_min_max_instances(self) -> "RunConfig":

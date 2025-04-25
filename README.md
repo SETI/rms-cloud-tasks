@@ -39,17 +39,39 @@ instances are destroyed.
 
 # Features
 
-- Extremely easy to use with a simple command line interface and straightforward
-  configuration file
-- Allows conversion of an existing Python program to a worker task with only a few lines
-  of code
-- Runs tasks on AWS, GCP, or Azure compute instances, or even a local workstation, using a
-  provider-independent API (NOTE: Azure support is currently not finished)
-- Enables the use of spot/preemptible instances to reduce costs, with graceful shutdown of
-  task workers
-- Automatically chooses the optimal instance type based on a wide-ranging set of
-  provider-independent constraints, including cost, number of vCPUs, and amount of memory
-- Uses cloud-based queueing to load and consume task
+Cloud Tasks is extremely easy to use with a simple command line interface and
+straightforward configuration file. It supports AWS, GCP, or Azure compute instances, or
+even a local workstation, using a provider-independent API (NOTE: Azure support is
+currently not finished).
+
+Cloud Tasks consists of four primary components:
+
+- A Python module to make parallel execution simple
+  - An existing Python program can be converted to a worker task with only a few lines
+    of code
+  - Parallel execution is performed in multiple processes for complete isolation;
+    processes can be reused for new tasks or killed and restarted for each task
+  - Can use a cloud-based task queue to keep track of completed and failed tasks, or can read
+    task descriptions directly from a local file
+  - Works in both cloud compute instance and local machine environments
+  - Monitors the state of spot instances to notify tasks of upcoming preemption
+- A command line interface to manage the task queue system, that allows
+  - Loading of tasks from a file
+  - Checking the status of a queue
+  - Purging a queue of remaining tasks
+  - Deleting a queue entirely
+- A command line interface to query the cloud about available resources, given certain constraints
+  - Types of compute instances available, including price (both demand and spot instances)
+  - VM boot images available
+  - Regions and zones
+- A command line interface to manage a pool of compute instances optimized for price, given
+  certain constraints
+  - Automatically finds the optimal compute instance type given pricing and other constraints
+  - Automatically determines the number of simultaneous instances to use
+  - Creates new instances and runs a specified startup script to execute a worker
+  - Monitors instances for failure or preemption and creates new instances as needed to keep
+    the compute pool full
+  - Detects when all jobs are complete and terminates the instances
 
 # Installation
 
@@ -110,7 +132,7 @@ To get help on a particular command:
 cloud_tasks load_queue --help
 ```
 
-To list all ARM64-based compute instance types that have 2 to 4 vCPUs at at most 4 GB
+To list all ARM64-based compute instance types that have 2 to 4 vCPUs and at most 4 GB
 memory per vCPU.
 
 ```bash

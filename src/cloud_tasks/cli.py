@@ -39,7 +39,7 @@ def yield_tasks_from_file(tasks_file: str) -> Iterable[Dict[str, Any]]:
         tasks_file: Path to the tasks file
 
     Yields:
-        Task dictionaries (expected to have "id" and "data" keys)
+        Task dictionaries (expected to have "task_id" and "data" keys)
 
     Raises:
         ValueError: If the file cannot be read
@@ -101,7 +101,7 @@ async def load_queue_cmd(args: argparse.Namespace, config: Config) -> None:
                 return
             async with semaphore:
                 try:
-                    await task_queue.send_task(task["id"], task["data"])
+                    await task_queue.send_task(task["task_id"], task["data"])
                 except Exception as e:
                     load_failed_exception = e
 
@@ -1016,15 +1016,13 @@ async def list_regions_cmd(args: argparse.Namespace, config: Config) -> None:
                     print(
                         f"  Physical Location: {region['metadata'].get('physical_location', 'N/A')}"
                     )
+                elif args.provider == "gcp":
+                    print(f"  Endpoint: {region['endpoint']}")
+                    print(f"  Status: {region['status']}")
                     skip_line = True
 
             if skip_line:
                 print()
-
-        if not args.zones:
-            print("\nUse --zones to show availability zones for each region")
-        if not args.detail:
-            print("Use --detail to show additional provider-specific information")
 
     except Exception as e:
         logger.error(f"Error listing regions: {e}", exc_info=True)
@@ -1035,7 +1033,10 @@ async def list_regions_cmd(args: argparse.Namespace, config: Config) -> None:
 
 
 def add_common_args(
-    parser: argparse.ArgumentParser, include_queue_name: bool = True, include_job_id: bool = True
+    parser: argparse.ArgumentParser,
+    include_job_id: bool = True,
+    include_region: bool = True,
+    include_zone=True,
 ) -> None:
     """Add common arguments to all command parsers."""
     parser.add_argument("--config", help="Path to configuration file")
@@ -1046,15 +1047,16 @@ def add_common_args(
     # From ProviderConfig class
     if include_job_id:
         parser.add_argument("--job-id", help="The job ID used to group tasks and compute instances")
-    if include_queue_name:
         parser.add_argument(
             "--queue-name",
             help="The name of the task queue to use (derived from job ID if not provided)",
         )
-    parser.add_argument(
-        "--region", help="Specific region to use (derived from zone if not provided)"
-    )
-    parser.add_argument("--zone", help="Specific zone to use")
+    if include_region:
+        parser.add_argument(
+            "--region", help="Specific region to use (derived from zone if not provided)"
+        )
+    if include_zone:
+        parser.add_argument("--zone", help="Specific zone to use")
 
     # AWS-specific arguments - from AWSConfig class
     parser.add_argument("--access-key", help="AWS only: access key")
@@ -1102,8 +1104,12 @@ def add_instance_pool_args(parser: argparse.ArgumentParser) -> None:
 
     # From RunConfig class
     # Constraints on number of instances
-    parser.add_argument("--min-instances", type=int, help="Minimum number of compute instances")
-    parser.add_argument("--max-instances", type=int, help="Maximum number of compute instances")
+    parser.add_argument(
+        "--min-instances", type=int, help="Minimum number of compute instances (default: 1)"
+    )
+    parser.add_argument(
+        "--max-instances", type=int, help="Maximum number of compute instances (default: 10)"
+    )
     parser.add_argument(
         "--min-total-cpus",
         type=int,
@@ -1357,7 +1363,7 @@ def main():
         "list_running_instances",
         help="List all currently running instances for the specified provider",
     )
-    add_common_args(list_running_instances_parser, include_queue_name=False, include_job_id=False)
+    add_common_args(list_running_instances_parser, include_job_id=False)
     list_running_instances_parser.add_argument("--job-id", help="Filter instances by job ID")
     list_running_instances_parser.add_argument(
         "--all-instances",
@@ -1390,7 +1396,9 @@ def main():
     list_regions_parser = subparsers.add_parser(
         "list_regions", help="List available regions for the specified provider"
     )
-    add_common_args(list_regions_parser, include_queue_name=False, include_job_id=False)
+    add_common_args(
+        list_regions_parser, include_job_id=False, include_region=False, include_zone=False
+    )
     list_regions_parser.add_argument(
         "--prefix", help="Filter regions to only show those with names starting with this prefix"
     )
@@ -1407,7 +1415,9 @@ def main():
     list_images_parser = subparsers.add_parser(
         "list_images", help="List available VM images for the specified provider"
     )
-    add_common_args(list_images_parser, include_queue_name=False, include_job_id=False)
+    add_common_args(
+        list_images_parser, include_job_id=False, include_region=False, include_zone=False
+    )
     list_images_parser.add_argument(
         "--user",
         action="store_true",
@@ -1417,14 +1427,14 @@ def main():
         "--filter", help="Filter images containing this text in any field"
     )
     list_images_parser.add_argument(
-        "--limit", type=int, help="Limit the number of images displayed"
-    )
-    list_images_parser.add_argument(
         "--sort-by",
         help='Sort results by comma-separated fields (e.g., "family,name" or "-source,project"). '
         "Available fields: family, name, project, source. "
         'Prefix with "-" for descending order. '
         'Partial field names like "fam" for "family" or "proj" for "project" are supported.',
+    )
+    list_images_parser.add_argument(
+        "--limit", type=int, help="Limit the number of images displayed"
     )
     # TODO Update --sort-by to be specific to each provider which have different fields
     list_images_parser.add_argument(
@@ -1438,16 +1448,13 @@ def main():
         "list_instance_types",
         help="List compute instance types for the specified provider with pricing information",
     )
-    add_common_args(list_instance_types_parser, include_queue_name=False, include_job_id=False)
+    add_common_args(list_instance_types_parser, include_job_id=False, include_zone=False)
     add_instance_args(list_instance_types_parser)
     list_instance_types_parser.add_argument(
         "--detail", action="store_true", help="Show additional cost information"
     )
     list_instance_types_parser.add_argument(
         "--filter", help="Filter instance types containing this text in any field"
-    )
-    list_instance_types_parser.add_argument(
-        "--limit", type=int, help="Limit the number of instance types displayed"
     )
     list_instance_types_parser.add_argument(
         "--sort-by",
@@ -1459,6 +1466,9 @@ def main():
         "total_price, total_price_per_cpu, zone, description. "
         'Prefix with "-" for descending order. '
         'Partial field names like "ram" or "mem" for "mem_gb" or "v" for "vcpu" are supported.',
+    )
+    list_instance_types_parser.add_argument(
+        "--limit", type=int, help="Limit the number of instance types displayed"
     )
     list_instance_types_parser.set_defaults(func=list_instance_types_cmd)
 
