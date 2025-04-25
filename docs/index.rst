@@ -13,6 +13,7 @@ Welcome to the documentation for Cloud Tasks
    cli
    examples
    worker
+   worker_api
 
 Indices and tables
 ==================

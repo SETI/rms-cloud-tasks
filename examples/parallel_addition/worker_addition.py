@@ -21,7 +21,7 @@ from cloud_tasks.worker import Worker
 from filecache import FCPath
 
 
-def process_task(task_id: str, task_data: Dict[str, Any]) -> Tuple[bool, Any]:
+def process_task(task_id: str, task_data: Dict[str, Any], worker: Worker) -> Tuple[bool, Any]:
     """
     Process a task by adding two numbers together.
 
@@ -31,6 +31,8 @@ def process_task(task_id: str, task_data: Dict[str, Any]) -> Tuple[bool, Any]:
     Args:
         task_id: Unique identifier for the task
         task_data: Task data containing the numbers to add
+        worker: Worker object (useful for retrieving information about the
+            local environment and polling for shutdown notifications)
 
     Returns:
         Tuple of (success, result)

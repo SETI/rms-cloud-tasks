@@ -476,6 +476,7 @@ Example:
 Queue Management Commands
 -------------------------
 
+.. _load_queue_cmd:
 load_queue
 ~~~~~~~~~~
 

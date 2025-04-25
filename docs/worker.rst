@@ -1,13 +1,17 @@
-Worker API Reference
-==================
-
-.. warning::
-   This documentation is a placeholder. The Worker API is still under development.
+Writing a Worker Task
+=====================
 
 Introduction
------------
+------------
 
-The Cloud Tasks Worker API provides a framework for implementing workers that process tasks from cloud provider queues. Workers run on compute instances and process tasks from the queue in parallel using Python's multiprocessing capabilities.
+The Cloud Tasks Worker API provides a framework for implementing worker programs that
+process tasks from cloud provider queues or local task files. Workers run on compute
+instances or a local workstation and process tasks from the queue (or local file) in
+parallel using Python's multiprocessing capabilities. The framework automatically handles
+the creation and destruction of processes, logging of task results, and graceful shutdown
+when the queue is empty and the worker is idle. When run on spot/preemptible instances,
+it also takes care of monitoring for the instance shutdown warning and notifying each
+running worker process.
 
 Basic Usage
 ----------
@@ -16,64 +20,83 @@ Here's a simple example of how to implement a worker:
 
 .. code-block:: python
 
+   import sys
    from cloud_tasks.worker import Worker
 
-   def process_task(task_id: str, task_data: dict) -> tuple[bool, str]:
+   def process_task(task_id: str, task_data: dict, worker: Worker) -> tuple[bool, str | dict]:
        """Process a single task.
 
        Args:
            task_id: Unique identifier for the task
-           task_data: Dictionary containing task data
+           task_data: Dictionary containing task data; will have the fields:
+               - "task_id": Unique identifier for the task
+               - "data": Dictionary containing task data
+           worker: Worker object (useful for retrieving information about the
+               local environment and polling for shutdown notifications)
 
        Returns:
-           Tuple of (success: bool, result: str)
-           - success: True if task processed successfully, False otherwise
-           - result: String describing the result or error message
+           Tuple of (requeue: bool, result: str or dict)
+           - requeue: True if task failed in a way that it should be re-queded for some other
+             process to try it again; False to indicate that the task is complete (whether
+             it succeeded or failed) and should not be retried
+           - result: String or dict describing the result; this will be sent to the local
+             log file or the result queue to be picked up by the pool manager
        """
        try:
            print(f"Processing task {task_id}")
            # Your processing logic here
            print(f"Task data: {task_data}")
-           return True, "Task completed successfully"
+           return False, "Task completed successfully"
        except Exception as e:
-           return False, str(e)
+           return False, str(e)  # Don't retry on failure
 
    # Create and start the worker
    if __name__ == "__main__":
-       worker = Worker(process_task)
+       worker = Worker(process_task, args=sys.argv[1:])
        asyncio.run(worker.start())
 
-Environment Variables
-------------------
+Environment Variables and Command Line Arguments
+------------------------------------------------
 
-The worker is configured using the following environment variables:
+The worker is configured using the following environment variables and/or command line
+arguments. All parameters will first be set from the command line arguments, and if not
+specified, will then be set from the environment variables. If neither is available,
+the parameter will be set to ``None``.
 
-Required Variables
-~~~~~~~~~~~~~~~~
+Tasks File
+~~~~~~~~~~
 
-- ``RMS_CLOUD_TASKS_PROVIDER``: Cloud provider (AWS, GCP, or AZURE)
-- ``RMS_CLOUD_TASKS_JOB_ID``: Unique identifier for the job
-- ``RMS_CLOUD_TASKS_QUEUE_NAME``: Name of the task queue to process
+--tasks TASKS_FILE      The name of a local file containing tasks to process; if not
+                        specified, the worker will pull tasks from the cloud provider
+                        queue (see below). The filename can also be a cloud storage
+                        path like gs://bucket/file, s3://bucket/file, or
+                        https://path/to/file.
 
-Optional Variables
-~~~~~~~~~~~~~~~
+If specified, the tasks file should be in the same format as read by the :ref:`load_queue_cmd`
+command.
 
-- ``RMS_CLOUD_TASKS_PROJECT_ID``: Project ID (required for GCP only)
-- ``RMS_CLOUD_TASKS_NUM_TASKS_PER_INSTANCE``: Number of concurrent tasks to process (defaults to number of vCPUs)
-- ``RMS_CLOUD_TASKS_INSTANCE_NUM_VCPUS``: Number of vCPUs available on the instance
-- ``RMS_CLOUD_TASKS_VISIBILITY_TIMEOUT_SECONDS``: How long tasks remain invisible after being claimed (default: 30)
-- ``RMS_CLOUD_TASKS_SHUTDOWN_GRACE_PERIOD``: Time in seconds to wait for tasks to complete during shutdown (default: 120)
-- ``RMS_CLOUD_WORKER_USE_NEW_PROCESS``: Whether to use a new process for each task (default: False)
+Parameters Required if Tasks File is Not Specified, Optional Otherwise
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Instance Information Variables (Set Automatically)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+--provider PROVIDER     The cloud provider to use (AWS, GCP, or AZURE) [or ``RMS_CLOUD_TASKS_PROVIDER``]
+--job-id JOB_ID         Unique identifier for the job [or ``RMS_CLOUD_TASKS_JOB_ID``]
 
-- ``RMS_CLOUD_TASKS_INSTANCE_TYPE``: Type of the compute instance
-- ``RMS_CLOUD_TASKS_INSTANCE_MEM_GB``: Memory available in GB
-- ``RMS_CLOUD_TASKS_INSTANCE_SSD_GB``: Local SSD storage in GB
-- ``RMS_CLOUD_TASKS_INSTANCE_BOOT_DISK_GB``: Boot disk size in GB
-- ``RMS_CLOUD_TASKS_INSTANCE_IS_SPOT``: Whether running on spot/preemptible instance
-- ``RMS_CLOUD_TASKS_INSTANCE_PRICE``: Price per hour for the instance
+Optional Parameters
+~~~~~~~~~~~~~~~~~~~
+
+--project-id PROJECT_ID          Project ID (required for GCP) [or ``RMS_CLOUD_TASKS_PROJECT_ID``]
+--queue-name QUEUE_NAME          Name of the task queue to process (derived from job ID if not specified) [or ``RMS_CLOUD_TASKS_QUEUE_NAME``]
+--instance-type INSTANCE_TYPE    Instance type running on this computer [or ``RMS_CLOUD_TASKS_INSTANCE_TYPE``]
+--num-cpus N                     Number of vCPUs on this computer [or ``RMS_CLOUD_TASKS_INSTANCE_NUM_VCPUS``]
+--memory MEMORY_GB               Memory in GB on this computer [or ``RMS_CLOUD_TASKS_INSTANCE_MEM_GB``]
+--local-ssd LOCAL_SSD_GB         Local SSD in GB on this computer [or ``RMS_CLOUD_TASKS_INSTANCE_SSD_GB``]
+--boot-disk BOOT_DISK_GB         Boot disk in GB on this computer [or ``RMS_CLOUD_TASKS_INSTANCE_BOOT_DISK_GB``]
+--is-spot                        Whether running on spot/preemptible instance [or ``RMS_CLOUD_TASKS_INSTANCE_IS_SPOT``]
+--price PRICE_PER_HOUR           Price per hour for the instance [or ``RMS_CLOUD_TASKS_INSTANCE_PRICE``]
+--num-simultaneous-tasks N       Number of concurrent tasks to process (defaults to number of vCPUs, or 1 if not specified) [or ``RMS_CLOUD_TASKS_NUM_TASKS_PER_INSTANCE``]
+--max-runtime SECONDS            Maximum runtime for a task in seconds [or ``RMS_CLOUD_TASKS_MAX_RUNTIME``]
+--shutdown-grace-period SECONDS  Time in seconds to wait for tasks to complete during shutdown [or ``RMS_CLOUD_TASKS_SHUTDOWN_GRACE_PERIOD``]
+--use-new-process                Whether to use a new process for each task [or ``RMS_CLOUD_WORKER_USE_NEW_PROCESS``]
 
 Worker Features
 -------------
@@ -83,13 +106,18 @@ Parallel Processing
 
 The worker uses Python's multiprocessing to achieve true parallelism:
 
-- Creates one worker process per vCPU (or as specified by ``RMS_CLOUD_TASKS_NUM_TASKS_PER_INSTANCE``)
+- Creates one worker process per vCPU (or as specified by ``--num-simultaneous-tasks``)
 - Each process handles one task at a time
 - Tasks are distributed automatically among processes
 - Results are collected and reported back to the main process
+- When a task if complete, the process is reused for the next task; but if the
+  ``--use-new-process`` flag is set, the process is destroyed and a new process is created for
+  each task. This is useful when you need to ensure that each task releases all of its
+  resources, including allocated memory, open file handles, etc. before starting the next
+  task.
 
 Task Processing
-~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~
 
 Tasks are processed with the following guarantees:
 
@@ -119,34 +147,6 @@ The worker implements graceful shutdown handling:
 - Configurable grace period for task completion
 - Proper process cleanup and termination
 
-API Reference
------------
-
-Worker Class
-~~~~~~~~~~
-
-.. code-block:: python
-
-   class Worker:
-       def __init__(self, user_worker_function: Callable[[str, Dict[str, Any]], Tuple[bool, str]]):
-           """Initialize the worker.
-
-           Args:
-               user_worker_function: Function to process tasks. Should accept task_id (str) and
-                   task_data (dict) arguments and return a tuple of (success: bool, result: str).
-           """
-           pass
-
-       async def start(self) -> None:
-           """Start the worker and begin processing tasks.
-
-           This method will:
-           1. Initialize the task queue connection
-           2. Start worker processes
-           3. Begin task processing
-           4. Run until shutdown is requested
-           """
-           pass
 
 Error Handling
 ------------
@@ -185,14 +185,3 @@ Best Practices
    - Minimize memory allocations
    - Use appropriate batch sizes
    - Monitor processing times
-
-Future Enhancements
------------------
-
-The following features are planned for future releases:
-
-- Distributed worker coordination
-- Enhanced metrics and monitoring
-- Horizontal scaling support
-- Worker middleware support
-- Enhanced task routing

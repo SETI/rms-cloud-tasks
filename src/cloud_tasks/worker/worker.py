@@ -98,7 +98,6 @@ def _parse_args(args: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--max-runtime",
         type=int,
-        default=30,
         help="Maximum allowed runtime in seconds "
         "[overrides $RMS_CLOUD_TASKS_MAX_RUNTIME]; used to determine queue visibility"
         "timeout and to kill tasks that are running too long",
@@ -106,7 +105,6 @@ def _parse_args(args: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--shutdown-grace-period",
         type=int,
-        default=120,
         help="Shutdown grace period in seconds "
         "[overrides $RMS_CLOUD_TASKS_SHUTDOWN_GRACE_PERIOD]",
     )
@@ -142,7 +140,7 @@ class LocalTaskQueue:
             tasks_file: Path to the tasks file
 
         Yields:
-            Task dictionaries (expected to have "id" and "data" keys)
+            Task dictionaries (expected to have "task_id" and "data" keys)
 
         Raises:
             ValueError: If the file cannot be read
@@ -221,7 +219,7 @@ class Worker:
 
         Args:
             user_worker_function: The function to execute for each task. It will be called
-                with the task_id and task_data dictionary as arguments.
+                with the task_id, task_data dictionary, and Worker object as arguments.
             args: Optional list of command line arguments (sys.argv[1:]).
         """
         self._user_worker_function = user_worker_function
@@ -317,7 +315,10 @@ class Worker:
             self._num_simultaneous_tasks = int(self._num_simultaneous_tasks)
             logger.info(f"Num simultaneous tasks: {self._num_simultaneous_tasks}")
         else:
-            self._num_simultaneous_tasks = 1
+            if self._num_cpus is not None:
+                self._num_simultaneous_tasks = self._num_cpus
+            else:
+                self._num_simultaneous_tasks = 1
             logger.info(f"Num simultaneous tasks (default): {self._num_simultaneous_tasks}")
 
         # Get maximum runtime from args or environment variable
@@ -375,6 +376,76 @@ class Worker:
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
 
+    @property
+    def provider(self) -> str | None:
+        """The provider (AWS, GCP, or AZURE) to communicate with for queues"""
+        return self._provider
+
+    @property
+    def project_id(self) -> str | None:
+        """The project ID (GCP only))"""
+        return self._project_id
+
+    @property
+    def job_id(self) -> str | None:
+        """The job ID"""
+        return self._job_id
+
+    @property
+    def queue_name(self) -> str | None:
+        """The task queue name"""
+        return self._queue_name
+
+    @property
+    def instance_type(self) -> str | None:
+        """The instance type this task is running on"""
+        return self._instance_type
+
+    @property
+    def num_cpus(self) -> int | None:
+        """The number of vCPUs on this computer"""
+        return self._num_cpus
+
+    @property
+    def memory_gb(self) -> float | None:
+        """The amount of memory on this computer"""
+        return self._memory_gb
+
+    @property
+    def local_ssd_gb(self) -> float | None:
+        """The size of the extra local SSD, if any, in GB"""
+        return self._local_ssd_gb
+
+    @property
+    def boot_disk_gb(self) -> float | None:
+        """The size of the boot disk in GB"""
+        return self._boot_disk_gb
+
+    @property
+    def is_spot(self) -> bool:
+        """Whether this is a spot instance and might be preempted"""
+        return self._is_spot
+
+    @property
+    def price_per_hour(self) -> float | None:
+        """The price per hour for this instance"""
+        return self._price_per_hour
+
+    @property
+    def num_simultaneous_tasks(self) -> int:
+        """The number of tasks to run simultaneously"""
+        return self._num_simultaneous_tasks
+
+    @property
+    def max_runtime(self) -> int:
+        """The maximum runtime for a task in seconds"""
+        return self._max_runtime
+
+    @property
+    def shutdown_grace_period(self) -> int:
+        """The grace period for shutting down the worker in seconds"""
+        return self._shutdown_grace_period
+
     def _signal_handler(self, signum, frame):
         """Handle termination signals."""
         signal_name = signal.Signals(signum).name
@@ -384,7 +455,14 @@ class Worker:
         signal.signal(signal.SIGTERM, signal.SIG_DFL)
 
     async def start(self) -> None:
-        """Start the worker processes and result handler."""
+        """Start the worker and begin processing tasks.
+
+        This method will:
+        1. Initialize the task queue connection
+        2. Start worker processes
+        3. Begin task processing
+        4. Run until shutdown is requested
+        """
         if self._tasks_file:
             logger.info(f"Starting worker for local tasks file '{self._tasks_file}'")
             try:
@@ -431,10 +509,11 @@ class Worker:
         """Start worker processes for task processing."""
         for i in range(self._num_simultaneous_tasks):
             p = Process(
-                target=self._worker_process_main,
+                target=Worker._worker_process_main,
                 args=(
                     i,
                     self._user_worker_function,
+                    self,
                     self._task_queue_mp,
                     self._result_queue,
                     self._shutdown_event,
@@ -610,6 +689,7 @@ class Worker:
                                     args=(
                                         process_id,
                                         self._user_worker_function,
+                                        self,
                                         self._task_queue_mp,
                                         self._result_queue,
                                         self._shutdown_event,
@@ -648,6 +728,7 @@ class Worker:
     def _worker_process_main(
         process_id: int,
         user_worker_function: Callable[[str, Dict[str, Any]], bool],
+        worker: "Worker",
         task_queue: MP_Queue,
         result_queue: MP_Queue,
         shutdown_event: MP_Event,
@@ -695,7 +776,7 @@ class Worker:
                     try:
                         # Execute task in isolated environment
                         success, result = Worker._execute_task_isolated(
-                            task_id, task_data, user_worker_function
+                            task_id, task_data, worker, user_worker_function
                         )
                         processing_time = time.time() - start_time
 
@@ -737,6 +818,7 @@ class Worker:
     def _execute_task_isolated(
         task_id: str,
         task_data: Dict[str, Any],
+        worker: "Worker",
         user_worker_function: Callable[[str, Dict[str, Any]], bool],
     ) -> Tuple[bool, str]:
         """
@@ -753,7 +835,7 @@ class Worker:
             success flag
         """
         try:
-            return user_worker_function(task_id, task_data)
+            return user_worker_function(task_id, task_data, worker)
 
         except Exception as e:
             return False, str(e)
