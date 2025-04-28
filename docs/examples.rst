@@ -7,4 +7,4 @@ The `cloud_tasks` package includes a number of examples that demonstrate how to 
    :maxdepth: 1
    :caption: Contents:
 
-   parallel_addition_example
+   example_parallel_addition

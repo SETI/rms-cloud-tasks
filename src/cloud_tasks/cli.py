@@ -271,7 +271,7 @@ async def purge_queue_cmd(args: argparse.Namespace, config: Config) -> None:
     # Confirm with the user if not using --force
     if not args.force:
         confirm = input(
-            f"\nWARNING: This will permanently delete all {queue_depth} messages from queue "
+            f"\nWARNING: This will permanently delete all {queue_depth}+ messages from queue "
             f"'{queue_name}' on '{provider}'."
             f"\nType 'EMPTY {queue_name}' to confirm: "
         )
@@ -285,7 +285,7 @@ async def purge_queue_cmd(args: argparse.Namespace, config: Config) -> None:
     # Verify the queue is now empty
     new_depth = await task_queue.get_queue_depth()
     if new_depth == 0:
-        print(f"Queue '{queue_name}' has been emptied. Removed {queue_depth} message(s).")
+        print(f"Queue '{queue_name}' has been emptied. Removed {queue_depth}+ message(s).")
     else:
         print(f"WARNING: Queue purge operation completed but {new_depth} messages still remain.")
         print("Some messages may be in flight or locked by consumers.")
@@ -444,11 +444,11 @@ async def list_running_instances_cmd(args: argparse.Namespace, config: Config) -
                 # Headers
                 if args.provider == "gcp":
                     print(
-                        f"{'Job ID':<16} {'ID':<26} {'Type':<15} {'State':<11} {'Zone':<15} {'Created':<30}"
+                        f"{'Job ID':<16} {'ID':<64} {'Type':<15} {'State':<11} {'Zone':<15} {'Created':<30}"
                     )
-                    print("-" * 117)
+                    print("-" * 155)
                 else:
-                    print(f"{'Job ID':<16} {'ID':<26} {'Type':<15} {'State':<11} {'Created':<30}")
+                    print(f"{'Job ID':<16} {'ID':<64} {'Type':<15} {'State':<11} {'Created':<30}")
                     print("-" * 101)
 
             instance_count = 0
@@ -492,7 +492,7 @@ async def list_running_instances_cmd(args: argparse.Namespace, config: Config) -
                 else:
                     if args.provider == "gcp" and zone:
                         print(
-                            f"{job_id:<16} {instance_id:<26} {instance_type:<15} {state:<11} "
+                            f"{job_id:<16} {instance_id:<64} {instance_type:<15} {state:<11} "
                             f"{zone:<15} {created_at:<30}"
                         )
                     else:
@@ -712,11 +712,11 @@ async def list_images_cmd(args: argparse.Namespace, config: Config) -> None:
                     print()
 
         elif args.provider == "gcp":
-            print(f"{'Family':<35} {'Name':<50} {'Project':<21} {'Source':<6}")
+            print(f"{'Family':<40} {'Name':<50} {'Project':<21} {'Source':<6}")
             print("-" * 114)
             for img in images:
                 print(
-                    f"{img.get('family', 'N/A')[:33]:<35} {img.get('name', 'N/A')[:48]:<50} "
+                    f"{img.get('family', 'N/A')[:38]:<40} {img.get('name', 'N/A')[:48]:<50} "
                     f"{img.get('project', 'N/A')[:19]:<21} {img.get('source', 'N/A'):<6}"
                 )
                 if args.detail:
@@ -954,7 +954,7 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
                 val += f"    {total_price_per_cpu_str:>11} "
             val += f" {price_data['zone']:<25} "
             if args.detail:
-                val += f"{price_data['description'][:60]}"
+                val += f"{price_data['description']}"
             print(val)
 
     except Exception as e:
@@ -1448,11 +1448,8 @@ def main():
         "list_instance_types",
         help="List compute instance types for the specified provider with pricing information",
     )
-    add_common_args(list_instance_types_parser, include_job_id=False, include_zone=False)
+    add_common_args(list_instance_types_parser, include_job_id=False)
     add_instance_args(list_instance_types_parser)
-    list_instance_types_parser.add_argument(
-        "--detail", action="store_true", help="Show additional cost information"
-    )
     list_instance_types_parser.add_argument(
         "--filter", help="Filter instance types containing this text in any field"
     )
@@ -1469,6 +1466,9 @@ def main():
     )
     list_instance_types_parser.add_argument(
         "--limit", type=int, help="Limit the number of instance types displayed"
+    )
+    list_instance_types_parser.add_argument(
+        "--detail", action="store_true", help="Show additional cost information"
     )
     list_instance_types_parser.set_defaults(func=list_instance_types_cmd)
 

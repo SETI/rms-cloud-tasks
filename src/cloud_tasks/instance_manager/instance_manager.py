@@ -11,6 +11,91 @@ class InstanceManager(ABC):
         """Initialize the instance manager with configuration."""
         self.config = config
 
+    def _instance_matches_constraints(
+        self, instance_info: Dict[str, Any], constraints: Optional[Dict[str, Any]] = None
+    ) -> bool:
+        """Check if an instance matches the constraints."""
+        # Derive min/max_cpu from cpus_per_task and min/max_tasks_per_instance
+        # if needed
+        min_cpu = constraints.get("min_cpu")
+        max_cpu = constraints.get("max_cpu")
+        if constraints.get("cpus_per_task") is not None:
+            cpus_per_task = constraints["cpus_per_task"]
+            if min_cpu is None and constraints.get("min_tasks_per_instance") is not None:
+                min_cpu = cpus_per_task * constraints["min_tasks_per_instance"]
+            if max_cpu is None and constraints.get("max_tasks_per_instance") is not None:
+                max_cpu = cpus_per_task * constraints["max_tasks_per_instance"]
+
+        return (
+            (
+                constraints.get("architecture") is None
+                or instance_info["architecture"] == constraints["architecture"]
+            )
+            and (min_cpu is None or instance_info["vcpu"] >= min_cpu)
+            and (max_cpu is None or instance_info["vcpu"] <= max_cpu)
+            and (
+                constraints.get("min_total_memory") is None
+                or instance_info["mem_gb"] >= constraints["min_total_memory"]
+            )
+            and (
+                constraints.get("max_total_memory") is None
+                or instance_info["mem_gb"] <= constraints["max_total_memory"]
+            )
+            and (
+                constraints.get("min_memory_per_cpu") is None
+                or instance_info["mem_gb"] / instance_info["vcpu"]
+                >= constraints["min_memory_per_cpu"]
+            )
+            and (
+                constraints.get("max_memory_per_cpu") is None
+                or instance_info["mem_gb"] / instance_info["vcpu"]
+                <= constraints["max_memory_per_cpu"]
+            )
+            and (
+                constraints.get("min_local_ssd") is None
+                or instance_info["local_ssd_gb"] >= constraints["min_local_ssd"]
+            )
+            and (
+                constraints.get("max_local_ssd") is None
+                or instance_info["local_ssd_gb"] <= constraints["max_local_ssd"]
+            )
+            and (
+                constraints.get("min_local_ssd_per_cpu") is None
+                or instance_info["local_ssd_gb"] / instance_info["vcpu"]
+                >= constraints["min_local_ssd_per_cpu"]
+            )
+            and (
+                constraints.get("max_local_ssd_per_cpu") is None
+                or instance_info["local_ssd_gb"] / instance_info["vcpu"]
+                <= constraints["max_local_ssd_per_cpu"]
+            )
+            # and (
+            #     constraints["min_boot_disk"] is None
+            #     or cast(float, instance_info["boot_disk_gb"])
+            #     >= cast(float, constraints["min_boot_disk"])
+            # )
+            # and (
+            #     constraints["max_boot_disk"] is None
+            #     or cast(float, instance_info["boot_disk_gb"])
+            #     <= cast(float, constraints["max_boot_disk"])
+            # )
+            # and (
+            #     constraints["min_boot_disk_per_cpu"] is None
+            #     or cast(float, instance_info["boot_disk_gb"]) / cast(int, instance_info["vcpu"])
+            #     >= cast(float, constraints["min_boot_disk_per_cpu"])
+            # )
+            # and (
+            #     constraints["max_boot_disk_per_cpu"] is None
+            #     or cast(float, instance_info["boot_disk_gb"]) / cast(int, instance_info["vcpu"])
+            #     <= cast(float, constraints["max_boot_disk_per_cpu"])
+            # )
+            and (
+                "use_spot" not in constraints
+                or constraints["use_spot"] is None
+                or instance_info["supports_spot"]
+            )
+        )
+
     @abstractmethod
     async def get_available_instance_types(
         self, constraints: Optional[Dict[str, Any]] = None

@@ -17,6 +17,17 @@ from cloud_tasks.common.config import AWSConfig
 from .instance_manager import InstanceManager
 
 
+# Notes:
+# - AWS EC2 instances are per-region, not per-zone
+# - AWS pricing is per-region for on-demand pricing and per-zone for spot instances
+# - If a zone is not specified, the spot pricing for each zone in the region will be
+#   returned; otherwise, the pricing for the specified zone will be returned.
+# - For on-demand pricing, the pricing is returned for the region as a whole using
+#   wildcards.
+# - This means that when choosing an optimal instance type with spot pricing, we will
+#   be locked to a single zone.
+
+
 class AWSEC2InstanceManager(InstanceManager):
     """AWS EC2 implementation of the InstanceManager interface."""
 
@@ -53,98 +64,32 @@ class AWSEC2InstanceManager(InstanceManager):
             "aws_secret_access_key": aws_config.secret_key,
         }
 
-        # Store instance_types configuration if present
-        self._instance_type = aws_config.instance_types
-        if self._instance_type:
-            if isinstance(self._instance_type, str):
-                # If a single string was provided, convert to a list
-                self._instance_type = [self._instance_type]
-            self._logger.info(f"Instance types restricted to patterns: {self._instance_type}")
-
         # Initialize with specified region
         self._region = aws_config.region
         self._zone = aws_config.zone
 
+        # If zone is provided but not region, extract region from zone
+        region_from_zone = None
+        if self._zone:
+            # Extract region from zone (e.g., us-central1-a -> us-central1)
+            region_from_zone = self._zone[:-1]
+            self._logger.debug(f"Extracted region {self._region} from zone {self._zone}")
+            if self._region is not None and self._region != region_from_zone:
+                raise ValueError(
+                    f"Region {self._region} does not match region {region_from_zone} extracted "
+                    f"from zone {self._zone}"
+                )
+        if self._region is None and region_from_zone is not None:
+            self._region = region_from_zone
+
         # TODO How do we know what the default region is so we can log it?
 
-        self._ec2 = boto3.resource("ec2", region_name=self._region, **self._credentials)
         self._ec2_client = boto3.client("ec2", region_name=self._region, **self._credentials)
         self._pricing_client = boto3.client(
             "pricing", region_name=self._PRICING_REGION, **self._credentials
         )
 
-        if self._region:
-            self._logger.info(f"Initialized AWS EC2: region '{self._region}'")
-        else:
-            self._logger.info(
-                "No region specified, will determine cheapest region during instance selection"
-            )
-
-    async def find_cheapest_region(self, instance_type: str = "t3.micro") -> str:
-        """
-        Find the cheapest AWS region for the given instance type.
-
-        Args:
-            instance_type: Instance type to check prices for (default: t3.micro)
-
-        Returns:
-            The region code with the lowest price
-        """
-        try:
-            # Create pricing client in us-east-1 (only region that supports the pricing API)
-            pricing_client = boto3.client(
-                "pricing", region_name=self._PRICING_REGION, **self._credentials
-            )
-
-            # Get available regions
-            ec2_client = boto3.client("ec2", region_name=self._DEFAULT_REGION, **self._credentials)
-            regions_response = ec2_client.describe_regions()
-            regions = [region["RegionName"] for region in regions_response["Regions"]]
-
-            self._logger.info(f"Checking prices across {len(regions)} regions for {instance_type}")
-
-            region_prices = {}
-            for region in regions:
-                try:
-                    # Get current price for the instance type in this region
-                    response = pricing_client.get_products(
-                        ServiceCode="AmazonEC2",
-                        Filters=[
-                            {"Type": "TERM_MATCH", "Field": "instanceType", "Value": instance_type},
-                            {"Type": "TERM_MATCH", "Field": "regionCode", "Value": region},
-                            {"Type": "TERM_MATCH", "Field": "operatingSystem", "Value": "Linux"},
-                            {"Type": "TERM_MATCH", "Field": "tenancy", "Value": "Shared"},
-                            {"Type": "TERM_MATCH", "Field": "capacitystatus", "Value": "Used"},
-                        ],
-                        MaxResults=10,
-                    )
-
-                    if response["PriceList"]:
-                        price_data = json.loads(response["PriceList"][0])
-                        on_demand = price_data["terms"]["OnDemand"]
-                        price_dimensions = list(on_demand.values())[0]["priceDimensions"]
-                        price = float(list(price_dimensions.values())[0]["pricePerUnit"]["USD"])
-                        region_prices[region] = price
-                        print(f"  {region}: ${price:.4f}/hour")
-                except Exception as e:
-                    print(f"  Error getting price for {region}: {e}")
-                    continue
-
-            if not region_prices:
-                print("Could not retrieve prices for any region, using us-east-1 as default")
-                return self._DEFAULT_REGION
-
-            # Find the cheapest region
-            cheapest_region = min(region_prices.items(), key=lambda x: x[1])[0]
-            self._logger.info(
-                f"Cheapest region is {cheapest_region} at ${region_prices[cheapest_region]:.4f}/hour"
-            )
-            return cheapest_region
-
-        except Exception as e:
-            print(f"Error finding cheapest region: {e}")
-            print("Using us-east-1 as default region")
-            return self._DEFAULT_REGION
+        self._logger.debug(f"Initialized AWS EC2: region '{self._region}', zone '{self._zone}'")
 
     async def get_available_instance_types(
         self, constraints: Optional[Dict[str, Any]] = None
@@ -159,8 +104,13 @@ class AWSEC2InstanceManager(InstanceManager):
             constraints: Dictionary of constraints to filter instance types by. Constraints
                 include::
                     "instance_types": List of regex patterns to filter instance types by name
+                    "architecture": Architecture (X86_64 or ARM64)
                     "min_cpu": Minimum number of vCPUs
                     "max_cpu": Maximum number of vCPUs
+                        Derived if not provided from:
+                            "cpus_per_task": Number of vCPUs per task
+                            "min_tasks_per_instance": Minimum number of tasks per instance
+                            "max_tasks_per_instance": Maximum number of tasks per instance
                     "min_total_memory": Minimum total memory in GB
                     "max_total_memory": Maximum total memory in GB
                     "min_memory_per_cpu": Minimum memory per vCPU in GB
@@ -169,14 +119,14 @@ class AWSEC2InstanceManager(InstanceManager):
                     "max_local_ssd": Maximum amount of local SSD storage in GB
                     "min_local_ssd_per_cpu": Minimum amount of local SSD storage per vCPU
                     "max_local_ssd_per_cpu": Maximum amount of local SSD storage per vCPU
-                    "min_boot_disk": Minimum amount of boot disk storage in GB
-                    "max_boot_disk": Maximum amount of boot disk storage in GB
-                    "min_boot_disk_per_cpu": Minimum amount of boot disk storage per vCPU
-                    "max_boot_disk_per_cpu": Maximum amount of boot disk storage per vCPU
+                    "min_boot_disk": Minimum amount of boot disk storage in GB (ignored)
+                    "max_boot_disk": Maximum amount of boot disk storage in GB (ignored)
+                    "min_boot_disk_per_cpu": Minimum amount of boot disk storage per vCPU (ignored)
+                    "max_boot_disk_per_cpu": Maximum amount of boot disk storage per vCPU (ignored)
                     "use_spot": Whether to filter for spot-capable instance types
 
         Returns:
-            List of dictionaries with instance types and their specifications:
+            Dictionary mapping instance type to a dictionary of instance type specifications::
                 "name": instance type name
                 "vcpu": number of vCPUs
                 "mem_gb": amount of RAM in GB
@@ -187,10 +137,11 @@ class AWSEC2InstanceManager(InstanceManager):
                 "description": description of the instance type
                 "url": URL to the instance type details
         """
-        self._logger.debug("Listing available EC2 instance types")
-
         if constraints is None:
             constraints = {}
+
+        self._logger.debug(f"Listing available EC2 instance types")
+        self._logger.debug(f"Constraints: {constraints}")
 
         # List instance types
         paginator = self._ec2_client.get_paginator("describe_instance_types")
@@ -218,8 +169,8 @@ class AWSEC2InstanceManager(InstanceManager):
                     "vcpu": instance_type["VCpuInfo"]["DefaultVCpus"],
                     "mem_gb": instance_type["MemoryInfo"]["SizeInMiB"] / 1024.0,
                     "architecture": instance_type["ProcessorInfo"]["SupportedArchitectures"][0],
-                    "local_ssd_gb": 0,  # AWS separates storage from instance type
                     "boot_disk_gb": 0,  # AWS separates storage from instance type
+                    "local_ssd_gb": 0,  # AWS separates storage from instance type
                     "supports_spot": "spot" in instance_type["SupportedUsageClasses"],
                     "description": instance_type["InstanceType"],
                     "url": None,
@@ -231,74 +182,7 @@ class AWSEC2InstanceManager(InstanceManager):
                         "TotalSizeInGB", 0
                     )
 
-                if (
-                    (
-                        constraints["min_cpu"] is None
-                        or instance_info["vcpu"] >= constraints["min_cpu"]
-                    )
-                    and (
-                        constraints["max_cpu"] is None
-                        or instance_info["vcpu"] <= constraints["max_cpu"]
-                    )
-                    and (
-                        constraints["min_total_memory"] is None
-                        or instance_info["mem_gb"] >= constraints["min_total_memory"]
-                    )
-                    and (
-                        constraints["max_total_memory"] is None
-                        or instance_info["mem_gb"] <= constraints["max_total_memory"]
-                    )
-                    and (
-                        constraints["min_memory_per_cpu"] is None
-                        or instance_info["mem_gb"] / instance_info["vcpu"]
-                        >= constraints["min_memory_per_cpu"]
-                    )
-                    and (
-                        constraints["max_memory_per_cpu"] is None
-                        or instance_info["mem_gb"] / instance_info["vcpu"]
-                        <= constraints["max_memory_per_cpu"]
-                    )
-                    and (
-                        constraints["min_local_ssd"] is None
-                        or instance_info["local_ssd_gb"] >= constraints["min_local_ssd"]
-                    )
-                    and (
-                        constraints["max_local_ssd"] is None
-                        or instance_info["local_ssd_gb"] <= constraints["max_local_ssd"]
-                    )
-                    and (
-                        constraints["min_local_ssd_per_cpu"] is None
-                        or instance_info["local_ssd_gb"] / instance_info["vcpu"]
-                        >= constraints["min_local_ssd_per_cpu"]
-                    )
-                    and (
-                        constraints["max_local_ssd_per_cpu"] is None
-                        or instance_info["local_ssd_gb"] / instance_info["vcpu"]
-                        <= constraints["max_local_ssd_per_cpu"]
-                    )
-                    and (
-                        constraints["min_boot_disk"] is None
-                        or instance_info["boot_disk_gb"] >= constraints["min_boot_disk"]
-                    )
-                    and (
-                        constraints["max_boot_disk"] is None
-                        or instance_info["boot_disk_gb"] <= constraints["max_boot_disk"]
-                    )
-                    and (
-                        constraints["min_boot_disk_per_cpu"] is None
-                        or instance_info["boot_disk_gb"] / instance_info["vcpu"]
-                        >= constraints["min_boot_disk_per_cpu"]
-                    )
-                    and (
-                        constraints["max_boot_disk_per_cpu"] is None
-                        or instance_info["boot_disk_gb"] / instance_info["vcpu"]
-                        <= constraints["max_boot_disk_per_cpu"]
-                    )
-                    and (
-                        not constraints["use_spot"]
-                        or (constraints["use_spot"] and instance_info["supports_spot"])
-                    )
-                ):
+                if self._instance_matches_constraints(instance_info, constraints):
                     instance_types[instance_info["name"]] = instance_info
 
         return instance_types
@@ -323,7 +207,12 @@ class AWSEC2InstanceManager(InstanceManager):
                 "per_cpu_price": Price of CPU in USD/vCPU/hour
                 "mem_price": Total price of RAM in USD/hour
                 "mem_per_gb_price": Price of RAM in USD/GB/hour
+                "local_ssd_price": Total price of local SSD in USD/hour
+                "local_ssd_per_gb_price": Price of local SSD in USD/GB/hour
+                "boot_disk_price": Total price of boot disk in USD/hour
+                "boot_disk_per_gb_price": Price of boot disk in USD/GB/hour
                 "total_price": Total price of instance in USD/hour
+                "total_price_per_cpu": Total price of instance in USD/vCPU/hour
                 "zone": availability zone
             Plus the original instance type info keyed by availability zone. If any price is not
             available, it is set to None.
@@ -332,11 +221,14 @@ class AWSEC2InstanceManager(InstanceManager):
             f"Getting pricing for {len(instance_types)} instance types (spot: {use_spot})"
         )
 
-        ret: Dict[str, Dict[str, Dict[str, float | str | None]]] = {}
-
         if len(instance_types) == 0:
             self._logger.warning("No instance types provided")
             return ret
+
+        ret: Dict[str, Dict[str, Dict[str, float | str | None]]] = {}
+
+        if self._region is None:
+            raise RuntimeError("Region must be specified")
 
         if use_spot:
             # Spot pricing
@@ -352,22 +244,25 @@ class AWSEC2InstanceManager(InstanceManager):
                 MaxResults=len(instance_types) * 10,  # For different availability zones
             )
             for price in spot_prices["SpotPriceHistory"]:
+                zone = price["AvailabilityZone"]
+                if self._zone is not None and self._zone != zone:
+                    continue
                 inst_type = price["InstanceType"]
                 if inst_type not in ret:
                     ret[inst_type] = {}
-                zone = price["AvailabilityZone"]
                 cpu_price = float(price["SpotPrice"])
                 vcpus = instance_types[inst_type]["vcpu"]
                 ret[inst_type][zone] = {
-                    "cpu_price": cpu_price,  # CPU price (combined CPU and memory)
-                    "per_cpu_price": cpu_price / vcpus,  # Per-CPU price
+                    "cpu_price": round(cpu_price, 6),  # CPU price (combined CPU and memory)
+                    "per_cpu_price": round(cpu_price / vcpus, 6),  # Per-CPU price
                     "mem_price": 0.0,  # Memory price (we don't have this)
                     "mem_per_gb_price": 0.0,  # Per-GB price (we don't have this)
                     "local_ssd_price": 0.0,  # Local SSD price (we don't have this)
                     "local_ssd_per_gb_price": 0.0,  # Local SSD per-GB price (we don't have this)
                     "boot_disk_price": 0.0,  # Storage price (we don't have this)
                     "boot_disk_per_gb_price": 0.0,  # Storage per-GB price (we don't have this)
-                    "total_price": float(price["SpotPrice"]),  # Total price
+                    "total_price": round(float(price["SpotPrice"]), 6),  # Total price
+                    "total_price_per_cpu": round(float(price["SpotPrice"]) / vcpus, 6),
                     "zone": price["AvailabilityZone"],
                     **instance_types[price["InstanceType"]],
                 }
@@ -470,18 +365,24 @@ class AWSEC2InstanceManager(InstanceManager):
                                 f"Found on-demand price for {inst_name}: ${price:.4f}/hour"
                             )
                             ret[inst_name] = {
-                                f"{self._region}-*": {
-                                    "cpu_price": price,  # CPU price (combined CPU and memory)
-                                    "per_cpu_price": price
-                                    / float(attributes["vcpu"]),  # Per-CPU price
+                                f"{self._region}*": {
+                                    "cpu_price": round(
+                                        price, 6
+                                    ),  # CPU price (combined CPU and memory)
+                                    "per_cpu_price": round(
+                                        price / float(attributes["vcpu"]), 6
+                                    ),  # Per-CPU price
                                     "mem_price": 0.0,  # Memory price
                                     "mem_per_gb_price": 0.0,  # Per-GB price (we don't have this)
                                     "local_ssd_price": 0.0,  # Local SSD price (we don't have this)
                                     "local_ssd_per_gb_price": 0.0,  # Local SSD per-GB price (we don't have this)
                                     "boot_disk_price": 0.0,  # Storage price (we don't have this)
                                     "boot_disk_per_gb_price": 0.0,  # Storage per-GB price (we don't have this)
-                                    "total_price": price,  # Total price
-                                    "zone": f"{self._region}-*",
+                                    "total_price": round(price, 6),  # Total price
+                                    "total_price_per_cpu": round(
+                                        price / float(attributes["vcpu"]), 6
+                                    ),
+                                    "zone": f"{self._region}*",
                                     **inst_info,
                                 }
                             }

@@ -47,4 +47,5 @@ pytest-mock
 myst-parser
 sphinx
 sphinx-rtd-theme
+sphinx-tabs
 sphinxcontrib-napoleon

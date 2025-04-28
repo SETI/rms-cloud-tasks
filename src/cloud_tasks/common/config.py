@@ -431,4 +431,12 @@ def load_config(config_file: Optional[str] = None) -> Config:
             FCPath(config_file).parent, config.azure.startup_script_file
         ).as_posix()
 
+    # Update the instance_types to always be a list
+    if config.aws.instance_types is not None and isinstance(config.aws.instance_types, str):
+        config.aws.instance_types = [config.aws.instance_types]
+    if config.gcp.instance_types is not None and isinstance(config.gcp.instance_types, str):
+        config.gcp.instance_types = [config.gcp.instance_types]
+    if config.azure.instance_types is not None and isinstance(config.azure.instance_types, str):
+        config.azure.instance_types = [config.azure.instance_types]
+
     return config

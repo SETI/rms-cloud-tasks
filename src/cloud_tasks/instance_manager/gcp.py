@@ -40,6 +40,8 @@ shortuuid.set_alphabet("abcdefghijklmnopqrstuvwxyz0123456789")
 #   credentials.
 # - Zone names can end with a wildcard "-*" to indicate that the instance can be started
 #   in any zone in the region.
+# - GCP pricing is per-region for both on-demand and spot pricing; wildcards are returned
+#   for the zone.
 
 
 class GCPComputeInstanceManager(InstanceManager):
@@ -82,14 +84,6 @@ class GCPComputeInstanceManager(InstanceManager):
 
         self._project_id = gcp_config.project_id
 
-        # Store instance_types configuration if present
-        self._instance_types = gcp_config.instance_types
-        if self._instance_types:
-            if isinstance(self._instance_types, str):
-                # If a single string was provided, convert to a list
-                self._instance_types = [self._instance_types]
-            self._logger.debug(f"Instance types restricted to patterns: {self._instance_types}")
-
         # Add thread-local storage for compute client
         self._thread_local = threading.local()
 
@@ -129,10 +123,19 @@ class GCPComputeInstanceManager(InstanceManager):
         self._zone = gcp_config.zone
 
         # If zone is provided but not region, extract region from zone
-        if self._zone and not self._region:
+        region_from_zone = None
+        if self._zone:
             # Extract region from zone (e.g., us-central1-a -> us-central1)
-            self._region = "-".join(self._zone.split("-")[:-1])
-            self._logger.info(f"Extracted region {self._region} from zone {self._zone}")
+            region_from_zone = self._zone.rsplit("-", 1)[0]
+            self._logger.debug(f"Extracted region {self._region} from zone {self._zone}")
+            if self._region is not None and self._region != region_from_zone:
+                raise ValueError(
+                    f"Region {self._region} does not match region {region_from_zone} extracted "
+                    f"from zone {self._zone}"
+                )
+        if self._region is None and region_from_zone is not None:
+            self._region = region_from_zone
+
         # if not self._region:
         #     raise RuntimeError("Missing required GCP configuration: region")
         # It's OK for there to be no specific zone
@@ -151,7 +154,7 @@ class GCPComputeInstanceManager(InstanceManager):
             Tuple[str, bool], Dict[str, Dict[str, float | str | None]] | None
         ] = {}
 
-        self._logger.info(
+        self._logger.debug(
             f"Initialized GCP Compute Engine: project '{self._project_id}', "
             f"region '{self._region}', zone '{self._zone}'"
         )
@@ -257,86 +260,9 @@ class GCPComputeInstanceManager(InstanceManager):
                 "url": machine_type.self_link,
             }
 
-            # Derive min/max_cpu from cpus_per_task and min/max_tasks_per_instance
-            # if needed
-            min_cpu = constraints.get("min_cpu")
-            max_cpu = constraints.get("max_cpu")
-            if constraints.get("cpus_per_task") is not None:
-                cpus_per_task = constraints["cpus_per_task"]
-                if min_cpu is None and constraints.get("min_tasks_per_instance") is not None:
-                    min_cpu = cpus_per_task * constraints["min_tasks_per_instance"]
-                if max_cpu is None and constraints.get("max_tasks_per_instance") is not None:
-                    max_cpu = cpus_per_task * constraints["max_tasks_per_instance"]
+            if self._instance_matches_constraints(instance_info, constraints):
+                instance_types[machine_type.name] = instance_info
 
-            if (
-                (
-                    constraints.get("architecture") is None
-                    or instance_info["architecture"] == constraints["architecture"]
-                )
-                and (min_cpu is None or instance_info["vcpu"] >= min_cpu)
-                and (max_cpu is None or instance_info["vcpu"] <= max_cpu)
-                and (
-                    constraints.get("min_total_memory") is None
-                    or instance_info["mem_gb"] >= constraints["min_total_memory"]
-                )
-                and (
-                    constraints.get("max_total_memory") is None
-                    or instance_info["mem_gb"] <= constraints["max_total_memory"]
-                )
-                and (
-                    constraints.get("min_memory_per_cpu") is None
-                    or instance_info["mem_gb"] / instance_info["vcpu"]
-                    >= constraints["min_memory_per_cpu"]
-                )
-                and (
-                    constraints.get("max_memory_per_cpu") is None
-                    or instance_info["mem_gb"] / instance_info["vcpu"]
-                    <= constraints["max_memory_per_cpu"]
-                )
-                and (
-                    constraints.get("min_local_ssd") is None
-                    or instance_info["local_ssd_gb"] >= constraints["min_local_ssd"]
-                )
-                and (
-                    constraints.get("max_local_ssd") is None
-                    or instance_info["local_ssd_gb"] <= constraints["max_local_ssd"]
-                )
-                and (
-                    constraints.get("min_local_ssd_per_cpu") is None
-                    or instance_info["local_ssd_gb"] / instance_info["vcpu"]
-                    >= constraints["min_local_ssd_per_cpu"]
-                )
-                and (
-                    constraints.get("max_local_ssd_per_cpu") is None
-                    or instance_info["local_ssd_gb"] / instance_info["vcpu"]
-                    <= constraints["max_local_ssd_per_cpu"]
-                )
-                # and (
-                #     constraints["min_boot_disk"] is None
-                #     or cast(float, instance_info["boot_disk_gb"])
-                #     >= cast(float, constraints["min_boot_disk"])
-                # )
-                # and (
-                #     constraints["max_boot_disk"] is None
-                #     or cast(float, instance_info["boot_disk_gb"])
-                #     <= cast(float, constraints["max_boot_disk"])
-                # )
-                # and (
-                #     constraints["min_boot_disk_per_cpu"] is None
-                #     or cast(float, instance_info["boot_disk_gb"]) / cast(int, instance_info["vcpu"])
-                #     >= cast(float, constraints["min_boot_disk_per_cpu"])
-                # )
-                # and (
-                #     constraints["max_boot_disk_per_cpu"] is None
-                #     or cast(float, instance_info["boot_disk_gb"]) / cast(int, instance_info["vcpu"])
-                #     <= cast(float, constraints["max_boot_disk_per_cpu"])
-                # )
-                and (
-                    "use_spot" not in constraints
-                    or constraints["use_spot"] is None
-                    or instance_info["supports_spot"]
-                )
-            ):
                 instance_types[machine_type.name] = instance_info
 
         return instance_types
@@ -445,19 +371,23 @@ class GCPComputeInstanceManager(InstanceManager):
                 "per_cpu_price": Price of CPU in USD/vCPU/hour
                 "mem_price": Total price of RAM in USD/hour
                 "mem_per_gb_price": Price of RAM in USD/GB/hour
+                "local_ssd_price": Total price of local SSD in USD/hour
+                "local_ssd_per_gb_price": Price of local SSD in USD/GB/hour
+                "boot_disk_price": Total price of boot disk in USD/hour
+                "boot_disk_per_gb_price": Price of boot disk in USD/GB/hour
                 "total_price": Total price of instance in USD/hour
                 "total_price_per_cpu": Total price of instance in USD/vCPU/hour
                 "zone": availability zone
             Plus the original instance type info keyed by availability zone. If any price is not
             available, it is set to None.
         """
-        if len(instance_types) == 0:
-            self._logger.debug("No instance types provided")
-            return {}
-
         self._logger.debug(
             f"Getting pricing for {len(instance_types)} instance types (spot: {use_spot})"
         )
+
+        if len(instance_types) == 0:
+            self._logger.debug("No instance types provided")
+            return {}
 
         ret: Dict[str, Dict[str, Dict[str, float | str | None]]] = {}
 
@@ -934,6 +864,11 @@ class GCPComputeInstanceManager(InstanceManager):
             tags=tags,
         )
 
+        self._logger.debug(
+            f"Creating {'spot' if use_spot else 'on-demand'} instance "
+            f"{instance_id} ({instance_type})"
+        )
+
         # Create the instance
         try:
             operation = await asyncio.to_thread(
@@ -944,10 +879,6 @@ class GCPComputeInstanceManager(InstanceManager):
             )
 
             # Wait for the create operation to complete
-            self._logger.debug(
-                f"Creating {'spot' if use_spot else 'on-demand'} instance "
-                f"{instance_id} ({instance_type})"
-            )
             await self._wait_for_operation(operation, zone, f"Creation of instance {instance_id}")
             self._logger.debug(
                 f"Instance {instance_id} created successfully " f"({instance_type} in zone {zone})"
@@ -976,9 +907,12 @@ class GCPComputeInstanceManager(InstanceManager):
 
         self._logger.debug(f"Terminating instance {instance_id} in zone {zone}")
 
+        # Get thread-local compute client
+        compute_client = self._get_compute_client()
+
         try:
-            operation = self._get_compute_client().delete(
-                project=self._project_id, zone=zone, instance=instance_id
+            operation = await asyncio.to_thread(
+                compute_client.delete, project=self._project_id, zone=zone, instance=instance_id
             )
 
             # Wait for the operation to complete asynchronously
@@ -1437,6 +1371,9 @@ class GCPComputeInstanceManager(InstanceManager):
 
         if region is None:
             region = self._region
+
+        if region is None:
+            raise RuntimeError("Region or zone must be specified")
 
         self._logger.debug(f"Getting default zone for region {region}")
 

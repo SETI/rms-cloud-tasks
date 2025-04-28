@@ -18,6 +18,8 @@ from cloud_tasks.common.config import Config
 # - Instance selection constraints
 # - # Instance constraints
 # - Environment variables set in startup script
+# - Startup script is required
+# - Image is required (set default?)
 
 
 class InstanceOrchestrator:
@@ -64,9 +66,6 @@ class InstanceOrchestrator:
         # Region/Location
         self._region = provider_config.region
         self._zone = provider_config.zone
-
-        if self._run_config.startup_script is None:
-            raise RuntimeError("startup_script is required")
 
         # Will be initialized in start()
         self._instance_manager: Optional[InstanceManager] = None
@@ -178,8 +177,11 @@ class InstanceOrchestrator:
         self._logger.info(f"  Max parallel instance creations: {self._start_instance_max_threads}")
         self._logger.info(f"  Image: {self._run_config.image}")
         self._logger.info(f"  Startup script:")
-        for line in self._run_config.startup_script.replace("\r", "").strip().split("\n"):
-            self._logger.info(f"    {line}")
+        if self._run_config.startup_script is None:
+            self._logger.info("    None")
+        else:
+            for line in self._run_config.startup_script.replace("\r", "").strip().split("\n"):
+                self._logger.info(f"    {line}")
 
     @property
     def task_queue(self) -> TaskQueue:
@@ -233,13 +235,12 @@ export RMS_CLOUD_WORKER_USE_NEW_PROCESS={self._run_config.worker_use_new_process
         ss = ss.replace("\r", "")  # Remove any Windows line endings
         if ss.startswith("#!"):
             # Insert supplement after the shebang line
-            ss_lines = ss.split("\n", 1)[1]
-            print(f"ss_lines: {ss_lines}")
+            ss_lines = ss.split("\n", 1)
             if not ss_lines[0].endswith("/bash"):
                 msg = "Startup script uses shell other than bash; this is not supported"
                 self._logger.error(msg)
                 raise RuntimeError(msg)
-            ss = f"{ss_lines[0]}\n{supplement}\n{'\n'.join(ss_lines[1:])}"
+            ss = f"{ss_lines[0]}\n{supplement}\n{ss_lines}"
         else:
             ss = f"{supplement}\n{ss}"
 
@@ -286,6 +287,14 @@ export RMS_CLOUD_WORKER_USE_NEW_PROCESS={self._run_config.worker_use_new_process
 
         await self.initialize()
 
+        if self._run_config.startup_script is None:
+            raise RuntimeError("startup_script is required")
+
+        if self._region is None:
+            raise RuntimeError("Region is required")
+
+        if self._run_config.image is None:
+            raise RuntimeError("Image is required")
         # Get optimal instance type based on requirements from config
         optimal_instance_info = await self._instance_manager.get_optimal_instance_type(
             vars(self._run_config)
@@ -663,6 +672,10 @@ export RMS_CLOUD_WORKER_USE_NEW_PROCESS={self._run_config.worker_use_new_process
     async def stop(self, terminate_instances: bool = True) -> None:
         """Stop the orchestrator and optionally terminate all instances."""
         self._logger.debug("Stopping orchestrator")
+
+        if self._region is None:
+            raise RuntimeError("Region is required")
+
         self._running = False
 
         # Cancel scaling task if it exists
@@ -718,7 +731,7 @@ export RMS_CLOUD_WORKER_USE_NEW_PROCESS={self._run_config.worker_use_new_process
             # Create a semaphore to limit concurrent instance creations
             semaphore = asyncio.Semaphore(self._start_instance_max_threads)
 
-            # Define the synchronous function to run in threads
+            # Define the synchronous function to start a single instance
             async def start_single_instance():
                 async with semaphore:
                     try:
@@ -759,37 +772,38 @@ export RMS_CLOUD_WORKER_USE_NEW_PROCESS={self._run_config.worker_use_new_process
         """Terminate all instances associated with this job."""
         self._logger.info("Terminating all instances")
 
-        # Create a semaphore to limit concurrent terminations
-        semaphore = asyncio.Semaphore(self._start_instance_max_threads)
+        async with self._instance_creation_lock:
+            # Create a semaphore to limit concurrent terminations
+            semaphore = asyncio.Semaphore(self._start_instance_max_threads)
 
-        # Define the synchronous function to terminate a single instance
-        async def terminate_single_instance(instance):
-            async with semaphore:
-                try:
-                    self._logger.info(f"Terminating instance: {instance['id']}")
-                    await self._instance_manager.terminate_instance(
-                        instance["id"], instance["zone"]
-                    )
-                    self._logger.info(f"Terminated instance: {instance['id']}")
-                    return True
-                except Exception as e:
-                    self._logger.error(
-                        f"Failed to terminate instance {instance['id']}: {e}", exc_info=True
-                    )
-                    return False
+            # Define the synchronous function to terminate a single instance
+            async def terminate_single_instance(instance):
+                async with semaphore:
+                    try:
+                        self._logger.info(f"Terminating instance: {instance['id']}")
+                        await self._instance_manager.terminate_instance(
+                            instance["id"], instance["zone"]
+                        )
+                        self._logger.info(f"Terminated instance: {instance['id']}")
+                        return True
+                    except Exception as e:
+                        self._logger.error(
+                            f"Failed to terminate instance {instance['id']}: {e}", exc_info=True
+                        )
+                        return False
 
-        current_instances = await self.list_job_instances()
-        running_instances = [i for i in current_instances if i["state"] == "running"]
+            current_instances = await self.list_job_instances()
+            running_instances = [i for i in current_instances if i["state"] == "running"]
 
-        # Create tasks for all instance terminations
-        tasks = [terminate_single_instance(instance) for instance in running_instances]
+            # Create tasks for all instance terminations
+            tasks = [terminate_single_instance(instance) for instance in running_instances]
 
-        # Wait for all tasks to complete
-        results = await asyncio.gather(*tasks)
+            # Wait for all tasks to complete
+            results = await asyncio.gather(*tasks)
 
-        # Count successful terminations
-        terminate_count = sum(1 for result in results if result)
-        self._logger.info(f"Successfully terminated {terminate_count} instances")
+            # Count successful terminations
+            terminate_count = sum(1 for result in results if result)
+            self._logger.info(f"Successfully terminated {terminate_count} instances")
 
     async def report_job_status(self) -> None:
         """

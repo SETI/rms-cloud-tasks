@@ -2,11 +2,35 @@ Command Line Interface Reference
 ================================
 
 This page provides a comprehensive reference for the Cloud Tasks command-line interface,
-``cloud_tasks``. Since many commands take similar options, we will start by listing the
+``cloud_tasks``. The general format of a command is:
+
+.. code-block:: none
+
+   cloud_tasks <command> <options>
+
+To get a list of available commands, run:
+
+.. code-block:: none
+
+   cloud_tasks --help
+
+To get a list of options for a specific command, run:
+
+.. code-block:: none
+
+   cloud_tasks <command> --help
+
+Since many commands take similar options, we will start by listing the
 shared options and then reference them as needed.
 
+
+Command Line Options
+--------------------
+
+.. _cli_common_options:
+
 Common Options
---------------
+~~~~~~~~~~~~~~
 
 All commands support these common options:
 
@@ -14,8 +38,10 @@ All commands support these common options:
 --provider PROVIDER    Cloud provider (aws, gcp, or azure), overrides configuration file
 --verbose, -v          Enable verbose output (-v for warning, -vv for info, -vvv for debug)
 
+.. _cli_job_specific_options:
+
 Job-Specific Options
----------------------
+~~~~~~~~~~~~~~~~~~~~
 
 In addition to the common options, each job-specific command has additional options that
 specify job-related information. They override any options in the configuration file (see
@@ -24,21 +50,23 @@ specify job-related information. They override any options in the configuration 
 --job-id JOB_ID            A unique identifier for the job
 --queue-name QUEUE_NAME    The name of the task queue to use (derived from job ID if not provided)
 
+.. _cli_provider_specific_options:
+
 Provider-Specific Options
--------------------------
+~~~~~~~~~~~~~~~~~~~~~~~~~
 
 In addition to the common options, each provider has additional options that are specific
 to that provider. They override any options in the configuration file (see
 :ref:`config_provider_specific_options`).
 
 AWS
-~~~
++++
 
 --access-key ACCESS_KEY       The access key to use
 --secret-key SECRET_KEY       The secret key to use
 
 GCP
-~~~
++++
 
 --project-id PROJECT_ID                The ID of the project to use [Required for most operations]
 --credentials-file CREDENTIALS_FILE    The path to a file containing the credentials to use; if not
@@ -47,16 +75,19 @@ GCP
                                        on cloud-based instances to have access to system resources [Required when creating
                                        instances]
 
-Azure
-~~~~~
+..
+   Azure
+   ~~~~~
 
---subscription-id SUBSCRIPTION_ID    The ID of the subscription to use
---tenant-id TENANT_ID                The ID of the tenant to use
---client-id CLIENT_ID                The ID of the client to use
---client-secret CLIENT_SECRET        The secret to use
+   --subscription-id SUBSCRIPTION_ID    The ID of the subscription to use
+   --tenant-id TENANT_ID                The ID of the tenant to use
+   --client-id CLIENT_ID                The ID of the client to use
+   --client-secret CLIENT_SECRET        The secret to use
+
+.. _cli_instance_type_selection_options:
 
 Instance Type Selection Options
--------------------------------
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 These options are used to constrain the instance types. They override any constraints
 in the configuration file (see :ref:`config_compute_instance_options`).
@@ -82,8 +113,10 @@ in the configuration file (see :ref:`config_compute_instance_options`).
                               (if no anchor character like ``^`` or ``$`` is specified, the given
                               string will match any part of the instance type name)
 
+.. _cli_number_of_instances_options:
+
 Number of Instances Options
----------------------------
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 These options are used to constrain the number of instances. They override any constraints
 in the configuration file (see :ref:`config_number_of_instances_options`).
@@ -102,16 +135,20 @@ in the configuration file (see :ref:`config_number_of_instances_options`).
 --min-total-price-per-hour N  The minimum total price per hour to use
 --max-total-price-per-hour N  The maximum total price per hour to use
 
+.. _cli_vm_options:
+
 VM Options
-----------
+~~~~~~~~~~
 
 These options are used to specify the type of VM to use. They override any options
 in the configuration file (see :ref:`config_vm_options`).
 
 --use-spot                    Use spot instances instead of on-demand instances
 
+.. _cli_boot_options:
+
 Boot Options
-------------
+~~~~~~~~~~~~
 
 These options are used to specify the boot process. They override any options
 in the configuration file (see :ref:`config_boot_options`).
@@ -119,8 +156,10 @@ in the configuration file (see :ref:`config_boot_options`).
 --startup-script-file FILE    The path to a file containing the startup script
 --image IMAGE                 The image to use for the VM
 
+.. _cli_worker_and_manage_pool_options:
+
 Worker and Manage Pool Options
-------------------------------
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 These options are used to specify the worker and manage_pool processes. They override any
 options in the configuration file (see :ref:`config_worker_and_manage_pool_options`).
@@ -133,8 +172,13 @@ options in the configuration file (see :ref:`config_worker_and_manage_pool_optio
 --worker-use-new-process               Use a new process for each task instead of reusing the
                                        same process (defaults to ``False``)
 
+
+.. _cli_information_commands:
+
 Information Commands
 --------------------
+
+.. _cli_list_regions:
 
 list_regions
 ~~~~~~~~~~~~
@@ -145,8 +189,9 @@ provider.
 .. code-block:: none
 
    cloud_tasks list_regions
-      [Common options]
-      [Additional options]
+     [Common options]
+     [Provider-specific options]
+     [Additional options]
 
 Additional options:
 
@@ -154,19 +199,57 @@ Additional options:
 --zones              Show availability zones for each region
 --detail             Show additional provider-specific information
 
-Example:
+Examples:
 
-.. code-block:: none
+.. tabs::
 
-   $ cloud_tasks list_regions --provider gcp --detail --zones --prefix africa
-   Found 1 regions (filtered by prefix: africa)
+   .. tab:: AWS
 
-   Region                    Description
-   ----------------------------------------------------------------------------------------------------
-   africa-south1             africa-south1
-   Availability Zones: africa-south1-a, africa-south1-b, africa-south1-c
-   Endpoint: https://africa-south1-compute.googleapis.com
-   Status: UP
+      .. code-block:: none
+
+         $ cloud_tasks list_regions --provider aws --detail --zones --prefix us-west
+         Found 2 regions (filtered by prefix: us-west)
+
+         Region                    Description
+         ----------------------------------------------------------------------------------------------------
+         us-west-1                 AWS Region us-west-1
+         Availability Zones: us-west-1a, us-west-1b
+         Opt-in Status: opt-in-not-required
+
+         us-west-2                 AWS Region us-west-2
+         Availability Zones: us-west-2a, us-west-2b, us-west-2c, us-west-2d
+         Opt-in Status: opt-in-not-required
+
+   .. tab:: GCP
+
+      .. code-block:: none
+
+         $ cloud_tasks list_regions --provider gcp --detail --zones --prefix us-west
+         Found 4 regions (filtered by prefix: us-west)
+
+         Region                    Description
+         ----------------------------------------------------------------------------------------------------
+         us-west1                  us-west1
+         Availability Zones: us-west1-a, us-west1-b, us-west1-c
+         Endpoint: https://us-west1-compute.googleapis.com
+         Status: UP
+
+         us-west2                  us-west2
+         Availability Zones: us-west2-a, us-west2-b, us-west2-c
+         Endpoint: https://us-west2-compute.googleapis.com
+         Status: UP
+
+         us-west3                  us-west3
+         Availability Zones: us-west3-a, us-west3-b, us-west3-c
+         Endpoint: https://us-west3-compute.googleapis.com
+         Status: UP
+
+         us-west4                  us-west4
+         Availability Zones: us-west4-a, us-west4-b, us-west4-c
+         Endpoint: https://us-west4-compute.googleapis.com
+         Status: UP
+
+.. _cli_list_images:
 
 list_images
 ~~~~~~~~~~~
@@ -176,8 +259,9 @@ List available VM images.
 .. code-block:: none
 
    cloud_tasks list_images
-      [Common options]
-      [Additional options]
+     [Common options]
+     [Provider-specific options]
+     [Additional options]
 
 Additional options:
 
@@ -191,31 +275,63 @@ Additional options:
 --limit N         Limit the number of results to the first ``N`` after sorting
 --detail          Show detailed information
 
-Example:
+Examples:
 
-.. code-block:: none
+.. tabs::
 
-   $ cloud_tasks list_images --provider aws --filter sapcal --detail --sort-by=-name --limit 2
-   Retrieving images...
-   Found 2 filtered images for aws:
+   .. tab:: AWS
 
-   Name                                                                             Source
-   ------------------------------------------------------------------------------------------
-   suse-sles-15-sp6-sapcal-v20250409-hvm-ssd-x86_64                                 AWS
-   SUSE Linux Enterprise Server 15 SP6 for SAP CAL (HVM, 64-bit, SSD Backed)
-   ID: ami-09b43f66ab9cce59a
-   CREATION DATE: 2025-04-09T21:15:49.000Z    STATUS: available
-   URL: N/A
+      .. code-block:: none
 
-   suse-sles-15-sp6-sapcal-v20250130-hvm-ssd-x86_64                                 AWS
-   SUSE Linux Enterprise Server 15 SP6 for SAP CAL (HVM, 64-bit, SSD Backed)
-   ID: ami-013778510a6146053
-   CREATION DATE: 2025-01-31T12:06:46.000Z    STATUS: available
-   URL: N/A
+         $ cloud_tasks list_images --provider aws --filter sapcal --detail --sort-by=-name --limit 2
+         Retrieving images...
+         Found 2 filtered images for aws:
+
+         Name                                                                             Source
+         ------------------------------------------------------------------------------------------
+         suse-sles-15-sp6-sapcal-v20250409-hvm-ssd-x86_64                                 AWS
+         SUSE Linux Enterprise Server 15 SP6 for SAP CAL (HVM, 64-bit, SSD Backed)
+         ID: ami-09b43f66ab9cce59a
+         CREATION DATE: 2025-04-09T21:15:49.000Z    STATUS: available
+         URL: N/A
+
+         suse-sles-15-sp6-sapcal-v20250130-hvm-ssd-x86_64                                 AWS
+         SUSE Linux Enterprise Server 15 SP6 for SAP CAL (HVM, 64-bit, SSD Backed)
+         ID: ami-013778510a6146053
+         CREATION DATE: 2025-01-31T12:06:46.000Z    STATUS: available
+         URL: N/A
 
 
-   To use a custom image with the 'run' or 'manage_pool' commands, use the --image parameter.
-   For AWS, specify the AMI ID: --image ami-12345678
+         To use a custom image with the 'run' or 'manage_pool' commands, use the --image parameter.
+         For AWS, specify the AMI ID: --image ami-12345678
+
+   .. tab:: GCP
+
+      .. code-block:: none
+
+         $ cloud_tasks list_images --provider gcp --filter centos --detail --sort-by=-name --limit 2
+         Retrieving images...
+         Found 2 filtered images for gcp:
+
+         Family                              Name                                               Project               Source
+         ------------------------------------------------------------------------------------------------------------------
+         centos-stream-9                     centos-stream-9-v20250415                          centos-cloud          GCP
+         CentOS, CentOS, Stream 9, x86_64 built on 20250415
+         ID: 150443207020477652        CREATION DATE: 2025-04-15T13:31:56.385-07:00       STATUS: READY
+         URL: https://www.googleapis.com/compute/v1/projects/centos-cloud/global/images/centos-stream-9-v20250415
+
+         centos-stream-9-arm64               centos-stream-9-arm64-v20250415                    centos-cloud          GCP
+         CentOS, CentOS, Stream 9, aarch64 built on 20250415
+         ID: 8695213632332725460       CREATION DATE: 2025-04-15T13:31:56.337-07:00       STATUS: READY
+         URL: https://www.googleapis.com/compute/v1/projects/centos-cloud/global/images/centos-stream-9-arm64-v20250415
+
+
+         To use a custom image with the 'run' or 'manage_pool' commands, use the --image parameter.
+         For GCP, specify the image family or full URI: --image ubuntu-2404-lts or --image https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-2404-lts-amd64-v20240416
+
+
+
+.. _cli_list_instance_types:
 
 list_instance_types
 ~~~~~~~~~~~~~~~~~~~
@@ -225,13 +341,14 @@ List available instance types with pricing.
 .. code-block:: none
 
    cloud_tasks list_instance_types
-      [Common options]
-      [Instance type selection options]
-      [Additional options]
+     [Common options]
+     [Provider-specific options]
+     [Instance type selection options]
+     [VM options]
+     [Additional options]
 
 Additional options:
 
---region REGION   Region to use, overrides configuration file
 --filter TEXT     Include only images containing ``TEXT`` in any field
 --sort-by FIELDS  Sort the result by one or more comma-separated fields; available fields
                   are ``name``, ``vcpu``, ``mem``, ``local_ssd``, ``storage``,
@@ -244,140 +361,196 @@ Additional options:
 --limit N         Limit the number of results to the first ``N`` after sorting
 --detail          Show detailed information
 
-Example:
+Examples:
 
-.. code-block:: none
+.. tabs::
 
-   $ cloud_tasks list_instance_types --provider gcp --region us-central1 --instance-types "n.-.*" --sort-by=-cpu,-mem --limit 5
-   Retrieving instance types...
-   Retrieving pricing information...
+   .. tab:: AWS
 
-   Instance Type                  Arch vCPU   Mem (GB)  LSSD (GB)  Disk (GB)  Total $/Hr         Zone
-   -----------------------------------------------------------------------------------------------------------
-   n1-ultramem-160              X86_64  160     3844.0          0          0    $21.3448  us-central1-*
-   n2-highmem-128               X86_64  128      864.0          0          0     $7.7070  us-central1-*
-   n2-standard-128              X86_64  128      512.0          0          0     $6.2156  us-central1-*
-   n1-megamem-96                X86_64   96     1433.6          0          0     $9.1088  us-central1-*
-   n2-highmem-96                X86_64   96      768.0          0          0     $6.2887  us-central1-*
+      .. code-block:: none
+
+         $ cloud_tasks list_instance_types --provider aws --region us-west-1 --instance-types "m4.*" --sort-by=-cpu,-mem --limit 5
+         Retrieving instance types...
+         Retrieving pricing information...
+
+         Instance Type                  Arch vCPU   Mem (GB)  LSSD (GB)  Disk (GB)  Total $/Hr         Zone
+         -----------------------------------------------------------------------------------------------------------
+         m4.16xlarge                  x86_64   64      256.0          0          0     $3.7440  us-west-1-*
+         m4.10xlarge                  x86_64   40      160.0          0          0     $2.3400  us-west-1-*
+         m4.4xlarge                   x86_64   16       64.0          0          0     $0.9360  us-west-1-*
+         m4.2xlarge                   x86_64    8       32.0          0          0     $0.4680  us-west-1-*
+         m4.xlarge                    x86_64    4       16.0          0          0     $0.2340  us-west-1-*
+
+   .. tab:: GCP
+
+      .. code-block:: none
+
+         $ cloud_tasks list_instance_types --provider gcp --region us-central1 --instance-types "n.-.*" --sort-by=-cpu,-mem --limit 5
+         Retrieving instance types...
+         Retrieving pricing information...
+
+         Instance Type                  Arch vCPU   Mem (GB)  LSSD (GB)  Disk (GB)  Total $/Hr         Zone
+         -----------------------------------------------------------------------------------------------------------
+         n1-ultramem-160              X86_64  160     3844.0          0          0    $21.3448  us-central1-*
+         n2-highmem-128               X86_64  128      864.0          0          0     $7.7070  us-central1-*
+         n2-standard-128              X86_64  128      512.0          0          0     $6.2156  us-central1-*
+         n1-megamem-96                X86_64   96     1433.6          0          0     $9.1088  us-central1-*
+         n2-highmem-96                X86_64   96      768.0          0          0     $6.2887  us-central1-*
+
+
+.. _cli_list_running_instances:
 
 list_running_instances
 ~~~~~~~~~~~~~~~~~~~~~~
 
-List currently running instances.
+List currently running instances. By default only active instances created by Cloud Tasks
+are shown. If only a region is specified, instances in all zones in that region are shown. If a
+zone is specified, only instances in that zone are shown.
 
 .. code-block:: none
 
-   python -m cloud_tasks.cli list_running_instances
-     --config CONFIG
-     --provider {aws,gcp,azure}
-     [--job-id JOB_ID]    Filter by job ID
-     [--all-instances]    Show all instances including non-cloud-tasks ones
-     [--include-terminated] Include terminated instances
-     [--sort-by FIELDS]   Sort by comma-separated fields
-     [--detail]          Show detailed information
-     [--region REGION]   Specific region to use
-     [--zone ZONE]       Specific zone to use
-     [--verbose]
+   cloud_tasks list_running_instances
+     [Common options]
+     [Provider-specific options]
+     [Additional options]
 
-This command displays:
+Additional options:
 
-- Instance IDs, types, and states
-- Creation timestamps
-- Associated tags (like job ID and role)
-- Summary information (total instances, running vs. starting)
-- Detailed information in verbose mode (``--verbose``)
+--job-id JOB_ID         Filter by job ID
+--all-instances         Show all instances including ones that were not created by Cloud Tasks
+--include-terminated    Include terminated instances
+--sort-by FIELDS        Sort results by comma-separated fields (e.g.,
+                        "state,type" or "-created,id"). Available fields: id, type, state,
+                        zone, creation_time. Prefix with "-" for descending order. Partial
+                        field names like "t" for "type" or "s" for "state" are supported.
+--detail                Show detailed information
 
-Example:
+Examples:
 
-.. code-block:: bash
+.. tabs::
 
-   python -m cloud_tasks.cli list_running_instances \
-     --config cloud_tasks_config.yaml \
-     --provider aws \
-     --job-id my-job-id
+   .. tab:: AWS
+
+      TODO
+
+   .. tab:: GCP
+
+      .. code-block:: none
+
+         $ cloud_tasks list_running_instances --provider gcp --project my-project --region us-central1 --all-instances --include-terminated
+         Listing all instances including ones not created by cloud tasks
+
+         Job ID           ID                                                               Type            State       Zone            Created
+         -----------------------------------------------------------------------------------------------------------------------------------------------------------
+         N/A              personal-instance-1                                              e2-micro        running     us-central1-c   2025-04-28T14:33:46.974-07:00
+         my-job           rmscr-my-job-b2siduvm6a88og25yu5z76kkd                           e2-micro        terminated  us-central1-b   2025-04-28T14:22:01.786-07:00
+         my-job           rmscr-my-job-cjh38y7dttesfqkdbx4ew6kxb                           e2-micro        running     us-central1-a   2025-04-28T14:22:01.585-07:00
+
+         Summary: 3 total instances
+         2 running
+         1 terminated
+
+.. _cli_job_management_commands:
 
 Job Management Commands
 -----------------------
 
-run
-~~~
+.. _cli_manage_pool_cmd:
 
-Run a job with automatic instance management.
+manage_pool
+~~~~~~~~~~~
+
+Manage a pool of compute instances, given various constraints. This will choose an optimal
+compute instance type based on the constraints, monitor the size of the instance pool
+that is running, and start new instances as needed. In general the maximum number of
+instances allowed that otherwise meet the constaints will be created. When an instance
+is terminated, either because of an hardware or software error, or because a spot instance
+was preempted, a new instance will be started to replace it.
+
+Only instances running in the given region, and, if specified, zone, are watched as part
+of the pool.
+
+If no zone is specified, the instances will be started in a random zones within the
+region; if a zone is specified, the instances will be started only in that zone.
+
+The the task queue for the job is empty, the instance pool will not be created in the
+first place.
+
+TBD Stuff about what happens once the queue is empty.
+
+.. note::
+
+   An image and startup script must be specified.
 
 .. code-block:: none
 
-   python -m cloud_tasks.cli run
-     --config CONFIG
-     --provider {aws,gcp,azure}
-     --job-id JOB_ID
-     --queue-name QUEUE_NAME
-     --tasks TASKS_FILE      Path to tasks file (JSON or YAML)
-     --start-task N         Skip tasks until this task number (1-based)
-     --limit N              Maximum number of tasks to enqueue
-     --max-concurrent-tasks N Maximum concurrent tasks to enqueue (default: 100)
-     --cpu CPU              Number of CPU cores required
-     --memory MEMORY        Memory required in GB
-     --disk DISK            Disk space required in GB
-     --min-instances MIN    Minimum number of instances to maintain
-     --max-instances MAX    Maximum number of instances allowed
-     --min-total-cpus N     Filter instance types by min total vCPUs
-     --max-total-cpus N     Filter instance types by max total vCPUs
-     --min-total-price-per-hour N  Filter by min total price per hour
-     --max-total-price-per-hour N  Filter by max total price per hour
-     --cpus-per-task N      Number of vCPUs per task
-     --min-tasks-per-instance N  Minimum tasks per instance
-     --max-tasks-per-instance N  Maximum tasks per instance
-     --architecture {x86_64,arm64}  CPU architecture to use
-     --min-cpu N            Filter by min vCPUs
-     --max-cpu N            Filter by max vCPUs
-     --min-total-memory N   Filter by min total memory (GB)
-     --max-total-memory N   Filter by max total memory (GB)
-     --min-memory-per-cpu N Filter by min memory per vCPU (GB)
-     --max-memory-per-cpu N Filter by max memory per vCPU (GB)
-     --min-local-ssd N      Filter by min local SSD (GB)
-     --max-local-ssd N      Filter by max local SSD (GB)
-     --min-local-ssd-per-cpu N  Filter by min local SSD per vCPU
-     --max-local-ssd-per-cpu N  Filter by max local SSD per vCPU
-     --min-boot-disk N      Filter by min boot disk (GB)
-     --max-boot-disk N      Filter by max boot disk (GB)
-     --min-boot-disk-per-cpu N  Filter by min boot disk per vCPU
-     --max-boot-disk-per-cpu N  Filter by max boot disk per vCPU
-     [--use-spot]          Use spot/preemptible instances
-     [--region REGION]     Specific region to use
-     [--zone ZONE]         Specific zone to use
-     [--startup-script-file FILE] Path to startup script file
-     [--instance-types TYPES]  Space-separated instance type families
-     [--image IMAGE]       VM image ID or name
-     [--task-timeout SECONDS]  Maximum time for a task to complete
-     [--instance-timeout SECONDS] Maximum time for an instance to run
-     [--scaling-check-interval SECONDS] Interval between scaling checks (default: 60)
-     [--instance-termination-delay SECONDS] Delay before terminating instances (default: 60)
-     [--max-runtime SECONDS] Maximum runtime for a worker job (default: 60)
-     [--worker-use-new-process] Use new process for each task (default: False)
-     [--verbose]
+   cloud_tasks manage_pool
+     [Common options]
+     [Provider-specific options]
+     [Job-specific options]
+     [Instance type selection options]
+     [Number of instances options]
+     [VM options]
+     [Boot options]
+     [Worker and Manage Pool options]
 
-Example:
+Examples:
 
-.. code-block:: bash
+.. tabs::
 
-   python -m cloud_tasks.cli run \
-     --config cloud_tasks_config.yaml \
-     --provider aws \
-     --job-id my-processing-job \
-     --queue-name my-task-queue \
-     --tasks tasks.json \
-     --cpu 2 \
-     --memory 4 \
-     --disk 20 \
-     --min-instances 1 \
-     --max-instances 10 \
-     --use-spot \
-     --region us-west-2 \
-     --startup-script-file setup.sh \
-     --instance-types "t3 m5" \
-     --image ami-123456 \
-     --task-timeout 3600 \
-     --instance-timeout 7200
+   .. tab:: AWS
+
+      TODO
+
+   .. tab:: GCP
+
+      $ cloud_tasks manage_pool --provider gcp --project my-project --job-id my-job --max-cpu 2 --max-instances 5 --startup-script-file startup_script_file.sh --region us-central1 --image https://www.googleapis.com/compute/v1/projects/centos-cloud/global/images/centos-stream-9-v20250415 -v
+      [TODO Put new stuff here]
+
+
+.. _cli_run_cmd:
+
+run
+~~~
+
+This combines the functionality of ``load_queue`` and ``manage_pool``, allowing the task
+queue to be populated with tasks and the instance pool to be managed usnig a single
+command.
+
+.. code-block:: none
+
+   cloud_tasks run
+     [Common options]
+     [Provider-specific options]
+     [Job-specific options]
+     [Instance type selection options]
+     [Number of instances options]
+     [VM options]
+     [Boot options]
+     [Worker and Manage Pool options]
+     [Additional options]
+
+Additional options:
+
+--tasks TASKS_FILE         Path to tasks file (JSON or YAML)
+--start-task N             Skip tasks until this task number (1-based)
+--limit N                  Maximum number of tasks to enqueue
+--max-concurrent-tasks N   Maximum concurrent tasks to enqueue (default: 100)
+
+Examples:
+
+.. tabs::
+
+   .. tab:: AWS
+
+      TODO
+
+   .. tab:: GCP
+
+      TODO
+
+
+.. _cli_status_cmd:
 
 status
 ~~~~~~
@@ -386,22 +559,39 @@ Check the status of a running job.
 
 .. code-block:: none
 
-   python -m cloud_tasks.cli status
-     --config CONFIG
-     --provider {aws,gcp,azure}
-     --job-id JOB_ID
-     [--region REGION]     Specific region to use
-     [--zone ZONE]         Specific zone to use
-     [--verbose]
+   cloud_tasks status
+     [Common options]
+     [Provider-specific options]
+     [Job-specific options]
 
-Example:
+Examples:
 
-.. code-block:: bash
+.. tabs::
 
-   python -m cloud_tasks.cli status \
-     --config cloud_tasks_config.yaml \
-     --provider aws \
-     --job-id my-job-id
+   .. tab:: AWS
+
+      TODO
+
+   .. tab:: GCP
+
+      .. code-block:: none
+
+         $ cloud_tasks status --provider gcp --project my-project --job-id my-job --region us-central1
+         Checking job status for job 'my-job'
+         Running instance summary:
+         State       Instance Type             vCPUs  Zone             Count  Total Price
+         --------------------------------------------------------------------------------
+         running     e2-micro                      2  us-central1-a        1        $0.05
+         running     e2-micro                      2  us-central1-b        1        $0.05
+         running     e2-micro                      2  us-central1-c        1        $0.05
+         running     e2-micro                      2  us-central1-f        2        $0.09
+         --------------------------------------------------------------------------------
+         Total running/starting:                  10 (weighted)            5        $0.23
+
+         Current queue depth: 10+
+
+
+.. _cli_stop_cmd:
 
 stop
 ~~~~
@@ -410,240 +600,252 @@ Stop a job and terminate its instances.
 
 .. code-block:: none
 
-   python -m cloud_tasks.cli stop
-     --config CONFIG
-     --provider {aws,gcp,azure}
-     --job-id JOB_ID
-     [--purge-queue]      Purge the queue after stopping
-     [--force]           Stop without confirmation
-     [--region REGION]   Specific region to use
-     [--zone ZONE]       Specific zone to use
-     [--verbose]
+   cloud_tasks stop
+     [Common options]
+     [Provider-specific options]
+     [Job-specific options]
+     [Additional options]
 
-Example:
+Additional options:
 
-.. code-block:: bash
+--purge-queue           Purge the task queue after stopping instances
 
-   python -m cloud_tasks.cli stop \
-     --config cloud_tasks_config.yaml \
-     --provider aws \
-     --job-id my-job-id \
-     --force
+Examples:
 
-manage_pool
-~~~~~~~~~~~
+.. tabs::
 
-Adjust the instance pool size for a running job.
+   .. tab:: AWS
 
-.. code-block:: none
+      TODO
 
-   python -m cloud_tasks.cli manage_pool
-     --config CONFIG
-     --provider {aws,gcp,azure}
-     --job-id JOB_ID
-     --min-instances MIN    New minimum instances
-     --max-instances MAX    New maximum instances
-     --min-total-cpus N     Filter instance types by min total vCPUs
-     --max-total-cpus N     Filter instance types by max total vCPUs
-     --min-total-price-per-hour N  Filter by min total price per hour
-     --max-total-price-per-hour N  Filter by max total price per hour
-     --cpus-per-task N      Number of vCPUs per task
-     --min-tasks-per-instance N  Minimum tasks per instance
-     --max-tasks-per-instance N  Maximum tasks per instance
-     --architecture {x86_64,arm64}  CPU architecture to use
-     [--image IMAGE]       VM image to use
-     [--startup-script-file FILE] Path to startup script file
-     [--scaling-check-interval SECONDS] Interval between scaling checks (default: 60)
-     [--instance-termination-delay SECONDS] Delay before terminating instances (default: 60)
-     [--max-runtime SECONDS] Maximum runtime for a worker job (default: 60)
-     [--worker-use-new-process] Use new process for each task (default: False)
-     [--use-spot]         Use spot/preemptible instances
-     [--region REGION]    Specific region to use
-     [--zone ZONE]        Specific zone to use
-     [--verbose]
+   .. tab:: GCP
 
-Example:
+      .. code-block:: none
 
-.. code-block:: bash
+         $ cloud_tasks stop --provider gcp --project my-project --job-id my-job --region us-central1
+         Stopping job 'my-job'...this could take a few minutes
+         Job 'my-job' stopped
 
-   python -m cloud_tasks.cli manage_pool \
-     --config cloud_tasks_config.yaml \
-     --provider aws \
-     --job-id my-job-id \
-     --min-instances 1 \
-     --max-instances 10
 
 Queue Management Commands
 -------------------------
 
 .. _load_queue_cmd:
+
 load_queue
 ~~~~~~~~~~
 
-Load tasks into a queue.
+Load tasks into a queue. If the queue already exists, the tasks will be added to the end
+of the queue.
 
 .. code-block:: none
 
-   python -m cloud_tasks.cli load_queue
-     --config CONFIG
-     --provider {aws,gcp,azure}
-     --queue-name QUEUE_NAME
-     --tasks TASKS_FILE    Path to tasks file (JSON or YAML)
-     [--start-task N]     Skip tasks until this task number (1-based)
-     [--limit N]          Maximum number of tasks to enqueue
-     [--max-concurrent-tasks N] Maximum concurrent tasks to enqueue (default: 100)
-     [--region REGION]    Specific region to use
-     [--zone ZONE]        Specific zone to use
-     [--verbose]
+   cloud_tasks load_queue
+     [Common options]
+     [Job-specific options]
+     [Provider-specific options]
+     [Additional options]
 
-Example:
+Additional options:
 
-.. code-block:: bash
+--tasks TASKS_FILE         Path to tasks file (JSON or YAML)
+--start-task N             Skip tasks until this task number (1-based)
+--limit N                  Maximum number of tasks to enqueue
+--max-concurrent-tasks N   Maximum concurrent tasks to enqueue (default: 100)
 
-   python -m cloud_tasks.cli load_queue \
-     --config cloud_tasks_config.yaml \
-     --provider aws \
-     --queue-name my-task-queue \
-     --tasks tasks.json
+Examples:
+
+.. tabs::
+
+   .. tab:: AWS
+
+      .. code-block:: none
+
+         $ cloud_tasks load_queue --provider aws --job-id my-job --tasks examples/parallel_addition/addition_tasks.json
+         Creating task queue 'my-job' on AWS if necessary...
+         Populating task queue from examples/parallel_addition/addition_tasks.json...
+         Enqueueing tasks: 10000it [00:13, 735.74it/s]
+         Loaded 10000 task(s)
+         Tasks loaded successfully. Queue depth (may be approximate): 10000
+
+   .. tab:: GCP
+
+      .. code-block:: none
+
+         $ cloud_tasks load_queue --provider gcp --job-id my-job --project my-project --tasks examples/parallel_addition/addition_tasks.json
+         Creating task queue 'my-job' on GCP if necessary...
+         Populating task queue from examples/parallel_addition/addition_tasks.json...
+         Enqueueing tasks: 10000it [00:07, 1414.18it/s]
+         Loaded 10000 task(s)
+         Tasks loaded successfully. Queue depth (may be approximate): 10
+
+
+.. _cli_show_queue_cmd:
 
 show_queue
 ~~~~~~~~~~
 
-Show information about a task queue.
+Show information about a task queue. Note that some providers do not provide an accurate
+count of messages remaining in a queue.
 
 .. code-block:: none
 
-   python -m cloud_tasks.cli show_queue
-     --config CONFIG
-     --provider {aws,gcp,azure}
-     --queue-name QUEUE_NAME
-     [--detail]          Show a sample message
-     [--region REGION]   Specific region to use
-     [--zone ZONE]       Specific zone to use
-     [--verbose]
+   cloud_tasks show_queue
+     [Common options]
+     [Job-specific options]
+     [Provider-specific options]
+     [Additional options]
 
-Example:
+Additional options:
 
-.. code-block:: bash
+--detail          Show a sample message
 
-   python -m cloud_tasks.cli show_queue \
-     --config cloud_tasks_config.yaml \
-     --provider aws \
-     --queue-name my-task-queue \
-     --verbose
+Examples:
+
+.. tabs::
+
+   .. tab:: AWS
+
+      .. code-block:: none
+
+         $ cloud_tasks show_queue --provider aws --job-id my-job --detail
+         Checking queue depth for 'my-job'...
+         Current depth: 10000 message(s)
+
+         Attempting to peek at first message...
+
+         --------------------------------------------------
+         SAMPLE MESSAGE
+         --------------------------------------------------
+         Task ID: addition-task-000035
+         Receipt Handle: AQEBt0nqkqnpbta3H0OV62eJGwx6do5rXY8MW+NbGlnhwE0Etz...
+
+         Data:
+         {
+         "num1": 1438,
+         "num2": 49332
+         }
+
+         Note: Message was not removed from the queue.
+
+   .. tab:: GCP
+
+      .. code-block:: none
+
+         $ cloud_tasks show_queue --provider gcp --job-id my-job --project my-project --detail
+         Checking queue depth for 'my-job'...
+         Current depth: 10 message(s)
+
+         Attempting to peek at first message...
+
+         --------------------------------------------------
+         SAMPLE MESSAGE
+         --------------------------------------------------
+         Task ID: addition-task-000011
+         Ack ID: RkhRNxkIaFEOT14jPzUgKEUWAggUBXx9S1tTNA0UKRpQCh0dfW...
+
+         Data:
+         {
+         "num1": 60977,
+         "num2": 24891
+         }
+
+         Note: Message was not removed from the queue.
+
+.. _cli_purge_queue_cmd:
 
 purge_queue
 ~~~~~~~~~~~
 
-Remove all messages from a queue.
+Remove all messages from a queue. This can be used to delete any remaining tasks; you can
+then reload the queue with new tasks if needed.
 
 .. code-block:: none
 
-   python -m cloud_tasks.cli purge_queue
-     --config CONFIG
-     --provider {aws,gcp,azure}
-     --queue-name QUEUE_NAME
-     [--force]           Purge without confirmation
-     [--region REGION]   Specific region to use
-     [--zone ZONE]       Specific zone to use
-     [--verbose]
+   cloud_tasks purge_queue
+     [Common options]
+     [Job-specific options]
+     [Provider-specific options]
+     [Additional options]
 
-Example:
+Additional options:
 
-.. code-block:: bash
+--force           Purge without confirmation
 
-   python -m cloud_tasks.cli purge_queue \
-     --config cloud_tasks_config.yaml \
-     --provider aws \
-     --queue-name my-task-queue \
-     --force
+Examples:
+
+.. tabs::
+
+   .. tab:: AWS
+
+      .. code-block:: none
+
+         $ cloud_tasks purge_queue --provider aws --job-id my-job
+
+         WARNING: This will permanently delete all 10000+ messages from queue 'my-job' on 'AWS'.
+         Type 'EMPTY my-job' to confirm: EMPTY my-job
+         Emptying queue 'my-job'...
+         Queue 'my-job' has been emptied. Removed 10000+ message(s).
+
+   .. tab:: GCP
+
+      .. code-block:: none
+
+         ❯ cloud_tasks purge_queue --provider gcp --job-id my-job --project my-project
+
+         WARNING: This will permanently delete all 10+ messages from queue 'my-job' on 'GCP'.
+         Type 'EMPTY my-job' to confirm: EMPTY my-job
+         Emptying queue 'my-job'...
+         Queue 'my-job' has been emptied. Removed 10+ message(s).
+
+
+.. _cli_delete_queue_cmd:
 
 delete_queue
 ~~~~~~~~~~~~
 
-Delete a queue and its infrastructure.
+Delete a queue and its infrastructure. This permanently frees up the resources used by the
+queue. Only do this if there are no processes running that use the queue.
 
 .. code-block:: none
 
-   python -m cloud_tasks.cli delete_queue
-     --config CONFIG
-     --provider {aws,gcp,azure}
-     --queue-name QUEUE_NAME
-     [--force]           Delete without confirmation
-     [--region REGION]   Specific region to use
-     [--zone ZONE]       Specific zone to use
-     [--verbose]
+   cloud_tasks purge_queue
+     [Common options]
+     [Job-specific options]
+     [Provider-specific options]
+     [Additional options]
 
-Example:
+Additional options:
 
-.. code-block:: bash
+--force           Delete without confirmation
 
-   python -m cloud_tasks.cli delete_queue \
-     --config cloud_tasks_config.yaml \
-     --provider aws \
-     --queue-name my-task-queue \
-     --force
+Examples:
 
-show_queue_depth
-~~~~~~~~~~~~~~~~
+.. tabs::
 
-Display the current depth of a task queue.
+   .. tab:: AWS
 
-.. code-block:: none
+      .. code-block:: none
 
-   python -m cloud_tasks.cli show_queue_depth
-     --config CONFIG
-     --provider {aws,gcp,azure}
-     --queue-name QUEUE_NAME
-     [--verbose]
+         $ cloud_tasks delete_queue --provider aws --job-id my-job
 
-With the ``--verbose`` flag, the command will also attempt to peek at the first message in the queue without removing it, displaying its contents.
+         WARNING: This will permanently delete the queue 'my-job' from AWS.
+         This operation cannot be undone and will remove all infrastructure.
+         Type 'DELETE my-job' to confirm: DELETE my-job
+         Deleting queue 'my-job' from AWS...
+         Queue 'my-job' has been deleted.
 
-Example:
+   .. tab:: GCP
 
-.. code-block:: bash
+      .. code-block:: none
 
-   python -m cloud_tasks.cli show_queue_depth \
-     --config cloud_tasks_config.yaml \
-     --provider aws \
-     --queue-name my-task-queue
+         $ cloud_tasks delete_queue --provider gcp --job-id my-job --project my-project
 
-empty_queue
-~~~~~~~~~~~
-
-Remove all messages from a queue.
-
-.. code-block:: none
-
-   python -m cloud_tasks.cli empty_queue
-     --config CONFIG
-     --provider {aws,gcp,azure}
-     --queue-name QUEUE_NAME
-     [--force]           Skip confirmation prompt
-     [--region REGION]   Specific region to use
-     [--zone ZONE]       Specific zone to use
-     [--verbose]
-
-This command:
-
-- Shows the current queue depth before emptying
-- Prompts for confirmation (unless ``--force`` is used)
-- Purges all messages from the queue
-- Verifies the queue is empty after the operation
-- Provides a warning if messages remain after purging (e.g., in-flight messages)
-
-.. warning::
-   Use this command with caution as it permanently deletes all messages in the queue.
-
-Example:
-
-.. code-block:: bash
-
-   python -m cloud_tasks.cli empty_queue \
-     --config cloud_tasks_config.yaml \
-     --provider aws \
-     --queue-name my-task-queue \
-     --force
+         WARNING: This will permanently delete the queue 'my-job' from GCP.
+         This operation cannot be undone and will remove all infrastructure.
+         Type 'DELETE my-job' to confirm: DELETE my-job
+         Deleting queue 'my-job' from GCP...
+         Queue 'my-job' has been deleted.
 
 
 Exit Status
@@ -653,25 +855,3 @@ The CLI returns the following exit codes:
 
 * 0 - Success
 * 1 - Error occurred during command execution
-
-Environment Variables
----------------------
-
-Cloud Tasks can use environment variables for credentials:
-
-- AWS: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
-- GCP: GOOGLE_APPLICATION_CREDENTIALS
-- Azure: AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET
-
-Troubleshooting
----------------
-
-Common Issues
-~~~~~~~~~~~~~
-
-1. **Connection Errors**: Ensure your credentials and network settings are correct
-2. **Permission Denied**: Verify the provided credentials have sufficient permissions
-3. **Resource Not Found**: Check that the specified queues, regions, or resources exist
-
-.. note::
-   For more detailed error messages, use the ``--verbose`` flag.
