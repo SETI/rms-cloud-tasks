@@ -1,5 +1,5 @@
-import os
-import tempfile
+# Manually verified 4/29/2025
+
 import yaml
 import pytest
 import pydantic
@@ -364,7 +364,6 @@ def test_load_config_file_gcp(tmp_path):
         assert cfg.run.architecture == "x86_64"
 
 
-# Above function for AWS and AZURE
 def test_load_config_file_aws(tmp_path):
     config_dict = {
         "provider": "aws",
@@ -477,11 +476,10 @@ def test_load_config_instance_types_str_to_list(tmp_path):
     file_path = tmp_path / "config.yaml"
     with open(file_path, "w") as f:
         yaml.safe_dump(config_dict, f)
-    with patch.object(config_mod, "FCPath", lambda *a, **kw: file_path):
-        cfg = load_config(str(file_path))
-        assert cfg.gcp.instance_types == ["n1-standard-1"]
-        assert cfg.aws.instance_types == ["t2.micro"]
-        assert cfg.azure.instance_types == ["Standard_B1s"]
+    cfg = load_config(str(file_path))
+    assert cfg.gcp.instance_types == ["n1-standard-1"]
+    assert cfg.aws.instance_types == ["t2.micro"]
+    assert cfg.azure.instance_types == ["Standard_B1s"]
 
 
 def test_load_config_instance_types_str_to_list_edge_cases(tmp_path):
@@ -496,11 +494,10 @@ def test_load_config_instance_types_str_to_list_edge_cases(tmp_path):
     file_path = tmp_path / "config.yaml"
     with open(file_path, "w") as f:
         yaml.safe_dump(config_dict, f)
-    with patch("cloud_tasks.common.config.FCPath", lambda *a, **kw: file_path):
-        cfg = load_config(str(file_path))
-        assert cfg.gcp.instance_types == ["n1-standard-1"]
-        assert cfg.aws.instance_types == ["t2.micro"]
-        assert cfg.azure.instance_types == ["Standard_B1s"]
+    cfg = load_config(str(file_path))
+    assert cfg.gcp.instance_types == ["n1-standard-1"]
+    assert cfg.aws.instance_types == ["t2.micro"]
+    assert cfg.azure.instance_types == ["Standard_B1s"]
     # Missing instance_types
     config_dict = {
         "provider": "gcp",
@@ -512,8 +509,7 @@ def test_load_config_instance_types_str_to_list_edge_cases(tmp_path):
     file_path2 = tmp_path / "config2.yaml"
     with open(file_path2, "w") as f:
         yaml.safe_dump(config_dict, f)
-    with patch("cloud_tasks.common.config.FCPath", lambda *a, **kw: file_path2):
-        cfg = load_config(str(file_path2))
-        assert cfg.gcp.instance_types is None
-        assert cfg.aws.instance_types is None
-        assert cfg.azure.instance_types is None
+    cfg = load_config(str(file_path2))
+    assert cfg.gcp.instance_types is None
+    assert cfg.aws.instance_types is None
+    assert cfg.azure.instance_types is None

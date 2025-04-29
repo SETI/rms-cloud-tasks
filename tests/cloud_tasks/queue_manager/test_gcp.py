@@ -1,6 +1,4 @@
-"""
-Tests for the GCP Pub/Sub queue adapter.
-"""
+# Manually verified 4/29/2025
 
 import pytest
 import sys

@@ -11,11 +11,11 @@ from datetime import timedelta
 from azure.servicebus import ServiceBusClient, ServiceBusMessage  # type: ignore
 from azure.servicebus.management import ServiceBusAdministrationClient  # type: ignore
 
-from .taskqueue import TaskQueue
+from .queue_manager import QueueManager
 from cloud_tasks.common.config import AzureConfig
 
 
-class AzureServiceBusQueue(TaskQueue):
+class AzureServiceBusQueue(QueueManager):
     """Azure Service Bus implementation of the TaskQueue interface."""
 
     def __init__(self, azure_config: AzureConfig) -> None:

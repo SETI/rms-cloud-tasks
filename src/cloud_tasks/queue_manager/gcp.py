@@ -13,10 +13,10 @@ from google.api_core import exceptions as gcp_exceptions
 
 from cloud_tasks.common.config import GCPConfig
 
-from .taskqueue import TaskQueue
+from .queue_manager import QueueManager
 
 
-class GCPPubSubQueue(TaskQueue):
+class GCPPubSubQueue(QueueManager):
     """Google Cloud Pub/Sub implementation of the TaskQueue interface."""
 
     def __init__(

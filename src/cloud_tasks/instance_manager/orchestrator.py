@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from cloud_tasks.instance_manager.instance_manager import InstanceManager
 from cloud_tasks.queue_manager import create_queue
-from cloud_tasks.queue_manager.taskqueue import TaskQueue
+from cloud_tasks.queue_manager.queue_manager import QueueManager
 from cloud_tasks.instance_manager import create_instance_manager
 from cloud_tasks.common.config import Config
 
@@ -69,7 +69,7 @@ class InstanceOrchestrator:
 
         # Will be initialized in start()
         self._instance_manager: Optional[InstanceManager] = None
-        self._task_queue: Optional[TaskQueue] = None
+        self._task_queue: Optional[QueueManager] = None
         self._optimal_instance_info = None
         self._optimal_instance_boot_disk_size = None
         self._optimal_instance_num_tasks = None
@@ -184,7 +184,7 @@ class InstanceOrchestrator:
                 self._logger.info(f"    {line}")
 
     @property
-    def task_queue(self) -> TaskQueue:
+    def task_queue(self) -> QueueManager:
         return self._task_queue
 
     @property

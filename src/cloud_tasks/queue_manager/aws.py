@@ -10,11 +10,11 @@ from typing import Any, Dict, List
 import boto3  # type: ignore
 from botocore.exceptions import ClientError  # type: ignore
 
-from .taskqueue import TaskQueue
+from .queue_manager import QueueManager
 from cloud_tasks.common.config import AWSConfig
 
 
-class AWSSQSQueue(TaskQueue):
+class AWSSQSQueue(QueueManager):
     """AWS SQS implementation of the TaskQueue interface."""
 
     def __init__(self, aws_config: AWSConfig) -> None:

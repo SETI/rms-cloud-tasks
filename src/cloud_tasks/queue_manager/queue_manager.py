@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional
 from cloud_tasks.common.config import ProviderConfig
 
 
-class TaskQueue(ABC):
+class QueueManager(ABC):
     """Base interface for task queue operations."""
 
     def __init__(self, config: Optional[ProviderConfig] = None, **kwargs: Any) -> None:
