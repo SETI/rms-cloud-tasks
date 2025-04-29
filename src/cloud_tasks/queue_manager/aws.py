@@ -5,7 +5,7 @@ AWS SQS implementation of the TaskQueue interface.
 import json
 import logging
 import asyncio
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import boto3  # type: ignore
 from botocore.exceptions import ClientError  # type: ignore
@@ -17,16 +17,25 @@ from cloud_tasks.common.config import AWSConfig
 class AWSSQSQueue(QueueManager):
     """AWS SQS implementation of the TaskQueue interface."""
 
-    def __init__(self, aws_config: AWSConfig) -> None:
+    def __init__(
+        self,
+        aws_config: Optional[AWSConfig] = None,
+        queue_name: Optional[str] = None,
+        **kwargs: Any,
+    ) -> None:
         """
         Initialize the SQS queue with configuration.
 
         Args:
-            queue_name: Name of the SQS queue
-            config: AWS configuration with access_key, secret_key, and region
+            aws_config: AWS configuration
+            queue_name: Name of the SQS queue (if not using aws_config)
+            **kwargs: Additional configuration parameters
         """
-        super().__init__(aws_config)
-        self._queue_name = aws_config.queue_name
+        if queue_name is not None:
+            self._queue_name = queue_name
+        else:
+            self._queue_name = aws_config.queue_name
+
         if self._queue_name is None:
             raise ValueError("Queue name is required")
 
@@ -43,9 +52,11 @@ class AWSSQSQueue(QueueManager):
             # Create SQS client
             self._sqs = boto3.client(
                 "sqs",
-                aws_access_key_id=aws_config.access_key,
-                aws_secret_access_key=aws_config.secret_key,
-                region_name=aws_config.region,
+                aws_access_key_id=aws_config.access_key if aws_config else kwargs.get("access_key"),
+                aws_secret_access_key=(
+                    aws_config.secret_key if aws_config else kwargs.get("secret_key")
+                ),
+                region_name=aws_config.region if aws_config else kwargs.get("region"),
             )
 
             # Check if queue exists
@@ -103,7 +114,7 @@ class AWSSQSQueue(QueueManager):
 
         Args:
             task_id: Unique identifier for the task
-            task_data: Task data to be processed
+            task_data: Task data to be sent
         """
         self._logger.debug(f"Sending task '{task_id}' to queue '{self._queue_name}'")
 
@@ -128,7 +139,7 @@ class AWSSQSQueue(QueueManager):
             self._logger.debug(f"Published message for task {task_id}")
         except Exception as e:
             self._logger.error(f"Failed to send task to AWS SQS queue: {str(e)}")
-            raise RuntimeError(f"Failed to publish task to SQS: {str(e)}")
+            raise
 
     async def receive_tasks(
         self,
@@ -136,14 +147,17 @@ class AWSSQSQueue(QueueManager):
         visibility_timeout_seconds: int = 30,
     ) -> List[Dict[str, Any]]:
         """
-        Receive tasks from the SQS queue with a visibility timeout.
+        Receive tasks from the SQS queue.
 
         Args:
-            max_count: Maximum number of messages to receive (1-10)
+            max_count: Maximum number of messages to receive
             visibility_timeout_seconds: Duration in seconds that messages are hidden
 
         Returns:
-            List of task dictionaries with task_id, data, and receipt_handle
+            List of task dictionaries, each containing:
+                - 'task_id' (str): Unique identifier for the task
+                - 'data' (Dict[str, Any]): Task payload/parameters
+                - 'receipt_handle' (str): SQS receipt handle used for completing or failing the task
         """
         self._logger.debug(f"Receiving up to {max_count} tasks from queue '{self._queue_name}'")
 
@@ -184,7 +198,7 @@ class AWSSQSQueue(QueueManager):
             return tasks
         except Exception as e:
             self._logger.error(f"Error receiving tasks: {str(e)}")
-            return []
+            raise
 
     async def complete_task(self, task_handle: Any) -> None:
         """
@@ -272,7 +286,7 @@ class AWSSQSQueue(QueueManager):
             return message_count
         except Exception as e:
             self._logger.error(f"Error getting queue depth: {str(e)}")
-            return 0
+            raise
 
     async def purge_queue(self) -> None:
         """Remove all messages from the queue."""
@@ -294,17 +308,14 @@ class AWSSQSQueue(QueueManager):
             raise
 
     async def delete_queue(self) -> None:
-        """Delete the SQS queue entirely."""
-        self._logger.debug(f"Deleting queue '{self._queue_name}'")
-
-        # Only try to delete if the queue exists
+        """Delete the queue."""
         try:
-            response = self._sqs.get_queue_url(QueueName=self._queue_name)
-            # We don't use self._queue_url here because it may be stale
-            queue_url = response["QueueUrl"]
+            queue_url = self._sqs.get_queue_url(QueueName=self._queue_name)["QueueUrl"]
         except ClientError as e:
             if e.response["Error"]["Code"] == "AWS.SimpleQueueService.NonExistentQueue":
                 self._logger.info(f"Queue '{self._queue_name}' does not exist")
+                self._queue_exists = False
+                self._queue_url = None
                 return
             else:
                 raise
@@ -318,6 +329,14 @@ class AWSSQSQueue(QueueManager):
             self._queue_exists = False
             self._queue_url = None
             self._logger.info(f"Successfully deleted queue {self._queue_name}")
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "AWS.SimpleQueueService.NonExistentQueue":
+                self._logger.info(f"Queue '{self._queue_name}' was deleted concurrently")
+                self._queue_exists = False
+                self._queue_url = None
+                return
+            self._logger.error(f"Error deleting queue: {str(e)}")
+            raise
         except Exception as e:
             self._logger.error(f"Error deleting queue: {str(e)}")
             raise

@@ -649,3 +649,211 @@ async def test_delete_queue_concurrent_deletion(gcp_queue, mock_pubsub_client):
     # Verify internal state was updated
     assert not gcp_queue._subscription_exists
     assert not gcp_queue._topic_exists
+
+
+@pytest.mark.asyncio
+async def test_initialization_missing_queue_name():
+    """Test initialization with missing queue name."""
+    with pytest.raises(ValueError, match="Queue name is required"):
+        GCPPubSubQueue(gcp_config=MagicMock(queue_name=None))
+
+
+@pytest.mark.asyncio
+async def test_initialization_with_project_id_kwarg(mock_pubsub_client):
+    """Test initialization with project_id provided as kwarg."""
+    queue = GCPPubSubQueue(
+        gcp_config=MagicMock(
+            queue_name="test-queue",
+            project_id="default-project",
+            credentials_file=None,  # Use default credentials
+        ),
+        project_id="override-project",
+    )
+    assert queue._project_id == "override-project"
+
+
+@pytest.mark.asyncio
+async def test_topic_initialization_error(mock_pubsub_client):
+    """Test error handling during topic initialization."""
+    mock_publisher, mock_subscriber = mock_pubsub_client
+    mock_publisher.get_topic.side_effect = gcp_exceptions.PermissionDenied("Permission denied")
+
+    with pytest.raises(gcp_exceptions.PermissionDenied):
+        GCPPubSubQueue(gcp_config=MagicMock(queue_name="test-queue"))
+
+
+@pytest.mark.asyncio
+async def test_subscription_initialization_error(mock_pubsub_client):
+    """Test error handling during subscription initialization."""
+    mock_publisher, mock_subscriber = mock_pubsub_client
+    mock_subscriber.get_subscription.side_effect = gcp_exceptions.PermissionDenied(
+        "Permission denied"
+    )
+
+    with pytest.raises(gcp_exceptions.PermissionDenied):
+        GCPPubSubQueue(gcp_config=MagicMock(queue_name="test-queue"))
+
+
+@pytest.mark.asyncio
+async def test_topic_creation_error(gcp_queue, mock_pubsub_client):
+    """Test error handling during topic creation."""
+    mock_publisher, mock_subscriber = mock_pubsub_client
+    mock_publisher.create_topic.side_effect = gcp_exceptions.PermissionDenied("Permission denied")
+    gcp_queue._topic_exists = False
+
+    with pytest.raises(gcp_exceptions.PermissionDenied):
+        await gcp_queue.send_task("test-task", {"data": "test"})
+
+
+@pytest.mark.asyncio
+async def test_subscription_creation_error(gcp_queue, mock_pubsub_client):
+    """Test error handling during subscription creation."""
+    mock_publisher, mock_subscriber = mock_pubsub_client
+    mock_subscriber.create_subscription.side_effect = gcp_exceptions.PermissionDenied(
+        "Permission denied"
+    )
+    gcp_queue._subscription_exists = False
+
+    with pytest.raises(gcp_exceptions.PermissionDenied):
+        await gcp_queue.send_task("test-task", {"data": "test"})
+
+
+@pytest.mark.asyncio
+async def test_send_task_publish_error(gcp_queue, mock_pubsub_client):
+    """Test error handling during task publishing."""
+    mock_publisher, mock_subscriber = mock_pubsub_client
+    future = MagicMock()
+    future.result.side_effect = gcp_exceptions.DeadlineExceeded("Deadline exceeded")
+    mock_publisher.publish.return_value = future
+
+    with pytest.raises(gcp_exceptions.DeadlineExceeded):
+        await gcp_queue.send_task("test-task", {"data": "test"})
+
+
+@pytest.mark.asyncio
+async def test_receive_tasks_pull_error(gcp_queue, mock_pubsub_client):
+    """Test error handling during task receiving."""
+    mock_publisher, mock_subscriber = mock_pubsub_client
+    mock_subscriber.pull.side_effect = gcp_exceptions.DeadlineExceeded("Deadline exceeded")
+
+    with pytest.raises(gcp_exceptions.DeadlineExceeded):
+        await gcp_queue.receive_tasks()
+
+
+@pytest.mark.asyncio
+async def test_complete_task_error(gcp_queue, mock_pubsub_client):
+    """Test error handling during task completion."""
+    mock_publisher, mock_subscriber = mock_pubsub_client
+    mock_subscriber.acknowledge.side_effect = gcp_exceptions.InvalidArgument("Invalid ack_id")
+
+    with pytest.raises(gcp_exceptions.InvalidArgument):
+        await gcp_queue.complete_task("invalid-ack-id")
+
+
+@pytest.mark.asyncio
+async def test_fail_task_error(gcp_queue, mock_pubsub_client):
+    """Test error handling during task failure."""
+    mock_publisher, mock_subscriber = mock_pubsub_client
+    mock_subscriber.modify_ack_deadline.side_effect = gcp_exceptions.InvalidArgument(
+        "Invalid ack_id"
+    )
+
+    with pytest.raises(gcp_exceptions.InvalidArgument):
+        await gcp_queue.fail_task("invalid-ack-id")
+
+
+@pytest.mark.asyncio
+async def test_get_queue_depth_pull_error_handling(gcp_queue, mock_pubsub_client):
+    """Test error handling during queue depth check."""
+    mock_publisher, mock_subscriber = mock_pubsub_client
+    mock_subscriber.pull.side_effect = gcp_exceptions.ServiceUnavailable("Service unavailable")
+
+    with pytest.raises(gcp_exceptions.ServiceUnavailable):
+        await gcp_queue.get_queue_depth()
+
+
+@pytest.mark.asyncio
+async def test_purge_queue_delete_error_handling(gcp_queue, mock_pubsub_client):
+    """Test error handling during queue purging."""
+    mock_publisher, mock_subscriber = mock_pubsub_client
+    mock_subscriber.delete_subscription.side_effect = gcp_exceptions.PermissionDenied(
+        "Permission denied"
+    )
+
+    with pytest.raises(gcp_exceptions.PermissionDenied):
+        await gcp_queue.purge_queue()
+
+
+@pytest.mark.asyncio
+async def test_delete_queue_error_handling(gcp_queue, mock_pubsub_client):
+    """Test error handling during queue deletion."""
+    mock_publisher, mock_subscriber = mock_pubsub_client
+    mock_subscriber.delete_subscription.side_effect = gcp_exceptions.PermissionDenied(
+        "Permission denied"
+    )
+
+    with pytest.raises(gcp_exceptions.PermissionDenied):
+        await gcp_queue.delete_queue()
+
+
+@pytest.mark.asyncio
+async def test_topic_exists_error(mock_pubsub_client):
+    """Test error handling when checking if topic exists."""
+    mock_publisher, mock_subscriber = mock_pubsub_client
+    mock_publisher.get_topic.side_effect = gcp_exceptions.ServerError("Internal error")
+
+    with pytest.raises(gcp_exceptions.ServerError):
+        GCPPubSubQueue(gcp_config=MagicMock(queue_name="test-queue"))
+
+
+@pytest.mark.asyncio
+async def test_subscription_exists_error(mock_pubsub_client):
+    """Test error handling when checking if subscription exists."""
+    mock_publisher, mock_subscriber = mock_pubsub_client
+    mock_subscriber.get_subscription.side_effect = gcp_exceptions.ServerError("Internal error")
+
+    with pytest.raises(gcp_exceptions.ServerError):
+        GCPPubSubQueue(gcp_config=MagicMock(queue_name="test-queue"))
+
+
+@pytest.mark.asyncio
+async def test_send_task_error_handling(gcp_queue, mock_pubsub_client):
+    """Test error handling during task sending."""
+    mock_publisher, mock_subscriber = mock_pubsub_client
+    mock_publisher.publish.side_effect = gcp_exceptions.ServerError("Internal error")
+
+    with pytest.raises(gcp_exceptions.ServerError):
+        await gcp_queue.send_task("test-task", {"data": "test"})
+
+
+@pytest.mark.asyncio
+async def test_receive_tasks_error_handling(gcp_queue, mock_pubsub_client):
+    """Test error handling during task receiving."""
+    mock_publisher, mock_subscriber = mock_pubsub_client
+    mock_subscriber.modify_ack_deadline.side_effect = gcp_exceptions.ServerError("Internal error")
+
+    # Create a mock message
+    mock_message = MagicMock()
+    mock_message.ack_id = "test-ack-id"
+    mock_message.message = MagicMock()
+    mock_message.message.data = ('{"task_id": "test-task-id", "data": {"key": "value"}}').encode(
+        "utf-8"
+    )
+
+    # Create a mock response with the message
+    mock_response = MagicMock()
+    mock_response.received_messages = [mock_message]
+    mock_subscriber.pull.return_value = mock_response
+
+    with pytest.raises(gcp_exceptions.ServerError):
+        await gcp_queue.receive_tasks()
+
+
+@pytest.mark.asyncio
+async def test_delete_queue_error_propagation(gcp_queue, mock_pubsub_client):
+    """Test error propagation during queue deletion."""
+    mock_publisher, mock_subscriber = mock_pubsub_client
+    mock_publisher.delete_topic.side_effect = gcp_exceptions.ServerError("Internal error")
+
+    with pytest.raises(gcp_exceptions.ServerError):
+        await gcp_queue.delete_queue()

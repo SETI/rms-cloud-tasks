@@ -4,7 +4,6 @@ Google Cloud Pub/Sub implementation of the TaskQueue interface.
 
 import json
 import logging
-import time
 import asyncio
 from typing import Any, Dict, List, Optional
 
@@ -29,7 +28,9 @@ class GCPPubSubQueue(QueueManager):
         Initialize the Pub/Sub queue with configuration.
 
         Args:
-            config: GCP configuration
+            aws_config: AWS configuration
+            queue_name: Name of the SQS queue (if not using aws_config)
+            **kwargs: Additional configuration parameters
         """
         if queue_name is not None:
             self._queue_name = queue_name
