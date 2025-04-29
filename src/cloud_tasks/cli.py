@@ -100,13 +100,30 @@ async def load_queue_cmd(args: argparse.Namespace, config: Config) -> None:
             if load_failed_exception:
                 return
             async with semaphore:
+                if "task_id" not in task:
+                    logger.error(f"Task #{task['task_num']} does not have a 'task_id' key")
+                    return
+                if not isinstance(task["task_id"], str):
+                    logger.error(
+                        f"Task #{task['task_num']} has a non-string 'task_id' "
+                        f"key: {task['task_id']}"
+                    )
+                    return
+                if "data" not in task:
+                    logger.error(f"Task #{task['task_num']} does not have a 'data' key")
+                    return
+                if not isinstance(task["data"], dict):
+                    logger.error(
+                        f"Task #{task['task_num']} has a non-dict 'data' key: {task['data']}"
+                    )
+                    return
                 try:
                     await task_queue.send_task(task["task_id"], task["data"])
                 except Exception as e:
                     load_failed_exception = e
 
         with tqdm(desc="Enqueueing tasks") as pbar:
-            for task in yield_tasks_from_file(args.tasks):
+            for task_num, task in enumerate(yield_tasks_from_file(args.tasks)):
                 # Skip tasks until we reach the start_task
                 if tasks_to_skip > 0:
                     tasks_to_skip -= 1
@@ -124,6 +141,7 @@ async def load_queue_cmd(args: argparse.Namespace, config: Config) -> None:
                 logger.debug(f"Loading task: {task}")
 
                 # Create and track the task
+                task["task_num"] = task_num  # For errors
                 task_obj = asyncio.create_task(enqueue_task(task))
                 pending_tasks.add(task_obj)
                 task_obj.add_done_callback(pending_tasks.discard)
@@ -1174,7 +1192,14 @@ def add_instance_pool_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--worker-use-new-process",
         action="store_true",
-        help="Use a new process for each task on each worker (default: False)",
+        default=None,
+        help="Use a new process for each task on each worker",
+    )
+    parser.add_argument(
+        "--no-worker-use-new-process",
+        action="store_false",
+        dest="worker_use_new_process",
+        help="Do not use a new process for each task on each worker (default)",
     )
 
 

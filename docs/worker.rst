@@ -14,7 +14,7 @@ it also takes care of monitoring for the instance shutdown warning and notifying
 running worker process.
 
 Basic Usage
-----------
+-----------
 
 Here's a simple example of how to implement a worker:
 
@@ -54,6 +54,9 @@ Here's a simple example of how to implement a worker:
    if __name__ == "__main__":
        worker = Worker(process_task, args=sys.argv[1:])
        asyncio.run(worker.start())
+
+
+.. _worker_environment_variables:
 
 Environment Variables and Command Line Arguments
 ------------------------------------------------
@@ -98,11 +101,16 @@ Optional Parameters
 --shutdown-grace-period SECONDS  Time in seconds to wait for tasks to complete during shutdown [or ``RMS_CLOUD_TASKS_SHUTDOWN_GRACE_PERIOD``]
 --use-new-process                Whether to use a new process for each task [or ``RMS_CLOUD_WORKER_USE_NEW_PROCESS``]
 
+.. _worker_spot_instances:
+
+Handling Spot Instance Termination
+----------------------------------
+
 Worker Features
--------------
+---------------
 
 Parallel Processing
-~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~
 
 The worker uses Python's multiprocessing to achieve true parallelism:
 
@@ -128,7 +136,7 @@ Tasks are processed with the following guarantees:
 - Spot instance termination handling
 
 Health Checks and Monitoring
-~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The worker includes built-in monitoring features:
 
@@ -138,7 +146,7 @@ The worker includes built-in monitoring features:
 - Process health monitoring
 
 Graceful Shutdown
-~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~
 
 The worker implements graceful shutdown handling:
 
@@ -149,7 +157,7 @@ The worker implements graceful shutdown handling:
 
 
 Error Handling
-------------
+--------------
 
 The worker implements comprehensive error handling:
 
@@ -160,7 +168,7 @@ The worker implements comprehensive error handling:
 - Graceful degradation on cloud API failures
 
 Best Practices
-------------
+--------------
 
 1. **Task Processing Function**
    - Keep the function stateless

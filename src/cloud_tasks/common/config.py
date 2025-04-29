@@ -2,6 +2,7 @@
 Configuration handling for the multi-cloud task processing system.
 """
 
+import logging
 import os
 from typing import Any, Dict, Optional, List, Literal, Union
 import yaml
@@ -17,6 +18,8 @@ from pydantic import (
     constr,
     model_validator,
 )
+
+LOGGER = logging.getLogger(__name__)
 
 
 class RunConfig(BaseModel, validate_assignment=True):
@@ -258,31 +261,65 @@ class Config(BaseModel, validate_assignment=True):
         Args:
             cli_args: Command line arguments as a dictionary
         """
+        if self.provider is not None:
+            self.provider = self.provider.upper()
         # Override loaded file and/or defaults with command line arguments
         if cli_args is not None:
             for attr_name in vars(self):
                 if attr_name in cli_args and cli_args[attr_name] is not None:
+                    val = getattr(self, attr_name)
+                    if val is not None:
+                        LOGGER.warning(
+                            f"Overloading {attr_name}={val} with CLI={cli_args[attr_name]}"
+                        )
                     setattr(self, attr_name, cli_args[attr_name])
+            if self.provider is not None:
+                self.provider = self.provider.upper()
             for attr_name in vars(self.run):
                 if attr_name in cli_args and cli_args[attr_name] is not None:
+                    val = getattr(self.run, attr_name)
+                    if val is not None:
+                        LOGGER.warning(
+                            f"Overloading run.{attr_name}={val} with CLI={cli_args[attr_name]}"
+                        )
                     setattr(self.run, attr_name, cli_args[attr_name])
-            if self.aws is not None:
+            if self.provider == "AWS" and self.aws is not None:
                 for attr_name in vars(self.aws):
                     if attr_name in cli_args and cli_args[attr_name] is not None:
+                        val = getattr(self.aws, attr_name)
+                        if val is not None:
+                            LOGGER.warning(
+                                f"Overloading aws.{attr_name}={val} with CLI={cli_args[attr_name]}"
+                            )
                         setattr(self.aws, attr_name, cli_args[attr_name])
-            if self.gcp is not None:
+            if self.provider == "GCP" and self.gcp is not None:
                 for attr_name in vars(self.gcp):
                     if attr_name in cli_args and cli_args[attr_name] is not None:
+                        val = getattr(self.gcp, attr_name)
+                        if val is not None:
+                            LOGGER.warning(
+                                f"Overloading gcp.{attr_name}={val} with CLI={cli_args[attr_name]}"
+                            )
                         setattr(self.gcp, attr_name, cli_args[attr_name])
-            if self.azure is not None:
+            if self.provider == "AZURE" and self.azure is not None:
                 for attr_name in vars(self.azure):
                     if attr_name in cli_args and cli_args[attr_name] is not None:
+                        val = getattr(self.azure, attr_name)
+                        if val is not None:
+                            LOGGER.warning(
+                                f"Overloading azure.{attr_name}={val} with "
+                                f"CLI={cli_args[attr_name]}"
+                            )
                         setattr(self.azure, attr_name, cli_args[attr_name])
 
-        if self.provider is not None:
-            self.provider = self.provider.upper()
         if self.run.architecture is not None:
             self.run.architecture = self.run.architecture.upper()
+        if self.aws.architecture is not None:
+            self.aws.architecture = self.aws.architecture.upper()
+        if self.gcp.architecture is not None:
+            self.gcp.architecture = self.gcp.architecture.upper()
+        if self.azure.architecture is not None:
+            self.azure.architecture = self.azure.architecture.upper()
 
     def update_run_config_from_provider_config(self) -> None:
         """Update run config with provider-specific config values."""
@@ -296,6 +333,14 @@ class Config(BaseModel, validate_assignment=True):
                         and attr_name in run_vars
                         and aws_vars[attr_name] is not None
                     ):
+                        if (
+                            run_vars[attr_name] is not None
+                            and run_vars[attr_name] != aws_vars[attr_name]
+                        ):
+                            LOGGER.warning(
+                                f"Overriding run.{attr_name}={run_vars[attr_name]} with "
+                                f"aws.{attr_name}={aws_vars[attr_name]}"
+                            )
                         setattr(self.run, attr_name, aws_vars[attr_name])
             case "GCP":
                 run_vars = vars(self.run)
@@ -306,6 +351,14 @@ class Config(BaseModel, validate_assignment=True):
                         and attr_name in run_vars
                         and gcp_vars[attr_name] is not None
                     ):
+                        if (
+                            run_vars[attr_name] is not None
+                            and run_vars[attr_name] != gcp_vars[attr_name]
+                        ):
+                            LOGGER.warning(
+                                f"Overriding run.{attr_name}={run_vars[attr_name]} with "
+                                f"gcp.{attr_name}={gcp_vars[attr_name]}"
+                            )
                         setattr(self.run, attr_name, gcp_vars[attr_name])
             case "AZURE":
                 run_vars = vars(self.run)
@@ -316,6 +369,14 @@ class Config(BaseModel, validate_assignment=True):
                         and attr_name in run_vars
                         and azure_vars[attr_name] is not None
                     ):
+                        if (
+                            run_vars[attr_name] is not None
+                            and run_vars[attr_name] != azure_vars[attr_name]
+                        ):
+                            LOGGER.warning(
+                                f"Overriding run.{attr_name}={run_vars[attr_name]} with "
+                                f"azure.{attr_name}={azure_vars[attr_name]}"
+                            )
                         setattr(self.run, attr_name, azure_vars[attr_name])
             case None:
                 raise ValueError("Provider must be specified")

@@ -69,7 +69,7 @@ def process_task(task_id: str, task_data: Dict[str, Any], worker: Worker) -> Tup
 
     except Exception as e:
         # We still return True because we don't want to retry the task
-        return False, str(e)
+        return True, str(e)
 
 
 async def main():

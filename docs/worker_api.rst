@@ -1,3 +1,5 @@
+.. _worker_api:
+
 The Worker API
 ==============
 

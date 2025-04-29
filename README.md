@@ -25,35 +25,38 @@
 # Introduction
 
 Cloud Tasks (contained in the `rms-cloud-tasks` package) is a framework for running
-independent tasks on cloud providers with automatic compute instance management. It is
-specifically designed for running the same code multiple times in a batch environment to
-process a series of different inputs. For example, this could be an image processing
-program that takes the image filename as an argument, downloads the image from the cloud,
-performs some manipulations, and writes the result to a cloud-based location. It is very
-important that the tasks are completely independent; no communication between them is
-supported. Also, the processing happens entirely in a batch mode: a certain number of
-compute instances are created, they all process tasks in parallel, and then the compute
-instances are destroyed.
+independent tasks on cloud providers with automatic compute instance  and task queue
+management. It is specifically designed for running the same code multiple times in a
+batch environment to process a series of different inputs. For example, the program could
+be an image processing program that takes the image filename as an argument, downloads the
+image from the cloud, performs some manipulations, and writes the result to a cloud-based
+location. It is very important that the tasks are completely independent; no communication
+between them is supported. Also, the processing happens entirely in a batch mode: a
+certain number of compute instances are created, they all process tasks in parallel, and
+then the compute instances are destroyed.
 
 `rms-cloud-tasks` is a product of the [PDS Ring-Moon Systems Node](https://pds-rings.seti.org).
 
 # Features
 
-Cloud Tasks is extremely easy to use with a simple command line interface and
-straightforward configuration file. It supports AWS, GCP, or Azure compute instances, or
-even a local workstation, using a provider-independent API (NOTE: Azure support is
-currently not finished).
+Cloud Task is extremely easy to use with a simple command line interface and
+straightforward configuration file. It supports AWS and GCP compute instances and queues
+along with the ability to run jobs on a local workstation, all using a
+provider-independent API. Although each cloud provider has implemented similar
+functionality as part of their offering (e.g. GCP's Cloud Batch), Cloud Tasks is unique in
+that it unifies all supported providers into a single, simple, universal system that does
+not require learning the often-complicated details of the official full-featured services.
 
 Cloud Tasks consists of four primary components:
 
 - A Python module to make parallel execution simple
   - An existing Python program can be converted to a worker task with only a few lines
     of code
+  - Works in both cloud compute instance and local machine environments
   - Parallel execution is performed in multiple processes for complete isolation;
     processes can be reused for new tasks or killed and restarted for each task
   - Can use a cloud-based task queue to keep track of completed and failed tasks, or can read
     task descriptions directly from a local file
-  - Works in both cloud compute instance and local machine environments
   - Monitors the state of spot instances to notify tasks of upcoming preemption
 - A command line interface to manage the task queue system, that allows
   - Loading of tasks from a file
@@ -144,7 +147,8 @@ cloud_tasks list_instance_types \
 To load a JSON file containing task descriptions into the task queue:
 
 ```bash
-cloud_tasks load_queue --provider gcp --region us-central1 --project-id my-project \
+cloud_tasks load_queue \
+  --provider gcp --region us-central1 --project-id my-project \
   --job-id my-job --tasks mytasks.json
 ```
 
