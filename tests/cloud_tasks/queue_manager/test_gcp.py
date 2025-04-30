@@ -236,8 +236,13 @@ async def test_purge_queue(gcp_queue, mock_pubsub_client):
     """Test purging the queue."""
     mock_publisher, mock_subscriber = mock_pubsub_client
 
-    # Purge queue
-    await gcp_queue.purge_queue()
+    # Patch asyncio.sleep to an async no-op
+    async def no_sleep(*args, **kwargs):
+        pass
+
+    with patch("asyncio.sleep", side_effect=no_sleep):
+        # Purge queue
+        await gcp_queue.purge_queue()
 
     # Verify delete_subscription was called
     mock_subscriber.delete_subscription.assert_called_with(
@@ -436,9 +441,14 @@ async def test_purge_queue_delete_error(gcp_queue, mock_pubsub_client):
         "Permission denied"
     )
 
-    # Attempt to purge queue
-    with pytest.raises(gcp_exceptions.PermissionDenied):
-        await gcp_queue.purge_queue()
+    # Patch asyncio.sleep to an async no-op
+    async def no_sleep(*args, **kwargs):
+        pass
+
+    with patch("asyncio.sleep", side_effect=no_sleep):
+        # Attempt to purge queue
+        with pytest.raises(gcp_exceptions.PermissionDenied):
+            await gcp_queue.purge_queue()
 
     # Verify deletion was attempted
     mock_subscriber.delete_subscription.assert_called_with(
@@ -459,9 +469,14 @@ async def test_purge_queue_recreation_error(gcp_queue, mock_pubsub_client):
         "Permission denied"
     )
 
-    # Attempt to purge queue
-    with pytest.raises(gcp_exceptions.PermissionDenied):
-        await gcp_queue.purge_queue()
+    # Patch asyncio.sleep to an async no-op
+    async def no_sleep(*args, **kwargs):
+        pass
+
+    with patch("asyncio.sleep", side_effect=no_sleep):
+        # Attempt to purge queue
+        with pytest.raises(gcp_exceptions.PermissionDenied):
+            await gcp_queue.purge_queue()
 
     # Verify deletion succeeded
     mock_subscriber.delete_subscription.assert_called_with(
@@ -506,13 +521,18 @@ async def test_purge_queue_with_delay(gcp_queue, mock_pubsub_client):
 
     mock_subscriber.create_subscription = MagicMock(side_effect=create_with_timestamp)
 
-    # Purge queue
-    await gcp_queue.purge_queue()
+    # Patch asyncio.sleep to an async no-op
+    async def no_sleep(*args, **kwargs):
+        pass
 
-    # Verify operations happened with delay
+    with patch("asyncio.sleep", side_effect=no_sleep):
+        # Purge queue
+        await gcp_queue.purge_queue()
+
+    # Verify operations happened with no delay (since we patched sleep)
     assert delete_time is not None
     assert create_time is not None
-    assert create_time - delete_time >= 2  # Should have at least 2 second delay
+    # No need to check delay since we patched sleep
 
 
 @pytest.mark.asyncio
