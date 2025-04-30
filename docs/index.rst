@@ -1,5 +1,5 @@
-Welcome to the documentation for Cloud Tasks
-============================================
+Introduction to Cloud Tasks
+===========================
 
 .. include:: ../README.md
    :parser: myst_parser.sphinx_
@@ -9,6 +9,7 @@ Welcome to the documentation for Cloud Tasks
    :maxdepth: 2
    :caption: Contents:
 
+   self
    quickstart
    config
    cli

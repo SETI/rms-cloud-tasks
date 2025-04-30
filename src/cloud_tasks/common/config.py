@@ -31,8 +31,8 @@ class RunConfig(BaseModel, validate_assignment=True):
     # Constraints on number of instances
     #
 
-    min_instances: Optional[NonNegativeInt] = 1
-    max_instances: Optional[PositiveInt] = 10
+    min_instances: Optional[NonNegativeInt] = None
+    max_instances: Optional[PositiveInt] = None
 
     @model_validator(mode="after")
     def validate_min_max_instances(self) -> "RunConfig":
@@ -91,7 +91,7 @@ class RunConfig(BaseModel, validate_assignment=True):
     #
 
     # Memory and disk are in GB
-    architecture: Optional[Literal["x86_64", "arm64", "X86_64", "ARM64"]] = "X86_64"
+    architecture: Optional[Literal["x86_64", "arm64", "X86_64", "ARM64"]] = None
     min_cpu: Optional[NonNegativeInt] = None
     max_cpu: Optional[PositiveInt] = None
 
@@ -187,10 +187,10 @@ class RunConfig(BaseModel, validate_assignment=True):
     #
     # Worker and manage_pool options
     #
-    scaling_check_interval: Optional[PositiveInt] = 60
-    instance_termination_delay: Optional[PositiveInt] = 60
-    max_runtime: Optional[PositiveInt] = 60  # Use for queue timeout and workout task kill
-    worker_use_new_process: Optional[bool] = False
+    scaling_check_interval: Optional[PositiveInt] = None
+    instance_termination_delay: Optional[PositiveInt] = None
+    max_runtime: Optional[PositiveInt] = None  # Use for queue timeout and workout task kill
+    worker_use_new_process: Optional[bool] = None
 
 
 class ProviderConfig(RunConfig, validate_assignment=True):
@@ -383,10 +383,29 @@ class Config(BaseModel, validate_assignment=True):
             case _:
                 raise ValueError(f"Unsupported provider: {self.provider}")
 
+        # Fix up the run config with the startup script and various defaults
         if self.run.startup_script is not None and self.run.startup_script_file is not None:
             raise ValueError("Startup script and startup script file cannot both be provided")
         if self.run.startup_script_file is not None:
             self.run.startup_script = FCPath(self.run.startup_script_file).read_text()
+
+        # Set defaults for missing values
+        if self.run.cpus_per_task is None:
+            self.run.cpus_per_task = 1
+        if self.run.min_instances is None:
+            self.run.min_instances = 1
+        if self.run.max_instances is None:
+            self.run.max_instances = 10
+        if self.run.scaling_check_interval is None:
+            self.run.scaling_check_interval = 60
+        if self.run.instance_termination_delay is None:
+            self.run.instance_termination_delay = 60
+        if self.run.max_runtime is None:
+            self.run.max_runtime = 60
+        if self.run.worker_use_new_process is None:
+            self.run.worker_use_new_process = False
+        if self.run.architecture is None:
+            self.run.architecture = "X86_64"
 
     def validate_config(self) -> None:
         """Perform final validation of the configuration."""

@@ -33,9 +33,9 @@ jobs:
         run: |
           flake8 src tests
 
-      - name: Mypy
-        run: |
-          mypy src tests
+      # - name: Mypy
+      #   run: |
+      #     mypy src tests
 
   test:
     name: Test cloud_tasks

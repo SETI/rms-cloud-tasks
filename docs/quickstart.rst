@@ -22,8 +22,8 @@ Step 2: Modify Your Code to be a Worker
 
    - ``task_id: str``: The ID of the task as provided in the tasks file (described below).
    - ``task_data: Dict[str, Any]``: The data for the task as provided in the tasks file (described
-     below). This should be the only data your function needs to process the task. Your
-     function should not use command line arguments.
+     below). This should be the only data your function needs to process the task; it should not
+     use command line arguments.
    - ``worker: cloud_tasks.worker.Worker``: The Worker object. This provides access to
      configuration options that were set by
      :ref:`environment variables or command line arguments <worker_environment_variables>` as well
@@ -41,10 +41,17 @@ Step 2: Modify Your Code to be a Worker
      return ``True`` so that the task is not retried; otherwise, the task will be retried
      indefinitely with no hope of success.
 
-   - The second is the result of the task. This can be any serializable Python object,
-     including ``None``. This result is returned in the results queue so that it can be
-     logged.
+   - The second is the result of the task. This can be any Python object that can be converted to
+     JSON. A return value of ``None`` is converted to an empty dictionary. This result is returned
+     in the results queue so that it can be logged.
 
+#. Modify your code to save its results to cloud-based storage, if needed. For example, if running
+   on a local workstation, you might save the results to a file in a local directory, but if
+   running on a cloud compute instance, you might save the results to a cloud-based storage bucket.
+   One particularly easy way to handle this is to use the
+   `FileCache package <https://rms-filecache.readthedocs.io/>`, which provides a
+   provider-independent API for reading and writing files from/to the local disk or cloud-based
+   storage.
 
 #. Modify your code's ``__main__`` block to use the ``cloud_tasks`` worker
    support:
@@ -60,9 +67,9 @@ Step 2: Modify Your Code to be a Worker
             Process a task.
 
             Args:
-                task_id: The ID of the task.
-                task_data: The data of the task.
-                worker: The worker object.
+                task_id: The unique ID of the task.
+                task_data: The data required to process the task.
+                worker: The worker object representing the top-level worker process manager.
 
             Returns:
                 Tuple of (success, result)
@@ -70,6 +77,8 @@ Step 2: Modify Your Code to be a Worker
             [... your code ...]
 
         async def main():
+            # These command line arguments are used to override environment variables when
+            # specifying the behavior of the worker process manager.
             worker = Worker(process_task, args=sys.argv[1:])
             await worker.start()
 
@@ -112,15 +121,40 @@ zero or more key-value pairs. The values can be as complicated as necessary but 
 be represented in JSON/YAML format.
 
 
+Interlude - Running Tasks Locally
+---------------------------------
+
+At this point you have done all of the preparation needed to run the tasks locally on your
+workstation. This could be useful for debugging your initial implementation or, if you
+have access to a high-end workstation with enough parallelism you may always want to run
+your code locally and not take advantage of a cloud provider's (costly) resources.
+
+To run tasks locally, set up your environment as needed (install Python, create and activate a
+virtual environment, install the dependencies and the ``rms-cloud-tasks`` package, etc.). Then
+execute your worker code from the command line as follows:
+
+.. code-block:: bash
+
+    python3 my_worker.py --tasks my_tasks.json
+
+This will run your ``process_task`` function once for each task. To increase the parallelism, you
+can specify the number of simultaneous tasks to run:
+
+.. code-block:: bash
+
+    python3 my_worker.py --tasks my_tasks.json --num-simultaneous-tasks 10
+
+
 Step 4: Create a Startup Script
 -------------------------------
 
 The startup script will be run as root on each cloud compute instance that is started to
-process tasks. At a minimum, the startup script should install your project and its
-dependencies and then run your worker code. It may also do more complicated operations
-such as setting up authentication, attaching additional disks or GPUs, copying static data
-files to the local disk, etc. It may also define environment variables that will be
-accessible to your task code. Here is an example:
+process tasks (it will not be run on a local workstation). At a minimum, the startup
+script should install your project and its dependencies and then run your worker code. It
+may also do more complicated operations such as setting up authentication, attaching
+additional disks or GPUs, copying static data files to the local disk, etc., as well as
+define environment variables that will be accessible to your task code. Here is an
+example:
 
 .. code-block:: bash
 
@@ -132,13 +166,18 @@ accessible to your task code. Here is an example:
     python3 -m venv venv
     source venv/bin/activate
     pip install -r requirements.txt
+    export MY_WORKER_DEST_BUCKET=gs://my-bucket/results
     python3 my_worker.py
 
 
 Step 5: Create a Configuration File
 -----------------------------------
 
-The :ref:`configuration file <config>` will be used to configure the ``cloud_tasks`` commnand.
+The :ref:`configuration file <config>` will be used to configure the ``cloud_tasks`` commands.
+Almost everything in the configuration file could also be specified as a command line option to the
+``cloud_tasks`` commands, but consolating all of the configuration into a single file makes it much
+simpler to run commands going forward.
+
 At a minimum you will need to specify:
 
 - ``provider``: The cloud provider to use (``aws`` or ``gcp``).

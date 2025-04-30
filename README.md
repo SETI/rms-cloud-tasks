@@ -52,7 +52,7 @@ Cloud Tasks consists of four primary components:
 - A Python module to make parallel execution simple
   - An existing Python program can be converted to a worker task with only a few lines
     of code
-  - Works in both cloud compute instance and local machine environments
+  - Supports both cloud compute instance and local machine environments
   - Parallel execution is performed in multiple processes for complete isolation;
     processes can be reused for new tasks or killed and restarted for each task
   - Can use a cloud-based task queue to keep track of completed and failed tasks, or can read
@@ -113,15 +113,15 @@ upgrade to a more recent version with:
 pipx upgrade rms-cloud-tasks
 ```
 
-Using `pipx` is particularly useful if you only want to use the command line interface and
-not access the Python module, as it does not require you to worry about the Python
-version, setting up a virtual environment, etc.
+Using `pipx` is only useful if you want to use the command line interface and not access
+the Python module; however, it does not require you to worry about the Python version,
+setting up a virtual environment, etc.
 
 # Basic Examples
 
 The `cloud_tasks` command line program supports many useful commands that control the task
 queue, compute instance pool, and retrieve general information about the cloud in a
-provider-indepent manner.
+provider-indepent manner. A few examples are given below.
 
 To get a list of available commands:
 
