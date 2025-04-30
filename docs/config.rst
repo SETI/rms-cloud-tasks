@@ -76,6 +76,10 @@ a regular expression. For example, to allow all GCP "N2" instances, specify
 instance type within that family given the other constraints. Note that it is quite
 possible to over-constrain the system such that no instance types meet the requirements.
 
+When multiple minimum constraints are specified, the maximum value wins. When multiple
+maximum constraints are specified, the minimum value wins.
+
+
 General Constraints
 +++++++++++++++++++
 
@@ -86,25 +90,36 @@ General Constraints
   anchor character like ``^`` or ``$`` is specified, the given string will match
   any part of the instance type name)
 
-CPU and Memory
-++++++++++++++
+CPU
++++
 
 * ``min_cpu``: The minimum number of vCPUs per instance
 * ``max_cpu``: The maximum number of vCPUs per instance
+
+* Derived from instance task information (the number of CPUs = cpus_per_task * tasks_per_instance)
+
+  * ``cpus_per_task``: The number of vCPUs per task (defaults to 1)
+  * ``min_tasks_per_instance``: The minimum number of tasks per instance
+  * ``max_tasks_per_instance``: The maximum number of tasks per instance
+
+
+Memory
+++++++
+
 * ``min_total_memory``: The minimum amount of memory in GB per instance
 * ``max_total_memory``: The maximum amount of memory in GB per instance
+
 * Per-CPU constraints
 
   * ``min_memory_per_cpu``: The minimum amount of memory in GB per vCPU
   * ``max_memory_per_cpu``: The maximum amount of memory in GB per vCPU
 
 * Per-task constraints (these are the same as the per-CPU constraints and simply use the
-  ``cpus_per_task`` value as a conversion factor))
+  ``cpus_per_task`` value as a conversion factor)
 
   * ``cpus_per_task``: The number of vCPUs per task (defaults to 1)
   * ``min_memory_per_task``: The minimum amount of memory in GB per task
   * ``max_memory_per_task``: The maximum amount of memory in GB per task
-
 
 SSD Storage
 +++++++++++
@@ -143,12 +158,12 @@ of a provider's instance type. As such, there are no "constraints" on the boot d
 there are simply ways to specify the size of the boot disk you want. This can either be a single
 absolute value:
 
-* ``boot_disk``: The size of the boot disk in GB
+* ``boot_disk``: The size of the boot disk in GB (defaults to 10 GB)
 
 or a per-CPU value:
 
 * ``boot_disk_base_size``: The amount of boot disk in GB present before allocating additional
-  space per vCPU
+  space per vCPU (defaults to 10 GB)
 * ``boot_disk_per_cpu``: The minimum amount of boot disk in GB per vCPU
 
 or a per-task value:

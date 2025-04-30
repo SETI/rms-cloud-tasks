@@ -15,16 +15,38 @@ class InstanceManager(ABC):
         self, instance_info: Dict[str, Any], constraints: Optional[Dict[str, Any]] = None
     ) -> bool:
         """Check if an instance matches the constraints."""
+        if constraints is None:
+            return True
+
+        cpus_per_task = constraints.get("cpus_per_task", 1)
+        min_tasks_per_instance = constraints.get("min_tasks_per_instance")
+        max_tasks_per_instance = constraints.get("max_tasks_per_instance")
+
         # Derive min/max_cpu from cpus_per_task and min/max_tasks_per_instance
         # if needed
         min_cpu = constraints.get("min_cpu")
         max_cpu = constraints.get("max_cpu")
-        if constraints.get("cpus_per_task") is not None:
-            cpus_per_task = constraints["cpus_per_task"]
-            if min_cpu is None and constraints.get("min_tasks_per_instance") is not None:
-                min_cpu = cpus_per_task * constraints["min_tasks_per_instance"]
-            if max_cpu is None and constraints.get("max_tasks_per_instance") is not None:
-                max_cpu = cpus_per_task * constraints["max_tasks_per_instance"]
+
+        if min_tasks_per_instance is not None:
+            min_cpu_from_tasks = cpus_per_task * min_tasks_per_instance
+            if min_cpu is None:
+                min_cpu = min_cpu_from_tasks
+            else:
+                min_cpu = max(min_cpu, min_cpu_from_tasks)
+        if max_tasks_per_instance is not None:
+            max_cpu_from_tasks = cpus_per_task * max_tasks_per_instance
+            if max_cpu is None:
+                max_cpu = max_cpu_from_tasks
+            else:
+                max_cpu = min(max_cpu, max_cpu_from_tasks)
+
+        num_cpus = instance_info["vcpu"]
+        memory_per_cpu = instance_info["mem_gb"] / num_cpus
+        memory_per_task = memory_per_cpu * cpus_per_task
+
+        local_ssd_base_size = constraints.get("local_ssd_base_size", 0)
+        local_ssd_per_cpu = (instance_info["local_ssd_gb"] - local_ssd_base_size) / num_cpus
+        local_ssd_per_task = local_ssd_per_cpu * cpus_per_task
 
         return (
             (
@@ -43,13 +65,19 @@ class InstanceManager(ABC):
             )
             and (
                 constraints.get("min_memory_per_cpu") is None
-                or instance_info["mem_gb"] / instance_info["vcpu"]
-                >= constraints["min_memory_per_cpu"]
+                or memory_per_cpu >= constraints["min_memory_per_cpu"]
             )
             and (
                 constraints.get("max_memory_per_cpu") is None
-                or instance_info["mem_gb"] / instance_info["vcpu"]
-                <= constraints["max_memory_per_cpu"]
+                or memory_per_cpu <= constraints["max_memory_per_cpu"]
+            )
+            and (
+                constraints.get("min_memory_per_task") is None
+                or memory_per_task >= constraints["min_memory_per_task"]
+            )
+            and (
+                constraints.get("max_memory_per_task") is None
+                or memory_per_task <= constraints["max_memory_per_task"]
             )
             and (
                 constraints.get("min_local_ssd") is None
@@ -61,34 +89,20 @@ class InstanceManager(ABC):
             )
             and (
                 constraints.get("min_local_ssd_per_cpu") is None
-                or instance_info["local_ssd_gb"] / instance_info["vcpu"]
-                >= constraints["min_local_ssd_per_cpu"]
+                or local_ssd_per_cpu >= constraints["min_local_ssd_per_cpu"]
             )
             and (
                 constraints.get("max_local_ssd_per_cpu") is None
-                or instance_info["local_ssd_gb"] / instance_info["vcpu"]
-                <= constraints["max_local_ssd_per_cpu"]
+                or local_ssd_per_cpu <= constraints["max_local_ssd_per_cpu"]
             )
-            # and (
-            #     constraints["min_boot_disk"] is None
-            #     or cast(float, instance_info["boot_disk_gb"])
-            #     >= cast(float, constraints["min_boot_disk"])
-            # )
-            # and (
-            #     constraints["max_boot_disk"] is None
-            #     or cast(float, instance_info["boot_disk_gb"])
-            #     <= cast(float, constraints["max_boot_disk"])
-            # )
-            # and (
-            #     constraints["min_boot_disk_per_cpu"] is None
-            #     or cast(float, instance_info["boot_disk_gb"]) / cast(int, instance_info["vcpu"])
-            #     >= cast(float, constraints["min_boot_disk_per_cpu"])
-            # )
-            # and (
-            #     constraints["max_boot_disk_per_cpu"] is None
-            #     or cast(float, instance_info["boot_disk_gb"]) / cast(int, instance_info["vcpu"])
-            #     <= cast(float, constraints["max_boot_disk_per_cpu"])
-            # )
+            and (
+                constraints.get("min_local_ssd_per_task") is None
+                or local_ssd_per_task >= constraints["min_local_ssd_per_task"]
+            )
+            and (
+                constraints.get("max_local_ssd_per_task") is None
+                or local_ssd_per_task <= constraints["max_local_ssd_per_task"]
+            )
             and (
                 "use_spot" not in constraints
                 or constraints["use_spot"] is None

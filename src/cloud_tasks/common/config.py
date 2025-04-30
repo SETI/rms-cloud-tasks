@@ -126,6 +126,18 @@ class RunConfig(BaseModel, validate_assignment=True):
             raise ValueError("max_memory_per_cpu must be greater than 0")
         return self
 
+    min_memory_per_task: Optional[NonNegativeFloat] = None
+    max_memory_per_task: Optional[NonNegativeFloat] = None
+
+    @model_validator(mode="after")
+    def validate_min_max_memory_per_task(self) -> "RunConfig":
+        if self.min_memory_per_task is not None and self.max_memory_per_task is not None:
+            if self.min_memory_per_task > self.max_memory_per_task:
+                raise ValueError("min_memory_per_task must be less than max_memory_per_task")
+        if self.max_memory_per_task is not None and self.max_memory_per_task <= 0:
+            raise ValueError("max_memory_per_task must be greater than 0")
+        return self
+
     min_local_ssd: Optional[NonNegativeFloat] = None
     max_local_ssd: Optional[NonNegativeFloat] = None
 
@@ -138,6 +150,7 @@ class RunConfig(BaseModel, validate_assignment=True):
             raise ValueError("max_local_ssd must be greater than 0")
         return self
 
+    local_ssd_base_size: Optional[NonNegativeFloat] = None
     min_local_ssd_per_cpu: Optional[NonNegativeFloat] = None
     max_local_ssd_per_cpu: Optional[NonNegativeFloat] = None
 
@@ -150,25 +163,22 @@ class RunConfig(BaseModel, validate_assignment=True):
             raise ValueError("max_local_ssd_per_cpu must be greater than 0")
         return self
 
-    min_boot_disk: Optional[PositiveFloat] = None
-    max_boot_disk: Optional[PositiveFloat] = None
+    min_local_ssd_per_task: Optional[NonNegativeFloat] = None
+    max_local_ssd_per_task: Optional[NonNegativeFloat] = None
 
     @model_validator(mode="after")
-    def validate_min_max_boot_disk(self) -> "RunConfig":
-        if self.min_boot_disk is not None and self.max_boot_disk is not None:
-            if self.min_boot_disk > self.max_boot_disk:
-                raise ValueError("min_boot_disk must be less than max_boot_disk")
+    def validate_min_max_local_ssd_per_task(self) -> "RunConfig":
+        if self.min_local_ssd_per_task is not None and self.max_local_ssd_per_task is not None:
+            if self.min_local_ssd_per_task > self.max_local_ssd_per_task:
+                raise ValueError("min_local_ssd_per_task must be less than max_local_ssd_per_task")
+        if self.max_local_ssd_per_task is not None and self.max_local_ssd_per_task <= 0:
+            raise ValueError("max_local_ssd_per_task must be greater than 0")
         return self
 
-    min_boot_disk_per_cpu: Optional[PositiveFloat] = None
-    max_boot_disk_per_cpu: Optional[PositiveFloat] = None
-
-    @model_validator(mode="after")
-    def validate_min_max_boot_disk_per_cpu(self) -> "RunConfig":
-        if self.min_boot_disk_per_cpu is not None and self.max_boot_disk_per_cpu is not None:
-            if self.min_boot_disk_per_cpu > self.max_boot_disk_per_cpu:
-                raise ValueError("min_boot_disk_per_cpu must be less than max_boot_disk_per_cpu")
-        return self
+    boot_disk: Optional[PositiveFloat] = None
+    boot_disk_base_size: Optional[PositiveFloat] = None
+    boot_disk_per_cpu: Optional[NonNegativeFloat] = None
+    boot_disk_per_task: Optional[NonNegativeFloat] = None
 
     instance_types: Optional[List[str] | str] = None  # Overriden by provider config
 
@@ -406,6 +416,12 @@ class Config(BaseModel, validate_assignment=True):
             self.run.worker_use_new_process = False
         if self.run.architecture is None:
             self.run.architecture = "X86_64"
+        if self.run.local_ssd_base_size is None:
+            self.run.local_ssd_base_size = 0
+        if self.run.boot_disk is None:
+            self.run.boot_disk = 10
+        if self.run.boot_disk_base_size is None:
+            self.run.boot_disk_base_size = 10
 
     def validate_config(self) -> None:
         """Perform final validation of the configuration."""

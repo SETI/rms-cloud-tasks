@@ -87,18 +87,6 @@ def test_runconfig_min_max_local_ssd_per_cpu():
         RunConfig(max_local_ssd_per_cpu=0)
 
 
-def test_runconfig_min_max_boot_disk():
-    RunConfig(min_boot_disk=1, max_boot_disk=2)
-    with pytest.raises(ValueError):
-        RunConfig(min_boot_disk=3, max_boot_disk=2)
-
-
-def test_runconfig_min_max_boot_disk_per_cpu():
-    RunConfig(min_boot_disk_per_cpu=1, max_boot_disk_per_cpu=2)
-    with pytest.raises(ValueError):
-        RunConfig(min_boot_disk_per_cpu=3, max_boot_disk_per_cpu=2)
-
-
 def test_runconfig_instance_types_list_or_str():
     RunConfig(instance_types=None)
     RunConfig(instance_types=["foo", "bar"])
@@ -114,6 +102,87 @@ def test_runconfig_architecture_case():
     assert rc.architecture == "arm64"
     rc = RunConfig(architecture="ARM64")
     assert rc.architecture == "ARM64"
+
+
+def test_runconfig_min_max_memory_per_task():
+    RunConfig(min_memory_per_task=1, max_memory_per_task=2)
+    with pytest.raises(ValueError):
+        RunConfig(min_memory_per_task=3, max_memory_per_task=2)
+    with pytest.raises(ValueError):
+        RunConfig(max_memory_per_task=0)
+
+
+def test_runconfig_min_max_local_ssd_per_task():
+    RunConfig(min_local_ssd_per_task=1, max_local_ssd_per_task=2)
+    with pytest.raises(ValueError):
+        RunConfig(min_local_ssd_per_task=3, max_local_ssd_per_task=2)
+    with pytest.raises(ValueError):
+        RunConfig(max_local_ssd_per_task=0)
+
+
+def test_update_run_config_from_provider_config_defaults():
+    c = Config(
+        provider="AWS",
+        aws=AWSConfig(),
+        gcp=GCPConfig(),
+        azure=AzureConfig(),
+        run=RunConfig(),
+    )
+    # Set all values to None to test defaults
+    c.run.cpus_per_task = None
+    c.run.min_instances = None
+    c.run.max_instances = None
+    c.run.scaling_check_interval = None
+    c.run.instance_termination_delay = None
+    c.run.max_runtime = None
+    c.run.worker_use_new_process = None
+    c.run.architecture = None
+    c.run.local_ssd_base_size = None
+    c.run.boot_disk = None
+    c.run.boot_disk_base_size = None
+
+    c.update_run_config_from_provider_config()
+
+    # Verify all defaults are set correctly
+    assert c.run.cpus_per_task == 1
+    assert c.run.min_instances == 1
+    assert c.run.max_instances == 10
+    assert c.run.scaling_check_interval == 60
+    assert c.run.instance_termination_delay == 60
+    assert c.run.max_runtime == 60
+    assert c.run.worker_use_new_process is False
+    assert c.run.architecture == "X86_64"
+    assert c.run.local_ssd_base_size == 0
+    assert c.run.boot_disk == 10
+    assert c.run.boot_disk_base_size == 10
+
+    # Test that values are not overwritten if already set
+    c.run.cpus_per_task = 2
+    c.run.min_instances = 3
+    c.run.max_instances = 5
+    c.run.scaling_check_interval = 30
+    c.run.instance_termination_delay = 45
+    c.run.max_runtime = 90
+    c.run.worker_use_new_process = True
+    c.run.architecture = "ARM64"
+    c.run.local_ssd_base_size = 20
+    c.run.boot_disk = 50
+    c.run.boot_disk_base_size = 30
+
+    c.update_run_config_from_provider_config()
+
+    # Verify values are preserved
+    assert c.run.cpus_per_task == 2
+    assert c.run.min_instances == 3
+    assert c.run.max_instances == 5
+    assert c.run.scaling_check_interval == 30
+    assert c.run.instance_termination_delay == 45
+    assert c.run.max_runtime == 90
+    assert c.run.worker_use_new_process is True
+    assert c.run.architecture == "ARM64"
+    assert c.run.local_ssd_base_size == 20
+    assert c.run.boot_disk == 50
+    assert c.run.boot_disk_base_size == 30
 
 
 # --- ProviderConfig, AWSConfig, GCPConfig, AzureConfig ---
@@ -513,3 +582,59 @@ def test_load_config_instance_types_str_to_list_edge_cases(tmp_path):
     assert cfg.gcp.instance_types is None
     assert cfg.aws.instance_types is None
     assert cfg.azure.instance_types is None
+
+
+def test_config_overload_from_cli_aws_warning():
+    c = make_config_obj()
+    c.provider = "AWS"
+    c.aws.region = "us-east-1"
+    cli_args = {"region": "us-west-1"}
+    with patch.object(config_mod, "LOGGER") as mock_logger:
+        c.overload_from_cli(cli_args)
+        mock_logger.warning.assert_called_with(
+            "Overloading aws.region=us-east-1 with CLI=us-west-1"
+        )
+    assert c.aws.region == "us-west-1"
+
+
+def test_config_overload_from_cli_gcp_warning():
+    c = make_config_obj()
+    c.provider = "GCP"
+    c.gcp.region = "us-east1"
+    cli_args = {"region": "us-west1"}
+    with patch.object(config_mod, "LOGGER") as mock_logger:
+        c.overload_from_cli(cli_args)
+        mock_logger.warning.assert_called_with("Overloading gcp.region=us-east1 with CLI=us-west1")
+    assert c.gcp.region == "us-west1"
+
+
+def test_config_overload_from_cli_azure_warning():
+    c = make_config_obj()
+    c.provider = "AZURE"
+    c.azure.region = "eastus"
+    cli_args = {"region": "westus"}
+    with patch.object(config_mod, "LOGGER") as mock_logger:
+        c.overload_from_cli(cli_args)
+        mock_logger.warning.assert_called_with("Overloading azure.region=eastus with CLI=westus")
+    assert c.azure.region == "westus"
+
+
+def test_config_overload_from_cli_no_warning():
+    c = make_config_obj()
+    c.provider = "AWS"
+    c.aws.region = None
+    cli_args = {"region": "us-west-1"}
+    with patch.object(config_mod, "LOGGER") as mock_logger:
+        c.overload_from_cli(cli_args)
+        mock_logger.warning.assert_not_called()
+    assert c.aws.region == "us-west-1"
+
+
+def test_config_overload_from_cli_run_warning():
+    c = make_config_obj()
+    c.run.min_instances = 1
+    cli_args = {"min_instances": 2}
+    with patch.object(config_mod, "LOGGER") as mock_logger:
+        c.overload_from_cli(cli_args)
+        mock_logger.warning.assert_called_with("Overloading run.min_instances=1 with CLI=2")
+    assert c.run.min_instances == 2
