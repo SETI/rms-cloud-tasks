@@ -8,12 +8,12 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 from botocore.exceptions import ClientError
 
-# Filter coroutine warnings for these tests
-warnings.filterwarnings("ignore", message="coroutine .* was never awaited")
-
 # Add the src directory to the path so we can import cloud_tasks modules
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from cloud_tasks.queue_manager.aws import AWSSQSQueue
+from cloud_tasks.queue_manager.aws import AWSSQSQueue  # noqa
+
+# Filter coroutine warnings for these tests
+warnings.filterwarnings("ignore", message="coroutine .* was never awaited")
 
 
 @pytest.fixture

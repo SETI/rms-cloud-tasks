@@ -3,7 +3,7 @@ Tests for the instance manager factory function.
 """
 
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 from cloud_tasks.instance_manager import create_instance_manager
 from cloud_tasks.common.config import Config, AWSConfig, GCPConfig

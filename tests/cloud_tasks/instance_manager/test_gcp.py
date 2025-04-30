@@ -1,7 +1,7 @@
 """Unit tests for the GCP Compute Engine instance manager."""
 
 import copy
-from typing import Any, Dict, Tuple, List, Optional
+from typing import Any, Dict, Tuple
 from unittest.mock import AsyncMock, MagicMock, patch
 import random
 import time
@@ -13,9 +13,6 @@ from google.cloud import billing
 from google.oauth2.credentials import Credentials
 import uuid as _uuid  # Import uuid module with alias to avoid conflicts
 import asyncio
-from google.cloud import compute_v1
-from google.api_core import exceptions as gcp_exceptions
-import logging
 
 from cloud_tasks.common.config import GCPConfig
 from cloud_tasks.instance_manager.gcp import GCPComputeInstanceManager
@@ -569,7 +566,7 @@ async def test_get_instance_pricing_basic(
     assert pricing["local_ssd_gb"] == 0
     assert pricing["boot_disk_gb"] == 0
     assert pricing["architecture"] == "X86_64"
-    assert pricing["supports_spot"] == True
+    assert pricing["supports_spot"] is True
 
 
 @pytest.mark.asyncio
@@ -638,7 +635,7 @@ async def test_get_instance_pricing_with_local_ssd(
     assert pricing["local_ssd_gb"] == 750
     assert pricing["boot_disk_gb"] == 0
     assert pricing["architecture"] == "X86_64"
-    assert pricing["supports_spot"] == True
+    assert pricing["supports_spot"] is True
 
 
 @pytest.mark.asyncio
@@ -695,7 +692,7 @@ async def test_get_instance_pricing_spot_instance(
     assert pricing["local_ssd_gb"] == 0
     assert pricing["boot_disk_gb"] == 0
     assert pricing["architecture"] == "X86_64"
-    assert pricing["supports_spot"] == True
+    assert pricing["supports_spot"] is True
 
 
 @pytest.mark.asyncio
@@ -755,7 +752,7 @@ async def test_get_instance_pricing_cache_hit(
     assert pricing["local_ssd_gb"] == 0
     assert pricing["boot_disk_gb"] == 0
     assert pricing["architecture"] == "X86_64"
-    assert pricing["supports_spot"] == True
+    assert pricing["supports_spot"] is True
 
     # Verify the billing client was not called
     gcp_instance_manager._billing_client.list_services.assert_not_called()
@@ -1328,8 +1325,8 @@ async def test_start_instance_spot(
 
                 # Check that spot scheduling was used
                 instance_config = call_args[1]["instance_resource"]
-                assert instance_config.scheduling.preemptible == True
-                assert instance_config.scheduling.automatic_restart == False
+                assert instance_config.scheduling.preemptible is True
+                assert instance_config.scheduling.automatic_restart is False
                 assert instance_config.scheduling.on_host_maintenance == "TERMINATE"
 
 
@@ -2611,6 +2608,7 @@ async def test_get_random_zone_different_region(
     gcp_instance_manager._zones_client.list.return_value = [mock_zone1, mock_zone2]
 
     zone = await gcp_instance_manager._get_random_zone(region="europe-west1")
+    assert zone.startswith("europe-west1-")
 
     # Verify correct filter was used for the specified region
     gcp_instance_manager._zones_client.list.assert_called_once()

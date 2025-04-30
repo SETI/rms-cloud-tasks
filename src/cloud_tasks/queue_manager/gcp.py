@@ -86,9 +86,9 @@ class GCPPubSubQueue(QueueManager):
             self._publisher.get_topic(request={"topic": self._topic_path})
             self._logger.debug(f"Topic '{self._topic_name}' already exists")
             self._topic_exists = True
-        except gcp_exceptions.NotFound as e:
+        except gcp_exceptions.NotFound:
             self._logger.debug(f"Topic '{self._topic_name}' doesn't exist...deferring creation")
-        except Exception as e:
+        except Exception:
             # self._logger.error(
             #     f"Failed to access topic '{self._topic_name}' for Pub/Sub queue "
             #     f"'{self._queue_name}': {str(e)}",
@@ -102,11 +102,11 @@ class GCPPubSubQueue(QueueManager):
             self._subscriber.get_subscription(request={"subscription": self._subscription_path})
             self._logger.debug(f"Subscription {self._subscription_name} already exists")
             self._subscription_exists = True
-        except gcp_exceptions.NotFound as e:
+        except gcp_exceptions.NotFound:
             self._logger.debug(
                 f"Subscription {self._subscription_name} doesn't exist...deferring creation"
             )
-        except Exception as e:
+        except Exception:
             # self._logger.error(
             #     f"Failed to access subscription '{self._subscription_name}' for Pub/Sub "
             #     f"queue '{self._queue_name}': {str(e)}",
@@ -127,7 +127,7 @@ class GCPPubSubQueue(QueueManager):
                     f"Topic '{self._topic_name}' already exists (created by another process)"
                 )
                 self._topic_exists = True
-            except Exception as e:
+            except Exception:
                 # self._logger.error(
                 #     f"Failed to create topic '{self._topic_name}' for Pub/Sub queue "
                 #     f"'{self._queue_name}': {str(e)}",
@@ -155,7 +155,7 @@ class GCPPubSubQueue(QueueManager):
                     f"Subscription '{self._subscription_name}' already exists (created by another process)"
                 )
                 self._subscription_exists = True
-            except Exception as e:
+            except Exception:
                 # self._logger.error(
                 #     f"Failed to create subscription '{self._subscription_name}' for Pub/Sub "
                 #     f"queue '{self._queue_name}': {str(e)}",
@@ -192,7 +192,7 @@ class GCPPubSubQueue(QueueManager):
                 f"Published message '{message_id}' for task '{task_id}' on queue "
                 f"'{self._queue_name}'"
             )
-        except Exception as e:
+        except Exception:
             # self._logger.error(
             #     f"Failed to publish task '{task_id}' to Pub/Sub on queue "
             #     f"'{self._queue_name}': {str(e)}",
@@ -264,7 +264,7 @@ class GCPPubSubQueue(QueueManager):
 
             self._logger.debug(f"Received {len(tasks)} tasks from subscription")
             return tasks
-        except Exception as e:
+        except Exception:
             # self._logger.error(
             #     f"Error receiving tasks from Pub/Sub queue '{self._queue_name}': {str(e)}",
             #     exc_info=True,
@@ -299,7 +299,7 @@ class GCPPubSubQueue(QueueManager):
                 ),
             )
             self._logger.debug(f"Completed task with ack_id: {task_handle}")
-        except Exception as e:
+        except Exception:
             # self._logger.error(
             #     f"Error completing task with ack_id '{task_handle}' on Pub/Subqueue "
             #     f"'{self._queue_name}': {str(e)}",
@@ -336,7 +336,7 @@ class GCPPubSubQueue(QueueManager):
                 ),
             )
             self._logger.debug(f"Failed task with ack_id: {task_handle}")
-        except Exception as e:
+        except Exception:
             # self._logger.error(
             #     f"Error failing task with ack_id '{task_handle}' on Pub/Sub queue "
             #     f"'{self._queue_name}': {str(e)}",
@@ -397,7 +397,7 @@ class GCPPubSubQueue(QueueManager):
             self._logger.debug(f"Queue '{self._queue_name}' appears to be empty")
             return 0
 
-        except Exception as e:
+        except Exception:
             # Log error and return 0 as fallback
             # self._logger.error(
             #     f"Error getting queue depth for Pub/Sub queue '{self._queue_name}': {str(e)}",
@@ -422,7 +422,7 @@ class GCPPubSubQueue(QueueManager):
                 ),
             )
             self._logger.info(f"Deleted subscription {self._subscription_name}")
-        except Exception as e:
+        except Exception:
             # self._logger.error(
             #     f"Failed to delete subscription '{self._subscription_name}' for Pub/Sub "
             #     f"queue '{self._queue_name}': {str(e)}"
@@ -449,7 +449,7 @@ class GCPPubSubQueue(QueueManager):
                 f"Recreated subscription '{self._subscription_name}' for Pub/Sub queue "
                 f"'{self._queue_name}', queue is now empty"
             )
-        except Exception as e:
+        except Exception:
             # self._logger.error(
             #     f"Error recreating subscription '{self._subscription_name}' for Pub/Sub "
             #     f"queue '{self._queue_name}': {str(e)}",
@@ -475,9 +475,9 @@ class GCPPubSubQueue(QueueManager):
             )
             self._logger.info(f"Successfully deleted subscription {self._subscription_name}")
             self._subscription_exists = False
-        except gcp_exceptions.NotFound as e:
+        except gcp_exceptions.NotFound:
             self._logger.info(f"Subscription '{self._subscription_name}' does not exist")
-        except Exception as e:
+        except Exception:
             # self._logger.error(
             #     f"Error deleting subscription '{self._subscription_name}' for Pub/Sub "
             #     f"queue '{self._queue_name}': {str(e)}"
@@ -492,9 +492,9 @@ class GCPPubSubQueue(QueueManager):
             )
             self._logger.info(f"Successfully deleted topic {self._topic_name}")
             self._topic_exists = False
-        except gcp_exceptions.NotFound as e:
+        except gcp_exceptions.NotFound:
             self._logger.info(f"Topic {self._topic_name} does not exist")
-        except Exception as e:
+        except Exception:
             # self._logger.error(
             #     f"Error deleting topic '{self._topic_name}' for Pub/Sub queue "
             #     f"'{self._queue_name}': {str(e)}"

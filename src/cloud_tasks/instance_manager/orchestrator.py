@@ -6,7 +6,7 @@ import asyncio
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from cloud_tasks.instance_manager.instance_manager import InstanceManager
 from cloud_tasks.queue_manager import create_queue
@@ -38,7 +38,7 @@ class InstanceOrchestrator:
             config: Configuration object containing all settings.
         """
         self._logger = logging.getLogger(__name__)
-        self._logger.debug(f"Initializing InstanceOrchestrator")
+        self._logger.debug("Initializing InstanceOrchestrator")
 
         self._config = config
         self._provider = self._config.provider
@@ -164,9 +164,9 @@ class InstanceOrchestrator:
             max_price_str = "None"
         self._logger.info(f"  Total price per hour: {min_price_str} to {max_price_str}")
         if self._run_config.use_spot:
-            self._logger.info(f"  Pricing: Spot instances")
+            self._logger.info("  Pricing: Spot instances")
         else:
-            self._logger.info(f"  Pricing: On-demand instances")
+            self._logger.info("  Pricing: On-demand instances")
         self._logger.info("Miscellaneous:")
         self._logger.info(f"  Scaling check interval: {self._scaling_check_interval} seconds")
         self._logger.info(
@@ -176,7 +176,7 @@ class InstanceOrchestrator:
         self._logger.info(f"  Worker use new process: {self._run_config.worker_use_new_process}")
         self._logger.info(f"  Max parallel instance creations: {self._start_instance_max_threads}")
         self._logger.info(f"  Image: {self._run_config.image}")
-        self._logger.info(f"  Startup script:")
+        self._logger.info("  Startup script:")
         if self._run_config.startup_script is None:
             self._logger.info("    None")
         else:
@@ -429,12 +429,12 @@ export RMS_CLOUD_WORKER_USE_NEW_PROCESS={bool(self._run_config.worker_use_new_pr
             return num_running, running_cpus, running_price, summary
 
         summary = ""
-        summary += f"Running instance summary:\n"
+        summary += "Running instance summary:\n"
         summary += (
-            f"  State       Instance Type             vCPUs  Zone             Count  Total Price\n"
+            "  State       Instance Type             vCPUs  Zone             Count  Total Price\n"
         )
         summary += (
-            f"  --------------------------------------------------------------------------------\n"
+            "  --------------------------------------------------------------------------------\n"
         )
 
         sorted_keys = sorted(running_instances_by_type.keys(), key=lambda x: (x[1], x[0], x[2]))
@@ -466,7 +466,7 @@ export RMS_CLOUD_WORKER_USE_NEW_PROCESS={bool(self._run_config.worker_use_new_pr
 
         running_price_str = f"${running_price:.2f}"
         summary += (
-            f"  --------------------------------------------------------------------------------\n"
+            "  --------------------------------------------------------------------------------\n"
         )
         summary += f"  Total running/starting:               {running_cpus:>5} (weighted)        "
         summary += f"{num_running:>5}  {running_price_str:>11}\n"

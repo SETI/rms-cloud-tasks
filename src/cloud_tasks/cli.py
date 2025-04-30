@@ -8,7 +8,6 @@ import json
 import json_stream
 import logging
 import sys
-import time
 from tqdm import tqdm  # type: ignore
 from typing import Any, Dict, Iterable
 import yaml  # type: ignore
@@ -57,14 +56,14 @@ def yield_tasks_from_file(tasks_file: str) -> Iterable[Dict[str, Any]]:
             y = fp.readline()
             cont = True
             while cont:
-                l = fp.readline()
-                if len(l) == 0:
+                ln = fp.readline()
+                if len(ln) == 0:
                     cont = False
-                elif l.startswith((" ", "-")):
-                    y = y + l
+                elif ln.startswith((" ", "-")):
+                    y = y + ln
                 elif len(y) > 0:
                     yield yaml.load(y)
-                    y = l
+                    y = ln
 
 
 async def load_queue_cmd(args: argparse.Namespace, config: Config) -> None:
@@ -526,7 +525,7 @@ async def list_running_instances_cmd(args: argparse.Namespace, config: Config) -
             if args.job_id:
                 print(f"\nNo instances found for job ID: {args.job_id}")
             else:
-                print(f"\nNo instances found")
+                print("\nNo instances found")
 
     except Exception as e:
         logger.error(f"Error listing running instances: {e}", exc_info=True)
@@ -625,7 +624,7 @@ async def list_images_cmd(args: argparse.Namespace, config: Config) -> None:
         images = await instance_manager.list_available_images()
 
         if not images:
-            print(f"No images found")
+            print("No images found")
             return
 
         # Apply filters if specified
@@ -819,7 +818,7 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
         instances = await instance_manager.get_available_instance_types(constraints)
 
         if not instances:
-            print(f"No instance types found")
+            print("No instance types found")
             return
 
         # Apply text filter to all fields if specified
@@ -999,7 +998,7 @@ async def list_regions_cmd(args: argparse.Namespace, config: Config) -> None:
             if args.prefix:
                 print(f"No regions found with prefix '{args.prefix}'")
             else:
-                print(f"No regions found")
+                print("No regions found")
             return
 
         # Display results

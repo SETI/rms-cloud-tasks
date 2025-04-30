@@ -1,7 +1,7 @@
 """Unit tests for the InstanceOrchestrator."""
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from cloud_tasks.instance_manager.orchestrator import InstanceOrchestrator
@@ -69,31 +69,27 @@ def mock_config():
 @pytest.fixture
 def orchestrator(mock_config):
     """Create an InstanceOrchestrator with mocked dependencies."""
-    with patch(
-        "cloud_tasks.instance_manager.create_instance_manager"
-    ) as mock_create_instance_manager:
-        with patch("cloud_tasks.queue_manager.create_queue") as mock_create_queue:
-            # Create orchestrator
-            orchestrator = InstanceOrchestrator(mock_config)
+    # Create orchestrator
+    orchestrator = InstanceOrchestrator(mock_config)
 
-            # Setup orchestrator for testing
-            orchestrator._instance_manager = AsyncMock()
-            orchestrator._task_queue = AsyncMock()
-            orchestrator._optimal_instance_info = {
-                "name": "n1-standard-2",
-                "vcpu": 2,
-                "mem_gb": 8,
-                "local_ssd_gb": 0,
-                "total_price": 5.75,
-                "zone": "us-central1-a",
-            }
-            orchestrator._optimal_instance_boot_disk_size = 20
-            orchestrator._optimal_instance_num_tasks = 2
+    # Setup orchestrator for testing
+    orchestrator._instance_manager = AsyncMock()
+    orchestrator._task_queue = AsyncMock()
+    orchestrator._optimal_instance_info = {
+        "name": "n1-standard-2",
+        "vcpu": 2,
+        "mem_gb": 8,
+        "local_ssd_gb": 0,
+        "total_price": 5.75,
+        "zone": "us-central1-a",
+    }
+    orchestrator._optimal_instance_boot_disk_size = 20
+    orchestrator._optimal_instance_num_tasks = 2
 
-            # Override start_instance_max_threads for testing
-            orchestrator._start_instance_max_threads = 3
+    # Override start_instance_max_threads for testing
+    orchestrator._start_instance_max_threads = 3
 
-            yield orchestrator
+    yield orchestrator
 
 
 @pytest.mark.asyncio
@@ -106,8 +102,6 @@ async def test_provision_instances_parallel(orchestrator):
     concurrent_starts = 0
     max_concurrent_starts = 0
     start_times = []
-    original_semaphore_enter = asyncio.Semaphore.__aenter__
-    original_semaphore_exit = asyncio.Semaphore.__aexit__
 
     # Create a delayed mocked start_instance method to simulate real-world behavior
     async def delayed_start_instance(*args, **kwargs):

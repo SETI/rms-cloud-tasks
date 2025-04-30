@@ -4,7 +4,6 @@ Configuration for pytest.
 
 import os
 import sys
-import asyncio
 import tempfile
 import pytest
 import uuid

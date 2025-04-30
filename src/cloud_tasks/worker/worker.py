@@ -7,7 +7,6 @@ It uses multiprocessing to achieve true parallelism across multiple CPU cores.
 
 import argparse
 import asyncio
-import json
 import json_stream
 import logging
 import os
@@ -158,14 +157,14 @@ class LocalTaskQueue:
                 y = fp.readline()
                 cont = True
                 while cont:
-                    l = fp.readline()
-                    if len(l) == 0:
+                    ln = fp.readline()
+                    if len(ln) == 0:
                         cont = False
-                    elif l.startswith((" ", "-")):
-                        y = y + l
+                    elif ln.startswith((" ", "-")):
+                        y = y + ln
                     elif len(y) > 0:
                         yield yaml.load(y)
-                        y = l
+                        y = ln
 
     async def receive_tasks(self, max_count: int, visibility_timeout: int) -> List[Dict[str, Any]]:
         """Get a batch of tasks from the queue.
@@ -765,9 +764,6 @@ class Worker:
                     task_id = task["task_id"]
                     task_data = task["data"]
                     ack_id = task["ack_id"]  # For removing from the main queue
-                    receipt = (
-                        task.get("receipt_handle") or task.get("lock_token") or task.get("ack_id")
-                    )
 
                     logger.info(f"Processing task {task_id} in process #{process_id}")
                     start_time = time.time()

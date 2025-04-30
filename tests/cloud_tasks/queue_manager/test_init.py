@@ -177,3 +177,5 @@ async def test_create_queue_unsupported_provider_no_config():
     """Test creating a queue with an unsupported provider without a Config object."""
     with pytest.raises(ValueError) as exc_info:
         await create_queue(provider="UNSUPPORTED")
+
+    assert "Unsupported queue provider: UNSUPPORTED" in str(exc_info.value)

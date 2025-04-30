@@ -26,8 +26,6 @@ class MicrosecondFormatter(logging.Formatter):
                 if len(parts) > 1:
                     # Get the length of the part before .%f
                     prefix_len = len(ct.strftime(parts[0]))
-                    # Get the length of the microseconds (should be 6)
-                    microsec_len = len(ct.strftime(".%f")) - 1  # subtract 1 for the dot
                     # Truncate the string to include only the first 3 digits of microseconds
                     s = s[: prefix_len + 4]  # +4 accounts for the dot and 3 digits
                     # If there's content after microseconds, append it

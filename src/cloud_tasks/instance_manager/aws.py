@@ -57,7 +57,7 @@ class AWSEC2InstanceManager(InstanceManager):
         super().__init__(aws_config)
         self._logger = logging.getLogger(__name__)
 
-        self._logger.info(f"Initializing AWS EC2 instance manager")
+        self._logger.info("Initializing AWS EC2 instance manager")
 
         self._credentials = {
             "aws_access_key_id": aws_config.access_key,
@@ -140,7 +140,7 @@ class AWSEC2InstanceManager(InstanceManager):
         if constraints is None:
             constraints = {}
 
-        self._logger.debug(f"Listing available EC2 instance types")
+        self._logger.debug("Listing available EC2 instance types")
         self._logger.debug(f"Constraints: {constraints}")
 
         # List instance types
@@ -217,6 +217,8 @@ class AWSEC2InstanceManager(InstanceManager):
             Plus the original instance type info keyed by availability zone. If any price is not
             available, it is set to None.
         """
+        ret: Dict[str, Dict[str, Dict[str, float | str | None]]] = {}
+
         self._logger.debug(
             f"Getting pricing for {len(instance_types)} instance types (spot: {use_spot})"
         )
@@ -224,8 +226,6 @@ class AWSEC2InstanceManager(InstanceManager):
         if len(instance_types) == 0:
             self._logger.warning("No instance types provided")
             return ret
-
-        ret: Dict[str, Dict[str, Dict[str, float | str | None]]] = {}
 
         if self._region is None:
             raise RuntimeError("Region must be specified")
@@ -303,7 +303,7 @@ class AWSEC2InstanceManager(InstanceManager):
             else:
                 # For lots of instance types, get on-demand price for all instance types and filter
                 # later
-                self._logger.debug(f"Getting on-demand price for all instance types")
+                self._logger.debug("Getting on-demand price for all instance types")
                 next_token = None
                 page_no = 1
                 while True:

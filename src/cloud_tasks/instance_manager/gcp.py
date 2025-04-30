@@ -80,7 +80,7 @@ class GCPComputeInstanceManager(InstanceManager):
         super().__init__(gcp_config)
 
         self._logger = logging.getLogger(__name__)
-        self._logger.debug(f"Initializing GCP Compute Engine instance manager")
+        self._logger.debug("Initializing GCP Compute Engine instance manager")
 
         self._project_id = gcp_config.project_id
 
@@ -429,7 +429,7 @@ class GCPComputeInstanceManager(InstanceManager):
                 ret_val = copy.deepcopy(ret_val)  # Since we're going to mutate it
                 zone_val = ret_val.get(f"{self._region}-*")
                 if zone_val is None:  # pragma: no cover
-                    raise RuntimeError(f"Internal error while finding pricing: region has changed")
+                    raise RuntimeError("Internal error while finding pricing: region has changed")
                 # Add the instance type info to the return value
                 zone_val.update(machine_info)
                 # Update the pricing info with the new vCPU and memory info
@@ -1053,7 +1053,8 @@ class GCPComputeInstanceManager(InstanceManager):
             if instance.tags and instance.tags.items:
                 for tag in instance.tags.items:
                     if tag.startswith(self._JOB_ID_TAG_PREFIX):
-                        inst_job_id = tag[len(self._JOB_ID_TAG_PREFIX) :]
+                        # black keeps reformatting this line in a way flake8 doesn't like
+                        inst_job_id = tag[len(self._JOB_ID_TAG_PREFIX) :]  # noqa
                         if job_id and inst_job_id != job_id:
                             self._logger.debug(
                                 f"Skipping instance {instance.name} because it has job_id "

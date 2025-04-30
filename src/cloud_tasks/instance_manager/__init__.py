@@ -5,7 +5,7 @@ Instance Orchestrator module and factory function
 from typing import cast
 
 from .instance_manager import InstanceManager
-from cloud_tasks.common.config import Config, AWSConfig, GCPConfig, AzureConfig
+from cloud_tasks.common.config import Config, AWSConfig, GCPConfig
 
 
 async def create_instance_manager(config: Config) -> InstanceManager:

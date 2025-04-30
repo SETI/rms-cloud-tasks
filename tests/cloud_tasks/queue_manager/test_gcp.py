@@ -9,12 +9,12 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 from google.api_core import exceptions as gcp_exceptions
 
-# Filter coroutine warnings for these tests
-warnings.filterwarnings("ignore", message="coroutine .* was never awaited")
-
 # Add the src directory to the path so we can import cloud_tasks modules
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from cloud_tasks.queue_manager.gcp import GCPPubSubQueue
+from cloud_tasks.queue_manager.gcp import GCPPubSubQueue  # noqa
+
+# Filter coroutine warnings for these tests
+warnings.filterwarnings("ignore", message="coroutine .* was never awaited")
 
 
 @pytest.fixture

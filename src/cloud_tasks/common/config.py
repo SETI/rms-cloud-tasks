@@ -4,7 +4,7 @@ Configuration handling for the multi-cloud task processing system.
 
 import logging
 import os
-from typing import Any, Dict, Optional, List, Literal, Union
+from typing import Any, Dict, Optional, List, Literal
 import yaml
 
 from filecache import FCPath
@@ -198,8 +198,8 @@ class ProviderConfig(RunConfig, validate_assignment=True):
 
     model_config = ConfigDict(extra="forbid")
 
-    job_id: Optional[constr(min_length=1, max_length=24, pattern="^[a-z][-a-z0-9]{0,23}$")] = None
-    queue_name: Optional[constr(min_length=1, max_length=24, pattern="^[a-z][-a-z0-9]{0,23}$")] = (
+    job_id: Optional[constr(min_length=1, max_length=24, pattern=r"^[a-z][-a-z0-9]{0,23}$")] = None
+    queue_name: Optional[constr(min_length=1, max_length=24, pattern=r"^[a-z][-a-z0-9]{0,23}$")] = (
         None
     )
     region: Optional[constr(min_length=1)] = None
