@@ -428,7 +428,7 @@ class GCPComputeInstanceManager(InstanceManager):
                     continue
                 ret_val = copy.deepcopy(ret_val)  # Since we're going to mutate it
                 zone_val = ret_val.get(f"{self._region}-*")
-                if zone_val is None:
+                if zone_val is None:  # pragma: no cover
                     raise RuntimeError(f"Internal error while finding pricing: region has changed")
                 # Add the instance type info to the return value
                 zone_val.update(machine_info)
@@ -484,6 +484,9 @@ class GCPComputeInstanceManager(InstanceManager):
                 # print(sku)
 
                 # Skip if this SKU is for local SSDs and our instance type doesn't have them
+                # This is necessary because there are instance types like "n1-standard-2"
+                # and "n1-standard-2-lssd" and we only want to include the LSSD pricing for the
+                # -lssd instance type.
                 if "local ssd" in sku_description and not is_lssd:
                     continue
 
@@ -587,12 +590,10 @@ class GCPComputeInstanceManager(InstanceManager):
             local_disk_price = 0
             per_gb_local_disk_price = 0
             if local_disk_pricing_info is not None:
-                if not is_lssd:
-                    self._logger.warning(
+                if not is_lssd:  # pragma: no cover
+                    raise RuntimeError(
                         f"Local SSD SKU found for non-LSSD instance type: {machine_type}"
                     )
-                    ret[machine_type] = {}
-                    continue
                 per_gb_local_disk_price = (
                     local_disk_pricing_info.unit_price.nanos / 1e9 / 730.5
                 )  # GiBy.mo -> GiBy/hour

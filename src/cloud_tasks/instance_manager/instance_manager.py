@@ -136,7 +136,7 @@ class InstanceManager(ABC):
                 "description": description of the instance type
                 "url": URL to the instance type details
         """
-        pass
+        pass  # pragma: no cover
 
     @abstractmethod
     async def get_instance_pricing(
@@ -162,7 +162,7 @@ class InstanceManager(ABC):
             Plus the original instance type info keyed by availability zone. If any price is not
             available, it is set to None.
         """
-        pass
+        pass  # pragma: no cover
 
     @abstractmethod
     async def get_optimal_instance_type(
@@ -198,7 +198,7 @@ class InstanceManager(ABC):
                 - Zone in which the instance type is cheapest
                 - Price of the instance type in USD/hour
         """
-        pass
+        pass  # pragma: no cover
 
     @abstractmethod
     async def start_instance(
@@ -228,7 +228,7 @@ class InstanceManager(ABC):
             A tuple containing the ID of the started instance and the zone it was started
             in
         """
-        pass
+        pass  # pragma: no cover
 
     @abstractmethod
     async def terminate_instance(self, instance_id: str, zone: Optional[str] = None) -> None:
@@ -238,14 +238,14 @@ class InstanceManager(ABC):
             instance_id: Instance name
             zone: The zone the instance is in; if not specified use the default zone
         """
-        pass
+        pass  # pragma: no cover
 
     @abstractmethod
     async def list_running_instances(
         self, job_id: Optional[str] = None, include_non_job: bool = False
     ) -> List[Dict[str, Any]]:
         """List currently running instances, optionally filtered by tags."""
-        pass
+        pass  # pragma: no cover
 
     @abstractmethod
     async def list_available_images(self) -> List[Dict[str, Any]]:
@@ -256,9 +256,9 @@ class InstanceManager(ABC):
         Returns:
             List of dictionaries with image information
         """
-        pass
+        pass  # pragma: no cover
 
     @abstractmethod
     async def get_available_regions(self) -> Dict[str, Any]:
         """Get all available regions and their attributes."""
-        pass
+        pass  # pragma: no cover
