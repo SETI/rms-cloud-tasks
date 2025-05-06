@@ -7,6 +7,58 @@ from cloud_tasks.common.config import ProviderConfig
 class InstanceManager(ABC):
     """Base interface for instance management operations."""
 
+    # These rankings are valid across all providers
+    _PROCESSOR_FAMILY_TO_PERFORMANCE_RANKING = {
+        # Unknown/Other
+        "Unknown": 0,
+        "Intel": 1,  # Generic/legacy Intel, very low performance
+        # Legacy/Oldest
+        "Intel Nehalem": 2,  # Xeon 5500, ~2009
+        "Intel Westmere": 3,  # Xeon 5600, ~2010
+        "Intel Sandy Bridge": 4,  # Xeon E5-2600, ~2012
+        "Intel Ivy Bridge": 5,  # Xeon E5 v2, ~2013
+        "Intel Haswell": 6,  # Xeon E5 v3, ~2014
+        "Intel Broadwell": 7,  # Xeon E5 v4, ~2016
+        "Intel Core i7": 8,  # Mac1, ~2017
+        # Early cloud ARM
+        "AWS Graviton": 9,  # A1, ~2018
+        # Early AMD EPYC
+        "AMD Naples": 10,  # EPYC 7001, Zen 1, ~2017
+        # 1st Gen Xeon Scalable
+        "Intel Skylake": 11,  # Xeon Scalable 1st Gen, ~2017
+        # 2nd Gen Xeon Scalable
+        "Intel Cascade Lake": 12,  # Xeon Scalable 2nd Gen, ~2019
+        # 2nd Gen AMD EPYC
+        "AMD Rome": 13,  # EPYC 7002, Zen 2, ~2019
+        # Early ARM/Apple
+        "Apple M1": 14,  # Mac2, ~2020
+        "Ampere Altra": 15,  # Arm Neoverse N1, ~2020
+        # 3rd Gen Xeon Scalable
+        "Intel Ice Lake": 16,  # Xeon Scalable 3rd Gen, ~2021
+        # 3rd Gen AMD EPYC
+        "AMD Milan": 17,  # EPYC 7003, Zen 3, ~2021
+        # AWS Graviton2
+        "AWS Graviton2": 18,  # M6g, ~2020
+        # AWS Graviton3
+        "AWS Graviton3": 19,  # M7g, ~2022
+        # AWS Graviton3E
+        "AWS Graviton3E": 20,  # HPC, ~2023
+        # 4th Gen Xeon Scalable
+        "Intel Sapphire Rapids": 21,  # Xeon Scalable 4th Gen, ~2023
+        # 4th Gen AMD EPYC
+        "AMD Genoa": 22,  # EPYC 9004, Zen 4, ~2022
+        # AWS Graviton4
+        "AWS Graviton4": 23,  # M8g, ~2024
+        # AWS Inferentia2
+        "AWS Inferentia2": 24,  # Modern AWS accelerator
+        # 5th Gen Xeon Scalable
+        "Intel Emerald Rapids": 25,  # Xeon Scalable 5th Gen, ~2024
+        # 5th Gen AMD EPYC
+        "AMD Turin": 26,  # EPYC 9005, Zen 5, ~2024 (expected)
+        # Google Custom ARM
+        "Google Axion": 27,  # Custom ARM, 2024 (early results)
+    }
+
     def __init__(self, config: ProviderConfig) -> None:
         """Initialize the instance manager with configuration."""
         self.config = config
@@ -52,6 +104,14 @@ class InstanceManager(ABC):
             (
                 constraints.get("architecture") is None
                 or instance_info["architecture"] == constraints["architecture"]
+            )
+            and (
+                constraints.get("min_cpu_rank") is None
+                or instance_info["cpu_rank"] >= constraints["min_cpu_rank"]
+            )
+            and (
+                constraints.get("max_cpu_rank") is None
+                or instance_info["cpu_rank"] <= constraints["max_cpu_rank"]
             )
             and (min_cpu is None or instance_info["vcpu"] >= min_cpu)
             and (max_cpu is None or instance_info["vcpu"] <= max_cpu)
@@ -110,6 +170,34 @@ class InstanceManager(ABC):
             )
         )
 
+    def _get_boot_disk_size(
+        self, instance_info: Dict[str, Any], boot_disk_constraints: Optional[Dict[str, Any]] = None
+    ) -> float:
+        """Get the boot disk size for an instance."""
+        if boot_disk_constraints is None:
+            boot_disk_constraints = {}
+
+        boot_disk_base_size = boot_disk_constraints.get("boot_disk_base_size")
+        if boot_disk_base_size is None:
+            boot_disk_base_size = 0
+        boot_disk_per_cpu = boot_disk_constraints.get("boot_disk_per_cpu")
+        if boot_disk_per_cpu is None:
+            boot_disk_per_cpu = 0
+        boot_disk_per_task = boot_disk_constraints.get("boot_disk_per_task")
+        if boot_disk_per_task is None:
+            boot_disk_per_task = 0
+        num_cpus = instance_info["vcpu"]
+        cpus_per_task = boot_disk_constraints.get("cpus_per_task", 1)
+        tasks_per_instance = num_cpus // cpus_per_task
+
+        boot_disk = boot_disk_constraints.get("total_boot_disk_size")
+        if boot_disk is None:
+            boot_disk = 10  # TODO Default is for GCP
+        boot_disk_from_cpus = boot_disk_base_size + boot_disk_per_cpu * num_cpus
+        boot_disk_from_tasks = boot_disk_base_size + boot_disk_per_task * tasks_per_instance
+
+        return max(boot_disk, boot_disk_from_cpus, boot_disk_from_tasks)
+
     @abstractmethod
     async def get_available_instance_types(
         self, constraints: Optional[Dict[str, Any]] = None
@@ -154,7 +242,11 @@ class InstanceManager(ABC):
 
     @abstractmethod
     async def get_instance_pricing(
-        self, instance_types: Dict[str, Dict[str, Any]], *, use_spot: bool = False
+        self,
+        instance_types: Dict[str, Dict[str, Any]],
+        *,
+        use_spot: bool = False,
+        boot_disk_constraints: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Dict[str, Dict[str, float | str | None]]]:
         """
         Get the hourly price for one or more specific instance types.
@@ -163,6 +255,9 @@ class InstanceManager(ABC):
             instance_types: A dictionary mapping instance type to a dictionary of instance type
                 specifications as returned by get_available_instance_types().
             use_spot: Whether to use spot pricing
+            boot_disk_constraints: Dictionary of constraints used to determine the boot disk type and
+                size. These are from the same config as the instance type constraints but are not
+                used to filter instances.
 
         Returns:
             A dictionary mapping instance type to a dictionary of hourly price in USD::
@@ -170,6 +265,10 @@ class InstanceManager(ABC):
                 "per_cpu_price": Price of CPU in USD/vCPU/hour
                 "mem_price": Total price of RAM in USD/hour
                 "mem_per_gb_price": Price of RAM in USD/GB/hour
+                "boot_disk_price": Total price of boot disk in USD/hour
+                "boot_disk_per_gb_price": Price of boot disk in USD/GB/hour
+                "local_ssd_price": Total price of local SSD in USD/hour
+                "local_ssd_per_gb_price": Price of local SSD in USD/GB/hour
                 "total_price": Total price of instance in USD/hour
                 "total_price_per_cpu": Total price of instance in USD/vCPU/hour
                 "zone": availability zone

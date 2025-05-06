@@ -52,6 +52,8 @@ class GCPComputeInstanceManager(InstanceManager):
 
     _JOB_ID_TAG_PREFIX = "rmscr-"
 
+    _DEFAULT_BOOT_DISK_TYPE = "balanced"
+
     # Map of instance statuses to standardized statuses
     _STATUS_MAP = {
         "PROVISIONING": "starting",
@@ -61,6 +63,78 @@ class GCPComputeInstanceManager(InstanceManager):
         "SUSPENDING": "stopping",
         "SUSPENDED": "stopped",
         "TERMINATED": "terminated",
+    }
+
+    _MACHINE_TYPE_FAMILY_TO_PROCESSOR_TYPE = {
+        # General purpose
+        "c4": "Intel Emerald Rapids",
+        "c4a": "Google Axion",
+        "c4d": "AMD Turin",
+        "n4": "Intel Emerald Rapids",
+        "c3": "Intel Sapphire Rapids",
+        "c3d": "AMD Genoa",
+        "e2": "Intel Broadwell",
+        "n2": "Intel Cascade Lake",
+        "n2d": "AMD Milan",
+        "t2a": "Ampere Altra",
+        "t2d": "AMD Milan",
+        "n1": "Intel Haswell",
+        "f1": "Intel Haswell",
+        "g1": "Intel Haswell",
+        # Compute-optimized
+        "h3": "Intel Sapphire Rapids",
+        "c2": "Intel Cascade Lake",
+        "c2d": "AMD Milan",
+        # Memory-optimized
+        "m4": "Intel Emerald Rapids",
+        "x4": "Intel Sapphire Rapids",
+        "m3": "Intel Ice Lake",
+        "m2": "Intel Cascade Lake",
+        "m1": "Intel Skylake",
+        # Storage-optimized
+        "z3": "Intel Sapphire Rapids",
+        # Accelerator-optimized
+        "a4": "Intel Emerald Rapids",
+        "a3": "Intel Sapphire Rapids",
+        "a2": "Intel Cascade Lake",
+        "g2": "Intel Cascade Lake",
+        "ct6e": "Unknown",  # TPU v6e
+    }
+
+    # hd- is HyperDisk; requires provisioned IOPS and provisioned throughput
+    _MACHINE_TYPE_FAMILY_TO_DISK_TYPES = {
+        # General purpose
+        "c4": ["hd-balanced"],
+        "c4a": ["hd-balanced"],
+        "c4d": None,
+        "n4": ["hd-balanced"],
+        "c3": ["hd-balanced", "pd-balanced", "pd-ssd"],
+        "c3d": ["hd-balanced", "pd-balanced", "pd-ssd"],
+        "e2": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd"],
+        "n2": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd"],
+        "n2d": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd", "hd-balanced"],
+        "t2a": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd"],
+        "t2d": ["pd-standard", "pd-balanced", "pd-ssd"],
+        "n1": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd"],
+        "f1": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd"],  #
+        "g1": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd"],  #
+        # Compute-optimized
+        "h3": ["pd-balanced", "hd-balanced"],
+        "c2": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd"],
+        "c2d": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd"],
+        # Memory-optimized
+        "m4": ["hd-balanced"],
+        "x4": ["hd-balanced"],
+        "m3": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd", "hd-balanced"],
+        "m2": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd", "hd-balanced"],
+        "m1": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd", "hd-balanced"],
+        # Storage-optimized
+        "z3": ["pd-balanced", "pd-ssd", "hd-balanced"],
+        # Accelerator-optimized
+        "a4": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd", "hd-balanced"],  #
+        "a3": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd", "hd-balanced"],  #
+        "a2": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd", "hd-balanced"],  #
+        "g2": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd", "hd-balanced"],  #
     }
 
     # This is derived by looking at the pricing tables; beware!
@@ -180,29 +254,37 @@ class GCPComputeInstanceManager(InstanceManager):
                 include::
                     "instance_types": List of regex patterns to filter instance types by name
                     "architecture": Architecture (X86_64 or ARM64)
+                    "min_cpu_rank": Minimum acceptable CPU performance rank
+                    "max_cpu_rank": Maximum acceptable CPU performance rank
+                    "cpus_per_task": Number of vCPUs per task
+                    "min_tasks_per_instance": Minimum number of tasks per instance
+                    "max_tasks_per_instance": Maximum number of tasks per instance
                     "min_cpu": Minimum number of vCPUs
                     "max_cpu": Maximum number of vCPUs
-                        Derived if not provided from:
-                            "cpus_per_task": Number of vCPUs per task
-                            "min_tasks_per_instance": Minimum number of tasks per instance
-                            "max_tasks_per_instance": Maximum number of tasks per instance
                     "min_total_memory": Minimum total memory in GB
                     "max_total_memory": Maximum total memory in GB
                     "min_memory_per_cpu": Minimum memory per vCPU in GB
                     "max_memory_per_cpu": Maximum memory per vCPU in GB
+                    "min_memory_per_task": Minimum memory per task in GB
+                    "max_memory_per_task": Maximum memory per task in GB
                     "min_local_ssd": Minimum amount of local SSD storage in GB
                     "max_local_ssd": Maximum amount of local SSD storage in GB
+                    "local_ssd_base_size": Base amount of local SSD storage in GB
                     "min_local_ssd_per_cpu": Minimum amount of local SSD storage per vCPU
                     "max_local_ssd_per_cpu": Maximum amount of local SSD storage per vCPU
-                    "min_boot_disk": Minimum amount of boot disk storage in GB (ignored)
-                    "max_boot_disk": Maximum amount of boot disk storage in GB (ignored)
-                    "min_boot_disk_per_cpu": Minimum amount of boot disk storage per vCPU (ignored)
-                    "max_boot_disk_per_cpu": Maximum amount of boot disk storage per vCPU (ignored)
+                    "min_local_ssd_per_task": Minimum amount of local SSD storage per task
+                    "max_local_ssd_per_task": Maximum amount of local SSD storage per task
+                    "total_boot_disk_size": Total amount of boot disk storage in GB
+                    "boot_disk_base_size": Base amount of boot disk storage in GB
+                    "boot_disk_per_cpu": Amount of boot disk storage per vCPU
+                    "boot_disk_per_task": Amount of boot disk storage per task
                     "use_spot": Whether to filter for spot-capable instance types
 
         Returns:
             Dictionary mapping instance type to a dictionary of instance type specifications::
                 "name": instance type name
+                "cpu_family": processor type
+                "cpu_rank": performance rank of the CPU model (higher is better)
                 "vcpu": number of vCPUs
                 "mem_gb": amount of RAM in GB
                 "local_ssd_gb": amount of local SSD storage in GB
@@ -244,21 +326,47 @@ class GCPComputeInstanceManager(InstanceManager):
                 if match:
                     local_ssd_size = int(match.group(1)) * self._ONE_LOCAL_SSD_SIZE
 
+            processor_family = None
+            performance_rank = 0
+            machine_type_family = machine_type.name.split("-")[0]
+            if machine_type_family in self._MACHINE_TYPE_FAMILY_TO_PROCESSOR_TYPE:
+                processor_family = self._MACHINE_TYPE_FAMILY_TO_PROCESSOR_TYPE[machine_type_family]
+                if processor_family in self._PROCESSOR_FAMILY_TO_PERFORMANCE_RANKING:
+                    performance_rank = self._PROCESSOR_FAMILY_TO_PERFORMANCE_RANKING[
+                        processor_family
+                    ]
+                else:
+                    self._logger.warning(
+                        f"Processor family '{processor_family}' is not in the processor type "
+                        "ranking; ranking will be 0"
+                    )
+            else:
+                self._logger.warning(
+                    f"Instance type {machine_type.name} with family "
+                    f"'{machine_type_family}' is not in the processor family mapping; "
+                    "performance ranking will be 0"
+                )
+
             instance_info = {
                 "name": machine_type.name,
+                "cpu_family": processor_family,
+                "cpu_rank": performance_rank,
                 "vcpu": machine_type.guest_cpus,
                 "mem_gb": machine_type.memory_mb / 1024.0,
                 "architecture": (
                     machine_type.architecture.upper() if machine_type.architecture else "X86_64"
                 ),
                 "local_ssd_gb": local_ssd_size,  # Except for dedicated SSDs
-                "boot_disk_gb": 0,  # GCP separates storage from instance type
+                "boot_disk_gb": 0,  # Will fill in later
                 "supports_spot": True,  # There is no other informationa available
                 "description": machine_type.description,
                 # https://www.googleapis.com/compute/v1/projects/[project]/zones/
                 # [zone]/machineTypes/[name]
                 "url": machine_type.self_link,
             }
+
+            boot_disk_gb = self._get_boot_disk_size(instance_info, constraints)
+            instance_info["boot_disk_gb"] = boot_disk_gb
 
             if self._instance_matches_constraints(instance_info, constraints):
                 instance_types[machine_type.name] = instance_info
@@ -296,6 +404,10 @@ class GCPComputeInstanceManager(InstanceManager):
         sku_request = billing.ListSkusRequest(parent=compute_service.name)
         self._billing_compute_skus = list(self._billing_client.list_skus(request=sku_request))
 
+        import pprint
+
+        with open("skus.txt", "w") as f:
+            f.write(pprint.pformat(self._billing_compute_skus))
         return self._billing_compute_skus
 
     def _extract_pricing_info(
@@ -334,24 +446,43 @@ class GCPComputeInstanceManager(InstanceManager):
             )
             return None
 
-        pricing_tier = list(pricing_info[0].pricing_expression.tiered_rates)
-        if len(pricing_tier) == 0:
+        pricing_tiers = list(pricing_info[0].pricing_expression.tiered_rates)
+        if len(pricing_tiers) == 0:
             self._logger.warning(
                 f"No tiered rates found for {machine_family} {component_name} SKU "
                 f'"{sku.description}"; these instance types will be ignored'
             )
             return None
-        if len(pricing_tier) > 1:
+        good_pricing_tier = None
+        first_pricing_tier = None
+        for pricing_tier in pricing_tiers:
+            if first_pricing_tier is None:
+                first_pricing_tier = pricing_tier
+            if pricing_tier.unit_price.nanos > 0:  # We really need to handle tiered pricing
+                if good_pricing_tier is not None:
+                    self._logger.warning(
+                        f"Multiple pricing tiers found for {machine_family} {component_name} SKU "
+                        f'"{sku.description}"; using first one'
+                    )
+                else:
+                    good_pricing_tier = pricing_tier
+        if good_pricing_tier is None:
+            good_pricing_tier = first_pricing_tier  # Take the first even if it's zero
+        if good_pricing_tier is None:
             self._logger.warning(
-                f"Multiple tiered rates found for {machine_family} {component_name} SKU "
+                f"No pricing tier found for {machine_family} {component_name} SKU "
                 f'"{sku.description}"; these instance types will be ignored'
             )
             return None
 
-        return pricing_tier[0]
+        return good_pricing_tier
 
     async def get_instance_pricing(
-        self, instance_types: Dict[str, Dict[str, Any]], *, use_spot: bool = False
+        self,
+        instance_types: Dict[str, Dict[str, Any]],
+        *,
+        use_spot: bool = False,
+        boot_disk_constraints: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Dict[str, Dict[str, float | str | None]]]:
         """
         Get the hourly price for one or more specific instance types.
@@ -364,6 +495,9 @@ class GCPComputeInstanceManager(InstanceManager):
             instance_types: A dictionary mapping instance type to a dictionary of instance type
                 specifications as returned by get_available_instance_types().
             use_spot: Whether to use spot pricing
+            boot_disk_constraints: Dictionary of constraints used to determine the boot disk type and
+                size. These are from the same config as the instance type constraints but are not
+                used to filter instances.
 
         Returns:
             A dictionary mapping instance type to a dictionary of hourly price in USD::
@@ -371,10 +505,10 @@ class GCPComputeInstanceManager(InstanceManager):
                 "per_cpu_price": Price of CPU in USD/vCPU/hour
                 "mem_price": Total price of RAM in USD/hour
                 "mem_per_gb_price": Price of RAM in USD/GB/hour
-                "local_ssd_price": Total price of local SSD in USD/hour
-                "local_ssd_per_gb_price": Price of local SSD in USD/GB/hour
                 "boot_disk_price": Total price of boot disk in USD/hour
                 "boot_disk_per_gb_price": Price of boot disk in USD/GB/hour
+                "local_ssd_price": Total price of local SSD in USD/hour
+                "local_ssd_per_gb_price": Price of local SSD in USD/GB/hour
                 "total_price": Total price of instance in USD/hour
                 "total_price_per_cpu": Total price of instance in USD/vCPU/hour
                 "zone": availability zone
@@ -384,12 +518,22 @@ class GCPComputeInstanceManager(InstanceManager):
         self._logger.debug(
             f"Getting pricing for {len(instance_types)} instance types (spot: {use_spot})"
         )
+        self._logger.debug(f"Boot disk constraints: {boot_disk_constraints}")
+
+        ret: Dict[str, Dict[str, Dict[str, float | str | None]]] = {}
 
         if len(instance_types) == 0:
             self._logger.debug("No instance types provided")
-            return {}
+            return ret
 
-        ret: Dict[str, Dict[str, Dict[str, float | str | None]]] = {}
+        boot_disk_type = self._DEFAULT_BOOT_DISK_TYPE
+        if (
+            boot_disk_constraints is not None
+            and boot_disk_constraints.get("boot_disk_type") is not None
+        ):
+            boot_disk_type = boot_disk_constraints.get("boot_disk_type")
+            if boot_disk_type not in ["balanced", "ssd", "standard", "extreme"]:
+                raise ValueError(f"Invalid boot disk type: {boot_disk_type}")
 
         # Lookup pricing for each instance type
         for machine_type, machine_info in instance_types.items():
@@ -455,7 +599,8 @@ class GCPComputeInstanceManager(InstanceManager):
 
             core_sku = None
             ram_sku = None
-            local_disk_sku = None
+            boot_disk_sku = None
+            local_ssd_sku = None
 
             # Save None to mark we tried, even if we don't eventually find a match
             self._instance_pricing_cache[(machine_family_for_cache, use_spot)] = None
@@ -475,13 +620,35 @@ class GCPComputeInstanceManager(InstanceManager):
                 ):
                     continue
 
-                # Skip if this SKU doesn't match our instance type and region
-                if (
-                    self._region not in sku.service_regions
-                    or f"{machine_family} " not in sku_description
-                ):
+                # Skip if this SKU doesn't match our region
+                if self._region not in sku.service_regions:
                     continue
                 # print(sku)
+
+                # Check if this is the SKU for the boot disk type we want
+                if "regional" in sku_description:
+                    continue
+
+                if (
+                    (boot_disk_type == "standard" and "storage pd capacity" in sku_description)
+                    or (boot_disk_type == "balanced" and "balanced pd capacity" in sku_description)
+                    or (boot_disk_type == "ssd" and "ssd backed pd capacity" in sku_description)
+                    or (boot_disk_type == "extreme" and "extreme pd capacity" in sku_description)
+                ):
+                    if boot_disk_sku is not None:
+                        self._logger.warning(
+                            f"Multiple boot disk SKUs found for {machine_family} in region "
+                            f"{self._region} (choosing first one):"
+                        )
+                        self._logger.warning(f"  {boot_disk_sku.description}")
+                        self._logger.warning(f"  {sku.description}")
+                    else:
+                        boot_disk_sku = sku
+                    continue
+
+                # Skip if this SKU doesn't match our instance type
+                if f"{machine_family} " not in sku_description:
+                    continue
 
                 # Skip if this SKU is for local SSDs and our instance type doesn't have them
                 # This is necessary because there are instance types like "n1-standard-2"
@@ -522,16 +689,17 @@ class GCPComputeInstanceManager(InstanceManager):
                         ram_sku = sku
                     # print(sku)
                 elif "local ssd" in sku_description:
-                    if local_disk_sku is not None:
+                    if local_ssd_sku is not None:
                         self._logger.warning(
                             f"Multiple local SSD SKUs found for {machine_family} in region "
                             f"{self._region} (choosing first one):"
                         )
-                        self._logger.warning(f"  {local_disk_sku.description}")
+                        self._logger.warning(f"  {local_ssd_sku.description}")
                         self._logger.warning(f"  {sku.description}")
                     else:
-                        local_disk_sku = sku
+                        local_ssd_sku = sku
                     # print(sku)
+
             if core_sku is None:
                 self._logger.warning(
                     f"No core SKU found for instance family {machine_family} in region "
@@ -546,12 +714,20 @@ class GCPComputeInstanceManager(InstanceManager):
                 )
                 ret[machine_type] = {}
                 continue
-            # It's OK for there to be no local disk SKU
+            if boot_disk_sku is None:
+                self._logger.warning(
+                    f"No boot disk SKU found for instance family {machine_family} "
+                    f"(boot disk type: {boot_disk_type}) in region "
+                    f"{self._region}; ignoring these instance types"
+                )
+                ret[machine_type] = {}
+                continue
 
-            self._logger.debug(f'Matching core SKU found: "{core_sku.description}"')
-            self._logger.debug(f'Matching  ram SKU found: "{ram_sku.description}"')
-            if local_disk_sku is not None:
-                self._logger.debug(f'Matching LSSD SKU found: "{local_disk_sku.description}"')
+            self._logger.debug(f'Matching      core SKU found: "{core_sku.description}"')
+            self._logger.debug(f'Matching       ram SKU found: "{ram_sku.description}"')
+            self._logger.debug(f'Matching boot disk SKU found: "{boot_disk_sku.description}"')
+            if local_ssd_sku is not None:
+                self._logger.debug(f'Matching LSSD SKU found: "{local_ssd_sku.description}"')
 
             # Extract price info for CPU
             cpu_pricing_info = self._extract_pricing_info(machine_family, core_sku, "h", "core")
@@ -565,13 +741,21 @@ class GCPComputeInstanceManager(InstanceManager):
                 ret[machine_type] = {}
                 continue
 
+            # Extract price info for boot disk
+            boot_disk_pricing_info = self._extract_pricing_info(
+                machine_family, boot_disk_sku, "GiBy.mo", "boot disk"
+            )
+            if boot_disk_pricing_info is None:
+                ret[machine_type] = {}
+                continue
+
             # Extract price info for local SSD if present
-            local_disk_pricing_info = None
-            if local_disk_sku is not None:
-                local_disk_pricing_info = self._extract_pricing_info(
-                    machine_family, local_disk_sku, "GiBy.mo", "local SSD"
+            local_ssd_pricing_info = None
+            if local_ssd_sku is not None:
+                local_ssd_pricing_info = self._extract_pricing_info(
+                    machine_family, local_ssd_sku, "GiBy.mo", "local SSD"
                 )
-                if local_disk_pricing_info is None:
+                if local_ssd_pricing_info is None:
                     ret[machine_type] = {}
                     continue
 
@@ -587,21 +771,41 @@ class GCPComputeInstanceManager(InstanceManager):
                 f"Ram price:  ${per_gb_ram_price:.6f}/GB/hour ({ram_price:.6f}/hour)"
             )
 
-            local_disk_price = 0
-            per_gb_local_disk_price = 0
-            if local_disk_pricing_info is not None:
+            boot_disk_price = 0
+            per_gb_boot_disk_price = 0
+            if boot_disk_pricing_info is not None:
+                per_gb_boot_disk_price = (
+                    boot_disk_pricing_info.unit_price.nanos / 1e9 / 730.5
+                )  # GiBy.mo -> GiBy/hour
+                boot_disk_price = per_gb_boot_disk_price * machine_info["boot_disk_gb"]
+                total_price += boot_disk_price
+                self._logger.debug(
+                    f"Boot disk price: ${per_gb_boot_disk_price:.6f}/GB/hour "
+                    f"({boot_disk_price:.6f}/hour)"
+                )
+            else:
+                self._logger.warning(
+                    f"No boot disk SKU found for {machine_family} in region {self._region}; "
+                    f"ignoring these instance types"
+                )
+                ret[machine_type] = {}
+                continue
+
+            local_ssd_price = 0
+            per_gb_local_ssd_price = 0
+            if local_ssd_pricing_info is not None:
                 if not is_lssd:  # pragma: no cover
                     raise RuntimeError(
                         f"Local SSD SKU found for non-LSSD instance type: {machine_type}"
                     )
-                per_gb_local_disk_price = (
-                    local_disk_pricing_info.unit_price.nanos / 1e9 / 730.5
+                per_gb_local_ssd_price = (
+                    local_ssd_pricing_info.unit_price.nanos / 1e9 / 730.5
                 )  # GiBy.mo -> GiBy/hour
-                local_disk_price = per_gb_local_disk_price * machine_info["local_ssd_gb"]
-                total_price += local_disk_price
+                local_ssd_price = per_gb_local_ssd_price * machine_info["local_ssd_gb"]
+                total_price += local_ssd_price
                 self._logger.debug(
-                    f"Local SSD price: ${per_gb_local_disk_price:.6f}/GB/hour "
-                    f"({local_disk_price:.6f}/hour)"
+                    f"Local SSD price: ${per_gb_local_ssd_price:.6f}/GB/hour "
+                    f"({local_ssd_price:.6f}/hour)"
                 )
             elif is_lssd:
                 self._logger.warning(
@@ -610,9 +814,6 @@ class GCPComputeInstanceManager(InstanceManager):
                 )
                 ret[machine_type] = {}
                 continue
-
-            per_gb_boot_disk_price = 0
-            boot_disk_price = 0
 
             # Round off the total price to 6 decimal places to avoid floating point
             # precision issues
@@ -625,8 +826,8 @@ class GCPComputeInstanceManager(InstanceManager):
                     "per_cpu_price": round(per_cpu_price, 6),  # Per-CPU price
                     "mem_price": round(ram_price, 6),  # Memory price
                     "mem_per_gb_price": round(per_gb_ram_price, 6),  # Per-GB price
-                    "local_ssd_price": round(local_disk_price, 6),  # Local SSD price
-                    "local_ssd_per_gb_price": round(per_gb_local_disk_price, 6),  # Per-GB price
+                    "local_ssd_price": round(local_ssd_price, 6),  # Local SSD price
+                    "local_ssd_per_gb_price": round(per_gb_local_ssd_price, 6),  # Per-GB price
                     "boot_disk_price": round(boot_disk_price, 6),  # Boot disk price
                     "boot_disk_per_gb_price": round(per_gb_boot_disk_price, 6),  # Per-GB price
                     "total_price": round(total_price, 6),  # Total price
@@ -655,21 +856,31 @@ class GCPComputeInstanceManager(InstanceManager):
                 include::
                     "instance_types": List of regex patterns to filter instance types by name
                     "architecture": Architecture (X86_64 or ARM64)
+                    "min_cpu_rank": Minimum acceptable CPU performance rank
+                    "max_cpu_rank": Maximum acceptable CPU performance rank
+                    "cpus_per_task": Number of vCPUs per task
+                    "min_tasks_per_instance": Minimum number of tasks per instance
+                    "max_tasks_per_instance": Maximum number of tasks per instance
                     "min_cpu": Minimum number of vCPUs
                     "max_cpu": Maximum number of vCPUs
                     "min_total_memory": Minimum total memory in GB
                     "max_total_memory": Maximum total memory in GB
                     "min_memory_per_cpu": Minimum memory per vCPU in GB
                     "max_memory_per_cpu": Maximum memory per vCPU in GB
+                    "min_memory_per_task": Minimum memory per task in GB
+                    "max_memory_per_task": Maximum memory per task in GB
                     "min_local_ssd": Minimum amount of local SSD storage in GB
                     "max_local_ssd": Maximum amount of local SSD storage in GB
+                    "local_ssd_base_size": Base amount of local SSD storage in GB
                     "min_local_ssd_per_cpu": Minimum amount of local SSD storage per vCPU
                     "max_local_ssd_per_cpu": Maximum amount of local SSD storage per vCPU
-                    "min_storage": Minimum amount of other storage in GB
-                    "max_storage": Maximum amount of other storage in GB
-                    "min_storage_per_cpu": Minimum amount of other storage per vCPU
-                    "max_storage_per_cpu": Maximum amount of other storage per vCPU
-                    "use_spot": Whether to use spot instances
+                    "min_local_ssd_per_task": Minimum amount of local SSD storage per task
+                    "max_local_ssd_per_task": Maximum amount of local SSD storage per task
+                    "total_boot_disk_size": Total amount of boot disk storage in GB
+                    "boot_disk_base_size": Base amount of boot disk storage in GB
+                    "boot_disk_per_cpu": Amount of boot disk storage per vCPU
+                    "boot_disk_per_task": Amount of boot disk storage per task
+                    "use_spot": Whether to filter for spot-capable instance types
 
         Returns:
             Dictionary of instance type pricing info as would be returned by get_instance_pricing
@@ -692,7 +903,9 @@ class GCPComputeInstanceManager(InstanceManager):
             raise ValueError("No instance type meets requirements")
 
         pricing_data = await self.get_instance_pricing(
-            avail_instance_types, use_spot=constraints["use_spot"]
+            avail_instance_types,
+            use_spot=constraints["use_spot"],
+            boot_disk_constraints=constraints,
         )
 
         # Rearrange the pricing data into a dictionary of (machine_type, zone) -> price

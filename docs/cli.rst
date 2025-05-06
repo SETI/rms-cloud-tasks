@@ -94,6 +94,9 @@ in the configuration file (see :ref:`config_compute_instance_options`).
 
 --architecture ARCHITECTURE   The architecture to use; valid values are ``X86_64`` and ``ARM64``
                               (defaults to ``X86_64``)
+--cpu-family CPU_FAMILY       The CPU family to use, for example ``Intel Cascade Lake`` or ``AMD Genoa``.
+--min-cpu-rank MIN_CPU_RANK   The minimum CPU performance rank to use (0 is the slowest)
+--max-cpu-rank MAX_CPU_RANK   The maximum CPU performance rank to use (0 is the slowest)
 --min-cpu N                   The minimum number of vCPUs per instance
 --max-cpu N                   The maximum number of vCPUs per instance
 --min-total-memory N          The minimum amount of memory in GB per instance

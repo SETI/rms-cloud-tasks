@@ -836,7 +836,7 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
         # Try to get pricing information where available
         print("Retrieving pricing information...")
         pricing_data = await instance_manager.get_instance_pricing(
-            instances, use_spot=args.use_spot
+            instances, use_spot=args.use_spot, boot_disk_constraints=constraints
         )
 
         pricing_data_list = []
@@ -897,6 +897,15 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
                 "description": "description",
                 "d": "description",
                 "desc": "description",
+                "processor_type": "processor_type",
+                "processor": "processor_type",
+                "p_type": "processor_type",
+                "ptype": "processor_type",
+                "pt": "processor_type",
+                "performance_rank": "performance_rank",
+                "pr": "performance_rank",
+                "rank": "performance_rank",
+                "r": "performance_rank",
             }
 
             # Parse the sort fields
@@ -940,21 +949,23 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
             )
         header += f"{'Total $/Hr':>11} "
         if args.detail:
-            header += f"{'Total $/vCPU/Hr':>11} "
-        header += f"{'Zone':>12}"
+            header += f"{'& $/vCPU/Hr':>11} "
+        header += f" {'Zone':<25} "
         if args.detail:
-            header += f"               {'Description':>10}"
-            underline += "-" * 100
+            header += f"{'Processor':<21} "
+            header += f"{'Ranking':>8}  "
+            header += f"{'Description':>10}"
+            underline += "-" * 130
 
         print(header)
         print(underline)
         for price_data in pricing_data_list:
-            cpu_price_str = f"${price_data['per_cpu_price']:.4f}"
-            mem_price_str = f"${price_data['mem_per_gb_price']:.4f}"
+            cpu_price_str = f"${price_data['per_cpu_price']:.5f}"
+            mem_price_str = f"${price_data['mem_per_gb_price']:.5f}"
             total_price_str = f"${price_data['total_price']:.4f}"
-            total_price_per_cpu_str = f"${price_data['total_price_per_cpu']:.4f}"
+            total_price_per_cpu_str = f"${price_data['total_price_per_cpu']:.5f}"
             local_ssd_price_str = f"${price_data['local_ssd_per_gb_price']:.8f}"
-            boot_disk_price_str = f"${price_data['boot_disk_per_gb_price']:.4f}"
+            boot_disk_price_str = f"${price_data['boot_disk_per_gb_price']:.8f}"
 
             val = (
                 f"{price_data['name']:<24} {price_data['architecture']:>10} {price_data['vcpu']:>4} "
@@ -968,9 +979,11 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
                 )
             val += f"{total_price_str:>11} "
             if args.detail:
-                val += f"    {total_price_per_cpu_str:>11} "
+                val += f"{total_price_per_cpu_str:>11} "
             val += f" {price_data['zone']:<25} "
             if args.detail:
+                val += f"{price_data['processor_type']:<21} "
+                val += f"{price_data['performance_rank']:>8}  "
                 val += f"{price_data['description']}"
             print(val)
 
@@ -1258,29 +1271,57 @@ def add_instance_args(parser: argparse.ArgumentParser) -> None:
         help="Filter instance types by maximum local-SSD storage per vCPU",
     )
     parser.add_argument(
-        "--min-boot-disk",
-        type=float,
-        help="Filter instance types by minimum boot disk storage (GB)",
+        "--cpu-family",
+        help="Filter instance types by CPU family (e.g., Intel Cascade Lake, AMD Genoa)",
     )
     parser.add_argument(
-        "--max-boot-disk",
-        type=float,
-        help="Filter instance types by maximum boot disk storage (GB)",
+        "--min-cpu-rank",
+        type=int,
+        help="Filter instance types by minimum CPU performance rank",
     )
     parser.add_argument(
-        "--min-boot-disk-per-cpu",
-        type=float,
-        help="Filter instance types by minimum boot disk storage (GB) per vCPU",
-    )
-    parser.add_argument(
-        "--max-boot-disk-per-cpu",
-        type=float,
-        help="Filter instance types by maximum boot disk storage (GB) per vCPU",
+        "--max-cpu-rank",
+        type=int,
+        help="Filter instance types by maximum CPU performance rank",
     )
     parser.add_argument(
         "--instance-types",
         nargs="+",
         help='Filter instance types by name prefix (e.g., "t3 m5" for AWS)',
+    )
+    parser.add_argument(
+        "--boot-disk-type",
+        help="Specify the boot disk type (default: balanced for GCP)",
+    )
+    parser.add_argument(
+        "--boot-disk-provisioned-iops",
+        type=int,
+        help="Specify the boot disk provisioned IOPS (GCP only)",
+    )
+    parser.add_argument(
+        "--boot-disk-provisioned-throughput",
+        type=int,
+        help="Specify the boot disk provisioned throughput (GCP only)",
+    )
+    parser.add_argument(
+        "--total-boot-disk-size",
+        type=float,
+        help="Specify the total boot disk size (GB) (default: 10 for GCP)",
+    )
+    parser.add_argument(
+        "--boot-disk-base-size",
+        type=float,
+        help="Specify the base boot disk size (GB) (default: 0)",
+    )
+    parser.add_argument(
+        "--boot-disk-per-cpu",
+        type=float,
+        help="Specify the boot disk size (GB) per vCPU",
+    )
+    parser.add_argument(
+        "--boot-disk-per-task",
+        type=float,
+        help="Specify the boot disk size (GB) per task",
     )
     parser.add_argument(
         "--use-spot",
@@ -1484,7 +1525,7 @@ def main():
         "name, vcpu, mem, local_ssd, storage, "
         "vcpu_price, mem_price, local_ssd_price, storage_price, "
         "price_per_cpu, mem_per_gb_price, local_ssd_per_gb_price, storage_per_gb_price, "
-        "total_price, total_price_per_cpu, zone, description. "
+        "total_price, total_price_per_cpu, zone, processor_type, performance_rank, description. "
         'Prefix with "-" for descending order. '
         'Partial field names like "ram" or "mem" for "mem_gb" or "v" for "vcpu" are supported.',
     )

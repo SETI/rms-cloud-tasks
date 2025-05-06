@@ -45,6 +45,177 @@ class AWSEC2InstanceManager(InstanceManager):
         "stopped": "stopped",
     }
 
+    _INSTANCE_TYPE_FAMILY_TO_PROCESSOR_FAMILY = {
+        # General Purpose
+        "m8g": "AWS Graviton4",
+        "m8gd": "AWS Graviton4",
+        "m7g": "AWS Graviton3",
+        "m7gd": "AWS Graviton3",
+        "m7i": "Intel Sapphire Rapids",
+        "m7i-flex": "Intel Sapphire Rapids",
+        "m7a": "AMD Genoa",
+        "mac1": "Intel Core i7",
+        "mac2": "Apple M1",
+        "mac2-m2pro": "Apple M2 Pro",
+        "m6g": "AWS Graviton2",
+        "m6gd": "AWS Graviton2",
+        "m6i": "Intel Ice Lake",
+        "m6id": "Intel Ice Lake",
+        "m6idn": "Intel Ice Lake",
+        "m6in": "Intel Ice Lake",
+        "m6a": "AMD Milan",
+        "m5": "Intel Cascade Lake",
+        "m5d": "Intel Cascade Lake",
+        "m5n": "Intel Cascade Lake",
+        "m5dn": "Intel Cascade Lake",
+        "m5zn": "Intel Cascade Lake",
+        "m5a": "AMD Naples",
+        "m5ad": "AMD Naples",
+        "m4": "Intel Haswell",
+        "m1": "Intel Nehalem",
+        "t4g": "AWS Graviton2",
+        "t3": "Intel Skylake",
+        "t3a": "AMD Naples",
+        "t2": "Intel",  # Various generations
+        # Compute Optimized
+        "c8g": "AWS Graviton4",
+        "c8gd": "AWS Graviton4",
+        "c7g": "AWS Graviton3",
+        "c7gd": "AWS Graviton3",
+        "c7i": "Intel Sapphire Rapids",
+        "c7i-flex": "Intel Sapphire Rapids",
+        "c7id": "Intel Sapphire Rapids",
+        "c7gn": "AWS Graviton3E",
+        "c7a": "AMD Genoa",
+        "c6g": "AWS Graviton2",
+        "c6gd": "AWS Graviton2",
+        "c6gn": "AWS Graviton2",
+        "c6i": "Intel Ice Lake",
+        "c6id": "Intel Ice Lake",
+        "c6idn": "Intel Ice Lake",
+        "c6in": "Intel Ice Lake",
+        "c6a": "AMD Milan",
+        "c6dn": "Intel Ice Lake",
+        "c5": "Intel Cascade Lake",
+        "c5d": "Intel Cascade Lake",
+        "c5n": "Intel Cascade Lake",
+        "c5a": "AMD Naples",
+        "c5ad": "AMD Naples",
+        "c4": "Intel Haswell",
+        # Memory Optimized
+        "r8g": "AWS Graviton4",
+        "r8gd": "AWS Graviton4",
+        "r7g": "AWS Graviton3",
+        "r7gd": "AWS Graviton3",
+        "r7i": "Intel Sapphire Rapids",
+        "r7iz": "Intel Sapphire Rapids",
+        "r7a": "AMD Genoa",
+        "r6g": "AWS Graviton2",
+        "r6gd": "AWS Graviton2",
+        "r6i": "Intel Ice Lake",
+        "r6id": "Intel Ice Lake",
+        "r6idn": "Intel Ice Lake",
+        "r6in": "Intel Ice Lake",
+        "r6a": "AMD Milan",
+        "r5": "Intel Cascade Lake",
+        "r5d": "Intel Cascade Lake",
+        "r5n": "Intel Cascade Lake",
+        "r5dn": "Intel Cascade Lake",
+        "r5b": "Intel Cascade Lake",
+        "r5ad": "AMD Naples",
+        "r5a": "AMD Naples",
+        "r4": "Intel Broadwell",
+        "x2gd": "AWS Graviton2",
+        "x2idn": "Intel Ice Lake",
+        "x2iedn": "Intel Ice Lake",
+        "x2iezn": "Intel Cascade Lake",
+        "x1": "Intel Haswell",
+        "x1e": "Intel Haswell",
+        "z1d": "Intel Skylake",
+        "x8g": "AWS Graviton4",
+        "u-6tb1": "Intel Cascade Lake",
+        "u-9tb1": "Intel Cascade Lake",
+        "u-12tb1": "Intel Cascade Lake",
+        "u-18tb1": "Intel Cascade Lake",
+        "u-24tb1": "Intel Cascade Lake",
+        "u-3tb1": "Intel Cascade Lake",
+        "u7i-6tb": "Intel Sapphire Rapids",
+        "u7in-24tb": "Intel Sapphire Rapids",
+        "u7i-12tb": "Intel Sapphire Rapids",
+        # Storage Optimized
+        "i8g": "AWS Graviton3E",
+        "i7g": "AWS Graviton2",
+        "i7gd": "AWS Graviton2",
+        "i7i": "Intel Sapphire Rapids",
+        "i7id": "Intel Sapphire Rapids",
+        "i7ie": "Intel Sapphire Rapids",
+        "i7iz": "Intel Sapphire Rapids",
+        "i4g": "AWS Graviton2",
+        "i4i": "Intel Ice Lake",
+        "i3": "Intel Broadwell",
+        "i3en": "Intel Broadwell",
+        "i2": "Intel Ivy Bridge",
+        "d3": "Intel Cascade Lake",
+        "d3en": "Intel Cascade Lake",
+        "d2": "Intel Haswell",
+        "f2": "Intel Broadwell",
+        "im4gn": "AWS Graviton2",
+        "is4gen": "AWS Graviton2",
+        "h1": "Intel Broadwell",
+        # Accelerated Computing
+        "p5": "Intel Sapphire Rapids",  # NVIDIA H100
+        "p5e": "Intel Sapphire Rapids",  # NVIDIA H100
+        "p5en": "Intel Sapphire Rapids",  # NVIDIA H100
+        "p4d": "Intel Cascade Lake",  # NVIDIA A100
+        "p4de": "Intel Cascade Lake",  # NVIDIA A100
+        "p3": "Intel Broadwell",  # NVIDIA V100
+        "p3dn": "Intel Broadwell",  # NVIDIA V100
+        "p2": "Intel Broadwell",  # NVIDIA K80
+        "inf2": "AWS Inferentia2",
+        "dl2q": "AWS Inferentia2",
+        "inf1": "Intel Cascade Lake",  # AWS Inferentia
+        "trn1": "AWS Graviton",  # AWS Trainium
+        "trn1n": "AWS Graviton",  # AWS Trainium
+        "dl1": "Intel Cascade Lake",  # Habana Gaudi
+        "f1": "Intel Broadwell",  # Xilinx UltraScale+ VU9P FPGA
+        "g6": "Intel Sapphire Rapids",  # NVIDIA L4
+        "g6e": "Intel Sapphire Rapids",  # NVIDIA L4
+        "g6gd": "Intel Sapphire Rapids",  # NVIDIA L4
+        "g5": "AMD Rome",  # NVIDIA A10G
+        "g5g": "AWS Graviton2",  # NVIDIA T4G
+        "g5gd": "AWS Graviton2",  # NVIDIA T4G, local NVMe
+        "g4dn": "Intel Cascade Lake",  # NVIDIA T4
+        "g4ad": "AMD Rome",  # NVIDIA Radeon Pro V520
+        "g3": "Intel Broadwell",  # NVIDIA M60
+        "vt1": "Intel Cascade Lake",  # Xilinx Alveo U30
+        "gr6": "AWS Graviton4",
+        # HPC Optimized
+        "hpc6id": "Intel Ice Lake",
+        "hpc6a": "AMD Milan",
+        "hpc7g": "AWS Graviton3E",
+        # Burstable Performance
+        "t4g": "AWS Graviton2",
+        "t3": "Intel Skylake",
+        "t3a": "AMD Naples",
+        "t2": "Intel",  # Various generations
+        # Dense Storage
+        "d3": "Intel Cascade Lake",
+        "d3en": "Intel Cascade Lake",
+        "h1": "Intel Broadwell",
+        # Other/Legacy
+        "a1": "AWS Graviton",
+        "m3": "Intel Ivy Bridge",
+        "c3": "Intel Ivy Bridge",
+        "c1": "Intel Sandy Bridge",
+        "r3": "Intel Ivy Bridge",
+        "t1": "Unknown",
+        "m2": "Intel Westmere",
+        "cr1": "Intel Sandy Bridge",
+        "hs1": "Intel Sandy Bridge",
+        "u7in-16tb": "Intel Sapphire Rapids",
+        "u7in-32tb": "Intel Sapphire Rapids",
+    }
+
     def __init__(self, aws_config: AWSConfig) -> None:
         """Initialize the AWS EC2 instance manager.
 
@@ -105,29 +276,37 @@ class AWSEC2InstanceManager(InstanceManager):
                 include::
                     "instance_types": List of regex patterns to filter instance types by name
                     "architecture": Architecture (X86_64 or ARM64)
+                    "min_cpu_performance": Minimum acceptable CPU performance
+                    "max_cpu_performance": Maximum acceptable CPU performance
+                    "cpus_per_task": Number of vCPUs per task
+                    "min_tasks_per_instance": Minimum number of tasks per instance
+                    "max_tasks_per_instance": Maximum number of tasks per instance
                     "min_cpu": Minimum number of vCPUs
                     "max_cpu": Maximum number of vCPUs
-                        Derived if not provided from:
-                            "cpus_per_task": Number of vCPUs per task
-                            "min_tasks_per_instance": Minimum number of tasks per instance
-                            "max_tasks_per_instance": Maximum number of tasks per instance
                     "min_total_memory": Minimum total memory in GB
                     "max_total_memory": Maximum total memory in GB
                     "min_memory_per_cpu": Minimum memory per vCPU in GB
                     "max_memory_per_cpu": Maximum memory per vCPU in GB
+                    "min_memory_per_task": Minimum memory per task in GB
+                    "max_memory_per_task": Maximum memory per task in GB
                     "min_local_ssd": Minimum amount of local SSD storage in GB
                     "max_local_ssd": Maximum amount of local SSD storage in GB
+                    "local_ssd_base_size": Base amount of local SSD storage in GB
                     "min_local_ssd_per_cpu": Minimum amount of local SSD storage per vCPU
                     "max_local_ssd_per_cpu": Maximum amount of local SSD storage per vCPU
-                    "min_boot_disk": Minimum amount of boot disk storage in GB (ignored)
-                    "max_boot_disk": Maximum amount of boot disk storage in GB (ignored)
-                    "min_boot_disk_per_cpu": Minimum amount of boot disk storage per vCPU (ignored)
-                    "max_boot_disk_per_cpu": Maximum amount of boot disk storage per vCPU (ignored)
+                    "min_local_ssd_per_task": Minimum amount of local SSD storage per task
+                    "max_local_ssd_per_task": Maximum amount of local SSD storage per task
+                    "total_boot_disk_size": Total amount of boot disk storage in GB
+                    "boot_disk_base_size": Base amount of boot disk storage in GB
+                    "boot_disk_per_cpu": Amount of boot disk storage per vCPU
+                    "boot_disk_per_task": Amount of boot disk storage per task
                     "use_spot": Whether to filter for spot-capable instance types
 
         Returns:
             Dictionary mapping instance type to a dictionary of instance type specifications::
                 "name": instance type name
+                "processor_type": processor type
+                "performance_rank": performance rank of the instance type
                 "vcpu": number of vCPUs
                 "mem_gb": amount of RAM in GB
                 "local_ssd_gb": amount of local SSD storage in GB
@@ -164,17 +343,46 @@ class AWSEC2InstanceManager(InstanceManager):
                     or "on-demand" not in instance_type["SupportedUsageClasses"]
                 ):
                     continue
+
+                instance_type_family = instance_type["InstanceType"].split(".")[0]
+                processor_family = None
+                performance_rank = 0
+                if instance_type_family in self._INSTANCE_TYPE_FAMILY_TO_PROCESSOR_FAMILY:
+                    processor_family = self._INSTANCE_TYPE_FAMILY_TO_PROCESSOR_FAMILY[
+                        instance_type_family
+                    ]
+                    if processor_family in self._PROCESSOR_FAMILY_TO_PERFORMANCE_RANKING:
+                        performance_rank = self._PROCESSOR_FAMILY_TO_PERFORMANCE_RANKING[
+                            processor_family
+                        ]
+                    else:
+                        self._logger.warning(
+                            f"Processor family '{processor_family}' is not in the processor type "
+                            "ranking; ranking will be 0"
+                        )
+                else:
+                    self._logger.warning(
+                        f"Instance type {instance_type["InstanceType"]} with family "
+                        f"'{instance_type_family}' is not in the processor family mapping; "
+                        "performance ranking will be 0"
+                    )
+
                 instance_info = {
                     "name": instance_type["InstanceType"],
                     "vcpu": instance_type["VCpuInfo"]["DefaultVCpus"],
-                    "mem_gb": instance_type["MemoryInfo"]["SizeInMiB"] / 1024.0,
+                    "processor_type": processor_family,
+                    "performance_rank": performance_rank,
                     "architecture": instance_type["ProcessorInfo"]["SupportedArchitectures"][0],
-                    "boot_disk_gb": 0,  # AWS separates storage from instance type
-                    "local_ssd_gb": 0,  # AWS separates storage from instance type
+                    "mem_gb": instance_type["MemoryInfo"]["SizeInMiB"] / 1024.0,
+                    "boot_disk_gb": 0,  # Will fill in later
+                    "local_ssd_gb": 0,  # Will fill in later
                     "supports_spot": "spot" in instance_type["SupportedUsageClasses"],
                     "description": instance_type["InstanceType"],
                     "url": None,
                 }
+
+                boot_disk_gb = self._get_boot_disk_size(instance_info, constraints)
+                instance_info["boot_disk_gb"] = boot_disk_gb
 
                 # Add storage info if available
                 if "InstanceStorageInfo" in instance_type:
@@ -188,7 +396,11 @@ class AWSEC2InstanceManager(InstanceManager):
         return instance_types
 
     async def get_instance_pricing(
-        self, instance_types: Dict[str, Dict[str, Any]], *, use_spot: bool = False
+        self,
+        instance_types: Dict[str, Dict[str, Any]],
+        *,
+        use_spot: bool = False,
+        boot_disk_constraints: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Dict[str, Dict[str, float | str | None]]]:
         """
         Get the hourly price for one or more specific instance types.
@@ -200,28 +412,32 @@ class AWSEC2InstanceManager(InstanceManager):
             instance_types: A dictionary mapping instance type to a dictionary of instance type
                 specifications as returned by get_available_instance_types().
             use_spot: Whether to use spot pricing
+            boot_disk_constraints: Dictionary of constraints used to determine the boot disk type and
+                size. These are from the same config as the instance type constraints but are not
+                used to filter instances.
 
         Returns:
-            A dictionary mapping instance type to a dictionary of hourly price in USD:
+            A dictionary mapping instance type to a dictionary of hourly price in USD::
                 "cpu_price": Total price of CPU in USD/hour
                 "per_cpu_price": Price of CPU in USD/vCPU/hour
                 "mem_price": Total price of RAM in USD/hour
                 "mem_per_gb_price": Price of RAM in USD/GB/hour
-                "local_ssd_price": Total price of local SSD in USD/hour
-                "local_ssd_per_gb_price": Price of local SSD in USD/GB/hour
                 "boot_disk_price": Total price of boot disk in USD/hour
                 "boot_disk_per_gb_price": Price of boot disk in USD/GB/hour
+                "local_ssd_price": Total price of local SSD in USD/hour
+                "local_ssd_per_gb_price": Price of local SSD in USD/GB/hour
                 "total_price": Total price of instance in USD/hour
                 "total_price_per_cpu": Total price of instance in USD/vCPU/hour
                 "zone": availability zone
             Plus the original instance type info keyed by availability zone. If any price is not
             available, it is set to None.
         """
-        ret: Dict[str, Dict[str, Dict[str, float | str | None]]] = {}
-
         self._logger.debug(
             f"Getting pricing for {len(instance_types)} instance types (spot: {use_spot})"
         )
+        self._logger.debug(f"Boot disk constraints: {boot_disk_constraints}")
+
+        ret: Dict[str, Dict[str, Dict[str, float | str | None]]] = {}
 
         if len(instance_types) == 0:
             self._logger.warning("No instance types provided")
@@ -229,6 +445,14 @@ class AWSEC2InstanceManager(InstanceManager):
 
         if self._region is None:
             raise RuntimeError("Region must be specified")
+
+        boot_disk_type = "gp3"
+        if boot_disk_constraints is not None:
+            boot_disk_type = boot_disk_constraints.get("boot_disk_type", "gp3")
+            if boot_disk_type is not None:
+                boot_disk_type = boot_disk_type.lower()
+                if boot_disk_type not in ["gp2", "gp3", "io1", "io2", "st1", "sc1", "standard"]:
+                    raise ValueError(f"Invalid boot disk type: {boot_disk_type}")
 
         if use_spot:
             # Spot pricing
@@ -259,8 +483,8 @@ class AWSEC2InstanceManager(InstanceManager):
                     "mem_per_gb_price": 0.0,  # Per-GB price (we don't have this)
                     "local_ssd_price": 0.0,  # Local SSD price (we don't have this)
                     "local_ssd_per_gb_price": 0.0,  # Local SSD per-GB price (we don't have this)
-                    "boot_disk_price": 0.0,  # Storage price (we don't have this)
-                    "boot_disk_per_gb_price": 0.0,  # Storage per-GB price (we don't have this)
+                    "boot_disk_price": 0.0,  # TODO
+                    "boot_disk_per_gb_price": 0.0,  # TODO
                     "total_price": round(float(price["SpotPrice"]), 6),  # Total price
                     "total_price_per_cpu": round(float(price["SpotPrice"]) / vcpus, 6),
                     "zone": price["AvailabilityZone"],
@@ -376,8 +600,8 @@ class AWSEC2InstanceManager(InstanceManager):
                                     "mem_per_gb_price": 0.0,  # Per-GB price (we don't have this)
                                     "local_ssd_price": 0.0,  # Local SSD price (we don't have this)
                                     "local_ssd_per_gb_price": 0.0,  # Local SSD per-GB price (we don't have this)
-                                    "boot_disk_price": 0.0,  # Storage price (we don't have this)
-                                    "boot_disk_per_gb_price": 0.0,  # Storage per-GB price (we don't have this)
+                                    "boot_disk_price": 0.0,  # TODO
+                                    "boot_disk_per_gb_price": 0.0,  # TODO
                                     "total_price": round(price, 6),  # Total price
                                     "total_price_per_cpu": round(
                                         price / float(attributes["vcpu"]), 6
@@ -640,21 +864,32 @@ class AWSEC2InstanceManager(InstanceManager):
             constraints: Dictionary of constraints to filter instance types by. Constraints
                 include::
                     "instance_types": List of regex patterns to filter instance types by name
+                    "architecture": Architecture (X86_64 or ARM64)
+                    "min_cpu_performance": Minimum acceptable CPU performance
+                    "max_cpu_performance": Maximum acceptable CPU performance
+                    "cpus_per_task": Number of vCPUs per task
+                    "min_tasks_per_instance": Minimum number of tasks per instance
+                    "max_tasks_per_instance": Maximum number of tasks per instance
                     "min_cpu": Minimum number of vCPUs
                     "max_cpu": Maximum number of vCPUs
                     "min_total_memory": Minimum total memory in GB
                     "max_total_memory": Maximum total memory in GB
                     "min_memory_per_cpu": Minimum memory per vCPU in GB
                     "max_memory_per_cpu": Maximum memory per vCPU in GB
+                    "min_memory_per_task": Minimum memory per task in GB
+                    "max_memory_per_task": Maximum memory per task in GB
                     "min_local_ssd": Minimum amount of local SSD storage in GB
                     "max_local_ssd": Maximum amount of local SSD storage in GB
+                    "local_ssd_base_size": Base amount of local SSD storage in GB
                     "min_local_ssd_per_cpu": Minimum amount of local SSD storage per vCPU
                     "max_local_ssd_per_cpu": Maximum amount of local SSD storage per vCPU
-                    "min_storage": Minimum amount of other storage in GB
-                    "max_storage": Maximum amount of other storage in GB
-                    "min_storage_per_cpu": Minimum amount of other storage per vCPU
-                    "max_storage_per_cpu": Maximum amount of other storage per vCPU
-                    "use_spot": Whether to use spot instances
+                    "min_local_ssd_per_task": Minimum amount of local SSD storage per task
+                    "max_local_ssd_per_task": Maximum amount of local SSD storage per task
+                    "total_boot_disk_size": Total amount of boot disk storage in GB
+                    "boot_disk_base_size": Base amount of boot disk storage in GB
+                    "boot_disk_per_cpu": Amount of boot disk storage per vCPU
+                    "boot_disk_per_task": Amount of boot disk storage per task
+                    "use_spot": Whether to filter for spot-capable instance types
 
         Returns:
             Dictionary of instance type pricing info as would be returned by get_instance_pricing
@@ -676,7 +911,9 @@ class AWSEC2InstanceManager(InstanceManager):
             raise ValueError("No instance type meets requirements")
 
         pricing_data = await self.get_instance_pricing(
-            avail_instance_types, use_spot=constraints["use_spot"]
+            avail_instance_types,
+            use_spot=constraints["use_spot"],
+            boot_disk_constraints=constraints,
         )
 
         # Rearrange the pricing data into a dictionary of (machine_type, zone) -> price

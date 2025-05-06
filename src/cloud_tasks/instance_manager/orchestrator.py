@@ -123,6 +123,11 @@ class InstanceOrchestrator:
             f"  Memory per CPU: {self._run_config.min_memory_per_cpu} to "
             f"{self._run_config.max_memory_per_cpu} GB"
         )
+        self._logger.info(f"  Boot disk type: {self._run_config.boot_disk_type}")
+        self._logger.info(f"  Boot disk total size: {self._run_config.total_boot_disk_size} GB")
+        self._logger.info(f"  Boot disk base size: {self._run_config.boot_disk_base_size} GB")
+        self._logger.info(f"  Boot disk per CPU: {self._run_config.boot_disk_per_cpu} GB")
+        self._logger.info(f"  Boot disk per task: {self._run_config.boot_disk_per_task} GB")
         self._logger.info(
             f"  Local SSD: {self._run_config.min_local_ssd} to "
             f"{self._run_config.max_local_ssd} GB"
@@ -132,12 +137,8 @@ class InstanceOrchestrator:
             f"{self._run_config.max_local_ssd_per_cpu} GB"
         )
         self._logger.info(
-            f"  Boot disk: {self._run_config.min_boot_disk} to "
-            f"{self._run_config.max_boot_disk} GB"
-        )
-        self._logger.info(
-            f"  Boot disk per CPU: {self._run_config.min_boot_disk_per_cpu} to "
-            f"{self._run_config.max_boot_disk_per_cpu} GB"
+            f"  Local SSD per task: {self._run_config.min_local_ssd_per_task} to "
+            f"{self._run_config.max_local_ssd_per_task} GB"
         )
         self._logger.info("Number of instances constraints:")
         self._logger.info(f"  # Instances: {self._min_instances} to {self._max_instances}")
@@ -273,7 +274,9 @@ export RMS_CLOUD_WORKER_USE_NEW_PROCESS={bool(self._run_config.worker_use_new_pr
             self._all_instance_info = await self._instance_manager.get_available_instance_types()
         if self._pricing_info is None:
             self._pricing_info = await self._instance_manager.get_instance_pricing(
-                self._all_instance_info
+                self._all_instance_info,
+                use_spot=self._run_config.use_spot,
+                boot_disk_constraints=vars(self._run_config),
             )
 
     async def start(self) -> None:
@@ -319,39 +322,10 @@ export RMS_CLOUD_WORKER_USE_NEW_PROCESS={bool(self._run_config.worker_use_new_pr
 
         # Derive the boot disk size from the constraints and the number of vCPUs in the
         # optimal instance
-        min_boot_disk_size = self._run_config.min_boot_disk
-        if self._run_config.min_boot_disk_per_cpu is not None:
-            if min_boot_disk_size is None:
-                min_boot_disk_size = (
-                    self._run_config.min_boot_disk_per_cpu * optimal_instance_info["vcpu"]
-                )
-            else:
-                min_boot_disk_size = max(
-                    self._run_config.min_boot_disk,
-                    self._run_config.min_boot_disk_per_cpu * optimal_instance_info["vcpu"],
-                    min_boot_disk_size,
-                )
 
-        max_boot_disk_size = self._run_config.max_boot_disk
-        if self._run_config.max_boot_disk_per_cpu is not None:
-            if max_boot_disk_size is None:
-                max_boot_disk_size = (
-                    self._run_config.max_boot_disk_per_cpu * optimal_instance_info["vcpu"]
-                )
-            else:
-                max_boot_disk_size = min(
-                    self._run_config.max_boot_disk,
-                    self._run_config.max_boot_disk_per_cpu * optimal_instance_info["vcpu"],
-                    max_boot_disk_size,
-                )
+        boot_disk_size = optimal_instance_info["boot_disk_gb"]
+        boot_disk_type = optimal_instance_info["boot_disk_type"]
 
-        if min_boot_disk_size is not None and max_boot_disk_size is not None:
-            if min_boot_disk_size > max_boot_disk_size:
-                raise ValueError("Calculated boot disk size constraints are inconsistent")
-
-        boot_disk_size = min_boot_disk_size
-        if boot_disk_size is None:
-            boot_disk_size = max_boot_disk_size
         if boot_disk_size is None:
             self._logger.warning(
                 "No boot disk size constraints provided; using default of "
@@ -359,7 +333,7 @@ export RMS_CLOUD_WORKER_USE_NEW_PROCESS={bool(self._run_config.worker_use_new_pr
             )
             boot_disk_size = self._DEFAULT_BOOT_DISK_SIZE_PER_CPU_GB * optimal_instance_info["vcpu"]
         else:
-            self._logger.info(f"|| Derived boot disk size: {boot_disk_size} GB")
+            self._logger.info(f"|| Derived boot disk size: {boot_disk_size} GB ({boot_disk_type})")
         self._optimal_instance_boot_disk_size = boot_disk_size
 
         # Derive the number of tasks per instance from the constraints and the number of vCPUs in the

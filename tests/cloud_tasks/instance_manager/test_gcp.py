@@ -79,6 +79,8 @@ def mock_instance_types() -> Dict[str, Dict[str, Any]]:
             "architecture": "X86_64",
             "supports_spot": True,
             "description": "2 vCPUs, 7.5 GB RAM",
+            "cpu_family": "Intel Haswell",
+            "cpu_rank": 5,
         },
         "n2-standard-4-lssd": {
             "name": "n2-standard-4-lssd",
@@ -89,6 +91,8 @@ def mock_instance_types() -> Dict[str, Dict[str, Any]]:
             "architecture": "X86_64",
             "supports_spot": True,
             "description": "4 vCPUs, 16 GB RAM, 2 local SSD",
+            "cpu_family": "Intel Cascade Lake",
+            "cpu_rank": 13,
         },
     }
 
@@ -205,6 +209,8 @@ async def test_get_available_instance_types_no_constraints(
         "min_boot_disk_per_cpu": None,
         "max_boot_disk_per_cpu": None,
         "use_spot": False,
+        "min_cpu_rank": None,
+        "max_cpu_rank": None,
     }
 
     # Act
@@ -221,6 +227,7 @@ async def test_get_available_instance_types_no_constraints(
     assert n1_instance["mem_gb"] == 7.5
     assert n1_instance["local_ssd_gb"] == 0
     assert n1_instance["architecture"] == "X86_64"
+    assert "cpu_family" in n1_instance
 
     # Verify n2-standard-4-lssd instance details
     n2_instance = result["n2-standard-4-lssd"]
@@ -228,6 +235,7 @@ async def test_get_available_instance_types_no_constraints(
     assert n2_instance["mem_gb"] == 16
     assert n2_instance["local_ssd_gb"] == 750  # 2 * 375 GB
     assert n2_instance["architecture"] == "X86_64"
+    assert "cpu_family" in n2_instance
 
 
 @pytest.mark.asyncio
@@ -255,6 +263,8 @@ async def test_get_available_instance_types_with_cpu_constraints(
         "min_boot_disk_per_cpu": None,
         "max_boot_disk_per_cpu": None,
         "use_spot": False,
+        "min_cpu_rank": None,
+        "max_cpu_rank": None,
     }
 
     # Act
@@ -291,6 +301,8 @@ async def test_get_available_instance_types_with_memory_constraints(
         "min_boot_disk_per_cpu": None,
         "max_boot_disk_per_cpu": None,
         "use_spot": False,
+        "min_cpu_rank": None,
+        "max_cpu_rank": None,
     }
 
     # Act
@@ -327,6 +339,8 @@ async def test_get_available_instance_types_with_instance_type_filter(
         "min_boot_disk_per_cpu": None,
         "max_boot_disk_per_cpu": None,
         "use_spot": False,
+        "min_cpu_rank": None,
+        "max_cpu_rank": None,
     }
 
     # Act
@@ -363,6 +377,8 @@ async def test_get_available_instance_types_with_no_matches(
         "min_boot_disk_per_cpu": None,
         "max_boot_disk_per_cpu": None,
         "use_spot": False,
+        "min_cpu_rank": None,
+        "max_cpu_rank": None,
     }
 
     # Act
@@ -397,6 +413,8 @@ async def test_get_available_instance_types_with_memory_per_cpu_constraints(
         "min_boot_disk_per_cpu": None,
         "max_boot_disk_per_cpu": None,
         "use_spot": False,
+        "min_cpu_rank": None,
+        "max_cpu_rank": None,
     }
 
     # Act
@@ -534,8 +552,18 @@ async def test_get_instance_pricing_basic(
     ram_pricing_info.pricing_expression.tiered_rates = [ram_tier_rate]
     ram_sku.pricing_info = [ram_pricing_info]
 
+    boot_disk_sku = MagicMock()
+    boot_disk_sku.description = "Balanced PD Capacity"
+    boot_disk_sku.service_regions = ["us-central1"]
+    boot_disk_pricing_info = MagicMock()
+    boot_disk_pricing_info.pricing_expression.usage_unit = "GiBy.mo"
+    boot_disk_tier_rate = MagicMock()
+    boot_disk_tier_rate.unit_price.nanos = 0  # $0/GB/month for simplicity
+    boot_disk_pricing_info.pricing_expression.tiered_rates = [boot_disk_tier_rate]
+    boot_disk_sku.pricing_info = [boot_disk_pricing_info]
+
     # Mock the billing SKUs response
-    gcp_instance_manager._billing_compute_skus = [core_sku, ram_sku]
+    gcp_instance_manager._billing_compute_skus = [core_sku, ram_sku, boot_disk_sku]
 
     # Act
     result = await gcp_instance_manager.get_instance_pricing(
@@ -545,6 +573,7 @@ async def test_get_instance_pricing_basic(
     # Assert
     assert result is not None
     assert "n1-standard-2" in result
+    print(result)
     pricing = result["n1-standard-2"][f"{gcp_instance_manager._region}-*"]
 
     # Verify all pricing fields
@@ -567,6 +596,7 @@ async def test_get_instance_pricing_basic(
     assert pricing["boot_disk_gb"] == 0
     assert pricing["architecture"] == "X86_64"
     assert pricing["supports_spot"] is True
+    assert "cpu_family" in pricing
 
 
 @pytest.mark.asyncio
@@ -592,6 +622,16 @@ async def test_get_instance_pricing_with_local_ssd(
     ram_pricing_info.pricing_expression.tiered_rates = [ram_tier_rate]
     ram_sku.pricing_info = [ram_pricing_info]
 
+    boot_disk_sku = MagicMock()
+    boot_disk_sku.description = "Balanced PD Capacity"
+    boot_disk_sku.service_regions = ["us-central1"]
+    boot_disk_pricing_info = MagicMock()
+    boot_disk_pricing_info.pricing_expression.usage_unit = "GiBy.mo"
+    boot_disk_tier_rate = MagicMock()
+    boot_disk_tier_rate.unit_price.nanos = 0  # $0/GB/month for simplicity
+    boot_disk_pricing_info.pricing_expression.tiered_rates = [boot_disk_tier_rate]
+    boot_disk_sku.pricing_info = [boot_disk_pricing_info]
+
     local_ssd_sku = MagicMock()
     local_ssd_sku.description = "N2 Local SSD provisioned space running in Americas"
     local_ssd_sku.service_regions = ["us-central1"]
@@ -604,7 +644,7 @@ async def test_get_instance_pricing_with_local_ssd(
     ssd_pricing_info.pricing_expression.tiered_rates = [ssd_tier_rate]
     local_ssd_sku.pricing_info = [ssd_pricing_info]
 
-    gcp_instance_manager._billing_compute_skus = [core_sku, ram_sku, local_ssd_sku]
+    gcp_instance_manager._billing_compute_skus = [core_sku, ram_sku, local_ssd_sku, boot_disk_sku]
 
     # Act
     result = await gcp_instance_manager.get_instance_pricing(
@@ -636,6 +676,7 @@ async def test_get_instance_pricing_with_local_ssd(
     assert pricing["boot_disk_gb"] == 0
     assert pricing["architecture"] == "X86_64"
     assert pricing["supports_spot"] is True
+    assert "cpu_family" in pricing
 
 
 @pytest.mark.asyncio
@@ -661,7 +702,17 @@ async def test_get_instance_pricing_spot_instance(
     ram_pricing_info.pricing_expression.tiered_rates = [ram_tier_rate]
     ram_sku.pricing_info = [ram_pricing_info]
 
-    gcp_instance_manager._billing_compute_skus = [core_sku, ram_sku]
+    boot_disk_sku = MagicMock()
+    boot_disk_sku.description = "Balanced PD Capacity"
+    boot_disk_sku.service_regions = ["us-central1"]
+    boot_disk_pricing_info = MagicMock()
+    boot_disk_pricing_info.pricing_expression.usage_unit = "GiBy.mo"
+    boot_disk_tier_rate = MagicMock()
+    boot_disk_tier_rate.unit_price.nanos = 0  # $0/GB/month for simplicity
+    boot_disk_pricing_info.pricing_expression.tiered_rates = [boot_disk_tier_rate]
+    boot_disk_sku.pricing_info = [boot_disk_pricing_info]
+
+    gcp_instance_manager._billing_compute_skus = [core_sku, ram_sku, boot_disk_sku]
 
     # Act
     result = await gcp_instance_manager.get_instance_pricing(
@@ -693,6 +744,7 @@ async def test_get_instance_pricing_spot_instance(
     assert pricing["boot_disk_gb"] == 0
     assert pricing["architecture"] == "X86_64"
     assert pricing["supports_spot"] is True
+    assert "cpu_family" in pricing
 
 
 @pytest.mark.asyncio
@@ -800,7 +852,17 @@ async def test_get_optimal_instance_type_basic(
     ram_pricing_info.pricing_expression.tiered_rates = [ram_tier_rate]
     ram_sku.pricing_info = [ram_pricing_info]
 
-    gcp_instance_manager._billing_compute_skus = [core_sku, ram_sku]
+    boot_disk_sku = MagicMock()
+    boot_disk_sku.description = "Balanced PD Capacity"
+    boot_disk_sku.service_regions = ["us-central1"]
+    boot_disk_pricing_info = MagicMock()
+    boot_disk_pricing_info.pricing_expression.usage_unit = "GiBy.mo"
+    boot_disk_tier_rate = MagicMock()
+    boot_disk_tier_rate.unit_price.nanos = 0  # $0/GB/month for simplicity
+    boot_disk_pricing_info.pricing_expression.tiered_rates = [boot_disk_tier_rate]
+    boot_disk_sku.pricing_info = [boot_disk_pricing_info]
+
+    gcp_instance_manager._billing_compute_skus = [core_sku, ram_sku, boot_disk_sku]
 
     # Act
     selected_price_info = await gcp_instance_manager.get_optimal_instance_type(constraints)
@@ -900,7 +962,17 @@ async def test_get_optimal_instance_type_spot_instance(
     ram_pricing_info.pricing_expression.tiered_rates = [ram_tier_rate]
     ram_sku.pricing_info = [ram_pricing_info]
 
-    gcp_instance_manager._billing_compute_skus = [core_sku, ram_sku]
+    boot_disk_sku = MagicMock()
+    boot_disk_sku.description = "Balanced PD Capacity"
+    boot_disk_sku.service_regions = ["us-central1"]
+    boot_disk_pricing_info = MagicMock()
+    boot_disk_pricing_info.pricing_expression.usage_unit = "GiBy.mo"
+    boot_disk_tier_rate = MagicMock()
+    boot_disk_tier_rate.unit_price.nanos = 0  # $0/GB/month for simplicity
+    boot_disk_pricing_info.pricing_expression.tiered_rates = [boot_disk_tier_rate]
+    boot_disk_sku.pricing_info = [boot_disk_pricing_info]
+
+    gcp_instance_manager._billing_compute_skus = [core_sku, ram_sku, boot_disk_sku]
 
     # Act
     selected_price_info = await gcp_instance_manager.get_optimal_instance_type(constraints)
@@ -963,6 +1035,15 @@ async def test_get_optimal_instance_type_with_memory_constraints(
     ram_tier_rate.unit_price.nanos = 200000000  # $0.20/GB/hour
     ram_pricing_info.pricing_expression.tiered_rates = [ram_tier_rate]
     ram_sku.pricing_info = [ram_pricing_info]
+    boot_disk_sku = MagicMock()
+    boot_disk_sku.description = "Balanced PD Capacity"
+    boot_disk_sku.service_regions = ["us-central1"]
+    boot_disk_pricing_info = MagicMock()
+    boot_disk_pricing_info.pricing_expression.usage_unit = "GiBy.mo"
+    boot_disk_tier_rate = MagicMock()
+    boot_disk_tier_rate.unit_price.nanos = 0  # $0/GB/month for simplicity
+    boot_disk_pricing_info.pricing_expression.tiered_rates = [boot_disk_tier_rate]
+    boot_disk_sku.pricing_info = [boot_disk_pricing_info]
 
     local_ssd_sku = MagicMock()
     local_ssd_sku.description = "N2 Local SSD provisioned space running in Americas"
@@ -974,7 +1055,7 @@ async def test_get_optimal_instance_type_with_memory_constraints(
     ssd_pricing_info.pricing_expression.tiered_rates = [ssd_tier_rate]
     local_ssd_sku.pricing_info = [ssd_pricing_info]
 
-    gcp_instance_manager._billing_compute_skus = [core_sku, ram_sku, local_ssd_sku]
+    gcp_instance_manager._billing_compute_skus = [core_sku, ram_sku, local_ssd_sku, boot_disk_sku]
 
     # Act
     selected_price_info = await gcp_instance_manager.get_optimal_instance_type(constraints)
@@ -1038,6 +1119,16 @@ async def test_get_optimal_instance_type_with_local_ssd_constraint(
     ram_pricing_info.pricing_expression.tiered_rates = [ram_tier_rate]
     ram_sku.pricing_info = [ram_pricing_info]
 
+    boot_disk_sku = MagicMock()
+    boot_disk_sku.description = "Balanced PD Capacity"
+    boot_disk_sku.service_regions = ["us-central1"]
+    boot_disk_pricing_info = MagicMock()
+    boot_disk_pricing_info.pricing_expression.usage_unit = "GiBy.mo"
+    boot_disk_tier_rate = MagicMock()
+    boot_disk_tier_rate.unit_price.nanos = 0  # $0/GB/month for simplicity
+    boot_disk_pricing_info.pricing_expression.tiered_rates = [boot_disk_tier_rate]
+    boot_disk_sku.pricing_info = [boot_disk_pricing_info]
+
     local_ssd_sku = MagicMock()
     local_ssd_sku.description = "N2 Local SSD provisioned space running in Americas"
     local_ssd_sku.service_regions = ["us-central1"]
@@ -1048,7 +1139,7 @@ async def test_get_optimal_instance_type_with_local_ssd_constraint(
     ssd_pricing_info.pricing_expression.tiered_rates = [ssd_tier_rate]
     local_ssd_sku.pricing_info = [ssd_pricing_info]
 
-    gcp_instance_manager._billing_compute_skus = [core_sku, ram_sku, local_ssd_sku]
+    gcp_instance_manager._billing_compute_skus = [core_sku, ram_sku, local_ssd_sku, boot_disk_sku]
 
     # Act
     selected_price_info = await gcp_instance_manager.get_optimal_instance_type(constraints)
@@ -1133,6 +1224,16 @@ async def test_get_optimal_instance_type_prefer_more_cpus(
     n2_ram_pricing_info.pricing_expression.tiered_rates = [n2_ram_tier_rate]
     n2_ram_sku.pricing_info = [n2_ram_pricing_info]
 
+    boot_disk_sku = MagicMock()
+    boot_disk_sku.description = "Balanced PD Capacity"
+    boot_disk_sku.service_regions = ["us-central1"]
+    boot_disk_pricing_info = MagicMock()
+    boot_disk_pricing_info.pricing_expression.usage_unit = "GiBy.mo"
+    boot_disk_tier_rate = MagicMock()
+    boot_disk_tier_rate.unit_price.nanos = 0  # $0/GB/month for simplicity
+    boot_disk_pricing_info.pricing_expression.tiered_rates = [boot_disk_tier_rate]
+    boot_disk_sku.pricing_info = [boot_disk_pricing_info]
+
     # Add local SSD SKU with very low price
     local_ssd_sku = MagicMock()
     local_ssd_sku.description = "N2 Local SSD provisioned space running in Americas"
@@ -1152,6 +1253,7 @@ async def test_get_optimal_instance_type_prefer_more_cpus(
         n2_core_sku,
         n2_ram_sku,
         local_ssd_sku,
+        boot_disk_sku,
     ]
 
     # Act
@@ -2698,14 +2800,16 @@ async def test_extract_pricing_info_multiple_tiered_rates(
     mock_pricing_info = MagicMock()
     mock_pricing_info.pricing_expression.usage_unit = "h"
     mock_tier1 = MagicMock()
+    mock_tier1.unit_price.nanos = 1000000000  # $1.00
     mock_tier2 = MagicMock()
+    mock_tier2.unit_price.nanos = 1000000000  # $1.00
     mock_pricing_info.pricing_expression.tiered_rates = [mock_tier1, mock_tier2]
     mock_sku.pricing_info = [mock_pricing_info]
     mock_sku.description = "Test SKU"
     with caplog.at_level("WARNING"):
         result = gcp_instance_manager._extract_pricing_info("n1-standard", mock_sku, "h", "core")
-    assert result is None
-    assert any("Multiple tiered rates found" in record.message for record in caplog.records)
+    assert result is mock_tier1
+    assert any("Multiple pricing tiers found" in record.message for record in caplog.records)
 
 
 @pytest.mark.asyncio
@@ -2906,7 +3010,17 @@ async def test_get_instance_pricing_multiple_skus_for_component(
     core_pricing_info2.pricing_expression.tiered_rates = [core_tier_rate2]
     core_sku2.pricing_info = [core_pricing_info2]
 
-    gcp_instance_manager._billing_compute_skus = [core_sku1, core_sku2]
+    boot_disk_sku = MagicMock()
+    boot_disk_sku.description = "Balanced PD Capacity"
+    boot_disk_sku.service_regions = ["us-central1"]
+    boot_disk_pricing_info = MagicMock()
+    boot_disk_pricing_info.pricing_expression.usage_unit = "GiBy.mo"
+    boot_disk_tier_rate = MagicMock()
+    boot_disk_tier_rate.unit_price.nanos = 0  # $0/GB/month for simplicity
+    boot_disk_pricing_info.pricing_expression.tiered_rates = [boot_disk_tier_rate]
+    boot_disk_sku.pricing_info = [boot_disk_pricing_info]
+
+    gcp_instance_manager._billing_compute_skus = [core_sku1, core_sku2, boot_disk_sku]
     result = await gcp_instance_manager.get_instance_pricing(
         {"n1-standard-2": mock_instance_types["n1-standard-2"]}, use_spot=False
     )
@@ -2932,7 +3046,18 @@ async def test_get_instance_pricing_pricing_info_none(
     ram_sku.description = "N1 Instance Ram running in Americas"
     ram_sku.service_regions = ["us-central1"]
     ram_sku.pricing_info = [MagicMock()]
-    gcp_instance_manager._billing_compute_skus = [core_sku, ram_sku]
+
+    boot_disk_sku = MagicMock()
+    boot_disk_sku.description = "Balanced PD Capacity"
+    boot_disk_sku.service_regions = ["us-central1"]
+    boot_disk_pricing_info = MagicMock()
+    boot_disk_pricing_info.pricing_expression.usage_unit = "GiBy.mo"
+    boot_disk_tier_rate = MagicMock()
+    boot_disk_tier_rate.unit_price.nanos = 0  # $0/GB/month for simplicity
+    boot_disk_pricing_info.pricing_expression.tiered_rates = [boot_disk_tier_rate]
+    boot_disk_sku.pricing_info = [boot_disk_pricing_info]
+
+    gcp_instance_manager._billing_compute_skus = [core_sku, ram_sku, boot_disk_sku]
     orig_extract = gcp_instance_manager._extract_pricing_info
 
     def fake_extract(family, sku, unit, component):
@@ -2973,7 +3098,18 @@ async def test_get_instance_pricing_spot_not_available(
     ram_tier_rate.unit_price.nanos = 500000000
     ram_pricing_info.pricing_expression.tiered_rates = [ram_tier_rate]
     ram_sku.pricing_info = [ram_pricing_info]
-    gcp_instance_manager._billing_compute_skus = [core_sku, ram_sku]
+
+    boot_disk_sku = MagicMock()
+    boot_disk_sku.description = "Balanced PD Capacity"
+    boot_disk_sku.service_regions = ["us-central1"]
+    boot_disk_pricing_info = MagicMock()
+    boot_disk_pricing_info.pricing_expression.usage_unit = "GiBy.mo"
+    boot_disk_tier_rate = MagicMock()
+    boot_disk_tier_rate.unit_price.nanos = 0  # $0/GB/month for simplicity
+    boot_disk_pricing_info.pricing_expression.tiered_rates = [boot_disk_tier_rate]
+    boot_disk_sku.pricing_info = [boot_disk_pricing_info]
+
+    gcp_instance_manager._billing_compute_skus = [core_sku, ram_sku, boot_disk_sku]
     result = await gcp_instance_manager.get_instance_pricing(
         {"n1-standard-2": mock_instance_types["n1-standard-2"]}, use_spot=True
     )
@@ -3168,7 +3304,21 @@ async def test_get_instance_pricing_multiple_ram_skus(
         MagicMock(unit_price=MagicMock(nanos=600000000))
     ]
     ram_sku2.pricing_info = [ram_pricing_info2]
-    gcp_instance_manager._billing_compute_skus = [core_sku, ram_sku1, ram_sku2]
+    boot_disk_sku = MagicMock()
+    boot_disk_sku.description = "Balanced PD Capacity"
+    boot_disk_sku.service_regions = ["us-central1"]
+    boot_disk_pricing_info = MagicMock()
+    boot_disk_pricing_info.pricing_expression.usage_unit = "GiBy.mo"
+    boot_disk_tier_rate = MagicMock()
+    boot_disk_tier_rate.unit_price.nanos = 0  # $0/GB/month for simplicity
+    boot_disk_pricing_info.pricing_expression.tiered_rates = [boot_disk_tier_rate]
+    boot_disk_sku.pricing_info = [boot_disk_pricing_info]
+    gcp_instance_manager._billing_compute_skus = [
+        core_sku,
+        ram_sku1,
+        ram_sku2,
+        boot_disk_sku,
+    ]
 
     with caplog.at_level("WARNING"):
         result = await gcp_instance_manager.get_instance_pricing(
@@ -3228,6 +3378,15 @@ async def test_get_instance_pricing_multiple_ssd_skus(
         MagicMock(unit_price=MagicMock(nanos=500000000))
     ]
     ram_sku.pricing_info = [ram_pricing_info]
+    boot_disk_sku = MagicMock()
+    boot_disk_sku.description = "Balanced PD Capacity"
+    boot_disk_sku.service_regions = ["us-central1"]
+    boot_disk_pricing_info = MagicMock()
+    boot_disk_pricing_info.pricing_expression.usage_unit = "GiBy.mo"
+    boot_disk_tier_rate = MagicMock()
+    boot_disk_tier_rate.unit_price.nanos = 0  # $0/GB/month for simplicity
+    boot_disk_pricing_info.pricing_expression.tiered_rates = [boot_disk_tier_rate]
+    boot_disk_sku.pricing_info = [boot_disk_pricing_info]
     ssd_sku1 = MagicMock()
     ssd_sku1.description = "N1 Local SSD provisioned space running in Americas"
     ssd_sku1.service_regions = ["us-central1"]
@@ -3246,7 +3405,13 @@ async def test_get_instance_pricing_multiple_ssd_skus(
         MagicMock(unit_price=MagicMock(nanos=2000000000))
     ]
     ssd_sku2.pricing_info = [ssd_pricing_info2]
-    gcp_instance_manager._billing_compute_skus = [core_sku, ram_sku, ssd_sku1, ssd_sku2]
+    gcp_instance_manager._billing_compute_skus = [
+        core_sku,
+        ram_sku,
+        boot_disk_sku,
+        ssd_sku1,
+        ssd_sku2,
+    ]
 
     with caplog.at_level("WARNING"):
         result = await gcp_instance_manager.get_instance_pricing(
@@ -3370,7 +3535,23 @@ async def test_get_optimal_instance_type_logs_sorted_instances(
     ram_pricing_info2.pricing_expression.tiered_rates = [ram_tier_rate2]
     ram_sku2.pricing_info = [ram_pricing_info2]
 
-    gcp_instance_manager._billing_compute_skus = [core_sku1, ram_sku1, core_sku2, ram_sku2]
+    boot_disk_sku = MagicMock()
+    boot_disk_sku.description = "Balanced PD Capacity"
+    boot_disk_sku.service_regions = ["us-central1"]
+    boot_disk_pricing_info = MagicMock()
+    boot_disk_pricing_info.pricing_expression.usage_unit = "GiBy.mo"
+    boot_disk_tier_rate = MagicMock()
+    boot_disk_tier_rate.unit_price.nanos = 0  # $0/GB/month for simplicity
+    boot_disk_pricing_info.pricing_expression.tiered_rates = [boot_disk_tier_rate]
+    boot_disk_sku.pricing_info = [boot_disk_pricing_info]
+
+    gcp_instance_manager._billing_compute_skus = [
+        core_sku1,
+        ram_sku1,
+        core_sku2,
+        ram_sku2,
+        boot_disk_sku,
+    ]
 
     # Add a second instance type to mock_instance_types
     instance_types = {
@@ -3589,7 +3770,16 @@ async def test_get_instance_pricing_cpu_pricing_info_none(
     ram_tier_rate.unit_price.nanos = 500000000
     ram_pricing_info.pricing_expression.tiered_rates = [ram_tier_rate]
     ram_sku.pricing_info = [ram_pricing_info]
-    gcp_instance_manager._billing_compute_skus = [core_sku, ram_sku]
+    boot_disk_sku = MagicMock()
+    boot_disk_sku.description = "Balanced PD Capacity"
+    boot_disk_sku.service_regions = ["us-central1"]
+    boot_disk_pricing_info = MagicMock()
+    boot_disk_pricing_info.pricing_expression.usage_unit = "GiBy.mo"
+    boot_disk_tier_rate = MagicMock()
+    boot_disk_tier_rate.unit_price.nanos = 0  # $0/GB/month for simplicity
+    boot_disk_pricing_info.pricing_expression.tiered_rates = [boot_disk_tier_rate]
+    boot_disk_sku.pricing_info = [boot_disk_pricing_info]
+    gcp_instance_manager._billing_compute_skus = [core_sku, ram_sku, boot_disk_sku]
     with caplog.at_level("WARNING"):
         result = await gcp_instance_manager.get_instance_pricing(
             {"n1-standard-2": mock_instance_types["n1-standard-2"]}, use_spot=False
@@ -3615,7 +3805,16 @@ async def test_get_instance_pricing_ram_pricing_info_none(
     ram_sku.description = "N1 Instance Ram running in Americas"
     ram_sku.service_regions = ["us-central1"]
     ram_sku.pricing_info = []  # No pricing info triggers None
-    gcp_instance_manager._billing_compute_skus = [core_sku, ram_sku]
+    boot_disk_sku = MagicMock()
+    boot_disk_sku.description = "Balanced PD Capacity"
+    boot_disk_sku.service_regions = ["us-central1"]
+    boot_disk_pricing_info = MagicMock()
+    boot_disk_pricing_info.pricing_expression.usage_unit = "GiBy.mo"
+    boot_disk_tier_rate = MagicMock()
+    boot_disk_tier_rate.unit_price.nanos = 0  # $0/GB/month for simplicity
+    boot_disk_pricing_info.pricing_expression.tiered_rates = [boot_disk_tier_rate]
+    boot_disk_sku.pricing_info = [boot_disk_pricing_info]
+    gcp_instance_manager._billing_compute_skus = [core_sku, ram_sku, boot_disk_sku]
     with caplog.at_level("WARNING"):
         result = await gcp_instance_manager.get_instance_pricing(
             {"n1-standard-2": mock_instance_types["n1-standard-2"]}, use_spot=False
@@ -3657,8 +3856,17 @@ async def test_get_instance_pricing_lssd_instance_no_local_ssd_sku(
     ram_tier_rate.unit_price.nanos = 500000000
     ram_pricing_info.pricing_expression.tiered_rates = [ram_tier_rate]
     ram_sku.pricing_info = [ram_pricing_info]
+    boot_disk_sku = MagicMock()
+    boot_disk_sku.description = "Balanced PD Capacity"
+    boot_disk_sku.service_regions = ["us-central1"]
+    boot_disk_pricing_info = MagicMock()
+    boot_disk_pricing_info.pricing_expression.usage_unit = "GiBy.mo"
+    boot_disk_tier_rate = MagicMock()
+    boot_disk_tier_rate.unit_price.nanos = 0  # $0/GB/month for simplicity
+    boot_disk_pricing_info.pricing_expression.tiered_rates = [boot_disk_tier_rate]
+    boot_disk_sku.pricing_info = [boot_disk_pricing_info]
     # No local SSD SKU
-    gcp_instance_manager._billing_compute_skus = [core_sku, ram_sku]
+    gcp_instance_manager._billing_compute_skus = [core_sku, ram_sku, boot_disk_sku]
     with caplog.at_level("WARNING"):
         result = await gcp_instance_manager.get_instance_pricing(
             {instance_type: mock_instance_types[instance_type]}, use_spot=False

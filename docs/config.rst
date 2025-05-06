@@ -73,11 +73,19 @@ possible instance type.
 If you need specific performance, specify the instance types you are willing to accept as
 a regular expression. For example, to allow all GCP "N2" instances, specify
 ``instance_types: "^n2-.*"``. This will still give the system freedom to choose the best
-instance type within that family given the other constraints. Note that it is quite
+instance type within that family given the other constraints. Alternatively, you can specify
+``cpu_family``, ``min_cpu_rank``, or ``max_cpu_rank`` if you don't want to look up the
+specific instance types that are relevant to your needs. For example, ``min_cpu_rank: 21``
+will specify a fast processor (Intel Sapphire Rapids or better). Note that it is quite
 possible to over-constrain the system such that no instance types meet the requirements.
 
 When multiple minimum constraints are specified, the maximum value wins. When multiple
 maximum constraints are specified, the minimum value wins.
+
+To get a list of the available instance types and their attributes, including number of
+vCPUs, amount of memory, CPU family and performance rank, price, etc. you can use the
+:ref:`cli_list_instance_types` command line command. Include the ``--detail`` option to see
+all available attributes.
 
 
 General Constraints
@@ -85,10 +93,14 @@ General Constraints
 
 * ``architecture``: The architecture to use; valid values are ``X86_64`` and ``ARM64``
   (defaults to ``X86_64``)
+* ``cpu_family``: The CPU family to use, for example ``Intel Cascade Lake`` or ``AMD Genoa``.
+* ``min_cpu_rank``: The minimum CPU performance rank to use (0 is the slowest)
+* ``max_cpu_rank``: The maximum CPU performance rank to use (0 is the slowest)
 * ``instance_types``: A single instance type or list of instance types to use;
   instance types are specified using Python-style regular expressions (if no
   anchor character like ``^`` or ``$`` is specified, the given string will match
   any part of the instance type name)
+
 
 CPU
 +++

@@ -120,6 +120,14 @@ def test_runconfig_min_max_local_ssd_per_task():
         RunConfig(max_local_ssd_per_task=0)
 
 
+def test_runconfig_min_max_cpu_rank():
+    RunConfig(min_cpu_rank=1, max_cpu_rank=2)
+    with pytest.raises(ValueError):
+        RunConfig(min_cpu_rank=3, max_cpu_rank=2)
+    # max_cpu_rank can be zero, so only test min > max
+    RunConfig(min_cpu_rank=0, max_cpu_rank=0)
+
+
 def test_update_run_config_from_provider_config_defaults():
     c = Config(
         provider="AWS",
@@ -138,8 +146,11 @@ def test_update_run_config_from_provider_config_defaults():
     c.run.worker_use_new_process = None
     c.run.architecture = None
     c.run.local_ssd_base_size = None
-    c.run.boot_disk = None
+    c.run.total_boot_disk_size = None
     c.run.boot_disk_base_size = None
+    c.run.cpu_family = None
+    c.run.min_cpu_rank = None
+    c.run.max_cpu_rank = None
 
     c.update_run_config_from_provider_config()
 
@@ -153,8 +164,11 @@ def test_update_run_config_from_provider_config_defaults():
     assert c.run.worker_use_new_process is False
     assert c.run.architecture == "X86_64"
     assert c.run.local_ssd_base_size == 0
-    assert c.run.boot_disk == 10
-    assert c.run.boot_disk_base_size == 10
+    assert c.run.total_boot_disk_size == 10
+    assert c.run.boot_disk_base_size == 0
+    assert c.run.cpu_family is None
+    assert c.run.min_cpu_rank is None
+    assert c.run.max_cpu_rank is None
 
     # Test that values are not overwritten if already set
     c.run.cpus_per_task = 2
@@ -166,8 +180,11 @@ def test_update_run_config_from_provider_config_defaults():
     c.run.worker_use_new_process = True
     c.run.architecture = "ARM64"
     c.run.local_ssd_base_size = 20
-    c.run.boot_disk = 50
+    c.run.total_boot_disk_size = 50
     c.run.boot_disk_base_size = 30
+    c.run.cpu_family = "INTEL CASCADE LAKE"
+    c.run.min_cpu_rank = 1
+    c.run.max_cpu_rank = 2
 
     c.update_run_config_from_provider_config()
 
@@ -181,8 +198,11 @@ def test_update_run_config_from_provider_config_defaults():
     assert c.run.worker_use_new_process is True
     assert c.run.architecture == "ARM64"
     assert c.run.local_ssd_base_size == 20
-    assert c.run.boot_disk == 50
+    assert c.run.total_boot_disk_size == 50
     assert c.run.boot_disk_base_size == 30
+    assert c.run.cpu_family == "INTEL CASCADE LAKE"
+    assert c.run.min_cpu_rank == 1
+    assert c.run.max_cpu_rank == 2
 
 
 # --- ProviderConfig, AWSConfig, GCPConfig, AzureConfig ---
@@ -207,7 +227,21 @@ def make_config_obj():
 @pytest.mark.parametrize("provider", ["AWS", "GCP", "AZURE"])
 def test_config_overload_from_cli(provider):
     c = make_config_obj()
-    cli_args = {"provider": provider, "region": "us-west-1", "architecture": "arm64"}
+    c.aws.region = "us-east-1"
+    c.gcp.region = "us-east-1"
+    c.azure.region = "us-east-1"
+    c.aws.architecture = "x86_64"
+    c.gcp.architecture = "x86_64"
+    c.azure.architecture = "x86_64"
+    c.aws.cpu_family = "Intel Sapphire Rapids"
+    c.gcp.cpu_family = "Intel Sapphire Rapids"
+    c.azure.cpu_family = "Intel Sapphire Rapids"
+    cli_args = {
+        "provider": provider,
+        "region": "us-west-1",
+        "architecture": "arm64",
+        "cpu_family": "Intel Cascade Lake",
+    }
     with patch.object(config_mod, "LOGGER") as mock_logger:
         c.overload_from_cli(cli_args)
         mock_logger.warning.assert_called()
@@ -216,13 +250,20 @@ def test_config_overload_from_cli(provider):
         case "AWS":
             assert c.aws.region == "us-west-1"
             assert c.aws.architecture == "ARM64"
+            assert c.aws.cpu_family == "INTEL CASCADE LAKE"
         case "GCP":
             assert c.gcp.region == "us-west-1"
             assert c.gcp.architecture == "ARM64"
+            assert c.gcp.cpu_family == "INTEL CASCADE LAKE"
         case "AZURE":
             assert c.azure.region == "us-west-1"
             assert c.azure.architecture == "ARM64"
+            assert c.azure.cpu_family == "INTEL CASCADE LAKE"
     assert c.run.architecture == "ARM64"
+    assert c.run.cpu_family == "INTEL CASCADE LAKE"
+    with patch.object(config_mod, "LOGGER") as mock_logger:
+        c.overload_from_cli(cli_args)  # Repeat
+        mock_logger.warning.assert_not_called()
     with patch.object(config_mod, "LOGGER") as mock_logger:
         c.overload_from_cli({})
         mock_logger.warning.assert_not_called()
@@ -231,13 +272,17 @@ def test_config_overload_from_cli(provider):
             case "AWS":
                 assert c.aws.region == "us-west-1"
                 assert c.aws.architecture == "ARM64"
+                assert c.aws.cpu_family == "INTEL CASCADE LAKE"
             case "GCP":
                 assert c.gcp.region == "us-west-1"
                 assert c.gcp.architecture == "ARM64"
+                assert c.gcp.cpu_family == "INTEL CASCADE LAKE"
             case "AZURE":
                 assert c.azure.region == "us-west-1"
                 assert c.azure.architecture == "ARM64"
+                assert c.azure.cpu_family == "INTEL CASCADE LAKE"
         assert c.run.architecture == "ARM64"
+        assert c.run.cpu_family == "INTEL CASCADE LAKE"
 
 
 @pytest.mark.parametrize("provider", ["AWS", "GCP", "AZURE"])

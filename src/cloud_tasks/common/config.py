@@ -92,6 +92,18 @@ class RunConfig(BaseModel, validate_assignment=True):
 
     # Memory and disk are in GB
     architecture: Optional[Literal["x86_64", "arm64", "X86_64", "ARM64"]] = None
+    cpu_family: Optional[constr(min_length=1)] = None
+
+    min_cpu_rank: Optional[NonNegativeInt] = None
+    max_cpu_rank: Optional[NonNegativeInt] = None
+
+    @model_validator(mode="after")
+    def validate_min_max_cpu_rank(self) -> "RunConfig":
+        if self.min_cpu_rank is not None and self.max_cpu_rank is not None:
+            if self.min_cpu_rank > self.max_cpu_rank:
+                raise ValueError("min_cpu_rank must be less than max_cpu_rank")
+        return self
+
     min_cpu: Optional[NonNegativeInt] = None
     max_cpu: Optional[PositiveInt] = None
 
@@ -175,12 +187,19 @@ class RunConfig(BaseModel, validate_assignment=True):
             raise ValueError("max_local_ssd_per_task must be greater than 0")
         return self
 
-    boot_disk: Optional[PositiveFloat] = None
-    boot_disk_base_size: Optional[PositiveFloat] = None
+    #
+    # Boot disk specifications
+    #
+
+    boot_disk_type: Optional[constr(min_length=1)] = None
+    boot_disk_provisioned_iops: Optional[PositiveInt] = None  # GCP only
+    boot_disk_provisioned_throughput: Optional[PositiveInt] = None  # GCP only
+    total_boot_disk_size: Optional[PositiveFloat] = None
+    boot_disk_base_size: Optional[NonNegativeFloat] = None
     boot_disk_per_cpu: Optional[NonNegativeFloat] = None
     boot_disk_per_task: Optional[NonNegativeFloat] = None
 
-    instance_types: Optional[List[str] | str] = None  # Overriden by provider config
+    instance_types: Optional[List[str] | str] = None
 
     #
     # Pricing options
@@ -273,12 +292,20 @@ class Config(BaseModel, validate_assignment=True):
         """
         if self.provider is not None:
             self.provider = self.provider.upper()
+
         # Override loaded file and/or defaults with command line arguments
         if cli_args is not None:
+            if "architecture" in cli_args and cli_args["architecture"] is not None:
+                cli_args["architecture"] = cli_args["architecture"].upper()
+            if "cpu_family" in cli_args and cli_args["cpu_family"] is not None:
+                cli_args["cpu_family"] = cli_args["cpu_family"].upper()
+            if "provider" in cli_args and cli_args["provider"] is not None:
+                cli_args["provider"] = cli_args["provider"].upper()
+
             for attr_name in vars(self):
                 if attr_name in cli_args and cli_args[attr_name] is not None:
                     val = getattr(self, attr_name)
-                    if val is not None:
+                    if val is not None and val != cli_args[attr_name]:
                         LOGGER.warning(
                             f"Overloading {attr_name}={val} with CLI={cli_args[attr_name]}"
                         )
@@ -288,7 +315,7 @@ class Config(BaseModel, validate_assignment=True):
             for attr_name in vars(self.run):
                 if attr_name in cli_args and cli_args[attr_name] is not None:
                     val = getattr(self.run, attr_name)
-                    if val is not None:
+                    if val is not None and val != cli_args[attr_name]:
                         LOGGER.warning(
                             f"Overloading run.{attr_name}={val} with CLI={cli_args[attr_name]}"
                         )
@@ -297,7 +324,7 @@ class Config(BaseModel, validate_assignment=True):
                 for attr_name in vars(self.aws):
                     if attr_name in cli_args and cli_args[attr_name] is not None:
                         val = getattr(self.aws, attr_name)
-                        if val is not None:
+                        if val is not None and val != cli_args[attr_name]:
                             LOGGER.warning(
                                 f"Overloading aws.{attr_name}={val} with CLI={cli_args[attr_name]}"
                             )
@@ -306,7 +333,7 @@ class Config(BaseModel, validate_assignment=True):
                 for attr_name in vars(self.gcp):
                     if attr_name in cli_args and cli_args[attr_name] is not None:
                         val = getattr(self.gcp, attr_name)
-                        if val is not None:
+                        if val is not None and val != cli_args[attr_name]:
                             LOGGER.warning(
                                 f"Overloading gcp.{attr_name}={val} with CLI={cli_args[attr_name]}"
                             )
@@ -315,7 +342,7 @@ class Config(BaseModel, validate_assignment=True):
                 for attr_name in vars(self.azure):
                     if attr_name in cli_args and cli_args[attr_name] is not None:
                         val = getattr(self.azure, attr_name)
-                        if val is not None:
+                        if val is not None and val != cli_args[attr_name]:
                             LOGGER.warning(
                                 f"Overloading azure.{attr_name}={val} with "
                                 f"CLI={cli_args[attr_name]}"
@@ -324,12 +351,20 @@ class Config(BaseModel, validate_assignment=True):
 
         if self.run.architecture is not None:
             self.run.architecture = self.run.architecture.upper()
+        if self.run.cpu_family is not None:
+            self.run.cpu_family = self.run.cpu_family.upper()
         if self.aws.architecture is not None:
             self.aws.architecture = self.aws.architecture.upper()
+        if self.aws.cpu_family is not None:
+            self.aws.cpu_family = self.aws.cpu_family.upper()
         if self.gcp.architecture is not None:
             self.gcp.architecture = self.gcp.architecture.upper()
+        if self.gcp.cpu_family is not None:
+            self.gcp.cpu_family = self.gcp.cpu_family.upper()
         if self.azure.architecture is not None:
             self.azure.architecture = self.azure.architecture.upper()
+        if self.azure.cpu_family is not None:
+            self.azure.cpu_family = self.azure.cpu_family.upper()
 
     def update_run_config_from_provider_config(self) -> None:
         """Update run config with provider-specific config values."""
@@ -418,10 +453,13 @@ class Config(BaseModel, validate_assignment=True):
             self.run.architecture = "X86_64"
         if self.run.local_ssd_base_size is None:
             self.run.local_ssd_base_size = 0
-        if self.run.boot_disk is None:
-            self.run.boot_disk = 10
+        if self.run.total_boot_disk_size is None:
+            self.run.total_boot_disk_size = 10
         if self.run.boot_disk_base_size is None:
-            self.run.boot_disk_base_size = 10
+            self.run.boot_disk_base_size = 0
+        if self.run.boot_disk_type is not None:
+            self.run.boot_disk_type = self.run.boot_disk_type.lower()
+        print(f"run.boot_disk_type: {self.run.boot_disk_type}")
 
     def validate_config(self) -> None:
         """Perform final validation of the configuration."""
