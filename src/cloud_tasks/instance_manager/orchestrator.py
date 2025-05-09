@@ -123,7 +123,10 @@ class InstanceOrchestrator:
             f"  Memory per CPU: {self._run_config.min_memory_per_cpu} to "
             f"{self._run_config.max_memory_per_cpu} GB"
         )
-        self._logger.info(f"  Boot disk type: {self._run_config.boot_disk_type}")
+        if self._run_config.boot_disk_types is None:
+            self._logger.info("  Boot disk types: None")
+        else:
+            self._logger.info(f"  Boot disk types: {', '.join(self._run_config.boot_disk_types)}")
         self._logger.info(f"  Boot disk total size: {self._run_config.total_boot_disk_size} GB")
         self._logger.info(f"  Boot disk base size: {self._run_config.boot_disk_base_size} GB")
         self._logger.info(f"  Boot disk per CPU: {self._run_config.boot_disk_per_cpu} GB")

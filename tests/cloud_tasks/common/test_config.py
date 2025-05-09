@@ -1,4 +1,4 @@
-# Manually verified 4/29/2025
+# Manually verified 5/7/2025
 
 import yaml
 import pytest
@@ -49,6 +49,12 @@ def test_runconfig_min_max_total_price_per_hour():
         RunConfig(max_total_price_per_hour=0)
 
 
+def test_runconfig_min_max_cpu_rank():
+    RunConfig(min_cpu_rank=1, max_cpu_rank=2)
+    with pytest.raises(ValueError):
+        RunConfig(min_cpu_rank=3, max_cpu_rank=2)
+
+
 def test_runconfig_min_max_cpu():
     RunConfig(min_cpu=1, max_cpu=2)
     with pytest.raises(ValueError):
@@ -71,6 +77,14 @@ def test_runconfig_min_max_memory_per_cpu():
         RunConfig(max_memory_per_cpu=0)
 
 
+def test_runconfig_min_max_memory_per_task():
+    RunConfig(min_memory_per_task=1, max_memory_per_task=2)
+    with pytest.raises(ValueError):
+        RunConfig(min_memory_per_task=3, max_memory_per_task=2)
+    with pytest.raises(ValueError):
+        RunConfig(max_memory_per_task=0)
+
+
 def test_runconfig_min_max_local_ssd():
     RunConfig(min_local_ssd=1, max_local_ssd=2)
     with pytest.raises(ValueError):
@@ -85,6 +99,14 @@ def test_runconfig_min_max_local_ssd_per_cpu():
         RunConfig(min_local_ssd_per_cpu=3, max_local_ssd_per_cpu=2)
     with pytest.raises(ValueError):
         RunConfig(max_local_ssd_per_cpu=0)
+
+
+def test_runconfig_min_max_local_ssd_per_task():
+    RunConfig(min_local_ssd_per_task=1, max_local_ssd_per_task=2)
+    with pytest.raises(ValueError):
+        RunConfig(min_local_ssd_per_task=3, max_local_ssd_per_task=2)
+    with pytest.raises(ValueError):
+        RunConfig(max_local_ssd_per_task=0)
 
 
 def test_runconfig_instance_types_list_or_str():
@@ -104,30 +126,6 @@ def test_runconfig_architecture_case():
     assert rc.architecture == "ARM64"
 
 
-def test_runconfig_min_max_memory_per_task():
-    RunConfig(min_memory_per_task=1, max_memory_per_task=2)
-    with pytest.raises(ValueError):
-        RunConfig(min_memory_per_task=3, max_memory_per_task=2)
-    with pytest.raises(ValueError):
-        RunConfig(max_memory_per_task=0)
-
-
-def test_runconfig_min_max_local_ssd_per_task():
-    RunConfig(min_local_ssd_per_task=1, max_local_ssd_per_task=2)
-    with pytest.raises(ValueError):
-        RunConfig(min_local_ssd_per_task=3, max_local_ssd_per_task=2)
-    with pytest.raises(ValueError):
-        RunConfig(max_local_ssd_per_task=0)
-
-
-def test_runconfig_min_max_cpu_rank():
-    RunConfig(min_cpu_rank=1, max_cpu_rank=2)
-    with pytest.raises(ValueError):
-        RunConfig(min_cpu_rank=3, max_cpu_rank=2)
-    # max_cpu_rank can be zero, so only test min > max
-    RunConfig(min_cpu_rank=0, max_cpu_rank=0)
-
-
 def test_update_run_config_from_provider_config_defaults():
     c = Config(
         provider="AWS",
@@ -137,20 +135,57 @@ def test_update_run_config_from_provider_config_defaults():
         run=RunConfig(),
     )
     # Set all values to None to test defaults
-    c.run.cpus_per_task = None
     c.run.min_instances = None
     c.run.max_instances = None
+    c.run.min_total_cpus = None
+    c.run.max_total_cpus = None
+    c.run.cpus_per_task = None
+    c.run.min_tasks_per_instance = None
+    c.run.max_tasks_per_instance = None
+    c.run.min_simultaneous_tasks = None
+    c.run.max_simultaneous_tasks = None
+    c.run.min_total_price_per_hour = None
+    c.run.max_total_price_per_hour = None
+
+    c.run.architecture = None
+    c.run.cpu_family = None
+    c.run.min_cpu_rank = None
+    c.run.max_cpu_rank = None
+    c.run.min_cpu = None
+    c.run.max_cpu = None
+    c.run.min_total_memory = None
+    c.run.max_total_memory = None
+    c.run.min_memory_per_cpu = None
+    c.run.max_memory_per_cpu = None
+    c.run.min_memory_per_task = None
+    c.run.max_memory_per_task = None
+    c.run.min_local_ssd = None
+    c.run.max_local_ssd = None
+    c.run.local_ssd_base_size = None
+    c.run.min_local_ssd_per_cpu = None
+    c.run.max_local_ssd_per_cpu = None
+    c.run.min_local_ssd_per_task = None
+    c.run.max_local_ssd_per_task = None
+    c.run.boot_disk_types = None
+    c.run.boot_disk_iops = None
+    c.run.boot_disk_throughput = None
+    c.run.total_boot_disk_size = None
+    c.run.boot_disk_base_size = None
+    c.run.boot_disk_per_cpu = None
+    c.run.boot_disk_per_task = None
+
+    c.run.instance_types = None
+
+    c.run.use_spot = None
+
+    c.run.startup_script = None
+    c.run.startup_script_file = None
+    c.run.image = None
+
     c.run.scaling_check_interval = None
     c.run.instance_termination_delay = None
     c.run.max_runtime = None
     c.run.worker_use_new_process = None
-    c.run.architecture = None
-    c.run.local_ssd_base_size = None
-    c.run.total_boot_disk_size = None
-    c.run.boot_disk_base_size = None
-    c.run.cpu_family = None
-    c.run.min_cpu_rank = None
-    c.run.max_cpu_rank = None
 
     c.update_run_config_from_provider_config()
 
@@ -166,9 +201,43 @@ def test_update_run_config_from_provider_config_defaults():
     assert c.run.local_ssd_base_size == 0
     assert c.run.total_boot_disk_size == 10
     assert c.run.boot_disk_base_size == 0
+
+    # Verify all fields that should be None are None
+    assert c.run.min_total_cpus is None
+    assert c.run.max_total_cpus is None
+    assert c.run.min_tasks_per_instance is None
+    assert c.run.max_tasks_per_instance is None
+    assert c.run.min_simultaneous_tasks is None
+    assert c.run.max_simultaneous_tasks is None
+    assert c.run.min_total_price_per_hour is None
+    assert c.run.max_total_price_per_hour is None
     assert c.run.cpu_family is None
     assert c.run.min_cpu_rank is None
     assert c.run.max_cpu_rank is None
+    assert c.run.min_cpu is None
+    assert c.run.max_cpu is None
+    assert c.run.min_total_memory is None
+    assert c.run.max_total_memory is None
+    assert c.run.min_memory_per_cpu is None
+    assert c.run.max_memory_per_cpu is None
+    assert c.run.min_memory_per_task is None
+    assert c.run.max_memory_per_task is None
+    assert c.run.min_local_ssd is None
+    assert c.run.max_local_ssd is None
+    assert c.run.min_local_ssd_per_cpu is None
+    assert c.run.max_local_ssd_per_cpu is None
+    assert c.run.min_local_ssd_per_task is None
+    assert c.run.max_local_ssd_per_task is None
+    assert c.run.boot_disk_types is None
+    assert c.run.boot_disk_iops is None
+    assert c.run.boot_disk_throughput is None
+    assert c.run.boot_disk_per_cpu is None
+    assert c.run.boot_disk_per_task is None
+    assert c.run.instance_types is None
+    assert c.run.use_spot is None
+    assert c.run.startup_script is None
+    assert c.run.startup_script_file is None
+    assert c.run.image is None
 
     # Test that values are not overwritten if already set
     c.run.cpus_per_task = 2
@@ -178,13 +247,16 @@ def test_update_run_config_from_provider_config_defaults():
     c.run.instance_termination_delay = 45
     c.run.max_runtime = 90
     c.run.worker_use_new_process = True
-    c.run.architecture = "ARM64"
+    c.run.architecture = "arm64"
     c.run.local_ssd_base_size = 20
     c.run.total_boot_disk_size = 50
     c.run.boot_disk_base_size = 30
-    c.run.cpu_family = "INTEL CASCADE LAKE"
+    c.run.cpu_family = "Intel Cascade Lake"
     c.run.min_cpu_rank = 1
     c.run.max_cpu_rank = 2
+    c.run.boot_disk_types = ["SSD", "HDD"]
+    c.run.boot_disk_iops = 1000
+    c.run.boot_disk_throughput = 100
 
     c.update_run_config_from_provider_config()
 
@@ -196,13 +268,16 @@ def test_update_run_config_from_provider_config_defaults():
     assert c.run.instance_termination_delay == 45
     assert c.run.max_runtime == 90
     assert c.run.worker_use_new_process is True
-    assert c.run.architecture == "ARM64"
+    assert c.run.architecture == "ARM64"  # Should be uppercased
     assert c.run.local_ssd_base_size == 20
     assert c.run.total_boot_disk_size == 50
     assert c.run.boot_disk_base_size == 30
-    assert c.run.cpu_family == "INTEL CASCADE LAKE"
+    assert c.run.cpu_family == "INTEL CASCADE LAKE"  # Should be uppercased
     assert c.run.min_cpu_rank == 1
     assert c.run.max_cpu_rank == 2
+    assert c.run.boot_disk_types == ["ssd", "hdd"]  # Should be lowercased
+    assert c.run.boot_disk_iops == 1000
+    assert c.run.boot_disk_throughput == 100
 
 
 # --- ProviderConfig, AWSConfig, GCPConfig, AzureConfig ---
@@ -213,8 +288,8 @@ def test_provider_config_fields():
     AzureConfig(subscription_id="sid", tenant_id="tid", client_id="cid", client_secret="cs")
 
 
-# --- Config class logic ---
-def make_config_obj():
+@pytest.fixture
+def config_obj():
     return Config(
         provider="GCP",
         aws=AWSConfig(),
@@ -225,22 +300,22 @@ def make_config_obj():
 
 
 @pytest.mark.parametrize("provider", ["AWS", "GCP", "AZURE"])
-def test_config_overload_from_cli(provider):
-    c = make_config_obj()
+def test_config_overload_from_cli(config_obj, provider):
+    c = config_obj
     c.aws.region = "us-east-1"
-    c.gcp.region = "us-east-1"
-    c.azure.region = "us-east-1"
+    c.gcp.region = "us-east-2"
+    c.azure.region = "us-east-3"
     c.aws.architecture = "x86_64"
     c.gcp.architecture = "x86_64"
     c.azure.architecture = "x86_64"
     c.aws.cpu_family = "Intel Sapphire Rapids"
-    c.gcp.cpu_family = "Intel Sapphire Rapids"
-    c.azure.cpu_family = "Intel Sapphire Rapids"
+    c.gcp.cpu_family = "Intel Cascade Lake"
+    c.azure.cpu_family = "Intel Emerald Rapids"
     cli_args = {
         "provider": provider,
         "region": "us-west-1",
         "architecture": "arm64",
-        "cpu_family": "Intel Cascade Lake",
+        "cpu_family": "Intel Haswell",
     }
     with patch.object(config_mod, "LOGGER") as mock_logger:
         c.overload_from_cli(cli_args)
@@ -250,17 +325,33 @@ def test_config_overload_from_cli(provider):
         case "AWS":
             assert c.aws.region == "us-west-1"
             assert c.aws.architecture == "ARM64"
-            assert c.aws.cpu_family == "INTEL CASCADE LAKE"
+            assert c.aws.cpu_family == "INTEL HASWELL"
         case "GCP":
             assert c.gcp.region == "us-west-1"
             assert c.gcp.architecture == "ARM64"
-            assert c.gcp.cpu_family == "INTEL CASCADE LAKE"
+            assert c.gcp.cpu_family == "INTEL HASWELL"
         case "AZURE":
             assert c.azure.region == "us-west-1"
             assert c.azure.architecture == "ARM64"
-            assert c.azure.cpu_family == "INTEL CASCADE LAKE"
+            assert c.azure.cpu_family == "INTEL HASWELL"
     assert c.run.architecture == "ARM64"
-    assert c.run.cpu_family == "INTEL CASCADE LAKE"
+    assert c.run.cpu_family == "INTEL HASWELL"
+
+    # Now test capitalization after update_run_config_from_provider_config
+    c.update_run_config_from_provider_config()
+    match provider:
+        case "AWS":
+            assert c.aws.architecture == "ARM64"
+            assert c.aws.cpu_family == "INTEL HASWELL"
+        case "GCP":
+            assert c.gcp.architecture == "ARM64"
+            assert c.gcp.cpu_family == "INTEL HASWELL"
+        case "AZURE":
+            assert c.azure.architecture == "ARM64"
+            assert c.azure.cpu_family == "INTEL HASWELL"
+    assert c.run.architecture == "ARM64"
+    assert c.run.cpu_family == "INTEL HASWELL"
+
     with patch.object(config_mod, "LOGGER") as mock_logger:
         c.overload_from_cli(cli_args)  # Repeat
         mock_logger.warning.assert_not_called()
@@ -272,22 +363,22 @@ def test_config_overload_from_cli(provider):
             case "AWS":
                 assert c.aws.region == "us-west-1"
                 assert c.aws.architecture == "ARM64"
-                assert c.aws.cpu_family == "INTEL CASCADE LAKE"
+                assert c.aws.cpu_family == "INTEL HASWELL"
             case "GCP":
                 assert c.gcp.region == "us-west-1"
                 assert c.gcp.architecture == "ARM64"
-                assert c.gcp.cpu_family == "INTEL CASCADE LAKE"
+                assert c.gcp.cpu_family == "INTEL HASWELL"
             case "AZURE":
                 assert c.azure.region == "us-west-1"
                 assert c.azure.architecture == "ARM64"
-                assert c.azure.cpu_family == "INTEL CASCADE LAKE"
+                assert c.azure.cpu_family == "INTEL HASWELL"
         assert c.run.architecture == "ARM64"
-        assert c.run.cpu_family == "INTEL CASCADE LAKE"
+        assert c.run.cpu_family == "INTEL HASWELL"
 
 
 @pytest.mark.parametrize("provider", ["AWS", "GCP", "AZURE"])
-def test_config_update_run_config_from_provider_config(provider):
-    c = make_config_obj()
+def test_config_update_run_config_from_provider_config(config_obj, provider):
+    c = config_obj
     c.provider = provider
     match provider:
         case "AWS":
@@ -352,15 +443,15 @@ def test_config_update_run_config_from_provider_config(provider):
         assert c.run.startup_script == "script-content"
 
 
-def test_update_run_config_from_provider_config_none():
-    c = make_config_obj()
+def test_update_run_config_from_provider_config_none(config_obj):
+    c = config_obj
     c.provider = None
     with pytest.raises(ValueError, match="Provider must be specified"):
         c.update_run_config_from_provider_config()
 
 
-def test_update_run_config_from_provider_config_unsupported():
-    c = make_config_obj()
+def test_update_run_config_from_provider_config_unsupported(config_obj):
+    c = config_obj
     # Bypass pydantic validation to set an unsupported provider
     object.__setattr__(c, "provider", "FOOBAR")
     with pytest.raises(ValueError, match="Unsupported provider: FOOBAR"):
@@ -368,8 +459,8 @@ def test_update_run_config_from_provider_config_unsupported():
 
 
 @pytest.mark.parametrize("provider", ["AWS", "GCP", "AZURE"])
-def test_config_validate_config(provider):
-    c = make_config_obj()
+def test_config_validate_config(config_obj, provider):
+    c = config_obj
     c.provider = None
     with pytest.raises(ValueError):
         c.validate_config()
@@ -380,10 +471,10 @@ def test_config_validate_config(provider):
 
 
 @pytest.mark.parametrize("provider", ["AWS", "GCP", "AZURE"])
-def test_config_get_provider_config(provider):
+def test_config_get_provider_config(config_obj, provider):
     import pydantic
 
-    c = make_config_obj()
+    c = config_obj
     c.provider = provider
     match provider:
         case "AWS":
@@ -424,8 +515,8 @@ def test_config_get_provider_config(provider):
         c.get_provider_config()
 
 
-def test_get_provider_config_unsupported():
-    c = make_config_obj()
+def test_get_provider_config_unsupported(config_obj):
+    c = config_obj
     # Bypass pydantic validation to set an unsupported provider
     object.__setattr__(c, "provider", "FOOBAR")
     with pytest.raises(ValueError, match="Unsupported provider: FOOBAR"):
@@ -433,8 +524,8 @@ def test_get_provider_config_unsupported():
 
 
 @pytest.mark.parametrize("provider", ["AWS", "GCP", "AZURE"])
-def test_config_get_provider_config_queue_name(provider):
-    c = make_config_obj()
+def test_config_get_provider_config_queue_name(config_obj, provider):
+    c = config_obj
     c.provider = provider
     match provider:
         case "AWS":
@@ -597,6 +688,21 @@ def test_load_config_instance_types_str_to_list(tmp_path):
 
 
 def test_load_config_instance_types_str_to_list_edge_cases(tmp_path):
+    # Just a string
+    config_dict = {
+        "provider": "gcp",
+        "gcp": {"instance_types": "n1-standard-1"},
+        "aws": {"instance_types": "t2.micro"},
+        "azure": {"instance_types": "Standard_B1s"},
+        "run": {},
+    }
+    file_path = tmp_path / "config.yaml"
+    with open(file_path, "w") as f:
+        yaml.safe_dump(config_dict, f)
+    cfg = load_config(str(file_path))
+    assert cfg.gcp.instance_types == ["n1-standard-1"]
+    assert cfg.aws.instance_types == ["t2.micro"]
+    assert cfg.azure.instance_types == ["Standard_B1s"]
     # Already a list
     config_dict = {
         "provider": "gcp",
@@ -629,8 +735,55 @@ def test_load_config_instance_types_str_to_list_edge_cases(tmp_path):
     assert cfg.azure.instance_types is None
 
 
-def test_config_overload_from_cli_aws_warning():
-    c = make_config_obj()
+def test_load_config_boot_disk_types_str_to_list_edge_cases(tmp_path):
+    # Just a string
+    config_dict = {
+        "provider": "gcp",
+        "gcp": {"boot_disk_types": "ssd"},
+        "aws": {"boot_disk_types": "gp2"},
+        "azure": {"boot_disk_types": "Premium_LRS"},
+        "run": {},
+    }
+    file_path = tmp_path / "config.yaml"
+    with open(file_path, "w") as f:
+        yaml.safe_dump(config_dict, f)
+    cfg = load_config(str(file_path))
+    assert cfg.gcp.boot_disk_types == ["ssd"]
+    assert cfg.aws.boot_disk_types == ["gp2"]
+    assert cfg.azure.boot_disk_types == ["Premium_LRS"]  # Already a list
+    config_dict = {
+        "provider": "gcp",
+        "gcp": {"boot_disk_types": ["ssd"]},
+        "aws": {"boot_disk_types": ["gp2"]},
+        "azure": {"boot_disk_types": ["Premium_LRS"]},
+        "run": {},
+    }
+    file_path = tmp_path / "config.yaml"
+    with open(file_path, "w") as f:
+        yaml.safe_dump(config_dict, f)
+    cfg = load_config(str(file_path))
+    assert cfg.gcp.boot_disk_types == ["ssd"]
+    assert cfg.aws.boot_disk_types == ["gp2"]
+    assert cfg.azure.boot_disk_types == ["Premium_LRS"]
+    # Missing boot_disk_types
+    config_dict = {
+        "provider": "gcp",
+        "gcp": {},
+        "aws": {},
+        "azure": {},
+        "run": {},
+    }
+    file_path2 = tmp_path / "config2.yaml"
+    with open(file_path2, "w") as f:
+        yaml.safe_dump(config_dict, f)
+    cfg = load_config(str(file_path2))
+    assert cfg.gcp.boot_disk_types is None
+    assert cfg.aws.boot_disk_types is None
+    assert cfg.azure.boot_disk_types is None
+
+
+def test_config_overload_from_cli_aws_warning(config_obj):
+    c = config_obj
     c.provider = "AWS"
     c.aws.region = "us-east-1"
     cli_args = {"region": "us-west-1"}
@@ -642,8 +795,8 @@ def test_config_overload_from_cli_aws_warning():
     assert c.aws.region == "us-west-1"
 
 
-def test_config_overload_from_cli_gcp_warning():
-    c = make_config_obj()
+def test_config_overload_from_cli_gcp_warning(config_obj):
+    c = config_obj
     c.provider = "GCP"
     c.gcp.region = "us-east1"
     cli_args = {"region": "us-west1"}
@@ -653,8 +806,8 @@ def test_config_overload_from_cli_gcp_warning():
     assert c.gcp.region == "us-west1"
 
 
-def test_config_overload_from_cli_azure_warning():
-    c = make_config_obj()
+def test_config_overload_from_cli_azure_warning(config_obj):
+    c = config_obj
     c.provider = "AZURE"
     c.azure.region = "eastus"
     cli_args = {"region": "westus"}
@@ -664,8 +817,8 @@ def test_config_overload_from_cli_azure_warning():
     assert c.azure.region == "westus"
 
 
-def test_config_overload_from_cli_no_warning():
-    c = make_config_obj()
+def test_config_overload_from_cli_no_warning(config_obj):
+    c = config_obj
     c.provider = "AWS"
     c.aws.region = None
     cli_args = {"region": "us-west-1"}
@@ -675,11 +828,48 @@ def test_config_overload_from_cli_no_warning():
     assert c.aws.region == "us-west-1"
 
 
-def test_config_overload_from_cli_run_warning():
-    c = make_config_obj()
+def test_config_overload_from_cli_run_warning(config_obj):
+    c = config_obj
     c.run.min_instances = 1
     cli_args = {"min_instances": 2}
     with patch.object(config_mod, "LOGGER") as mock_logger:
         c.overload_from_cli(cli_args)
         mock_logger.warning.assert_called_with("Overloading run.min_instances=1 with CLI=2")
     assert c.run.min_instances == 2
+
+
+def test_boot_disk_types_capitalization(config_obj):
+    c = config_obj
+    c.run.boot_disk_types = "SSD"
+    c.update_run_config_from_provider_config()
+    assert c.run.boot_disk_types == ["ssd"]
+
+    # Test single string - should be converted to a list with one element
+    c.run.boot_disk_types = "SSD"
+    # First convert to list like load_config does
+    if isinstance(c.run.boot_disk_types, str):
+        c.run.boot_disk_types = [c.run.boot_disk_types]
+    c.update_run_config_from_provider_config()
+    assert isinstance(c.run.boot_disk_types, list)
+    assert c.run.boot_disk_types == ["ssd"]
+
+    # Test list of strings
+    c.run.boot_disk_types = ["SSD", "HDD", "NVMe"]
+    c.update_run_config_from_provider_config()
+    assert c.run.boot_disk_types == ["ssd", "hdd", "nvme"]
+
+    # Test provider override
+    c.gcp.boot_disk_types = ["SSD", "HDD"]
+    c.update_run_config_from_provider_config()
+    assert c.run.boot_disk_types == ["ssd", "hdd"]
+
+    # Test None value
+    c.run.boot_disk_types = None
+    c.gcp.boot_disk_types = None  # Make sure provider config is also None
+    c.update_run_config_from_provider_config()
+    assert c.run.boot_disk_types is None
+
+    # Test empty list
+    c.run.boot_disk_types = []
+    c.update_run_config_from_provider_config()
+    assert c.run.boot_disk_types == []

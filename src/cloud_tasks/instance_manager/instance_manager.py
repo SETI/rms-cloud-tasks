@@ -70,7 +70,9 @@ class InstanceManager(ABC):
         if constraints is None:
             return True
 
-        cpus_per_task = constraints.get("cpus_per_task", 1)
+        cpus_per_task = constraints.get("cpus_per_task")
+        if cpus_per_task is None:
+            cpus_per_task = 1
         min_tasks_per_instance = constraints.get("min_tasks_per_instance")
         max_tasks_per_instance = constraints.get("max_tasks_per_instance")
 
@@ -96,7 +98,9 @@ class InstanceManager(ABC):
         memory_per_cpu = instance_info["mem_gb"] / num_cpus
         memory_per_task = memory_per_cpu * cpus_per_task
 
-        local_ssd_base_size = constraints.get("local_ssd_base_size", 0)
+        local_ssd_base_size = constraints.get("local_ssd_base_size")
+        if local_ssd_base_size is None:
+            local_ssd_base_size = 0
         local_ssd_per_cpu = (instance_info["local_ssd_gb"] - local_ssd_base_size) / num_cpus
         local_ssd_per_task = local_ssd_per_cpu * cpus_per_task
 
@@ -187,7 +191,9 @@ class InstanceManager(ABC):
         if boot_disk_per_task is None:
             boot_disk_per_task = 0
         num_cpus = instance_info["vcpu"]
-        cpus_per_task = boot_disk_constraints.get("cpus_per_task", 1)
+        cpus_per_task = boot_disk_constraints.get("cpus_per_task")
+        if cpus_per_task is None:
+            cpus_per_task = 1
         tasks_per_instance = num_cpus // cpus_per_task
 
         boot_disk = boot_disk_constraints.get("total_boot_disk_size")

@@ -191,9 +191,9 @@ class RunConfig(BaseModel, validate_assignment=True):
     # Boot disk specifications
     #
 
-    boot_disk_type: Optional[constr(min_length=1)] = None
-    boot_disk_provisioned_iops: Optional[PositiveInt] = None  # GCP only
-    boot_disk_provisioned_throughput: Optional[PositiveInt] = None  # GCP only
+    boot_disk_types: Optional[List[str] | str] = None
+    boot_disk_iops: Optional[PositiveInt] = None  # GCP only
+    boot_disk_throughput: Optional[PositiveInt] = None  # GCP only
     total_boot_disk_size: Optional[PositiveFloat] = None
     boot_disk_base_size: Optional[NonNegativeFloat] = None
     boot_disk_per_cpu: Optional[NonNegativeFloat] = None
@@ -349,23 +349,6 @@ class Config(BaseModel, validate_assignment=True):
                             )
                         setattr(self.azure, attr_name, cli_args[attr_name])
 
-        if self.run.architecture is not None:
-            self.run.architecture = self.run.architecture.upper()
-        if self.run.cpu_family is not None:
-            self.run.cpu_family = self.run.cpu_family.upper()
-        if self.aws.architecture is not None:
-            self.aws.architecture = self.aws.architecture.upper()
-        if self.aws.cpu_family is not None:
-            self.aws.cpu_family = self.aws.cpu_family.upper()
-        if self.gcp.architecture is not None:
-            self.gcp.architecture = self.gcp.architecture.upper()
-        if self.gcp.cpu_family is not None:
-            self.gcp.cpu_family = self.gcp.cpu_family.upper()
-        if self.azure.architecture is not None:
-            self.azure.architecture = self.azure.architecture.upper()
-        if self.azure.cpu_family is not None:
-            self.azure.cpu_family = self.azure.cpu_family.upper()
-
     def update_run_config_from_provider_config(self) -> None:
         """Update run config with provider-specific config values."""
         match self.provider:
@@ -457,9 +440,16 @@ class Config(BaseModel, validate_assignment=True):
             self.run.total_boot_disk_size = 10
         if self.run.boot_disk_base_size is None:
             self.run.boot_disk_base_size = 0
-        if self.run.boot_disk_type is not None:
-            self.run.boot_disk_type = self.run.boot_disk_type.lower()
-        print(f"run.boot_disk_type: {self.run.boot_disk_type}")
+
+        # Fix case
+        if self.run.architecture is not None:
+            self.run.architecture = self.run.architecture.upper()
+        if self.run.cpu_family is not None:
+            self.run.cpu_family = self.run.cpu_family.upper()
+        if self.run.boot_disk_types is not None:
+            if isinstance(self.run.boot_disk_types, str):
+                self.run.boot_disk_types = [self.run.boot_disk_types]
+            self.run.boot_disk_types = [t.lower() for t in self.run.boot_disk_types]
 
     def validate_config(self) -> None:
         """Perform final validation of the configuration."""
@@ -572,5 +562,13 @@ def load_config(config_file: Optional[str] = None) -> Config:
         config.gcp.instance_types = [config.gcp.instance_types]
     if config.azure.instance_types is not None and isinstance(config.azure.instance_types, str):
         config.azure.instance_types = [config.azure.instance_types]
+
+    # Update the boot_disk_type to always be a list
+    if config.aws.boot_disk_types is not None and isinstance(config.aws.boot_disk_types, str):
+        config.aws.boot_disk_types = [config.aws.boot_disk_types]
+    if config.gcp.boot_disk_types is not None and isinstance(config.gcp.boot_disk_types, str):
+        config.gcp.boot_disk_types = [config.gcp.boot_disk_types]
+    if config.azure.boot_disk_types is not None and isinstance(config.azure.boot_disk_types, str):
+        config.azure.boot_disk_types = [config.azure.boot_disk_types]
 
     return config

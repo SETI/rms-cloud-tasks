@@ -47,6 +47,8 @@ shortuuid.set_alphabet("abcdefghijklmnopqrstuvwxyz0123456789")
 class GCPComputeInstanceManager(InstanceManager):
     """Google Cloud Compute Engine implementation of the InstanceManager interface."""
 
+    _HOURS_PER_MONTH = 730.5
+
     _DEFAULT_REGION = "us-central1"
     _DEFAULT_ZONE = "us-central1-a"
 
@@ -102,6 +104,23 @@ class GCPComputeInstanceManager(InstanceManager):
     }
 
     # hd- is HyperDisk; requires provisioned IOPS and provisioned throughput
+    #   hd-balanced
+    #       Size is 10 to 524288 GB
+    #       Default IOPS = 3120
+    #       Default throughput = 170 MB/s
+    # pd- is Persistent Disk
+    #   pd-standard
+    #       Size is 10 to 65536 GB
+    #   pd-balanced
+    #       Size is 10 to 65536 GB
+    #   pd-ssd
+    #       Size is 10 to 65536 GB
+    #   pd-extreme requires provisioned IOPS
+    #       Size is 500 to 65536 GB
+    #       Default IOPS = 2,500
+    _DISK_TYPES = ["pd-standard", "pd-balanced", "pd-ssd", "pd-extreme", "hd-balanced"]
+    _DEFAULT_BOOT_DISK_IOPS = 3120
+    _DEFAULT_BOOT_DISK_THROUGHPUT = 170
     _MACHINE_TYPE_FAMILY_TO_DISK_TYPES = {
         # General purpose
         "c4": ["hd-balanced"],
@@ -131,10 +150,10 @@ class GCPComputeInstanceManager(InstanceManager):
         # Storage-optimized
         "z3": ["pd-balanced", "pd-ssd", "hd-balanced"],
         # Accelerator-optimized
-        "a4": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd", "hd-balanced"],  #
-        "a3": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd", "hd-balanced"],  #
-        "a2": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd", "hd-balanced"],  #
-        "g2": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd", "hd-balanced"],  #
+        "a4": ["hd-balanced"],
+        "a3": ["pd-balanced", "pd-ssd", "hd-balanced"],
+        "a2": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd"],
+        "g2": ["pd-standard", "pd-balanced", "pd-ssd"],
     }
 
     # This is derived by looking at the pricing tables; beware!
@@ -274,6 +293,7 @@ class GCPComputeInstanceManager(InstanceManager):
                     "max_local_ssd_per_cpu": Maximum amount of local SSD storage per vCPU
                     "min_local_ssd_per_task": Minimum amount of local SSD storage per task
                     "max_local_ssd_per_task": Maximum amount of local SSD storage per task
+                    "boot_disk_types": List of boot disk types to use
                     "total_boot_disk_size": Total amount of boot disk storage in GB
                     "boot_disk_base_size": Base amount of boot disk storage in GB
                     "boot_disk_per_cpu": Amount of boot disk storage per vCPU
@@ -288,6 +308,11 @@ class GCPComputeInstanceManager(InstanceManager):
                 "vcpu": number of vCPUs
                 "mem_gb": amount of RAM in GB
                 "local_ssd_gb": amount of local SSD storage in GB
+                "available_boot_disk_types": list of available boot disk types
+                "boot_disk_iops": amount of boot disk IOPS (only applicable for some boot disk
+                    types)
+                "boot_disk_throughput": amount of boot disk throughput in MB/s (only applicable
+                    for some boot disk types)
                 "boot_disk_gb": amount of boot disk storage in GB
                 "architecture": architecture of the instance type
                 "supports_spot": whether the instance type supports spot pricing
@@ -347,6 +372,23 @@ class GCPComputeInstanceManager(InstanceManager):
                     "performance ranking will be 0"
                 )
 
+            boot_disk_iops = constraints.get("boot_disk_iops")
+            if boot_disk_iops is None:
+                boot_disk_iops = self._DEFAULT_BOOT_DISK_IOPS
+            boot_disk_throughput = constraints.get("boot_disk_throughput")
+            if boot_disk_throughput is None:
+                boot_disk_throughput = self._DEFAULT_BOOT_DISK_THROUGHPUT
+            boot_disk_types = constraints.get("boot_disk_types")
+            if boot_disk_types is None:
+                available_boot_disk_types = self._MACHINE_TYPE_FAMILY_TO_DISK_TYPES[
+                    machine_type_family
+                ]
+            else:
+                for boot_disk_type in boot_disk_types:
+                    if boot_disk_type not in self._DISK_TYPES:
+                        raise ValueError(f"Invalid boot disk type: {boot_disk_type}")
+                available_boot_disk_types = boot_disk_types
+
             instance_info = {
                 "name": machine_type.name,
                 "cpu_family": processor_family,
@@ -358,6 +400,9 @@ class GCPComputeInstanceManager(InstanceManager):
                 ),
                 "local_ssd_gb": local_ssd_size,  # Except for dedicated SSDs
                 "boot_disk_gb": 0,  # Will fill in later
+                "available_boot_disk_types": available_boot_disk_types,
+                "boot_disk_iops": boot_disk_iops,
+                "boot_disk_throughput": boot_disk_throughput,
                 "supports_spot": True,  # There is no other informationa available
                 "description": machine_type.description,
                 # https://www.googleapis.com/compute/v1/projects/[project]/zones/
@@ -406,8 +451,8 @@ class GCPComputeInstanceManager(InstanceManager):
 
         import pprint
 
-        with open("skus.txt", "w") as f:
-            f.write(pprint.pformat(self._billing_compute_skus))
+        # with open("skus.txt", "w") as f:
+        #     f.write(pprint.pformat(self._billing_compute_skus))
         return self._billing_compute_skus
 
     def _extract_pricing_info(
@@ -442,7 +487,8 @@ class GCPComputeInstanceManager(InstanceManager):
         if usage_unit != expected_unit:
             self._logger.warning(
                 f'{machine_family} {component_name} SKU "{sku.description}" '
-                f"has unknown pricing unit: {usage_unit}; these instance types will be ignored"
+                f"has unknown pricing unit: {usage_unit} (expected {expected_unit}); "
+                "these instance types will be ignored"
             )
             return None
 
@@ -477,6 +523,20 @@ class GCPComputeInstanceManager(InstanceManager):
 
         return good_pricing_tier
 
+    def _match_sku(self, match_string, error_string, set_sku, sku, sku_description, machine_family):
+        if match_string in sku_description:
+            if set_sku is not None:
+                self._logger.warning(
+                    f"Multiple {error_string} SKUs found for {machine_family} in region "
+                    f"{self._region} (choosing first one):"
+                )
+                self._logger.warning(f"  {set_sku.description}")
+                self._logger.warning(f"  {sku.description}")
+                return set_sku, True
+            else:
+                return sku, True
+        return set_sku, False
+
     async def get_instance_pricing(
         self,
         instance_types: Dict[str, Dict[str, Any]],
@@ -500,13 +560,19 @@ class GCPComputeInstanceManager(InstanceManager):
                 used to filter instances.
 
         Returns:
-            A dictionary mapping instance type to a dictionary of hourly price in USD::
+            A dictionary mapping instance type to a dictionary of zones, which contains a dictionary
+            of boot disk types, which contains a dictionary of hourly price in USD::
                 "cpu_price": Total price of CPU in USD/hour
                 "per_cpu_price": Price of CPU in USD/vCPU/hour
                 "mem_price": Total price of RAM in USD/hour
                 "mem_per_gb_price": Price of RAM in USD/GB/hour
+                "boot_disk_type": Type of boot disk being used for pricing
                 "boot_disk_price": Total price of boot disk in USD/hour
                 "boot_disk_per_gb_price": Price of boot disk in USD/GB/hour
+                "boot_disk_per_iops_price": Price of one boot disk IOPS in USD/hour
+                "boot_disk_iops_price": Price of provisioned boot disk IOPS in USD/hour
+                "boot_disk_per_throughput_price": Price of boot disk throughput in USD/GiBi/hour
+                "boot_disk_throughput_price": Price of provisioned boot disk throughput in USD/hour
                 "local_ssd_price": Total price of local SSD in USD/hour
                 "local_ssd_per_gb_price": Price of local SSD in USD/GB/hour
                 "total_price": Total price of instance in USD/hour
@@ -525,15 +591,6 @@ class GCPComputeInstanceManager(InstanceManager):
         if len(instance_types) == 0:
             self._logger.debug("No instance types provided")
             return ret
-
-        boot_disk_type = self._DEFAULT_BOOT_DISK_TYPE
-        if (
-            boot_disk_constraints is not None
-            and boot_disk_constraints.get("boot_disk_type") is not None
-        ):
-            boot_disk_type = boot_disk_constraints.get("boot_disk_type")
-            if boot_disk_type not in ["balanced", "ssd", "standard", "extreme"]:
-                raise ValueError(f"Invalid boot disk type: {boot_disk_type}")
 
         # Lookup pricing for each instance type
         for machine_type, machine_info in instance_types.items():
@@ -574,24 +631,59 @@ class GCPComputeInstanceManager(InstanceManager):
                 zone_val = ret_val.get(f"{self._region}-*")
                 if zone_val is None:  # pragma: no cover
                     raise RuntimeError("Internal error while finding pricing: region has changed")
-                # Add the instance type info to the return value
-                zone_val.update(machine_info)
-                # Update the pricing info with the new vCPU and memory info
-                per_cpu_price = cast(float, zone_val["per_cpu_price"])
-                per_gb_ram_price = cast(float, zone_val["mem_per_gb_price"])
-                per_gb_local_ssd_price = cast(float, zone_val["local_ssd_per_gb_price"])
-                per_gb_boot_disk_price = cast(float, zone_val["boot_disk_per_gb_price"])
-                cpu_price = per_cpu_price * machine_info["vcpu"]
-                ram_price = per_gb_ram_price * machine_info["mem_gb"]
-                local_ssd_price = per_gb_local_ssd_price * machine_info["local_ssd_gb"]
-                boot_disk_price = per_gb_boot_disk_price * machine_info["boot_disk_gb"]
-                total_price = cpu_price + ram_price + local_ssd_price + boot_disk_price
-                zone_val["cpu_price"] = round(cpu_price, 6)
-                zone_val["mem_price"] = round(ram_price, 6)
-                zone_val["local_ssd_price"] = round(local_ssd_price, 6)
-                zone_val["boot_disk_price"] = round(boot_disk_price, 6)
-                zone_val["total_price"] = round(total_price, 6)
-                zone_val["total_price_per_cpu"] = round(total_price / machine_info["vcpu"], 6)
+                for boot_disk_type, zone_boot_val in zone_val.items():
+                    # Add the instance type info to the return value
+                    zone_boot_val.update(machine_info)
+                    # Update the pricing info with the new vCPU and memory info
+                    per_cpu_price = cast(float, zone_boot_val["per_cpu_price"])
+                    per_gb_ram_price = cast(float, zone_boot_val["mem_per_gb_price"])
+                    per_gb_local_ssd_price = cast(float, zone_boot_val["local_ssd_per_gb_price"])
+                    per_gb_boot_disk_price = cast(float, zone_boot_val["boot_disk_per_gb_price"])
+                    cpu_price = per_cpu_price * machine_info["vcpu"]
+                    ram_price = per_gb_ram_price * machine_info["mem_gb"]
+                    local_ssd_price = per_gb_local_ssd_price * machine_info["local_ssd_gb"]
+                    boot_disk_per_iops_price = 0
+                    boot_disk_iops_price = 0
+                    boot_disk_per_throughput_price = 0
+                    boot_disk_throughput_price = 0
+                    match boot_disk_type:
+                        case "pd-extreme":
+                            boot_disk_per_iops_price = zone_boot_val["boot_disk_per_iops_price"]
+                            boot_disk_iops_price = (
+                                boot_disk_per_iops_price * machine_info["boot_disk_iops"]
+                            )
+                        case "hd-balanced":
+                            boot_disk_per_iops_price = zone_boot_val["boot_disk_per_iops_price"]
+                            boot_disk_per_throughput_price = zone_boot_val[
+                                "boot_disk_per_throughput_price"
+                            ]
+                            boot_disk_iops_price = (
+                                boot_disk_per_iops_price * machine_info["boot_disk_iops"]
+                            )
+                            boot_disk_throughput_price = (
+                                boot_disk_per_throughput_price
+                                * machine_info["boot_disk_throughput"]
+                            )
+                    boot_disk_price = (
+                        per_gb_boot_disk_price * machine_info["boot_disk_gb"]
+                        + boot_disk_iops_price
+                        + boot_disk_throughput_price
+                    )
+                    total_price = cpu_price + ram_price + local_ssd_price + boot_disk_price
+                    zone_boot_val["cpu_price"] = round(cpu_price, 6)
+                    zone_boot_val["mem_price"] = round(ram_price, 6)
+                    zone_boot_val["local_ssd_price"] = round(local_ssd_price, 6)
+                    zone_boot_val["boot_disk_per_iops_price"] = boot_disk_per_iops_price
+                    zone_boot_val["boot_disk_iops_price"] = round(boot_disk_iops_price, 6)
+                    zone_boot_val["boot_disk_per_throughput_price"] = boot_disk_per_throughput_price
+                    zone_boot_val["boot_disk_throughput_price"] = round(
+                        boot_disk_throughput_price, 6
+                    )
+                    zone_boot_val["boot_disk_price"] = round(boot_disk_price, 6)
+                    zone_boot_val["total_price"] = round(total_price, 6)
+                    zone_boot_val["total_price_per_cpu"] = round(
+                        total_price / machine_info["vcpu"], 6
+                    )
                 ret[machine_type] = ret_val
                 continue
 
@@ -599,7 +691,16 @@ class GCPComputeInstanceManager(InstanceManager):
 
             core_sku = None
             ram_sku = None
-            boot_disk_sku = None
+            boot_disk_skus = {
+                "pd-standard": None,
+                "pd-balanced": None,
+                "pd-ssd": None,
+                "pd-extreme": None,
+                "hd-balanced": None,
+            }
+            pd_extreme_iops_sku = None
+            hd_balanced_iops_sku = None
+            hd_balanced_throughput_sku = None
             local_ssd_sku = None
 
             # Save None to mark we tried, even if we don't eventually find a match
@@ -626,25 +727,98 @@ class GCPComputeInstanceManager(InstanceManager):
                 # print(sku)
 
                 # Check if this is the SKU for the boot disk type we want
-                if "regional" in sku_description:
+                if (
+                    "regional" in sku_description
+                    or "asynchronous" in sku_description
+                    or "confidential" in sku_description
+                ):
                     continue
 
-                if (
-                    (boot_disk_type == "standard" and "storage pd capacity" in sku_description)
-                    or (boot_disk_type == "balanced" and "balanced pd capacity" in sku_description)
-                    or (boot_disk_type == "ssd" and "ssd backed pd capacity" in sku_description)
-                    or (boot_disk_type == "extreme" and "extreme pd capacity" in sku_description)
-                ):
-                    if boot_disk_sku is not None:
-                        self._logger.warning(
-                            f"Multiple boot disk SKUs found for {machine_family} in region "
-                            f"{self._region} (choosing first one):"
-                        )
-                        self._logger.warning(f"  {boot_disk_sku.description}")
-                        self._logger.warning(f"  {sku.description}")
-                    else:
-                        boot_disk_sku = sku
+                boot_disk_skus["pd-standard"], found = self._match_sku(
+                    "storage pd capacity",
+                    "PD Standard",
+                    boot_disk_skus["pd-standard"],
+                    sku,
+                    sku_description,
+                    machine_family,
+                )
+                if found:
                     continue
+
+                boot_disk_skus["pd-balanced"], found = self._match_sku(
+                    "balanced pd capacity",
+                    "PD Balanced",
+                    boot_disk_skus["pd-balanced"],
+                    sku,
+                    sku_description,
+                    machine_family,
+                )
+                if found:
+                    continue
+
+                boot_disk_skus["pd-ssd"], found = self._match_sku(
+                    "ssd backed pd capacity",
+                    "PD SSD",
+                    boot_disk_skus["pd-ssd"],
+                    sku,
+                    sku_description,
+                    machine_family,
+                )
+                if found:
+                    continue
+
+                boot_disk_skus["pd-extreme"], found = self._match_sku(
+                    "extreme pd capacity",
+                    "PD Extreme",
+                    boot_disk_skus["pd-extreme"],
+                    sku,
+                    sku_description,
+                    machine_family,
+                )
+                if found:
+                    continue
+
+                boot_disk_skus["hd-balanced"], found = self._match_sku(
+                    "hyperdisk balanced capacity",
+                    "HD Balanced",
+                    boot_disk_skus["hd-balanced"],
+                    sku,
+                    sku_description,
+                    machine_family,
+                )
+                if found:
+                    continue
+
+                pd_extreme_iops_sku, found = self._match_sku(
+                    "extreme pd iops",
+                    "PD Extreme IOPS",
+                    pd_extreme_iops_sku,
+                    sku,
+                    sku_description,
+                    machine_family,
+                )
+                if found:
+                    continue
+
+                hd_balanced_iops_sku, found = self._match_sku(
+                    "hyperdisk balanced iops",
+                    "HD Balanced IOPS",
+                    hd_balanced_iops_sku,
+                    sku,
+                    sku_description,
+                    machine_family,
+                )
+                if found:
+                    continue
+
+                hd_balanced_throughput_sku, found = self._match_sku(
+                    "hyperdisk balanced throughput",
+                    "HD Balanced Throughput",
+                    hd_balanced_throughput_sku,
+                    sku,
+                    sku_description,
+                    machine_family,
+                )
 
                 # Skip if this SKU doesn't match our instance type
                 if f"{machine_family} " not in sku_description:
@@ -666,87 +840,151 @@ class GCPComputeInstanceManager(InstanceManager):
                     continue
 
                 # Save the SKU for core, ram, and local SSD
-                if "instance core" in sku_description:
-                    if core_sku is not None:
-                        self._logger.warning(
-                            f"Multiple core SKUs found for {machine_family} in region "
-                            f"{self._region} (choosing first one):"
-                        )
-                        self._logger.warning(f"  {core_sku.description}")
-                        self._logger.warning(f"  {sku.description}")
-                    else:
-                        core_sku = sku
-                    # print(sku)
-                elif "instance ram" in sku_description:
-                    if ram_sku is not None:
-                        self._logger.warning(
-                            f"Multiple ram SKUs found for {machine_family} in region "
-                            f"{self._region} (choosing first one):"
-                        )
-                        self._logger.warning(f"  {ram_sku.description}")
-                        self._logger.warning(f"  {sku.description}")
-                    else:
-                        ram_sku = sku
-                    # print(sku)
-                elif "local ssd" in sku_description:
-                    if local_ssd_sku is not None:
-                        self._logger.warning(
-                            f"Multiple local SSD SKUs found for {machine_family} in region "
-                            f"{self._region} (choosing first one):"
-                        )
-                        self._logger.warning(f"  {local_ssd_sku.description}")
-                        self._logger.warning(f"  {sku.description}")
-                    else:
-                        local_ssd_sku = sku
-                    # print(sku)
+                core_sku, found = self._match_sku(
+                    "instance core", "core", core_sku, sku, sku_description, machine_family
+                )
+                if found:
+                    continue
+
+                ram_sku, found = self._match_sku(
+                    "instance ram", "ram", ram_sku, sku, sku_description, machine_family
+                )
+                if found:
+                    continue
+
+                local_ssd_sku, found = self._match_sku(
+                    "local ssd", "local SSD", local_ssd_sku, sku, sku_description, machine_family
+                )
+                if found:
+                    continue
+
+            # From this point on we at least want the machine type to be in the return value
+            ret[machine_type] = {}
 
             if core_sku is None:
                 self._logger.warning(
                     f"No core SKU found for instance family {machine_family} in region "
                     f"{self._region}; ignoring these instance types"
                 )
-                ret[machine_type] = {}
                 continue
             if ram_sku is None:
                 self._logger.warning(
                     f"No ram SKU found for instance family {machine_family} in region "
                     f"{self._region}; ignoring these instance types"
                 )
-                ret[machine_type] = {}
                 continue
-            if boot_disk_sku is None:
+            if boot_disk_skus["pd-standard"] is None:
                 self._logger.warning(
-                    f"No boot disk SKU found for instance family {machine_family} "
-                    f"(boot disk type: {boot_disk_type}) in region "
-                    f"{self._region}; ignoring these instance types"
+                    f"No PD Standard boot disk SKU found for instance family {machine_family} "
+                    f"in region {self._region}; ignoring these instance types"
                 )
-                ret[machine_type] = {}
+                continue
+            if boot_disk_skus["pd-balanced"] is None:
+                self._logger.warning(
+                    f"No PD Balanced boot disk SKU found for instance family {machine_family} "
+                    f"in region {self._region}; ignoring these instance types"
+                )
+                continue
+            if boot_disk_skus["pd-ssd"] is None:
+                self._logger.warning(
+                    f"No PD SSD boot disk SKU found for instance family {machine_family} "
+                    f"in region {self._region}; ignoring these instance types"
+                )
+                continue
+            if boot_disk_skus["pd-extreme"] is None:
+                self._logger.warning(
+                    f"No PD Extreme boot disk SKU found for instance family {machine_family} "
+                    f"in region {self._region}; ignoring these instance types"
+                )
+                continue
+            if boot_disk_skus["hd-balanced"] is None:
+                self._logger.warning(
+                    f"No HD Balanced boot disk SKU found for instance family {machine_family} "
+                    f"in region {self._region}; ignoring these instance types"
+                )
+                continue
+            if pd_extreme_iops_sku is None:
+                self._logger.warning(
+                    f"No PD Extreme IOPS SKU found for instance family {machine_family} "
+                    f"in region {self._region}; ignoring these instance types"
+                )
+                continue
+            if hd_balanced_iops_sku is None:
+                self._logger.warning(
+                    f"No HD Balanced IOPS SKU found for instance family {machine_family} "
+                    f"in region {self._region}; ignoring these instance types"
+                )
+                continue
+            if hd_balanced_throughput_sku is None:
+                self._logger.warning(
+                    f"No HD Balanced Throughput SKU found for instance family {machine_family} "
+                    f"in region {self._region}; ignoring these instance types"
+                )
                 continue
 
-            self._logger.debug(f'Matching      core SKU found: "{core_sku.description}"')
-            self._logger.debug(f'Matching       ram SKU found: "{ram_sku.description}"')
-            self._logger.debug(f'Matching boot disk SKU found: "{boot_disk_sku.description}"')
+            self._logger.debug(f'Matching        core SKU found: "{core_sku.description}"')
+            self._logger.debug(f'Matching         ram SKU found: "{ram_sku.description}"')
+            self._logger.debug(
+                f'Matching PD Standard SKU found: "{boot_disk_skus["pd-standard"].description}"'
+            )
+            self._logger.debug(
+                f'Matching PD Balanced SKU found: "{boot_disk_skus["pd-balanced"].description}"'
+            )
+            self._logger.debug(
+                f'Matching PD SSD boot SKU found: "{boot_disk_skus["pd-ssd"].description}"'
+            )
+            self._logger.debug(
+                f'Matching PD Extreme  SKU found: "{boot_disk_skus["pd-extreme"].description}"'
+            )
+            self._logger.debug(
+                f'Matching HD Balanced SKU found: "{boot_disk_skus["hd-balanced"].description}"'
+            )
+            self._logger.debug(
+                f'Matching PD Extreme IOPS SKU found: "{pd_extreme_iops_sku.description}"'
+            )
+            self._logger.debug(
+                f'Matching HD Balanced IOPS SKU found: "{hd_balanced_iops_sku.description}"'
+            )
+            self._logger.debug(
+                f'Matching HD Balanced Throughput SKU found: "{hd_balanced_throughput_sku.description}"'
+            )
+
             if local_ssd_sku is not None:
                 self._logger.debug(f'Matching LSSD SKU found: "{local_ssd_sku.description}"')
 
             # Extract price info for CPU
             cpu_pricing_info = self._extract_pricing_info(machine_family, core_sku, "h", "core")
             if cpu_pricing_info is None:
-                ret[machine_type] = {}
                 continue
 
             # Extract price info for RAM
             ram_pricing_info = self._extract_pricing_info(machine_family, ram_sku, "GiBy.h", "ram")
             if ram_pricing_info is None:
-                ret[machine_type] = {}
                 continue
 
             # Extract price info for boot disk
-            boot_disk_pricing_info = self._extract_pricing_info(
-                machine_family, boot_disk_sku, "GiBy.mo", "boot disk"
+            boot_disk_pricing_info = {}
+            for boot_disk_type in boot_disk_skus:
+                boot_disk_pricing_info[boot_disk_type] = self._extract_pricing_info(
+                    machine_family, boot_disk_skus[boot_disk_type], "GiBy.mo", "boot disk"
+                )
+                if boot_disk_pricing_info[boot_disk_type] is None:
+                    continue
+
+            pd_extreme_iops_pricing_info = self._extract_pricing_info(
+                machine_family, pd_extreme_iops_sku, "mo", "PD Extreme IOPS"
             )
-            if boot_disk_pricing_info is None:
-                ret[machine_type] = {}
+            if pd_extreme_iops_pricing_info is None:
+                continue
+            hd_balanced_iops_pricing_info = self._extract_pricing_info(
+                machine_family, hd_balanced_iops_sku, "mo", "HD Balanced IOPS"
+            )
+            if hd_balanced_iops_pricing_info is None:
+                continue
+            hd_balanced_throughput_pricing_info = self._extract_pricing_info(
+                machine_family, hd_balanced_throughput_sku, "mo", "HD Balanced Throughput"
+            )
+            if hd_balanced_throughput_pricing_info is None:
                 continue
 
             # Extract price info for local SSD if present
@@ -756,7 +994,6 @@ class GCPComputeInstanceManager(InstanceManager):
                     machine_family, local_ssd_sku, "GiBy.mo", "local SSD"
                 )
                 if local_ssd_pricing_info is None:
-                    ret[machine_type] = {}
                     continue
 
             per_cpu_price = cast(float, cpu_pricing_info.unit_price.nanos / 1e9)
@@ -764,32 +1001,12 @@ class GCPComputeInstanceManager(InstanceManager):
 
             cpu_price = per_cpu_price * machine_info["vcpu"]
             ram_price = per_gb_ram_price * machine_info["mem_gb"]
-            total_price = cpu_price + ram_price
+            no_boot_disk_total_price = cpu_price + ram_price
 
             self._logger.debug(f"Core price: ${per_cpu_price:.6f}/vCPU/hour ({cpu_price:.6f}/hour)")
             self._logger.debug(
                 f"Ram price:  ${per_gb_ram_price:.6f}/GB/hour ({ram_price:.6f}/hour)"
             )
-
-            boot_disk_price = 0
-            per_gb_boot_disk_price = 0
-            if boot_disk_pricing_info is not None:
-                per_gb_boot_disk_price = (
-                    boot_disk_pricing_info.unit_price.nanos / 1e9 / 730.5
-                )  # GiBy.mo -> GiBy/hour
-                boot_disk_price = per_gb_boot_disk_price * machine_info["boot_disk_gb"]
-                total_price += boot_disk_price
-                self._logger.debug(
-                    f"Boot disk price: ${per_gb_boot_disk_price:.6f}/GB/hour "
-                    f"({boot_disk_price:.6f}/hour)"
-                )
-            else:
-                self._logger.warning(
-                    f"No boot disk SKU found for {machine_family} in region {self._region}; "
-                    f"ignoring these instance types"
-                )
-                ret[machine_type] = {}
-                continue
 
             local_ssd_price = 0
             per_gb_local_ssd_price = 0
@@ -799,10 +1016,10 @@ class GCPComputeInstanceManager(InstanceManager):
                         f"Local SSD SKU found for non-LSSD instance type: {machine_type}"
                     )
                 per_gb_local_ssd_price = (
-                    local_ssd_pricing_info.unit_price.nanos / 1e9 / 730.5
+                    local_ssd_pricing_info.unit_price.nanos / 1e9 / self._HOURS_PER_MONTH
                 )  # GiBy.mo -> GiBy/hour
                 local_ssd_price = per_gb_local_ssd_price * machine_info["local_ssd_gb"]
-                total_price += local_ssd_price
+                no_boot_disk_total_price += local_ssd_price
                 self._logger.debug(
                     f"Local SSD price: ${per_gb_local_ssd_price:.6f}/GB/hour "
                     f"({local_ssd_price:.6f}/hour)"
@@ -812,35 +1029,108 @@ class GCPComputeInstanceManager(InstanceManager):
                     f"No local SSD SKU found for LSSD instance type {machine_type} "
                     f"in region {self._region}"
                 )
-                ret[machine_type] = {}
                 continue
 
-            # Round off the total price to 6 decimal places to avoid floating point
-            # precision issues
-            total_price = round(total_price, 6)
-            self._logger.debug(f"Total price: ${total_price:.6f}/hour")
+            # Now go through each boot disk type and create a separate pricing entry for
+            # it for this instance type
 
-            ret_val = {
-                f"{self._region}-*": {
+            pricing_by_boot_disk = {}
+            ret_val = {f"{self._region}-*": pricing_by_boot_disk}
+
+            for boot_disk_type in machine_info["available_boot_disk_types"]:
+                self._logger.debug(f"For boot disk type: {boot_disk_type}")
+                if (
+                    boot_disk_type not in boot_disk_pricing_info
+                    or boot_disk_pricing_info[boot_disk_type] is None
+                ):
+                    self._logger.warning(
+                        f"  No pricing info was found for boot disk type {boot_disk_type}; skipping"
+                    )
+                    continue
+                per_gb_boot_disk_price = (
+                    boot_disk_pricing_info[boot_disk_type].unit_price.nanos
+                    / 1e9
+                    / self._HOURS_PER_MONTH
+                )  # GiBy.mo -> GiBy/hour
+                boot_disk_price = per_gb_boot_disk_price * machine_info["boot_disk_gb"]
+                self._logger.debug(
+                    f"  Boot disk storage price: ${per_gb_boot_disk_price:.6f}/GB/hour "
+                    f"({boot_disk_price:.6f}/hour)"
+                )
+
+                per_iops_price = (
+                    pd_extreme_iops_pricing_info.unit_price.nanos / 1e9 / self._HOURS_PER_MONTH
+                )
+                per_throughput_price = (
+                    hd_balanced_throughput_pricing_info.unit_price.nanos
+                    / 1e9
+                    / self._HOURS_PER_MONTH
+                )
+                boot_disk_per_iops_price = 0
+                boot_disk_per_throughput_price = 0
+                iops_price = 0
+                throughput_price = 0
+
+                match boot_disk_type:
+                    case "pd-extreme":
+                        boot_disk_per_iops_price = per_iops_price
+                        iops_price = per_iops_price * machine_info["boot_disk_iops"]
+                        self._logger.debug(
+                            f"  Boot disk {machine_info['boot_disk_iops']} IOPS price: "
+                            f"${iops_price:.6f}/hour"
+                        )
+                    case "hd-balanced":
+                        boot_disk_per_iops_price = per_iops_price
+                        boot_disk_per_throughput_price = per_throughput_price
+                        iops_price = per_iops_price * machine_info["boot_disk_iops"]
+                        throughput_price = (
+                            per_throughput_price * machine_info["boot_disk_throughput"]
+                        )
+                        self._logger.debug(
+                            f"  Boot disk {machine_info['boot_disk_iops']} IOPS price: "
+                            f"${iops_price:.6f}/hour"
+                        )
+                        self._logger.debug(
+                            f"  Boot disk {machine_info['boot_disk_throughput']} "
+                            f"throughput price: ${throughput_price:.6f}/hour"
+                        )
+
+                total_price = (
+                    no_boot_disk_total_price + boot_disk_price + iops_price + throughput_price
+                )
+
+                # Round off the total price to 6 decimal places to avoid floating point
+                # precision issues
+                total_price = round(total_price, 6)
+                self._logger.debug(f"  Total price: ${total_price:.6f}/hour")
+
+                pricing_by_boot_disk[boot_disk_type] = {
                     "cpu_price": round(cpu_price, 6),  # CPU price
                     "per_cpu_price": round(per_cpu_price, 6),  # Per-CPU price
                     "mem_price": round(ram_price, 6),  # Memory price
                     "mem_per_gb_price": round(per_gb_ram_price, 6),  # Per-GB price
                     "local_ssd_price": round(local_ssd_price, 6),  # Local SSD price
                     "local_ssd_per_gb_price": round(per_gb_local_ssd_price, 6),  # Per-GB price
+                    "boot_disk_type": boot_disk_type,
                     "boot_disk_price": round(boot_disk_price, 6),  # Boot disk price
                     "boot_disk_per_gb_price": round(per_gb_boot_disk_price, 6),  # Per-GB price
+                    "boot_disk_per_iops_price": boot_disk_per_iops_price,  # Per-IOPS price
+                    "boot_disk_iops_price": round(iops_price, 6),  # Boot disk IOPS price
+                    "boot_disk_per_throughput_price": boot_disk_per_throughput_price,  # Per-throughput price
+                    "boot_disk_throughput_price": round(
+                        throughput_price, 6
+                    ),  # Boot disk throughput price
                     "total_price": round(total_price, 6),  # Total price
                     "total_price_per_cpu": round(
                         total_price / machine_info["vcpu"], 6
                     ),  # Total price per CPU
                     "zone": f"{self._region}-*",
+                    **machine_info,
                 }
-            }
+
             # We only cache the pricing info for the machine family
             self._instance_pricing_cache[(machine_family_for_cache, use_spot)] = ret_val
             # Add the instance type info to the return value
-            ret_val[f"{self._region}-*"].update(machine_info)
             ret[machine_type] = ret_val
 
         return ret
@@ -876,6 +1166,7 @@ class GCPComputeInstanceManager(InstanceManager):
                     "max_local_ssd_per_cpu": Maximum amount of local SSD storage per vCPU
                     "min_local_ssd_per_task": Minimum amount of local SSD storage per task
                     "max_local_ssd_per_task": Maximum amount of local SSD storage per task
+                    "boot_disk_types": List of boot disk types to use
                     "total_boot_disk_size": Total amount of boot disk storage in GB
                     "boot_disk_base_size": Base amount of boot disk storage in GB
                     "boot_disk_per_cpu": Amount of boot disk storage per vCPU
@@ -893,6 +1184,12 @@ class GCPComputeInstanceManager(InstanceManager):
         )
         self._logger.debug(f"Constraints: {constraints}")
 
+        if constraints.get("boot_disk_types") is None or constraints.get("boot_disk_types") == []:
+            self._logger.warning(
+                "No boot disk types specified; this will make all relevant types available and "
+                "likely result in the selection of the slowest boot disk available"
+            )
+
         avail_instance_types = await self.get_available_instance_types(constraints)
         self._logger.debug(
             f"Found {len(avail_instance_types)} available instance types in region "
@@ -902,9 +1199,12 @@ class GCPComputeInstanceManager(InstanceManager):
         if not avail_instance_types:
             raise ValueError("No instance type meets requirements")
 
+        use_spot = constraints.get("use_spot")
+        if use_spot is None:
+            use_spot = False
         pricing_data = await self.get_instance_pricing(
             avail_instance_types,
-            use_spot=constraints["use_spot"],
+            use_spot=use_spot,
             boot_disk_constraints=constraints,
         )
 
@@ -928,7 +1228,8 @@ class GCPComputeInstanceManager(InstanceManager):
         # Select instance with the lowest price
         priced_instances = [
             (machine_type, zone, price_info)
-            for (machine_type, zone), price_info in zone_pricing_data.items()
+            for (machine_type, zone), by_boot_disk_type in zone_pricing_data.items()
+            for boot_disk_type, price_info in by_boot_disk_type.items()
         ]
         # Sort by price per vCPU, then by decreasing vCPU (this gives us the cheapest
         # instance type with the most vCPUs). Instead of using the price_per_vcpu field,
@@ -946,16 +1247,19 @@ class GCPComputeInstanceManager(InstanceManager):
         self._logger.debug("Instance types sorted by price (cheapest and most vCPUs first):")
         for i, (machine_type, zone, price_info) in enumerate(priced_instances):
             self._logger.debug(
-                f"  [{i+1:3d}] {machine_type:20s} in {zone:15s}: "
+                f"  [{i+1:3d}] {machine_type:20s} ({price_info['boot_disk_type']:12s}) "
+                f"in {zone:15s}: "
                 f"${price_info['total_price']:10.6f}/hour = "
                 f"${price_info['total_price'] / price_info['vcpu']:10.6f}/vCPU/hour"
             )
 
+        print(f"Priced instances: {priced_instances}")
         selected_type, selected_zone, selected_price_info = priced_instances[0]
         total_price = selected_price_info["total_price"]
         self._logger.debug(
-            f"Selected {selected_type} in {selected_zone} at ${total_price:.6f} per hour "
-            f"{' (spot)' if constraints["use_spot"] else '(on demand)'}"
+            f"Selected {selected_type} ({selected_price_info['boot_disk_type']:12s}) in "
+            f"{selected_zone} at ${total_price:.6f} per hour "
+            f"{' (spot)' if use_spot else '(on demand)'}"
         )
 
         return selected_price_info

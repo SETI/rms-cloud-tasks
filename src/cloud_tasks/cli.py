@@ -840,72 +840,112 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
         )
 
         pricing_data_list = []
-        for zone_pricing in pricing_data.values():
-            if zone_pricing is None:
+        for zone_prices in pricing_data.values():
+            if zone_prices is None:
                 continue
-            for x in zone_pricing.values():
-                pricing_data_list.append(x)
+            for zone_price in zone_prices.values():
+                for boot_disk_price in zone_price.values():
+                    pricing_data_list.append(boot_disk_price)
 
         # Apply custom sorting if specified
         if args.sort_by:
             # Define field mapping for case-insensitive and prefix matching
             field_mapping = {
+                # name
                 "type": "name",
                 "t": "name",
                 "name": "name",
-                "zone": "zone",
-                "z": "zone",
+                # cpu_family
+                "cpu_family": "cpu_family",
+                "family": "cpu_family",
+                "processor_type": "cpu_family",
+                "processor": "cpu_family",
+                "p_type": "cpu_family",
+                "ptype": "cpu_family",
+                "pt": "cpu_family",
+                # cpu_rank
+                "cpu_rank": "cpu_rank",
+                "performance_rank": "cpu_rank",
+                "cr": "cpu_rank",
+                "pr": "cpu_rank",
+                "rank": "cpu_rank",
+                "r": "cpu_rank",
+                # vcpu
                 "vcpu": "vcpu",
                 "v": "vcpu",
                 "cpu": "vcpu",
                 "c": "vcpu",
+                # mem_gb
                 "mem_gb": "mem_gb",
                 "memory": "mem_gb",
                 "mem": "mem_gb",
                 "m": "mem_gb",
                 "ram": "mem_gb",
+                # local_ssd_gb
                 "local_ssd": "local_ssd_gb",
                 "local_ssd_gb": "local_ssd_gb",
                 "lssd": "local_ssd_gb",
                 "ssd": "local_ssd_gb",
+                # Can't sort on available_boot_disk_types
+                # Can't sort on boot_disk_iops
+                # Can't sort on boot_disk_throughput
+                # boot_disk_gb
                 "boot_disk": "boot_disk_gb",
                 "boot_disk_gb": "boot_disk_gb",
                 "disk": "boot_disk_gb",
+                # architecture
+                "architecture": "architecture",
+                "arch": "architecture",
+                "a": "architecture",
+                # description
+                "description": "description",
+                "d": "description",
+                "desc": "description",
+                # Added by get_instance_pricing
+                # cpu_price
                 "cpu_price": "cpu_price",
                 "cp": "cpu_price",
                 "per_cpu_price": "cpu_price",
                 "vcpu_price": "cpu_price",
+                # per_cpu_price
+                "per_cpu_price": "per_cpu_price",
+                "cpu_price_per_cpu": "per_cpu_price",
+                "vcpu_price_per_cpu": "per_cpu_price",
+                # mem_price
                 "mem_price": "mem_price",
                 "mp": "mem_price",
-                "per_gb_price": "mem_per_gb_price",
+                # mem_per_gb_price
                 "mem_per_gb_price": "mem_per_gb_price",
+                # boot_disk_type
+                "boot_disk_type": "boot_disk_type",
+                # boot_disk_price
+                "boot_disk_price": "boot_disk_price",
+                # boot_disk_per_gb_price
+                "boot_disk_per_gb_price": "boot_disk_per_gb_price",
+                # boot_disk_iops_price
+                "boot_disk_iops_price": "boot_disk_iops_price",
+                # boot_disk_throughput_price
+                "boot_disk_throughput_price": "boot_disk_throughput_price",
+                # local_ssd_price
                 "local_ssd_price": "local_ssd_price",
                 "lssd_price": "local_ssd_price",
+                # local_ssd_per_gb_price
                 "local_ssd_per_gb_price": "local_ssd_per_gb_price",
                 "lssd_per_gb_price": "local_ssd_per_gb_price",
                 "ssd_price": "local_ssd_price",
-                "boot_disk_price": "boot_disk_price",
-                "disk_price": "boot_disk_price",
-                "boot_disk_per_gb_price": "boot_disk_per_gb_price",
-                "disk_per_gb_price": "boot_disk_per_gb_price",
+                # total_price
                 "total_price": "total_price",
+                "cost": "total_price",
                 "p": "total_price",
                 "tp": "total_price",
-                "cost": "total_price",
+                # total_price_per_cpu
                 "total_price_per_cpu": "total_price_per_cpu",
                 "tp_per_cpu": "total_price_per_cpu",
-                "description": "description",
-                "d": "description",
-                "desc": "description",
-                "processor_type": "processor_type",
-                "processor": "processor_type",
-                "p_type": "processor_type",
-                "ptype": "processor_type",
-                "pt": "processor_type",
-                "performance_rank": "performance_rank",
-                "pr": "performance_rank",
-                "rank": "performance_rank",
-                "r": "performance_rank",
+                # zone
+                "zone": "zone",
+                "z": "zone",
+                # Can't sort on supports_spot
+                # Can't sort on URL
             }
 
             # Parse the sort fields
@@ -937,15 +977,16 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
         # Display results with pricing if available
         print()
 
-        underline = "-" * 107
+        underline = "-" * 117
         header = (
             f"{'Instance Type':<24} {'Arch':>10} {'vCPU':>4} {'Mem (GB)':>10} "
-            f"{'LSSD (GB)':>10} {'Disk (GB)':>10} "
+            f"{'LSSD (GB)':>10} {'Disk (GB)':>10} {'Disk Type':<12} "
         )
 
         if args.detail:
             header += (
                 f"{'$/vCPU/Hr':>10} {'Mem $/GB/Hr':>12} {'LSSD $/GB/Hr':>13} {'Disk $/GB/Hr':>13} "
+                f"{'IOPS $/Hr':>13} {'Thruput $/Hr':>13} "
             )
         header += f"{'Total $/Hr':>11} "
         if args.detail:
@@ -955,7 +996,7 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
             header += f"{'Processor':<21} "
             header += f"{'Ranking':>8}  "
             header += f"{'Description':>10}"
-            underline += "-" * 130
+            underline += "-" * 170
 
         print(header)
         print(underline)
@@ -966,24 +1007,27 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
             total_price_per_cpu_str = f"${price_data['total_price_per_cpu']:.5f}"
             local_ssd_price_str = f"${price_data['local_ssd_per_gb_price']:.8f}"
             boot_disk_price_str = f"${price_data['boot_disk_per_gb_price']:.8f}"
+            boot_disk_iops_price_str = f"${price_data['boot_disk_iops_price']:.5f}"
+            boot_disk_throughput_price_str = f"${price_data['boot_disk_throughput_price']:.5f}"
 
             val = (
                 f"{price_data['name']:<24} {price_data['architecture']:>10} {price_data['vcpu']:>4} "
                 f"{price_data['mem_gb']:>10.1f} {price_data['local_ssd_gb']:>10} "
-                f"{price_data['boot_disk_gb']:>10} "
+                f"{price_data['boot_disk_gb']:>10} {price_data['boot_disk_type']:<12} "
             )
             if args.detail:
                 val += (
                     f"{cpu_price_str:>10} {mem_price_str:>12} "
                     f"{local_ssd_price_str:>13} {boot_disk_price_str:>13} "
+                    f"{boot_disk_iops_price_str:>13} {boot_disk_throughput_price_str:>13} "
                 )
             val += f"{total_price_str:>11} "
             if args.detail:
                 val += f"{total_price_per_cpu_str:>11} "
             val += f" {price_data['zone']:<25} "
             if args.detail:
-                val += f"{price_data['processor_type']:<21} "
-                val += f"{price_data['performance_rank']:>8}  "
+                val += f"{price_data['cpu_family']:<21} "
+                val += f"{price_data['cpu_rank']:>8}  "
                 val += f"{price_data['description']}"
             print(val)
 
@@ -1290,16 +1334,17 @@ def add_instance_args(parser: argparse.ArgumentParser) -> None:
         help='Filter instance types by name prefix (e.g., "t3 m5" for AWS)',
     )
     parser.add_argument(
-        "--boot-disk-type",
-        help="Specify the boot disk type (default: balanced for GCP)",
+        "--boot-disk-types",
+        nargs="+",
+        help="Specify the boot disk type(s)",
     )
     parser.add_argument(
-        "--boot-disk-provisioned-iops",
+        "--boot-disk-iops",
         type=int,
         help="Specify the boot disk provisioned IOPS (GCP only)",
     )
     parser.add_argument(
-        "--boot-disk-provisioned-throughput",
+        "--boot-disk-throughput",
         type=int,
         help="Specify the boot disk provisioned throughput (GCP only)",
     )
@@ -1523,8 +1568,9 @@ def main():
         help='Sort results by comma-separated fields (e.g., "price,vcpu" or "type,-memory"). '
         "Available fields: "
         "name, vcpu, mem, local_ssd, storage, "
-        "vcpu_price, mem_price, local_ssd_price, storage_price, "
-        "price_per_cpu, mem_per_gb_price, local_ssd_per_gb_price, storage_per_gb_price, "
+        "vcpu_price, mem_price, local_ssd_price, boot_disk_type, boot_disk_price, "
+        "boot_disk_iops_price, boot_disk_throughput_price, "
+        "price_per_cpu, mem_per_gb_price, local_ssd_per_gb_price, boot_disk_per_gb_price, "
         "total_price, total_price_per_cpu, zone, processor_type, performance_rank, description. "
         'Prefix with "-" for descending order. '
         'Partial field names like "ram" or "mem" for "mem_gb" or "v" for "vcpu" are supported.',
