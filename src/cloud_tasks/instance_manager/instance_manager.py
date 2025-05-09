@@ -175,12 +175,9 @@ class InstanceManager(ABC):
         )
 
     def _get_boot_disk_size(
-        self, instance_info: Dict[str, Any], boot_disk_constraints: Optional[Dict[str, Any]] = None
+        self, instance_info: Dict[str, Any], boot_disk_constraints: Dict[str, Any]
     ) -> float:
         """Get the boot disk size for an instance."""
-        if boot_disk_constraints is None:
-            boot_disk_constraints = {}
-
         boot_disk_base_size = boot_disk_constraints.get("boot_disk_base_size")
         if boot_disk_base_size is None:
             boot_disk_base_size = 0

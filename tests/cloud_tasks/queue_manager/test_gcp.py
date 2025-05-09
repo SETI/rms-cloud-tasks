@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 from google.api_core import exceptions as gcp_exceptions
+import logging
 
 # Add the src directory to the path so we can import cloud_tasks modules
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -213,6 +214,12 @@ async def test_get_queue_depth(gcp_queue, mock_pubsub_client):
     message1.ack_id = "ack-id-1"
     message2 = MagicMock()
     message2.ack_id = "ack-id-2"
+
+    # Get queue depth
+    depth = await gcp_queue.get_queue_depth()
+
+    # Verify depth is correct
+    assert depth == 0
 
     mock_pull_response = MagicMock()
     mock_pull_response.received_messages = [message1, message2]
@@ -877,3 +884,94 @@ async def test_delete_queue_error_propagation(gcp_queue, mock_pubsub_client):
 
     with pytest.raises(gcp_exceptions.ServerError):
         await gcp_queue.delete_queue()
+
+
+@pytest.mark.asyncio
+async def test_initialization_with_explicit_queue_name(gcp_config):
+    """Test initialization with explicitly provided queue name."""
+    # Create queue with explicit queue name
+    queue = GCPPubSubQueue(
+        gcp_config=gcp_config,
+        queue_name="explicit-queue",  # This should be used
+    )
+
+    # Verify the explicit queue name was used
+    assert queue._queue_name == "explicit-queue"
+    assert queue._topic_name == "explicit-queue-topic"
+    assert queue._subscription_name == "explicit-queue-subscription"
+
+    # Verify topic and subscription paths use the explicit queue name
+    assert queue._topic_path == "projects/test-project/topics/explicit-queue-topic"
+    assert (
+        queue._subscription_path
+        == "projects/test-project/subscriptions/explicit-queue-subscription"
+    )
+
+
+@pytest.mark.asyncio
+async def test_initialization_existing_queue_logging(mock_pubsub_client, caplog):
+    """Test debug logging when initializing a queue that already exists."""
+    mock_publisher, mock_subscriber = mock_pubsub_client
+
+    # First create a queue
+    queue1 = GCPPubSubQueue(
+        gcp_config=MagicMock(queue_name="test-queue"),
+    )
+
+    # Reset the mocks to simulate the queue already existing
+    mock_publisher.get_topic.reset_mock()
+    mock_subscriber.get_subscription.reset_mock()
+
+    # Make get_topic and get_subscription return successfully to indicate they exist
+    mock_publisher.get_topic.side_effect = None
+    mock_subscriber.get_subscription.side_effect = None
+
+    # Create a second queue with the same name
+    with caplog.at_level(logging.DEBUG):
+        queue2 = GCPPubSubQueue(
+            gcp_config=MagicMock(queue_name="test-queue"),
+        )
+
+        # Verify debug messages about existing topic and subscription
+        assert any(
+            "Topic 'test-queue-topic' already exists" in record.message for record in caplog.records
+        )
+        assert any(
+            "Subscription test-queue-subscription already exists" in record.message
+            for record in caplog.records
+        )
+
+
+@pytest.mark.asyncio
+async def test_create_topic_subscription_already_exists(gcp_queue, mock_pubsub_client, caplog):
+    """Test handling of AlreadyExists exception when creating topic and subscription."""
+    mock_publisher, mock_subscriber = mock_pubsub_client
+
+    # Configure topic and subscription to not exist initially
+    gcp_queue._topic_exists = False
+    gcp_queue._subscription_exists = False
+
+    # Make create_topic and create_subscription raise AlreadyExists
+    mock_publisher.create_topic.side_effect = gcp_exceptions.AlreadyExists("Topic already exists")
+    mock_subscriber.create_subscription.side_effect = gcp_exceptions.AlreadyExists(
+        "Subscription already exists"
+    )
+
+    # Try to send a task which will trigger topic and subscription creation
+    with caplog.at_level(logging.INFO):
+        await gcp_queue.send_task("test-task", {"data": "test"})
+
+        # Verify the appropriate log messages
+        assert any(
+            "Topic 'test-queue-topic' already exists (created by another process)" in record.message
+            for record in caplog.records
+        )
+        assert any(
+            "Subscription 'test-queue-subscription' already exists (created by another process)"
+            in record.message
+            for record in caplog.records
+        )
+
+    # Verify both flags were set to True
+    assert gcp_queue._topic_exists is True
+    assert gcp_queue._subscription_exists is True

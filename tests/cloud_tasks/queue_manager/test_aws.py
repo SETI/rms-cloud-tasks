@@ -10,7 +10,7 @@ from botocore.exceptions import ClientError
 
 # Add the src directory to the path so we can import cloud_tasks modules
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from cloud_tasks.queue_manager.aws import AWSSQSQueue  # noqa
+from cloud_tasks.queue_manager.aws import AWSSQSQueue, AWSConfig  # noqa
 
 # Filter coroutine warnings for these tests
 warnings.filterwarnings("ignore", message="coroutine .* was never awaited")
@@ -517,3 +517,190 @@ async def test_create_queue_already_exists(aws_queue, mock_sqs_client):
     assert "MessageBody" in kwargs
     assert "MessageAttributes" in kwargs
     assert kwargs["MessageAttributes"]["TaskId"]["StringValue"] == "test-task-id"
+
+
+@pytest.mark.asyncio
+async def test_initialization_with_explicit_queue_name(mock_sqs_client):
+    """Test initialization with explicitly provided queue name."""
+    # Create queue with explicit queue name
+    queue = AWSSQSQueue(
+        aws_config=MagicMock(queue_name="default-queue"),  # This should be ignored
+        queue_name="explicit-queue",  # This should be used
+    )
+    queue._sqs = mock_sqs_client  # Ensure we use our mock
+
+    # Verify the explicit queue name was used
+    assert queue._queue_name == "explicit-queue"
+
+    # Verify get_queue_url was called with the explicit queue name
+    mock_sqs_client.get_queue_url.assert_called_with(QueueName="explicit-queue")
+
+    # Verify queue URL is set correctly
+    assert queue._queue_url == "https://sqs.us-west-2.amazonaws.com/123456789012/test-queue"
+
+
+@pytest.mark.asyncio
+async def test_initialization_missing_queue_name():
+    """Test initialization fails when no queue name is provided."""
+    # Create config without queue name
+    config = AWSConfig(
+        region="us-west-2",
+        access_key="test-access-key",
+        secret_key="test-secret-key",
+        queue_name=None,  # Explicitly set queue_name to None
+    )
+
+    # Attempt to create queue without queue name
+    with pytest.raises(ValueError, match="Queue name is required"):
+        AWSSQSQueue(aws_config=config)
+
+
+@pytest.mark.asyncio
+async def test_initialization_boto3_client_error():
+    """Test initialization fails when boto3.client raises an exception."""
+    with patch("boto3.client") as mock_client_cls:
+        # Make boto3.client raise an exception
+        mock_client_cls.side_effect = Exception("Failed to create SQS client")
+
+        # Attempt to create queue
+        with pytest.raises(Exception, match="Failed to create SQS client"):
+            AWSSQSQueue(
+                aws_config=AWSConfig(
+                    region="us-west-2",
+                    access_key="test-access-key",
+                    secret_key="test-secret-key",
+                    queue_name="test-queue",
+                )
+            )
+
+
+@pytest.mark.asyncio
+async def test_initialization_get_queue_url_error():
+    """Test initialization fails when get_queue_url raises a ClientError."""
+    with patch("boto3.client") as mock_client_cls:
+        # Create mock SQS client
+        sqs = MagicMock()
+        mock_client_cls.return_value = sqs
+
+        # Make get_queue_url raise a ClientError
+        sqs.get_queue_url.side_effect = ClientError(
+            {
+                "Error": {
+                    "Code": "InvalidClientTokenId",
+                    "Message": "The security token included in the request is invalid",
+                }
+            },
+            "GetQueueUrl",
+        )
+
+        # Attempt to create queue
+        with pytest.raises(ClientError) as exc_info:
+            AWSSQSQueue(
+                aws_config=AWSConfig(
+                    region="us-west-2",
+                    access_key="test-access-key",
+                    secret_key="test-secret-key",
+                    queue_name="test-queue",
+                )
+            )
+
+        # Verify the error details
+        assert exc_info.value.response["Error"]["Code"] == "InvalidClientTokenId"
+        assert "security token" in exc_info.value.response["Error"]["Message"]
+
+
+@pytest.mark.asyncio
+async def test_create_queue_error(aws_queue, mock_sqs_client):
+    """Test _create_queue error handling when create_queue raises a ClientError."""
+    # Setup create_queue to fail with a different error
+    mock_sqs_client.create_queue.side_effect = ClientError(
+        {
+            "Error": {
+                "Code": "InvalidParameterValue",
+                "Message": "Invalid queue name",
+            }
+        },
+        "CreateQueue",
+    )
+
+    # Force queue to not exist initially
+    aws_queue._queue_exists = False
+    aws_queue._queue_url = None
+
+    # Try to send a task which will trigger queue creation
+    with pytest.raises(ClientError) as exc_info:
+        await aws_queue.send_task("test-task-id", {"key": "value"})
+
+    # Verify create_queue was called with correct parameters
+    mock_sqs_client.create_queue.assert_called_with(
+        QueueName="test-queue",
+        Attributes={
+            "VisibilityTimeout": "30",
+            "MessageRetentionPeriod": "1209600",
+        },
+    )
+
+    # Verify the error details
+    assert exc_info.value.response["Error"]["Code"] == "InvalidParameterValue"
+    assert "Invalid queue name" in exc_info.value.response["Error"]["Message"]
+
+    # Verify queue state was not updated
+    assert not aws_queue._queue_exists
+    assert aws_queue._queue_url is None
+
+
+@pytest.mark.asyncio
+async def test_delete_queue_get_url_error(aws_queue, mock_sqs_client):
+    """Test delete_queue error handling when get_queue_url raises a ClientError."""
+    # Make get_queue_url raise a ClientError that's not NonExistentQueue
+    mock_sqs_client.get_queue_url.side_effect = ClientError(
+        {
+            "Error": {
+                "Code": "InvalidClientTokenId",
+                "Message": "The security token included in the request is invalid",
+            }
+        },
+        "GetQueueUrl",
+    )
+
+    # Attempt to delete queue
+    with pytest.raises(ClientError) as exc_info:
+        await aws_queue.delete_queue()
+
+    # Verify get_queue_url was called
+    mock_sqs_client.get_queue_url.assert_called_with(QueueName="test-queue")
+
+    # Verify delete_queue was not called
+    mock_sqs_client.delete_queue.assert_not_called()
+
+    # Verify the error details
+    assert exc_info.value.response["Error"]["Code"] == "InvalidClientTokenId"
+    assert "security token" in exc_info.value.response["Error"]["Message"]
+
+
+@pytest.mark.asyncio
+async def test_delete_queue_delete_error(aws_queue, mock_sqs_client):
+    """Test delete_queue error handling when delete_queue raises a ClientError."""
+    # Make delete_queue raise a ClientError
+    mock_sqs_client.delete_queue.side_effect = RuntimeError(
+        "You do not have permission to delete this queue",
+    )
+
+    # Attempt to delete queue
+    with pytest.raises(RuntimeError) as exc_info:
+        await aws_queue.delete_queue()
+
+    # Verify get_queue_url was called
+    mock_sqs_client.get_queue_url.assert_called_with(QueueName="test-queue")
+
+    # Verify delete_queue was called
+    mock_sqs_client.delete_queue.assert_called_with(
+        QueueUrl="https://sqs.us-west-2.amazonaws.com/123456789012/test-queue"
+    )
+
+    # Verify the error details
+    assert "permission" in str(exc_info.value)
+
+    # Verify queue state was not updated
+    assert aws_queue._queue_exists
+    assert aws_queue._queue_url == "https://sqs.us-west-2.amazonaws.com/123456789012/test-queue"

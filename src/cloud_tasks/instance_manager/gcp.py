@@ -1130,6 +1130,14 @@ class GCPComputeInstanceManager(InstanceManager):
 
             # We only cache the pricing info for the machine family
             self._instance_pricing_cache[(machine_family_for_cache, use_spot)] = ret_val
+
+            if pricing_by_boot_disk == {}:
+                self._logger.warning(
+                    "No pricing info found for any boot disk type for instance type "
+                    f"{machine_type}; skipping"
+                )
+                continue
+
             # Add the instance type info to the return value
             ret[machine_type] = ret_val
 

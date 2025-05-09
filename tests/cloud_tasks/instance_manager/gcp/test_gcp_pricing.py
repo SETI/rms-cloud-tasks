@@ -1010,7 +1010,6 @@ async def test_get_instance_pricing_pricing_info_none(
     boot_disk_pricing_default_skus: List[MagicMock],
 ) -> None:
     """Test get_instance_pricing when pricing info extraction returns None for a component."""
-    # Arrange
     gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
     ram_pricing_n1_sku = MagicMock()
     ram_pricing_n1_sku.description = "N1 Instance Ram running in Americas"
@@ -1273,6 +1272,270 @@ async def test_get_instance_pricing_missing_ram_sku(
 
 
 @pytest.mark.asyncio
+async def test_get_instance_pricing_missing_pd_standard_sku(
+    gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
+    mock_instance_types_n1_n2: Dict[str, Dict[str, Any]],
+    caplog,
+    cpu_pricing_n1_sku: MagicMock,
+    ram_pricing_n1_sku: MagicMock,
+    boot_disk_pricing_default_skus: List[MagicMock],
+) -> None:
+    """Test get_instance_pricing returns empty dict and logs warning if pd-standard SKU is missing."""
+    gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
+    # Filter out pd-standard from default skus
+    filtered_skus = [
+        sku
+        for sku in boot_disk_pricing_default_skus
+        if "storage pd capacity" not in sku.description.lower()
+    ]
+    gcp_instance_manager_n1_n2._billing_compute_skus = [
+        cpu_pricing_n1_sku,
+        ram_pricing_n1_sku,
+    ] + filtered_skus
+    with caplog.at_level("WARNING"):
+        result = await gcp_instance_manager_n1_n2.get_instance_pricing(
+            {"n1-standard-2": mock_instance_types_n1_n2["n1-standard-2"]}, use_spot=False
+        )
+    assert result["n1-standard-2"] == {}
+    assert any(
+        f"No PD Standard boot disk SKU found for instance family n1 in region {gcp_instance_manager_n1_n2._region}"
+        in record.message
+        for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_instance_pricing_missing_pd_balanced_sku(
+    gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
+    mock_instance_types_n1_n2: Dict[str, Dict[str, Any]],
+    caplog,
+    cpu_pricing_n1_sku: MagicMock,
+    ram_pricing_n1_sku: MagicMock,
+    boot_disk_pricing_default_skus: List[MagicMock],
+) -> None:
+    """Test get_instance_pricing returns empty dict and logs warning if pd-balanced SKU is missing."""
+    gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
+    # Filter out pd-balanced from default skus
+    filtered_skus = [
+        sku
+        for sku in boot_disk_pricing_default_skus
+        if "balanced pd capacity" not in sku.description.lower()
+    ]
+    gcp_instance_manager_n1_n2._billing_compute_skus = [
+        cpu_pricing_n1_sku,
+        ram_pricing_n1_sku,
+    ] + filtered_skus
+    with caplog.at_level("WARNING"):
+        result = await gcp_instance_manager_n1_n2.get_instance_pricing(
+            {"n1-standard-2": mock_instance_types_n1_n2["n1-standard-2"]}, use_spot=False
+        )
+    assert result["n1-standard-2"] == {}
+    assert any(
+        f"No PD Balanced boot disk SKU found for instance family n1 in region {gcp_instance_manager_n1_n2._region}"
+        in record.message
+        for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_instance_pricing_missing_pd_ssd_sku(
+    gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
+    mock_instance_types_n1_n2: Dict[str, Dict[str, Any]],
+    caplog,
+    cpu_pricing_n1_sku: MagicMock,
+    ram_pricing_n1_sku: MagicMock,
+    boot_disk_pricing_default_skus: List[MagicMock],
+) -> None:
+    """Test get_instance_pricing returns empty dict and logs warning if pd-ssd SKU is missing."""
+    gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
+    # Filter out pd-ssd from default skus
+    filtered_skus = [
+        sku
+        for sku in boot_disk_pricing_default_skus
+        if "ssd backed pd capacity" not in sku.description.lower()
+    ]
+    gcp_instance_manager_n1_n2._billing_compute_skus = [
+        cpu_pricing_n1_sku,
+        ram_pricing_n1_sku,
+    ] + filtered_skus
+    with caplog.at_level("WARNING"):
+        result = await gcp_instance_manager_n1_n2.get_instance_pricing(
+            {"n1-standard-2": mock_instance_types_n1_n2["n1-standard-2"]}, use_spot=False
+        )
+    assert result["n1-standard-2"] == {}
+    assert any(
+        f"No PD SSD boot disk SKU found for instance family n1 in region {gcp_instance_manager_n1_n2._region}"
+        in record.message
+        for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_instance_pricing_missing_pd_extreme_sku(
+    gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
+    mock_instance_types_n1_n2: Dict[str, Dict[str, Any]],
+    caplog,
+    cpu_pricing_n1_sku: MagicMock,
+    ram_pricing_n1_sku: MagicMock,
+    boot_disk_pricing_default_skus: List[MagicMock],
+) -> None:
+    """Test get_instance_pricing returns empty dict and logs warning if pd-extreme SKU is missing."""
+    gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
+    # Filter out pd-extreme from default skus
+    filtered_skus = [
+        sku
+        for sku in boot_disk_pricing_default_skus
+        if "extreme pd capacity" not in sku.description.lower()
+    ]
+    gcp_instance_manager_n1_n2._billing_compute_skus = [
+        cpu_pricing_n1_sku,
+        ram_pricing_n1_sku,
+    ] + filtered_skus
+    with caplog.at_level("WARNING"):
+        result = await gcp_instance_manager_n1_n2.get_instance_pricing(
+            {"n1-standard-2": mock_instance_types_n1_n2["n1-standard-2"]}, use_spot=False
+        )
+    assert result["n1-standard-2"] == {}
+    assert any(
+        f"No PD Extreme boot disk SKU found for instance family n1 in region {gcp_instance_manager_n1_n2._region}"
+        in record.message
+        for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_instance_pricing_missing_hd_balanced_sku(
+    gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
+    mock_instance_types_n1_n2: Dict[str, Dict[str, Any]],
+    caplog,
+    cpu_pricing_n1_sku: MagicMock,
+    ram_pricing_n1_sku: MagicMock,
+    boot_disk_pricing_default_skus: List[MagicMock],
+) -> None:
+    """Test get_instance_pricing returns empty dict and logs warning if hd-balanced SKU is missing."""
+    gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
+    # Filter out hd-balanced from default skus
+    filtered_skus = [
+        sku
+        for sku in boot_disk_pricing_default_skus
+        if "hyperdisk balanced capacity" not in sku.description.lower()
+    ]
+    gcp_instance_manager_n1_n2._billing_compute_skus = [
+        cpu_pricing_n1_sku,
+        ram_pricing_n1_sku,
+    ] + filtered_skus
+    with caplog.at_level("WARNING"):
+        result = await gcp_instance_manager_n1_n2.get_instance_pricing(
+            {"n1-standard-2": mock_instance_types_n1_n2["n1-standard-2"]}, use_spot=False
+        )
+    assert result["n1-standard-2"] == {}
+    assert any(
+        f"No HD Balanced boot disk SKU found for instance family n1 in region {gcp_instance_manager_n1_n2._region}"
+        in record.message
+        for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_instance_pricing_missing_pd_extreme_iops_sku(
+    gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
+    mock_instance_types_n1_n2: Dict[str, Dict[str, Any]],
+    caplog,
+    cpu_pricing_n1_sku: MagicMock,
+    ram_pricing_n1_sku: MagicMock,
+    boot_disk_pricing_default_skus: List[MagicMock],
+) -> None:
+    """Test get_instance_pricing returns empty dict and logs warning if pd-extreme IOPS SKU is missing."""
+    gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
+    # Filter out pd-extreme IOPS from default skus
+    filtered_skus = [
+        sku
+        for sku in boot_disk_pricing_default_skus
+        if "extreme pd iops" not in sku.description.lower()
+    ]
+    gcp_instance_manager_n1_n2._billing_compute_skus = [
+        cpu_pricing_n1_sku,
+        ram_pricing_n1_sku,
+    ] + filtered_skus
+    with caplog.at_level("WARNING"):
+        result = await gcp_instance_manager_n1_n2.get_instance_pricing(
+            {"n1-standard-2": mock_instance_types_n1_n2["n1-standard-2"]}, use_spot=False
+        )
+    assert result["n1-standard-2"] == {}
+    assert any(
+        f"No PD Extreme IOPS SKU found for instance family n1 in region {gcp_instance_manager_n1_n2._region}"
+        in record.message
+        for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_instance_pricing_missing_hd_balanced_iops_sku(
+    gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
+    mock_instance_types_n1_n2: Dict[str, Dict[str, Any]],
+    caplog,
+    cpu_pricing_n1_sku: MagicMock,
+    ram_pricing_n1_sku: MagicMock,
+    boot_disk_pricing_default_skus: List[MagicMock],
+) -> None:
+    """Test get_instance_pricing returns empty dict and logs warning if hd-balanced IOPS SKU is missing."""
+    gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
+    # Filter out hd-balanced IOPS from default skus
+    filtered_skus = [
+        sku
+        for sku in boot_disk_pricing_default_skus
+        if "hyperdisk balanced iops" not in sku.description.lower()
+    ]
+    gcp_instance_manager_n1_n2._billing_compute_skus = [
+        cpu_pricing_n1_sku,
+        ram_pricing_n1_sku,
+    ] + filtered_skus
+    with caplog.at_level("WARNING"):
+        result = await gcp_instance_manager_n1_n2.get_instance_pricing(
+            {"n1-standard-2": mock_instance_types_n1_n2["n1-standard-2"]}, use_spot=False
+        )
+    assert result["n1-standard-2"] == {}
+    assert any(
+        f"No HD Balanced IOPS SKU found for instance family n1 in region {gcp_instance_manager_n1_n2._region}"
+        in record.message
+        for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_instance_pricing_missing_hd_balanced_throughput_sku(
+    gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
+    mock_instance_types_n1_n2: Dict[str, Dict[str, Any]],
+    caplog,
+    cpu_pricing_n1_sku: MagicMock,
+    ram_pricing_n1_sku: MagicMock,
+    boot_disk_pricing_default_skus: List[MagicMock],
+) -> None:
+    """Test get_instance_pricing returns empty dict and logs warning if hd-balanced throughput SKU is missing."""
+    gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
+    # Filter out hd-balanced throughput from default skus
+    filtered_skus = [
+        sku
+        for sku in boot_disk_pricing_default_skus
+        if "hyperdisk balanced throughput" not in sku.description.lower()
+    ]
+    gcp_instance_manager_n1_n2._billing_compute_skus = [
+        cpu_pricing_n1_sku,
+        ram_pricing_n1_sku,
+    ] + filtered_skus
+    with caplog.at_level("WARNING"):
+        result = await gcp_instance_manager_n1_n2.get_instance_pricing(
+            {"n1-standard-2": mock_instance_types_n1_n2["n1-standard-2"]}, use_spot=False
+        )
+    assert result["n1-standard-2"] == {}
+    assert any(
+        f"No HD Balanced Throughput SKU found for instance family n1 in region {gcp_instance_manager_n1_n2._region}"
+        in record.message
+        for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
 async def test_get_instance_pricing_cpu_pricing_info_none(
     gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
     mock_instance_types_n1_n2: Dict[str, Dict[str, Any]],
@@ -1318,6 +1581,155 @@ async def test_get_instance_pricing_ram_pricing_info_none(
         cpu_pricing_n1_sku,
         ram_sku,
     ] + boot_disk_pricing_default_skus
+    with caplog.at_level("WARNING"):
+        result = await gcp_instance_manager_n1_n2.get_instance_pricing(
+            {"n1-standard-2": mock_instance_types_n1_n2["n1-standard-2"]}, use_spot=False
+        )
+    assert result["n1-standard-2"] == {}
+    assert any("No pricing info found" in record.message for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_get_instance_pricing_boot_disk_pricing_info_none_pd_standard(
+    gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
+    mock_instance_types_n1_n2: Dict[str, Dict[str, Any]],
+    caplog,
+    cpu_pricing_n1_sku: MagicMock,
+    ram_pricing_n1_sku: MagicMock,
+    boot_disk_pricing_default_skus: List[MagicMock],
+) -> None:
+    """Test get_instance_pricing returns empty dict and logs warning if pd-standard boot disk pricing_info is None."""
+    gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
+    # Arrange: pd-standard SKU with no pricing info (so _extract_pricing_info returns None)
+    pd_standard_sku = MagicMock()
+    pd_standard_sku.description = "Storage PD Capacity in Iowa"
+    pd_standard_sku.service_regions = ["us-central1"]
+    pd_standard_sku.pricing_info = []  # No pricing info triggers None
+
+    # Filter out pd-standard from default skus and add our mock
+    filtered_skus = [
+        sku
+        for sku in boot_disk_pricing_default_skus
+        if "Storage PD Capacity" not in sku.description
+    ]
+    gcp_instance_manager_n1_n2._billing_compute_skus = [
+        cpu_pricing_n1_sku,
+        ram_pricing_n1_sku,
+        pd_standard_sku,
+    ] + filtered_skus
+
+    with caplog.at_level("WARNING"):
+        result = await gcp_instance_manager_n1_n2.get_instance_pricing(
+            {"n1-standard-2": mock_instance_types_n1_n2["n1-standard-2"]}, use_spot=False
+        )
+    print(result)
+    assert result["n1-standard-2"] == {}
+    assert any("No pricing info found" in record.message for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_get_instance_pricing_boot_disk_pricing_info_none_pd_extreme_iops(
+    gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
+    mock_instance_types_n1_n2: Dict[str, Dict[str, Any]],
+    caplog,
+    cpu_pricing_n1_sku: MagicMock,
+    ram_pricing_n1_sku: MagicMock,
+    boot_disk_pricing_default_skus: List[MagicMock],
+) -> None:
+    """Test get_instance_pricing returns empty dict and logs warning if pd-extreme IOPS pricing_info is None."""
+    gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
+    # Arrange: pd-extreme IOPS SKU with no pricing info (so _extract_pricing_info returns None)
+    pd_extreme_iops_sku = MagicMock()
+    pd_extreme_iops_sku.description = "extreme pd iops in Iowa"
+    pd_extreme_iops_sku.service_regions = ["us-central1"]
+    pd_extreme_iops_sku.pricing_info = []  # No pricing info triggers None
+
+    # Filter out pd-extreme IOPS from default skus and add our mock
+    filtered_skus = [
+        sku
+        for sku in boot_disk_pricing_default_skus
+        if "extreme pd iops" not in sku.description.lower()
+    ]
+    gcp_instance_manager_n1_n2._billing_compute_skus = [
+        cpu_pricing_n1_sku,
+        ram_pricing_n1_sku,
+        pd_extreme_iops_sku,
+    ] + filtered_skus
+
+    with caplog.at_level("WARNING"):
+        result = await gcp_instance_manager_n1_n2.get_instance_pricing(
+            {"n1-standard-2": mock_instance_types_n1_n2["n1-standard-2"]}, use_spot=False
+        )
+    assert result["n1-standard-2"] == {}
+    assert any("No pricing info found" in record.message for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_get_instance_pricing_boot_disk_pricing_info_none_hd_balanced_iops(
+    gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
+    mock_instance_types_n1_n2: Dict[str, Dict[str, Any]],
+    caplog,
+    cpu_pricing_n1_sku: MagicMock,
+    ram_pricing_n1_sku: MagicMock,
+    boot_disk_pricing_default_skus: List[MagicMock],
+) -> None:
+    """Test get_instance_pricing returns empty dict and logs warning if hd-balanced IOPS pricing_info is None."""
+    gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
+    # Arrange: hd-balanced IOPS SKU with no pricing info (so _extract_pricing_info returns None)
+    hd_balanced_iops_sku = MagicMock()
+    hd_balanced_iops_sku.description = "hyperdisk balanced iops in Iowa"
+    hd_balanced_iops_sku.service_regions = ["us-central1"]
+    hd_balanced_iops_sku.pricing_info = []  # No pricing info triggers None
+
+    # Filter out hd-balanced IOPS from default skus and add our mock
+    filtered_skus = [
+        sku
+        for sku in boot_disk_pricing_default_skus
+        if "hyperdisk balanced iops" not in sku.description.lower()
+    ]
+    gcp_instance_manager_n1_n2._billing_compute_skus = [
+        cpu_pricing_n1_sku,
+        ram_pricing_n1_sku,
+        hd_balanced_iops_sku,
+    ] + filtered_skus
+
+    with caplog.at_level("WARNING"):
+        result = await gcp_instance_manager_n1_n2.get_instance_pricing(
+            {"n1-standard-2": mock_instance_types_n1_n2["n1-standard-2"]}, use_spot=False
+        )
+    assert result["n1-standard-2"] == {}
+    assert any("No pricing info found" in record.message for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_get_instance_pricing_boot_disk_pricing_info_none_hd_balanced_throughput(
+    gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
+    mock_instance_types_n1_n2: Dict[str, Dict[str, Any]],
+    caplog,
+    cpu_pricing_n1_sku: MagicMock,
+    ram_pricing_n1_sku: MagicMock,
+    boot_disk_pricing_default_skus: List[MagicMock],
+) -> None:
+    """Test get_instance_pricing returns empty dict and logs warning if hd-balanced throughput pricing_info is None."""
+    gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
+    # Arrange: hd-balanced throughput SKU with no pricing info (so _extract_pricing_info returns None)
+    hd_balanced_throughput_sku = MagicMock()
+    hd_balanced_throughput_sku.description = "hyperdisk balanced throughput in Iowa"
+    hd_balanced_throughput_sku.service_regions = ["us-central1"]
+    hd_balanced_throughput_sku.pricing_info = []  # No pricing info triggers None
+
+    # Filter out hd-balanced throughput from default skus and add our mock
+    filtered_skus = [
+        sku
+        for sku in boot_disk_pricing_default_skus
+        if "hyperdisk balanced throughput" not in sku.description.lower()
+    ]
+    gcp_instance_manager_n1_n2._billing_compute_skus = [
+        cpu_pricing_n1_sku,
+        ram_pricing_n1_sku,
+        hd_balanced_throughput_sku,
+    ] + filtered_skus
+
     with caplog.at_level("WARNING"):
         result = await gcp_instance_manager_n1_n2.get_instance_pricing(
             {"n1-standard-2": mock_instance_types_n1_n2["n1-standard-2"]}, use_spot=False
