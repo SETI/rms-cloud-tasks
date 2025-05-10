@@ -136,10 +136,9 @@ Memory
 SSD Storage
 +++++++++++
 
-The boot disk is usually a standard hard drive, not an SSD. However, some instance
-types have additional local SSD storage and these constraints apply to them. By specifying
-a minimum SSD size you are also constraining the instance type to those that have an extra
-SSD attached.
+Some instance types have additional local SSD storage in addition to whatever volume is
+mounted as the boot disk and these constraints apply to them. By specifying a minimum SSD
+size you are also constraining the instance type to those that have an extra SSD attached.
 
 * ``min_local_ssd``: The minimum amount of local extra SSD storage in GB per instance
 * ``max_local_ssd``: The maximum amount of local extra SSD storage in GB per instance
@@ -165,17 +164,19 @@ SSD attached.
 Boot Disk
 +++++++++
 
-The boot disk size is configurable at instance creation time and is not an intrinsic property
-of a provider's instance type. As such, there are no "constraints" on the boot disk size. Instead,
-there are simply ways to specify the size of the boot disk you want. This can either be a single
-absolute value:
+The boot disk size and type is configurable at instance creation time and is not an
+intrinsic property of a provider's instance type. As such, there are no "constraints" on
+the boot disk size. Instead, there are simply ways to specify the size and type of the
+boot disk you want.
 
-* ``boot_disk``: The size of the boot disk in GB (defaults to 10 GB)
+The boot disk size can either be a single absolute value:
+
+* ``total_boot_disk_size``: The size of the boot disk in GB (defaults to 10 GB)
 
 or a per-CPU value:
 
 * ``boot_disk_base_size``: The amount of boot disk in GB present before allocating additional
-  space per vCPU (defaults to 10 GB)
+  space per vCPU
 * ``boot_disk_per_cpu``: The minimum amount of boot disk in GB per vCPU
 
 or a per-task value:
@@ -186,6 +187,19 @@ or a per-task value:
 * ``boot_disk_per_task``: The minimum amount of boot disk in GB per task
 
 If more than one size is specified, the maximum of the values will be used.
+
+The boot disk type is provider-specific and can be a single type or a list of types:
+
+* ``boot_disk_types``: The type(s) of the boot disk to allow (defaults to all available types
+  for the provider)
+
+Finally, some boot disk types require additional configuration:
+
+* ``boot_disk_iops``: For any boot disk type that supports it, the number of provisioned IOPS
+  to request; this is an absolute value and is not scaled by the number of vCPUs or tasks
+* ``boot_disk_throughput``: For any boot disk type that supports it, the number of provisioned
+  throughput in MB/s to request; this is an absolute value and is not scaled by the number of
+  vCPUs or tasks
 
 
 .. _config_number_of_instances_options:
@@ -214,7 +228,7 @@ excessive instance pool sizes, but this can be overridden by specifying a differ
 * ``min_simultaneous_tasks``: The minimum number of tasks to run simultaneously
 * ``max_simultaneous_tasks``: The maximum number of tasks to run simultaneously
 * ``min_total_price_per_hour``: The minimum total price per hour to use
-* ``max_total_price_per_hour``: The maximum total price per hour to use
+* ``max_total_price_per_hour``: The maximum total price per hour to use (defaults to 10)
 
 .. _config_vm_options:
 
@@ -308,7 +322,7 @@ Simple replace any ``_`` character with ``-``:
       --provider aws \                 # Specify/override provider setting
       --min-cpu 8 \                    # Specify/override min_cpu setting
       --min-memory-per-cpu 16 \        # Specify/override min_memory_per_cpu setting
-      --min-boot-disk 100 \            # Specify/override min_boot_disk setting
+      --total-boot-disk-size 100 \     # Specify/override total_boot_disk_size setting
       --image ami-0123456789abcdef0 \  # Specify/override image setting
       --job-id my-processing-job \     # Specify/override job_id setting
       --instance-types t3- m5-         # Specify/override instance_types and
@@ -344,14 +358,18 @@ a job ID, a project ID, a region, and a startup script.
 Given the lack of
 :ref:`configuration options to constrain the instance type <config_compute_instance_options>`,
 the system will select the ``e2-highcpu-32`` instance type. This is the lowest-memory
-version of GCP's most economical instance type, costing $0.024736/vCPU/hour as of this
+version of GCP's most economical instance type, costing $0.02475/vCPU/hour as of this
 writing. It selects the 32-vCPU version, which is the maximum number of vCPUs available in
-a single instance for the ``e2`` family, with the goal of minimizing the number of instances
-that need to be started and managed. However, the lack of
+a single instance for the ``e2`` family, because the cost of the boot disk (which is
+per-instance instead of per-vCPU) is amortized over the greatest number of vCPUs. However,
+the lack of
 :ref:`configuration options to constain the number of instances <config_number_of_instances_options>`
 means the system will create the default maximum number of instances, 10,
 which will result in the creation of 320 vCPUs and a burn rate of $7.92/hour, which may be
-more than actually required.
+more than actually required depending on the actual workload. Note that in addition to the
+default maximum number of instances being 10, the default maximum total price per hour is
+$10.00, which is designed to limit the user's exposure to a high burn rate without explicitly
+asking for it.
 
 With the exception of the startup script, this could also be specified entirely on the
 command line:
@@ -389,17 +407,17 @@ Constraining the Instance Type and Containing Costs
 
 This example uses more sophisticated constraints to limit the instance types and number of
 instances to use. First, we want to use slightly higher-performance processors and choose
-the ``n2`` series. We want to limit instance types to those that have at least 8 but not
-more than 40 vCPUs; we might choose these numbers to balance parallelism with the network
-and disk bandwidth available on a single instance. At the same time, we know that our
-tasks are themselves parallel internally, and require 4 vCPUs per task for optimal
-performance. They also require memory of at least 32 GB per task. Finally, since we have a
-large number of tasks to process but our task code is still experimental, we are concerned
-about starting too many instances at once and thus having a high burn rate in case
-something goes wrong and we want to stop the job in the middle when we detect a problem.
-We set limits of 20 instances total, 100 simultaneous tasks, and a burn rate of $15.00 per
-hour. Whichever of these is most constraining will determine the total number of instances
-that will be started.
+the ``n`` series using a balanced persistent boot disk. We want to limit instance types to
+those that have at least 8 but not more than 40 vCPUs; we might choose these numbers to
+balance parallelism with the network and disk bandwidth available on a single instance. At
+the same time, we know that our tasks are themselves parallel internally, and require 4
+vCPUs per task for optimal performance. They also require memory of at least 32 GB per
+task. Finally, since we have a large number of tasks to process but our task code is still
+experimental, we are concerned about starting too many instances at once and thus having a
+high burn rate in case something goes wrong and we want to stop the job in the middle when
+we detect a problem. We set limits of 20 instances total, 100 simultaneous tasks, and a
+burn rate of $15.00 per hour. Whichever of these is most constraining will determine the
+total number of instances that will be started.
 
 .. code-block:: yaml
 
@@ -416,6 +434,7 @@ that will be started.
       max_instances: 20
       max_simultaneous_tasks: 100
       max_total_price_per_hour: 15.00
+      boot_disk_types: pd-balanced
       startup_script: |
         #!/bin/bash
         echo "Hello, world!"
@@ -423,7 +442,7 @@ that will be started.
 In this case, the system starts by looking at all available ``n2-``, ``n3-``, and ``n4-``
 instance types that meet our vCPU and memory constraints while minimizing price per vCPU.
 This results in the selection of ``n4-highmem-32`` as the optimal instance type with the
-lowest cost of $0.062194/vCPU/hour while supporting the most vCPUs in a single instance.
+lowest cost of $0.0622/vCPU/hour while supporting the most vCPUs in a single instance.
 For the number of instances, the system starts with the maximum allowed, 20. However, with
 a maximum of 100 simultaneous tasks, 32 vCPUs, and 4 vCPUs per task, this is reduced to 12.
 Finally, at a cost of $1.99/hour for each instance, the price limit of $15.00 per hour

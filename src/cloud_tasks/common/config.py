@@ -424,6 +424,8 @@ class Config(BaseModel, validate_assignment=True):
             self.run.min_instances = 1
         if self.run.max_instances is None:
             self.run.max_instances = 10
+        if self.run.max_total_price_per_hour is None:
+            self.run.max_total_price_per_hour = 10
         if self.run.scaling_check_interval is None:
             self.run.scaling_check_interval = 60
         if self.run.instance_termination_delay is None:

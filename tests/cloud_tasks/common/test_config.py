@@ -210,7 +210,7 @@ def test_update_run_config_from_provider_config_defaults():
     assert c.run.min_simultaneous_tasks is None
     assert c.run.max_simultaneous_tasks is None
     assert c.run.min_total_price_per_hour is None
-    assert c.run.max_total_price_per_hour is None
+    assert c.run.max_total_price_per_hour == 10
     assert c.run.cpu_family is None
     assert c.run.min_cpu_rank is None
     assert c.run.max_cpu_rank is None

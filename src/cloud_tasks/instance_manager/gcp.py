@@ -123,36 +123,37 @@ class GCPComputeInstanceManager(InstanceManager):
     _DEFAULT_BOOT_DISK_THROUGHPUT = 170
     _MACHINE_TYPE_FAMILY_TO_DISK_TYPES = {
         # General purpose
+        "c3": ["hd-balanced", "pd-balanced", "pd-ssd"],
+        "c3d": ["hd-balanced", "pd-balanced", "pd-ssd"],
         "c4": ["hd-balanced"],
         "c4a": ["hd-balanced"],
         "c4d": None,
-        "n4": ["hd-balanced"],
-        "c3": ["hd-balanced", "pd-balanced", "pd-ssd"],
-        "c3d": ["hd-balanced", "pd-balanced", "pd-ssd"],
         "e2": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd"],
-        "n2": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd"],
-        "n2d": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd", "hd-balanced"],
-        "t2a": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd"],
-        "t2d": ["pd-standard", "pd-balanced", "pd-ssd"],
-        "n1": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd"],
         "f1": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd"],  #
         "g1": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd"],  #
+        "n1": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd"],
+        "n2": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd"],
+        "n2d": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd", "hd-balanced"],
+        "n4": ["hd-balanced"],
+        "t2a": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd"],
+        "t2d": ["pd-standard", "pd-balanced", "pd-ssd"],
         # Compute-optimized
-        "h3": ["pd-balanced", "hd-balanced"],
         "c2": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd"],
         "c2d": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd"],
+        "h3": ["pd-balanced", "hd-balanced"],
         # Memory-optimized
+        "m1": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd", "hd-balanced"],
+        "m2": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd", "hd-balanced"],
+        "m3": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd", "hd-balanced"],
         "m4": ["hd-balanced"],
         "x4": ["hd-balanced"],
-        "m3": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd", "hd-balanced"],
-        "m2": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd", "hd-balanced"],
-        "m1": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd", "hd-balanced"],
         # Storage-optimized
         "z3": ["pd-balanced", "pd-ssd", "hd-balanced"],
         # Accelerator-optimized
-        "a4": ["hd-balanced"],
-        "a3": ["pd-balanced", "pd-ssd", "hd-balanced"],
         "a2": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd"],
+        "a3": ["pd-balanced", "pd-ssd", "hd-balanced"],
+        "a4": ["hd-balanced"],
+        "ct6e": ["hd-balanced"],  # This is a guess
         "g2": ["pd-standard", "pd-balanced", "pd-ssd"],
     }
 

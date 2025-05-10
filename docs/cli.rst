@@ -97,24 +97,38 @@ in the configuration file (see :ref:`config_compute_instance_options`).
 --cpu-family CPU_FAMILY       The CPU family to use, for example ``Intel Cascade Lake`` or ``AMD Genoa``.
 --min-cpu-rank MIN_CPU_RANK   The minimum CPU performance rank to use (0 is the slowest)
 --max-cpu-rank MAX_CPU_RANK   The maximum CPU performance rank to use (0 is the slowest)
---min-cpu N                   The minimum number of vCPUs per instance
---max-cpu N                   The maximum number of vCPUs per instance
---min-total-memory N          The minimum amount of memory in GB per instance
---max-total-memory N          The maximum amount of memory in GB per instance
---min-memory-per-cpu N        The minimum amount of memory per vCPU
---max-memory-per-cpu N        The maximum amount of memory per vCPU
---min-local-ssd N             The minimum amount of local extra SSD storage in GB per instance
---max-local-ssd N             The maximum amount of local extra SSD storage in GB per instance
---min-local-ssd-per-cpu N     The minimum amount of local extra SSD storage per vCPU
---max-local-ssd-per-cpu N     The maximum amount of local extra SSD storage per vCPU
---min-boot-disk N             The minimum amount of boot disk in GB per instance
---max-boot-disk N             The maximum amount of boot disk in GB per instance
---min-boot-disk-per-cpu N     The minimum amount of boot disk per vCPU
---max-boot-disk-per-cpu N     The maximum amount of boot disk per vCPU
 --instance-types TYPES        A single instance type or list of instance types to use;
                               instance types are specified using Python-style regular expressions
                               (if no anchor character like ``^`` or ``$`` is specified, the given
                               string will match any part of the instance type name)
+--min-cpu N                   The minimum number of vCPUs per instance
+--max-cpu N                   The maximum number of vCPUs per instance
+--cpus-per-task N             The number of vCPUs per task; this is also used to configure
+                              the worker process to limit the number of tasks that can be run
+                              simultaneously on a single instance
+--min-tasks-per-instance N    The minimum number of tasks per instance
+--max-tasks-per-instance N    The maximum number of tasks per instance
+--min-total-memory N          The minimum amount of memory in GB per instance
+--max-total-memory N          The maximum amount of memory in GB per instance
+--min-memory-per-cpu N        The minimum amount of memory per vCPU
+--max-memory-per-cpu N        The maximum amount of memory per vCPU
+--min-memory-per-task N       The minimum amount of memory per task
+--max-memory-per-task N       The maximum amount of memory per task
+--min-local-ssd N             The minimum amount of local extra SSD storage in GB per instance
+--max-local-ssd N             The maximum amount of local extra SSD storage in GB per instance
+--local-ssd-base-size N       The base size of the local extra SSD storage in GB per instance
+--min-local-ssd-per-cpu N     The minimum amount of local extra SSD storage per vCPU
+--max-local-ssd-per-cpu N     The maximum amount of local extra SSD storage per vCPU
+--min-local-ssd-per-task N    The minimum amount of local extra SSD storage per task
+--max-local-ssd-per-task N    The maximum amount of local extra SSD storage per task
+--total-boot-disk-size N      The total size of the boot disk in GB per instance
+--boot-disk-base-size N       The base size of the boot disk in GB per instance
+--boot-disk-per-cpu N         The amount of boot disk per vCPU
+--boot-disk-per-task N        The amount of boot disk per task
+--boot-disk-types TYPES       The types of boot disks to use
+--boot-disk-iops N            The number of provisioned IOPS for the boot disk, if applicable
+--boot-disk-throughput N      The number of provisioned throughput in MB/s for the boot disk, if applicable
+
 
 .. _cli_number_of_instances_options:
 
