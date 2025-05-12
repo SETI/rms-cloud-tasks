@@ -1277,11 +1277,14 @@ class GCPComputeInstanceManager(InstanceManager):
         self,
         *,
         instance_type: str,
-        boot_disk_size: int,  # GB
         startup_script: str,
         job_id: str,
         use_spot: bool,
         image: str,
+        boot_disk_type: str,
+        boot_disk_size: int,  # GB
+        boot_disk_iops: Optional[int] = None,
+        boot_disk_throughput: Optional[int] = None,  # MB/s
         zone: Optional[str] = None,
     ) -> Tuple[str, str]:
         """
@@ -1293,6 +1296,12 @@ class GCPComputeInstanceManager(InstanceManager):
             job_id: Job ID to use for the instance
             use_spot: Whether to use a spot instance
             image: Image to use
+            boot_disk_type: Boot disk type to use
+            boot_disk_size: Boot disk size in GB
+            provisioned_iops: Number of provisioned IOPS; must be specified for `pd-extreme` and
+                `hd-balanced`
+            provisioned_throughput: Amount of provisioned throughput (MB/s); must be specified for
+                `hd-balanced`
             zone: Zone to use for the instance; if not specified use the default zone,
                 or if none choose a random zone
 
@@ -1337,14 +1346,41 @@ class GCPComputeInstanceManager(InstanceManager):
 
         # Prepare the disk configuration
         # https://cloud.google.com/python/docs/reference/compute/latest/google.cloud.compute_v1.types.AttachedDisk
+
+        disk_type_map = {
+            "pd-standard": "pd-standard",
+            "pd-balanced": "pd-balanced",
+            "pd-ssd": "pd-ssd",
+            "pd-extreme": "pd-extreme",
+            "hd-balanced": "hyperdisk-balanced",
+        }
+
+        if boot_disk_type not in disk_type_map:
+            raise ValueError(f"Invalid boot disk type: {boot_disk_type}")
+
+        gcp_disk_type = disk_type_map[boot_disk_type]
+
         disk_config = {
             "boot": True,
             "auto_delete": True,
             "initialize_params": {
                 "source_image": source_image,
                 "disk_size_gb": boot_disk_size,
+                "disk_type": f"zones/{zone}/diskTypes/{gcp_disk_type}",
             },
         }
+
+        # Add IOPS for pd-extreme and hd-balanced
+        if boot_disk_type in ["pd-extreme", "hd-balanced"]:
+            if boot_disk_iops is None:
+                raise ValueError("boot_disk_iops must be specified for pd-extreme and hd-balanced")
+            disk_config["initialize_params"]["provisioned_iops"] = boot_disk_iops
+
+        # Add throughput for hd-balanced
+        if boot_disk_type == "hd-balanced":
+            if boot_disk_throughput is None:
+                raise ValueError("boot_disk_throughput must be specified for hd-balanced")
+            disk_config["initialize_params"]["provisioned_throughput"] = boot_disk_throughput
 
         # Prepare the network interface configuration
         # https://cloud.google.com/python/docs/reference/compute/latest/google.cloud.compute_v1.types.NetworkInterface
@@ -1557,7 +1593,18 @@ class GCPComputeInstanceManager(InstanceManager):
             instances_list: List of GCP instance objects
 
         Returns:
-            List of instance dictionaries with standardized fields
+            List of instance dictionaries with standardized fields:
+                id: Instance ID
+                type: Instance type
+                state: Instance state
+                creation_time: Instance creation time
+                zone: Instance zone
+                boot_disk_type: Boot disk type
+                boot_disk_iops: Boot disk IOPS
+                boot_disk_throughput: Boot disk throughput
+                private_ip: Private IP address
+                public_ip: Public IP address
+                job_id: Job ID
         """
         instances = []
         for instance in instances_list:
@@ -1570,7 +1617,41 @@ class GCPComputeInstanceManager(InstanceManager):
                 "state": self._STATUS_MAP.get(instance.status, "unknown"),
                 "creation_time": instance.creation_timestamp,
                 "zone": instance.zone.split("/")[-1],  # Extract zone name from URL
+                "boot_disk_type": None,
+                "boot_disk_iops": None,
+                "boot_disk_throughput": None,
             }
+
+            # TODO This doesn't work
+            # Extract boot disk information
+            if instance.disks and len(instance.disks) > 0:
+                boot_disk = instance.disks[0]  # First disk is the boot disk
+                if boot_disk.initialize_params and boot_disk.initialize_params.disk_type:
+                    # Extract disk type from URL (e.g., ".../diskTypes/pd-balanced")
+                    disk_type = boot_disk.initialize_params.disk_type.split("/")[-1]
+                    # Convert GCP disk type names to our disk type names
+                    disk_type_map = {
+                        "pd-standard": "pd-standard",
+                        "pd-balanced": "pd-balanced",
+                        "pd-ssd": "pd-ssd",
+                        "pd-extreme": "pd-extreme",
+                        "hyperdisk-balanced": "hd-balanced",
+                    }
+                    instance_info["boot_disk_type"] = disk_type_map.get(disk_type, disk_type)
+
+                    # Add IOPS for pd-extreme and hd-balanced
+                    if instance_info["boot_disk_type"] in ["pd-extreme", "hd-balanced"]:
+                        if boot_disk.initialize_params.provisioned_iops:
+                            instance_info["boot_disk_iops"] = (
+                                boot_disk.initialize_params.provisioned_iops
+                            )
+
+                    # Add throughput for hd-balanced
+                    if instance_info["boot_disk_type"] == "hd-balanced":
+                        if boot_disk.initialize_params.provisioned_throughput:
+                            instance_info["boot_disk_throughput"] = (
+                                boot_disk.initialize_params.provisioned_throughput
+                            )
 
             if instance_info["state"] == "unknown":
                 self._logger.error(
@@ -1820,7 +1901,7 @@ class GCPComputeInstanceManager(InstanceManager):
         """
         self._logger.debug(f"Waiting for operation {operation.name} to complete")
 
-        result = operation.result(timeout=120)  # TODO
+        result = operation.result(timeout=240)
 
         if operation.error_code:
             self._logger.error(

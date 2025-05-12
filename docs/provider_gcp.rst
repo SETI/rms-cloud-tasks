@@ -47,17 +47,17 @@ When pricing or selecting one of these instances, if you do not specify a boot d
 supported types will be used. You can specify one or more type with the ``boot_disk_types``
 configuration option or the ``--boot-disk-types`` command line option like this:
 
-The ``pd-extreme`` requires the specification of the number of provisioned IOPS using the
+The ``pd-extreme`` disk type requires the specification of the number of provisioned IOPS using the
 ``boot_disk_iops`` configuration option or the ``--boot-disk-iops`` command line option. If not
 specified, the default number of IOPS (3,120) will be used. The ``hd-balanced`` disk type
 requires the specification of the number of provisioned IOPS, and also requires the
 specification of the amount of provisioned throughput in MB/s using the
 ``boot_disk_throughput`` configuration option or the ``--boot-disk-throughput`` command line
-option. If not specified, the default amount of throughput (170) will be used.
+option. If not specified, the default amount of throughput (170 MB/s) will be used.
 
 Note that different instances and boot disk types have different limits on the number of IOPS
 and the amount of throughput, and also the minimum and maximum disk size. These limits are
-not encoded in the ``cloud_tasks`` system and it is your responsibility to ensure that what
+not enforced in the ``cloud_tasks`` system and it is your responsibility to ensure that what
 you specify is within the supported limits. Otherwise you will see an error when instances
 are being created.
 
@@ -84,326 +84,291 @@ or
     cloud_tasks <command> --boot-disk-types pd-standard pd-balanced pd-ssd
 
 
-.. list-table::
-   :header-rows: 1
+Boot Disk Types Legend:
 
-   * - Machine Type
-     - pd-standard
-     - pd-balanced
-     - pd-extreme
-     - pd-ssd
-     - hd-balanced
-
-   * - **General Purpose**
-     -
-     -
-     -
-     -
-     -
-   * - c3
-     -
-     - X
-     -
-     - X
-     - X
-   * - c3d
-     -
-     - X
-     -
-     - X
-     - X
-   * - c4
-     -
-     -
-     -
-     -
-     - X
-   * - c4a
-     -
-     -
-     -
-     -
-     - X
-   * - c4d
-     -
-     -
-     -
-     -
-     -
-   * - e2
-     - X
-     - X
-     - X
-     - X
-     -
-   * - f1
-     - X
-     - X
-     - X
-     - X
-     -
-   * - g1
-     - X
-     - X
-     - X
-     - X
-     -
-   * - n1
-     - X
-     - X
-     - X
-     - X
-     -
-   * - n2
-     - X
-     - X
-     - X
-     - X
-     -
-   * - n2d
-     - X
-     - X
-     - X
-     - X
-     - X
-   * - n4
-     -
-     -
-     -
-     -
-     - X
-   * - t2a
-     - X
-     - X
-     - X
-     - X
-     -
-   * - t2d
-     - X
-     - X
-     -
-     - X
-     -
-
-   * - **Compute Optimized**
-     -
-     -
-     -
-     -
-     -
-   * - c2
-     - X
-     - X
-     - X
-     - X
-     -
-   * - c2d
-     - X
-     - X
-     - X
-     - X
-     -
-   * - h3
-     -
-     - X
-     -
-     -
-     - X
-
-   * - **Memory Optimized**
-     -
-     -
-     -
-     -
-     -
-   * - m1
-     - X
-     - X
-     - X
-     - X
-     - X
-   * - m2
-     - X
-     - X
-     - X
-     - X
-     - X
-   * - m3
-     - X
-     - X
-     - X
-     - X
-     - X
-   * - m4
-     -
-     -
-     -
-     -
-     - X
-   * - x4
-     -
-     -
-     -
-     -
-     - X
-
-   * - **Storage Optimized**
-     -
-     -
-     -
-     -
-     -
-   * - z3
-     -
-     - X
-     -
-     - X
-     - X
-
-   * - **Accelerator Optimized**
-     -
-     -
-     -
-     -
-     -
-   * - a2
-     - X
-     - X
-     - X
-     - X
-     -
-   * - a3
-     -
-     - X
-     -
-     - X
-     - X
-   * - a4
-     -
-     -
-     -
-     -
-     - X
-   * - ct6e
-     -
-     -
-     -
-     -
-     - X
-   * - g2
-     - X
-     - X
-     -
-     - X
-     -
+* B1: pd-standard (Standard persistent disk)
+* B2: pd-balanced (Balanced persistent disk)
+* B3: pd-extreme (Extreme persistent disk)
+* B4: pd-ssd (SSD persistent disk)
+* B5: hd-balanced (Balanced persistent disk with HDD)
 
 .. list-table::
    :header-rows: 1
 
    * - Machine Type
+     - B1
+     - B2
+     - B3
+     - B4
+     - B5
      - Processor Type
-     - Performance Rank
+     - Perf. Rank
 
    * - **General Purpose**
      -
      -
+     -
+     -
+     -
+     -
+     -
    * - c3
+     -
+     - X
+     -
+     - X
+     - X
      - Intel Ice Lake
      - 16
    * - c3d
+     -
+     - X
+     -
+     - X
+     - X
      - AMD Milan
      - 17
    * - c4
+     -
+     -
+     -
+     -
+     - X
      - Intel Ice Lake
      - 16
    * - c4a
+     -
+     -
+     -
+     -
+     - X
      - AMD Milan
      - 17
    * - c4d
+     -
+     -
+     -
+     -
+     -
      - Intel Ice Lake
      - 16
    * - e2
+     - X
+     - X
+     - X
+     - X
+     -
      - Intel Cascade Lake
      - 12
    * - f1
+     - X
+     - X
+     - X
+     - X
+     -
      - Intel Cascade Lake
      - 12
    * - g1
+     - X
+     - X
+     - X
+     - X
+     -
      - Intel Cascade Lake
      - 12
    * - n1
+     - X
+     - X
+     - X
+     - X
+     -
      - Intel Skylake
      - 11
    * - n2
+     - X
+     - X
+     - X
+     - X
+     -
      - Intel Cascade Lake
      - 12
    * - n2d
+     - X
+     - X
+     - X
+     - X
+     - X
      - AMD Rome
      - 13
    * - n4
+     -
+     -
+     -
+     -
+     - X
      - Intel Ice Lake
      - 16
    * - t2a
+     - X
+     - X
+     - X
+     - X
+     -
      - AMD Milan
      - 17
    * - t2d
+     - X
+     - X
+     -
+     - X
+     -
      - AMD Rome
      - 13
 
    * - **Compute Optimized**
      -
      -
+     -
+     -
+     -
+     -
+     -
    * - c2
+     - X
+     - X
+     - X
+     - X
+     -
      - Intel Cascade Lake
      - 12
    * - c2d
+     - X
+     - X
+     - X
+     - X
+     -
      - AMD Rome
      - 13
    * - h3
+     -
+     - X
+     -
+     -
+     - X
      - Intel Ice Lake
      - 16
 
    * - **Memory Optimized**
      -
      -
+     -
+     -
+     -
+     -
+     -
    * - m1
+     - X
+     - X
+     - X
+     - X
+     - X
      - Intel Skylake
      - 11
    * - m2
+     - X
+     - X
+     - X
+     - X
+     - X
      - Intel Cascade Lake
      - 12
    * - m3
+     - X
+     - X
+     - X
+     - X
+     - X
      - Intel Ice Lake
      - 16
    * - m4
+     -
+     -
+     -
+     -
+     - X
      - Intel Ice Lake
      - 16
    * - x4
+     -
+     -
+     -
+     -
+     - X
      - Intel Ice Lake
      - 16
 
    * - **Storage Optimized**
      -
      -
+     -
+     -
+     -
+     -
+     -
    * - z3
+     -
+     - X
+     -
+     - X
+     - X
      - Intel Ice Lake
      - 16
 
    * - **Accelerator Optimized**
      -
      -
+     -
+     -
+     -
+     -
+     -
    * - a2
+     - X
+     - X
+     - X
+     - X
+     -
      - Intel Cascade Lake
      - 12
    * - a3
+     -
+     - X
+     -
+     - X
+     - X
      - Intel Ice Lake
      - 16
    * - a4
+     -
+     -
+     -
+     -
+     - X
      - Intel Ice Lake
      - 16
    * - ct6e
+     -
+     -
+     -
+     -
+     - X
      - Intel Ice Lake
      - 16
    * - g2
+     - X
+     - X
+     -
+     - X
+     -
      - Intel Cascade Lake
      - 12
