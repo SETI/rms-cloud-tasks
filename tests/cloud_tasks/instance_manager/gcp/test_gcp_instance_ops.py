@@ -47,6 +47,7 @@ async def test_start_instance_basic(
     mock_credentials = copy.deepcopy(mock_credentials)
     # Arrange
     instance_type = "n1-standard-2"
+    boot_disk_type = "pd-balanced"
     startup_script = "#!/bin/bash\necho 'Hello World'"
     job_id = "test-job-123"
     use_spot = False
@@ -83,6 +84,7 @@ async def test_start_instance_basic(
                     instance_id, zone = await gcp_instance_manager_n1_n2.start_instance(
                         instance_type=instance_type,
                         boot_disk_size=20,
+                        boot_disk_type=boot_disk_type,
                         startup_script=startup_script,
                         job_id=job_id,
                         use_spot=use_spot,
@@ -135,6 +137,7 @@ async def test_start_instance_spot(
     mock_credentials = copy.deepcopy(mock_credentials)
     # Arrange
     instance_type = "n1-standard-2"
+    boot_disk_type = "pd-balanced"
     startup_script = "#!/bin/bash\necho 'Hello World'"
     job_id = "test-job-123"
     use_spot = True
@@ -173,6 +176,7 @@ async def test_start_instance_spot(
                 instance_id, zone = await gcp_instance_manager_n1_n2.start_instance(
                     instance_type=instance_type,
                     boot_disk_size=20,
+                    boot_disk_type=boot_disk_type,
                     startup_script=startup_script,
                     job_id=job_id,
                     use_spot=use_spot,
@@ -206,6 +210,7 @@ async def test_start_instance_with_service_account(
     gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
     mock_credentials = copy.deepcopy(mock_credentials)
     instance_type = "n1-standard-2"
+    boot_disk_type = "pd-balanced"
     startup_script = "#!/bin/bash\necho 'Hello World'"
     job_id = "test-job-123"
     use_spot = False
@@ -248,6 +253,7 @@ async def test_start_instance_with_service_account(
                 instance_id, zone = await gcp_instance_manager_n1_n2.start_instance(
                     instance_type=instance_type,
                     boot_disk_size=20,
+                    boot_disk_type=boot_disk_type,
                     startup_script=startup_script,
                     job_id=job_id,
                     use_spot=use_spot,
@@ -281,6 +287,7 @@ async def test_start_instance_with_custom_image_uri(
     gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
     mock_credentials = copy.deepcopy(mock_credentials)
     instance_type = "n1-standard-2"
+    boot_disk_type = "pd-balanced"
     startup_script = "#!/bin/bash\necho 'Hello World'"
     job_id = "test-job-123"
     use_spot = False
@@ -311,6 +318,7 @@ async def test_start_instance_with_custom_image_uri(
             instance_id, zone = await gcp_instance_manager_n1_n2.start_instance(
                 instance_type=instance_type,
                 boot_disk_size=20,
+                boot_disk_type=boot_disk_type,
                 startup_script=startup_script,
                 job_id=job_id,
                 use_spot=use_spot,
@@ -341,6 +349,7 @@ async def test_start_instance_with_random_zone(
     gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
     mock_credentials = copy.deepcopy(mock_credentials)
     instance_type = "n1-standard-2"
+    boot_disk_type = "pd-balanced"
     startup_script = "#!/bin/bash\necho 'Hello World'"
     job_id = "test-job-123"
     use_spot = False
@@ -387,6 +396,7 @@ async def test_start_instance_with_random_zone(
                     instance_id, zone = await gcp_instance_manager_n1_n2.start_instance(
                         instance_type=instance_type,
                         boot_disk_size=20,
+                        boot_disk_type=boot_disk_type,
                         startup_script=startup_script,
                         job_id=job_id,
                         use_spot=use_spot,
@@ -417,6 +427,7 @@ async def test_start_instance_error_handling(
     gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
     mock_credentials = copy.deepcopy(mock_credentials)
     instance_type = "n1-standard-2"
+    boot_disk_type = "pd-balanced"
     startup_script = "#!/bin/bash\necho 'Hello World'"
     job_id = "test-job-123"
     use_spot = False
@@ -444,6 +455,7 @@ async def test_start_instance_error_handling(
                 await gcp_instance_manager_n1_n2.start_instance(
                     instance_type=instance_type,
                     boot_disk_size=20,
+                    boot_disk_type=boot_disk_type,
                     startup_script=startup_script,
                     job_id=job_id,
                     use_spot=use_spot,
@@ -935,7 +947,9 @@ async def test_wait_for_operation_success(
 
     # Assert
     assert result == mock_result
-    mock_operation.result.assert_called_once_with(timeout=120)
+    mock_operation.result.assert_called_once_with(
+        timeout=gcp_instance_manager_n1_n2._DEFAULT_OPERATION_TIMEOUT
+    )
 
 
 @pytest.mark.asyncio
@@ -958,7 +972,9 @@ async def test_wait_for_operation_with_error(
             mock_operation, "us-central1-a", "Test operation"
         )
 
-    mock_operation.result.assert_called_once_with(timeout=120)
+    mock_operation.result.assert_called_once_with(
+        timeout=gcp_instance_manager_n1_n2._DEFAULT_OPERATION_TIMEOUT
+    )
 
 
 @pytest.mark.asyncio
@@ -994,7 +1010,9 @@ async def test_wait_for_operation_with_warnings(
 
     # Assert
     assert result == mock_result
-    mock_operation.result.assert_called_once_with(timeout=120)
+    mock_operation.result.assert_called_once_with(
+        timeout=gcp_instance_manager_n1_n2._DEFAULT_OPERATION_TIMEOUT
+    )
 
 
 @pytest.mark.asyncio
@@ -1015,7 +1033,9 @@ async def test_wait_for_operation_timeout(
             mock_operation, "us-central1-a", "Test operation"
         )
 
-    mock_operation.result.assert_called_once_with(timeout=120)
+    mock_operation.result.assert_called_once_with(
+        timeout=gcp_instance_manager_n1_n2._DEFAULT_OPERATION_TIMEOUT
+    )
 
 
 @pytest.mark.asyncio
@@ -1036,4 +1056,6 @@ async def test_wait_for_operation_cancellation(
             mock_operation, "us-central1-a", "Test operation"
         )
 
-    mock_operation.result.assert_called_once_with(timeout=120)
+    mock_operation.result.assert_called_once_with(
+        timeout=gcp_instance_manager_n1_n2._DEFAULT_OPERATION_TIMEOUT
+    )

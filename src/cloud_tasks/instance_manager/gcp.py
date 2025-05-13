@@ -54,7 +54,7 @@ class GCPComputeInstanceManager(InstanceManager):
 
     _JOB_ID_TAG_PREFIX = "rmscr-"
 
-    _DEFAULT_BOOT_DISK_TYPE = "balanced"
+    _DEFAULT_OPERATION_TIMEOUT = 240  # seconds
 
     # Map of instance statuses to standardized statuses
     _STATUS_MAP = {
@@ -1901,7 +1901,7 @@ class GCPComputeInstanceManager(InstanceManager):
         """
         self._logger.debug(f"Waiting for operation {operation.name} to complete")
 
-        result = operation.result(timeout=240)
+        result = operation.result(timeout=self._DEFAULT_OPERATION_TIMEOUT)
 
         if operation.error_code:
             self._logger.error(

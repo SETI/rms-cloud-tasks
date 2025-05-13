@@ -308,9 +308,11 @@ export RMS_CLOUD_WORKER_USE_NEW_PROCESS={bool(self._run_config.worker_use_new_pr
 
         self._optimal_instance_info = optimal_instance_info
 
+        boot_disk_type = optimal_instance_info["boot_disk_type"]
+
         self._logger.info(
-            f"|| Selected instance type: {optimal_instance_info['name']} in "
-            f"{optimal_instance_info['zone']} "
+            f"|| Selected instance type: {optimal_instance_info['name']} ({boot_disk_type}) "
+            f"in {optimal_instance_info['zone']} "
             f"at ${optimal_instance_info['total_price']:.6f}/hour"
         )
         local_ssd_str = (
@@ -319,7 +321,7 @@ export RMS_CLOUD_WORKER_USE_NEW_PROCESS={bool(self._run_config.worker_use_new_pr
             else "no local SSD"
         )
         self._logger.info(
-            f"||  {optimal_instance_info['vcpu']} vCPUs, {optimal_instance_info['mem_gb']} GB RAM, "
+            f"||   {optimal_instance_info['vcpu']} vCPUs, {optimal_instance_info['mem_gb']} GB RAM, "
             f"{local_ssd_str}"
         )
 
@@ -327,7 +329,6 @@ export RMS_CLOUD_WORKER_USE_NEW_PROCESS={bool(self._run_config.worker_use_new_pr
         # optimal instance
 
         boot_disk_size = optimal_instance_info["boot_disk_gb"]
-        boot_disk_type = optimal_instance_info["boot_disk_type"]
 
         if boot_disk_size is None:
             self._logger.warning(
@@ -336,7 +337,7 @@ export RMS_CLOUD_WORKER_USE_NEW_PROCESS={bool(self._run_config.worker_use_new_pr
             )
             boot_disk_size = self._DEFAULT_BOOT_DISK_SIZE_PER_CPU_GB * optimal_instance_info["vcpu"]
         else:
-            self._logger.info(f"|| Derived boot disk size: {boot_disk_size} GB ({boot_disk_type})")
+            self._logger.info(f"|| Derived boot disk size: {boot_disk_size} GB")
         self._optimal_instance_boot_disk_size = boot_disk_size
 
         # Derive the number of tasks per instance from the constraints and the number of vCPUs in the
@@ -393,7 +394,15 @@ export RMS_CLOUD_WORKER_USE_NEW_PROCESS={bool(self._run_config.worker_use_new_pr
         # Also count by "state" and "zone" fields
         running_instances_by_type = {}
         for instance in running_instances:
-            key = (instance["type"], instance["state"], instance["zone"])
+            boot_disk_type = instance["boot_disk_type"]
+            if boot_disk_type is None:
+                boot_disk_type = self._run_config.boot_disk_types[0]
+            key = (
+                instance["type"],
+                boot_disk_type,
+                instance["state"],
+                instance["zone"],
+            )
             if key not in running_instances_by_type:
                 running_instances_by_type[key] = 0
             running_instances_by_type[key] += 1
@@ -405,29 +414,40 @@ export RMS_CLOUD_WORKER_USE_NEW_PROCESS={bool(self._run_config.worker_use_new_pr
             summary = "No instances found"
             return num_running, running_cpus, running_price, summary
 
+        self._logger.warning(
+            "Due to limitations in the GCP API, we cannot currently detect the boot disk type "
+            "for each instance."
+        )
+        self._logger.warning(
+            "Instead we will use the first disk type specified with the "
+            "boot_disk_types configuration option "
+        )
+        self._logger.warning(
+            " along with the specified IOPS and throughput to estimate the price of each instance."
+        )
         summary = ""
         summary += "Running instance summary:\n"
-        summary += (
-            "  State       Instance Type             vCPUs  Zone             Count  Total Price\n"
-        )
-        summary += (
-            "  --------------------------------------------------------------------------------\n"
-        )
+        summary += "  State       Instance Type             Boot Disk    vCPUs  Zone             Count  Total Price\n"
+        summary += "  ---------------------------------------------------------------------------------------------\n"
 
         sorted_keys = sorted(running_instances_by_type.keys(), key=lambda x: (x[1], x[0], x[2]))
-        for type_, state, zone in sorted_keys:
-            count = running_instances_by_type[(type_, state, zone)]
+        for type_, boot_disk_type, state, zone in sorted_keys:
+            count = running_instances_by_type[(type_, boot_disk_type, state, zone)]
             instance = self._all_instance_info[type_]
             cpus = instance["vcpu"]
             try:
-                price = self._pricing_info[type_][zone]["total_price"] * count
+                price = self._pricing_info[type_][zone][boot_disk_type]["total_price"] * count
             except KeyError:
                 wildcard_zone = zone[:-1] + "*"
                 try:
-                    price = self._pricing_info[type_][wildcard_zone]["total_price"] * count
+                    price = (
+                        self._pricing_info[type_][wildcard_zone][boot_disk_type]["total_price"]
+                        * count
+                    )
                 except KeyError:
                     self._logger.warning(
-                        f"No pricing info for instance type {type_} in zone {zone}"
+                        f"No pricing info for instance type {type_} ({boot_disk_type}) in "
+                        f"zone {zone}"
                     )
                     price = 0
             price_str = "N/A"
@@ -437,16 +457,14 @@ export RMS_CLOUD_WORKER_USE_NEW_PROCESS={bool(self._run_config.worker_use_new_pr
                 running_cpus += count * cpus
                 running_price += price
             summary += f"  {state:<10}  {type_:<24}  "
-            summary += f"{cpus:>5}  "
+            summary += f"{str(boot_disk_type):<12} {cpus:>5}  "
             summary += f"{zone:<15}  {count:>5}  "
             summary += f"{price_str:>11}\n"
 
         running_price_str = f"${running_price:.2f}"
-        summary += (
-            "  --------------------------------------------------------------------------------\n"
-        )
-        summary += f"  Total running/starting:               {running_cpus:>5} (weighted)        "
-        summary += f"{num_running:>5}  {running_price_str:>11}\n"
+        summary += "  ---------------------------------------------------------------------------------------------\n"
+        summary += f"  Total running/starting:                            {running_cpus:>5} "
+        summary += f"(weighted)        {num_running:>5}  {running_price_str:>11}\n"
 
         return num_running, running_cpus, running_price, summary
 
@@ -716,6 +734,11 @@ export RMS_CLOUD_WORKER_USE_NEW_PROCESS={bool(self._run_config.worker_use_new_pr
                         instance_id, zone = await self._instance_manager.start_instance(
                             instance_type=self._optimal_instance_info["name"],
                             boot_disk_size=self._optimal_instance_boot_disk_size,
+                            boot_disk_type=self._optimal_instance_info["boot_disk_type"],
+                            boot_disk_iops=self._optimal_instance_info["boot_disk_iops"],
+                            boot_disk_throughput=self._optimal_instance_info[
+                                "boot_disk_throughput"
+                            ],
                             startup_script=startup_script,
                             job_id=self._job_id,
                             use_spot=self._run_config.use_spot,

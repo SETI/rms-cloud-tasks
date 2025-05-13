@@ -82,6 +82,9 @@ def orchestrator(mock_config):
         "local_ssd_gb": 0,
         "total_price": 5.75,
         "zone": "us-central1-a",
+        "boot_disk_type": "pd-balanced",
+        "boot_disk_iops": None,
+        "boot_disk_throughput": None,
     }
     orchestrator._optimal_instance_boot_disk_size = 20
     orchestrator._optimal_instance_num_tasks = 2
