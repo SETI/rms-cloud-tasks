@@ -459,32 +459,31 @@ async def list_running_instances_cmd(args: argparse.Namespace, config: Config) -
 
             if not args.detail:
                 # Headers
-                if args.provider == "gcp":
+                if args.provider.lower() == "gcp":
                     print(
-                        f"{'Job ID':<16} {'ID':<64} {'Type':<15} {'State':<11} {'Zone':<15} {'Created':<30}"
+                        f"{'Job ID':<25} {'ID':<64} {'Type':<15} {'State':<11} {'Zone':<15} {'Created':<30}"
                     )
-                    print("-" * 155)
+                    print("-" * 164)
                 else:
-                    print(f"{'Job ID':<16} {'ID':<64} {'Type':<15} {'State':<11} {'Created':<30}")
-                    print("-" * 101)
+                    print(f"{'Job ID':<25} {'ID':<74} {'Type':<15} {'State':<11} {'Created':<30}")
+                    print("-" * 121)
 
             instance_count = 0
             state_counts = {}
             for instance in instances:
                 if not args.include_terminated and instance.get("state") == "terminated":
                     continue
-
                 instance_count += 1
 
                 # Extract common fields with safe defaults
-                instance_id = instance.get("id", "N/A")
+                instance_id = instance.get("id", "N/A")[:64]
                 instance_type = instance.get("type", "N/A")
                 state = instance.get("state", "N/A")
                 created_at = instance.get("creation_time", instance.get("created_at", "N/A"))
                 zone = instance.get("zone", "N/A")
                 private_ip = instance.get("private_ip", "N/A")
                 public_ip = instance.get("public_ip", "N/A")
-                job_id = instance.get("job_id", "N/A")
+                job_id = instance.get("job_id", "N/A")[:22]
                 state_counts[state] = state_counts.get(state, 0) + 1
 
                 if args.detail:
@@ -507,14 +506,14 @@ async def list_running_instances_cmd(args: argparse.Namespace, config: Config) -
                         print(f"Public IP:   {public_ip}")
                     print()
                 else:
-                    if args.provider == "gcp" and zone:
+                    if args.provider.lower() == "gcp" and zone:
                         print(
-                            f"{job_id:<16} {instance_id:<64} {instance_type:<15} {state:<11} "
+                            f"{job_id:<25} {instance_id:<64} {instance_type:<15} {state:<11} "
                             f"{zone:<15} {created_at:<30}"
                         )
                     else:
                         print(
-                            f"{job_id:<16} {instance_id:<26} {instance_type:<15} {state:<11} "
+                            f"{job_id:<25} {instance_id:<64} {instance_type:<15} {state:<11} "
                             f"{created_at:<30} "
                         )
 
@@ -712,7 +711,7 @@ async def list_images_cmd(args: argparse.Namespace, config: Config) -> None:
         print()
 
         # Format output based on provider
-        if args.provider == "aws":
+        if args.provider.lower() == "aws":
             print(f"{'Name':<80} {'Source':<6}")
             print("-" * 90)
             for img in images:
@@ -728,7 +727,7 @@ async def list_images_cmd(args: argparse.Namespace, config: Config) -> None:
                     print(f"URL: {img.get('self_link', 'N/A')}")
                     print()
 
-        elif args.provider == "gcp":
+        elif args.provider.lower() == "gcp":
             print(f"{'Family':<40} {'Name':<50} {'Project':<21} {'Source':<6}")
             print("-" * 114)
             for img in images:
@@ -745,7 +744,7 @@ async def list_images_cmd(args: argparse.Namespace, config: Config) -> None:
                     )
                     print(f"URL: {img.get('self_link', 'N/A')}")
                     print()
-        elif args.provider == "azure":
+        elif args.provider.lower() == "azure":
             if any(img.get("source") == "Azure" for img in images):
                 print("MARKETPLACE IMAGES (Reference format: publisher:offer:sku:version)")
                 print(f"{'Publisher':<24} {'Offer':<24} {'SKU':<24} {'Latest Version':<16}")
@@ -785,7 +784,7 @@ async def list_images_cmd(args: argparse.Namespace, config: Config) -> None:
                 "--image https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/"
                 "global/images/ubuntu-2404-lts-amd64-v20240416"
             )
-        elif args.provider == "azure":
+        elif args.provider.lower() == "azure":
             print(
                 "For Azure, specify as publisher:offer:sku:version or full resource ID: "
                 "--image Canonical:UbuntuServer:24_04-lts:latest"

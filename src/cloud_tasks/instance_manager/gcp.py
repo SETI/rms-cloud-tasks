@@ -127,7 +127,7 @@ class GCPComputeInstanceManager(InstanceManager):
         "c3d": ["hd-balanced", "pd-balanced", "pd-ssd"],
         "c4": ["hd-balanced"],
         "c4a": ["hd-balanced"],
-        "c4d": None,
+        "c4d": [],
         "e2": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd"],
         "f1": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd"],  #
         "g1": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd"],  #
@@ -241,6 +241,7 @@ class GCPComputeInstanceManager(InstanceManager):
         self._zones_client = compute_v1.ZonesClient(credentials=self._credentials)
         self._regions_client = compute_v1.RegionsClient(credentials=self._credentials)
         self._machine_type_client = compute_v1.MachineTypesClient(credentials=self._credentials)
+        self._disks_client = compute_v1.DisksClient(credentials=self._credentials)
         self._images_client = compute_v1.ImagesClient(credentials=self._credentials)
         self._billing_client = billing.CloudCatalogClient(credentials=self._credentials)
         self._billing_compute_skus: List[billing.Sku] | None = None
@@ -309,7 +310,9 @@ class GCPComputeInstanceManager(InstanceManager):
                 "vcpu": number of vCPUs
                 "mem_gb": amount of RAM in GB
                 "local_ssd_gb": amount of local SSD storage in GB
-                "available_boot_disk_types": list of available boot disk types
+                "supported_boot_disk_types": list of boot disk types supported by the instance
+                "available_boot_disk_types": list of available boot disk types after applying
+                    constraints
                 "boot_disk_iops": amount of boot disk IOPS (only applicable for some boot disk
                     types)
                 "boot_disk_throughput": amount of boot disk throughput in MB/s (only applicable
@@ -370,8 +373,9 @@ class GCPComputeInstanceManager(InstanceManager):
                 self._logger.warning(
                     f"Instance type {machine_type.name} with family "
                     f"'{machine_type_family}' is not in the processor family mapping; "
-                    "performance ranking will be 0"
+                    "skipping this type"
                 )
+                continue
 
             boot_disk_iops = constraints.get("boot_disk_iops")
             if boot_disk_iops is None:
@@ -379,16 +383,27 @@ class GCPComputeInstanceManager(InstanceManager):
             boot_disk_throughput = constraints.get("boot_disk_throughput")
             if boot_disk_throughput is None:
                 boot_disk_throughput = self._DEFAULT_BOOT_DISK_THROUGHPUT
-            boot_disk_types = constraints.get("boot_disk_types")
-            if boot_disk_types is None:
-                available_boot_disk_types = self._MACHINE_TYPE_FAMILY_TO_DISK_TYPES[
+            if machine_type_family in self._MACHINE_TYPE_FAMILY_TO_DISK_TYPES:
+                supported_boot_disk_types = self._MACHINE_TYPE_FAMILY_TO_DISK_TYPES[
                     machine_type_family
                 ]
             else:
+                self._logger.warning(
+                    f"Instance type {machine_type.name} with family "
+                    f"'{machine_type_family}' is not in the machine type family mapping; "
+                    "skipping this instance type"
+                )
+                continue
+            boot_disk_types = constraints.get("boot_disk_types")
+            if boot_disk_types is None:
+                available_boot_disk_types = supported_boot_disk_types
+            else:
+                available_boot_disk_types = []
                 for boot_disk_type in boot_disk_types:
                     if boot_disk_type not in self._DISK_TYPES:
                         raise ValueError(f"Invalid boot disk type: {boot_disk_type}")
-                available_boot_disk_types = boot_disk_types
+                    if boot_disk_type in supported_boot_disk_types:
+                        available_boot_disk_types.append(boot_disk_type)
 
             instance_info = {
                 "name": machine_type.name,
@@ -401,6 +416,7 @@ class GCPComputeInstanceManager(InstanceManager):
                 ),
                 "local_ssd_gb": local_ssd_size,  # Except for dedicated SSDs
                 "boot_disk_gb": 0,  # Will fill in later
+                "supported_boot_disk_types": supported_boot_disk_types,
                 "available_boot_disk_types": available_boot_disk_types,
                 "boot_disk_iops": boot_disk_iops,
                 "boot_disk_throughput": boot_disk_throughput,
@@ -1038,7 +1054,10 @@ class GCPComputeInstanceManager(InstanceManager):
             pricing_by_boot_disk = {}
             ret_val = {f"{self._region}-*": pricing_by_boot_disk}
 
-            for boot_disk_type in machine_info["available_boot_disk_types"]:
+            # We return pricing for all supported boot disk types, even if they have not been
+            # selected by the constraints; the user of the pricing info has to enforce those
+            # constraints
+            for boot_disk_type in machine_info["supported_boot_disk_types"]:
                 self._logger.debug(f"For boot disk type: {boot_disk_type}")
                 if (
                     boot_disk_type not in boot_disk_pricing_info
@@ -1229,16 +1248,19 @@ class GCPComputeInstanceManager(InstanceManager):
                         f"No pricing data found for {machine_type} in zone {zone}; ignoring"
                     )
                     continue
-                zone_pricing_data[(machine_type, zone)] = price_in_zone
+                for boot_disk_type, price_info in price_in_zone.items():
+                    # Filter out the boot disk types that were not selected by the constraints
+                    if boot_disk_type not in price_info["available_boot_disk_types"]:
+                        continue
+                    zone_pricing_data[(machine_type, zone, boot_disk_type)] = price_info
 
         if len(zone_pricing_data) == 0:
             raise ValueError("No pricing data found for any instance types")
 
         # Select instance with the lowest price
         priced_instances = [
-            (machine_type, zone, price_info)
-            for (machine_type, zone), by_boot_disk_type in zone_pricing_data.items()
-            for boot_disk_type, price_info in by_boot_disk_type.items()
+            (machine_type, zone, boot_disk_type, price_info)
+            for (machine_type, zone, boot_disk_type), price_info in zone_pricing_data.items()
         ]
         # Sort by price per vCPU, then by decreasing vCPU (this gives us the cheapest
         # instance type with the most vCPUs). Instead of using the price_per_vcpu field,
@@ -1248,25 +1270,26 @@ class GCPComputeInstanceManager(InstanceManager):
         # make us choose an instance with fewer vCPUs that would otherwise cost the same.
         priced_instances.sort(
             key=lambda x: (
-                round(cast(float, x[2]["total_price"]) / x[2]["vcpu"], 4),
-                -cast(int, x[2]["vcpu"]),
+                round(cast(float, x[3]["total_price"]) / x[3]["vcpu"], 4),
+                -cast(int, x[3]["vcpu"]),
             )
         )
 
         self._logger.debug("Instance types sorted by price (cheapest and most vCPUs first):")
-        for i, (machine_type, zone, price_info) in enumerate(priced_instances):
+        for i, (machine_type, zone, boot_disk_type, price_info) in enumerate(priced_instances):
             self._logger.debug(
-                f"  [{i+1:3d}] {machine_type:20s} ({price_info['boot_disk_type']:12s}) "
+                f"  [{i+1:3d}] {machine_type:20s} ({boot_disk_type:12s}) "
                 f"in {zone:15s}: "
                 f"${price_info['total_price']:10.6f}/hour = "
                 f"${price_info['total_price'] / price_info['vcpu']:10.6f}/vCPU/hour"
             )
 
-        print(f"Priced instances: {priced_instances}")
-        selected_type, selected_zone, selected_price_info = priced_instances[0]
+        selected_type, selected_zone, selected_boot_disk_type, selected_price_info = (
+            priced_instances[0]
+        )
         total_price = selected_price_info["total_price"]
         self._logger.debug(
-            f"Selected {selected_type} ({selected_price_info['boot_disk_type']:12s}) in "
+            f"Selected {selected_type} ({selected_boot_disk_type:12s}) in "
             f"{selected_zone} at ${total_price:.6f} per hour "
             f"{' (spot)' if use_spot else '(on demand)'}"
         )
@@ -1583,6 +1606,53 @@ class GCPComputeInstanceManager(InstanceManager):
 
         return instances
 
+    def _get_boot_disk_info(self, instance) -> Tuple[str, int, int, int]:
+        """
+        Retrieves full information about a running instance's boot disk,
+        including its type and provisioned IOPS/throughput if applicable.
+
+        Args:
+            instance_name: The name of the running instance.
+
+        Returns:
+            Tuple of (boot_disk_type, boot_disk_size, boot_disk_iops, boot_disk_throughput)
+        """
+
+        boot_disk = None
+        for attached_disk in instance.disks:
+            if attached_disk.boot:
+                boot_disk = attached_disk
+                break
+
+        if not boot_disk:
+            self._logger.warning(f"No boot disk found for instance '{instance.name}'.")
+            return None, None, None, None
+
+        # The 'source' field of the attached_disk is a URL to the actual disk resource.
+        # We need to parse it to get the disk name and zone.
+        # Example: https://www.googleapis.com/compute/v1/projects/your-project/zones/your-zone/disks/your-disk-name
+        disk_url_parts = boot_disk.source.split("/")
+        disk_name = disk_url_parts[-1]
+        # Zone is two parts before the disk name in the URL
+        # The URL structure implies: projects/PROJECT_ID/zones/ZONE/disks/DISK_NAME
+        disk_zone = disk_url_parts[-3]
+
+        # Get full disk details
+        disk_request = compute_v1.GetDiskRequest(
+            project=self._project_id,
+            zone=disk_zone,
+            disk=disk_name,
+        )
+        full_disk_details = self._disks_client.get(request=disk_request)
+
+        # Extract human-readable disk type from the URL
+        disk_type = full_disk_details.type.split("/")[-1]
+        disk_size = full_disk_details.size_gb
+        provisioned_iops = full_disk_details.provisioned_iops
+        provisioned_throughput = full_disk_details.provisioned_throughput
+
+        return disk_type, disk_size, provisioned_iops, provisioned_throughput
+
     def _standardize_instance_data(
         self, instances_list, job_id: Optional[str], include_non_job: bool
     ) -> List[Dict[str, Any]]:
@@ -1622,36 +1692,21 @@ class GCPComputeInstanceManager(InstanceManager):
                 "boot_disk_throughput": None,
             }
 
-            # TODO This doesn't work
-            # Extract boot disk information
-            if instance.disks and len(instance.disks) > 0:
-                boot_disk = instance.disks[0]  # First disk is the boot disk
-                if boot_disk.initialize_params and boot_disk.initialize_params.disk_type:
-                    # Extract disk type from URL (e.g., ".../diskTypes/pd-balanced")
-                    disk_type = boot_disk.initialize_params.disk_type.split("/")[-1]
-                    # Convert GCP disk type names to our disk type names
-                    disk_type_map = {
-                        "pd-standard": "pd-standard",
-                        "pd-balanced": "pd-balanced",
-                        "pd-ssd": "pd-ssd",
-                        "pd-extreme": "pd-extreme",
-                        "hyperdisk-balanced": "hd-balanced",
-                    }
-                    instance_info["boot_disk_type"] = disk_type_map.get(disk_type, disk_type)
-
-                    # Add IOPS for pd-extreme and hd-balanced
-                    if instance_info["boot_disk_type"] in ["pd-extreme", "hd-balanced"]:
-                        if boot_disk.initialize_params.provisioned_iops:
-                            instance_info["boot_disk_iops"] = (
-                                boot_disk.initialize_params.provisioned_iops
-                            )
-
-                    # Add throughput for hd-balanced
-                    if instance_info["boot_disk_type"] == "hd-balanced":
-                        if boot_disk.initialize_params.provisioned_throughput:
-                            instance_info["boot_disk_throughput"] = (
-                                boot_disk.initialize_params.provisioned_throughput
-                            )
+            boot_disk_type, boot_disk_size, boot_disk_iops, boot_disk_throughput = (
+                self._get_boot_disk_info(instance)
+            )
+            disk_type_map = {
+                "pd-standard": "pd-standard",
+                "pd-balanced": "pd-balanced",
+                "pd-ssd": "pd-ssd",
+                "pd-extreme": "pd-extreme",
+                "hyperdisk-balanced": "hd-balanced",
+            }
+            instance_info["boot_disk_type"] = disk_type_map.get(boot_disk_type)
+            if instance_info["boot_disk_type"] is None:
+                self._logger.warning(f"Unknown boot disk type: {boot_disk_type}")
+            instance_info["boot_disk_iops"] = boot_disk_iops
+            instance_info["boot_disk_throughput"] = boot_disk_throughput
 
             if instance_info["state"] == "unknown":
                 self._logger.error(

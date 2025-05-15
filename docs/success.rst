@@ -20,3 +20,13 @@ Principles for Greatest Success (and Least Frustration)
 
 - When developing the startup script, using the console logging system for the given provider
   to watch the commands being executed.
+
+- If you are copying data to the instance to be shared amount all tasks, either do it during
+  the startup script or allow your tasks to do it on-deman in a multi-processor-safe manner.
+
+- If you want to preload large amounts of data, you can create custom boot image that already has
+  the data loaded on the boot disk.
+
+- When writing results to a file, be sure to separate them in a way that makes them specific to
+  the current task. The `rms-filecache` package is a good way to do this, using the unique
+  Task ID as the name of the cache.

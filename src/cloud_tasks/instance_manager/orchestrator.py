@@ -274,13 +274,24 @@ export RMS_CLOUD_WORKER_USE_NEW_PROCESS={bool(self._run_config.worker_use_new_pr
     async def _initialize_pricing_info(self) -> None:
         """Initialize the pricing information."""
         if self._all_instance_info is None:
+            # No constraints on the instance types - we want all of them so that we can analyze
+            # any running instances that may already exist.
             self._all_instance_info = await self._instance_manager.get_available_instance_types()
         if self._pricing_info is None:
+            # We don't want to include boot_disk_type when getting the instance prices because
+            # we need the instance prices to include all possible boot disk types in case there
+            # are existing running instances that uses types other than the ones currently
+            # selected in the config.
+            boot_disk_constraints = {
+                "boot_disk_iops": self._run_config.boot_disk_iops,
+                "boot_disk_throughput": self._run_config.boot_disk_throughput,
+            }
             self._pricing_info = await self._instance_manager.get_instance_pricing(
                 self._all_instance_info,
                 use_spot=self._run_config.use_spot,
-                boot_disk_constraints=vars(self._run_config),
+                boot_disk_constraints=boot_disk_constraints,
             )
+            print(self._pricing_info["e2-medium"])
 
     async def start(self) -> None:
         """Start the orchestrator.
@@ -414,17 +425,6 @@ export RMS_CLOUD_WORKER_USE_NEW_PROCESS={bool(self._run_config.worker_use_new_pr
             summary = "No instances found"
             return num_running, running_cpus, running_price, summary
 
-        self._logger.warning(
-            "Due to limitations in the GCP API, we cannot currently detect the boot disk type "
-            "for each instance."
-        )
-        self._logger.warning(
-            "Instead we will use the first disk type specified with the "
-            "boot_disk_types configuration option "
-        )
-        self._logger.warning(
-            " along with the specified IOPS and throughput to estimate the price of each instance."
-        )
         summary = ""
         summary += "Running instance summary:\n"
         summary += "  State       Instance Type             Boot Disk    vCPUs  Zone             Count  Total Price\n"
@@ -440,6 +440,8 @@ export RMS_CLOUD_WORKER_USE_NEW_PROCESS={bool(self._run_config.worker_use_new_pr
             except KeyError:
                 wildcard_zone = zone[:-1] + "*"
                 try:
+                    print(self._pricing_info[type_].keys())
+                    print(self._pricing_info[type_][wildcard_zone].keys())
                     price = (
                         self._pricing_info[type_][wildcard_zone][boot_disk_type]["total_price"]
                         * count

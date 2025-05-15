@@ -92,6 +92,12 @@ async def test_get_available_instance_types_no_constraints(
     assert n1_instance["vcpu"] == 2
     assert n1_instance["mem_gb"] == 7.5
     assert n1_instance["local_ssd_gb"] == 0
+    assert n1_instance["supported_boot_disk_types"] == [
+        "pd-standard",
+        "pd-balanced",
+        "pd-extreme",
+        "pd-ssd",
+    ]
     assert n1_instance["available_boot_disk_types"] == [
         "pd-standard",
         "pd-balanced",
@@ -117,6 +123,12 @@ async def test_get_available_instance_types_no_constraints(
     assert n2_instance["vcpu"] == 4
     assert n2_instance["mem_gb"] == 16
     assert n2_instance["local_ssd_gb"] == GCPComputeInstanceManager._ONE_LOCAL_SSD_SIZE * 2
+    assert n2_instance["supported_boot_disk_types"] == [
+        "pd-standard",
+        "pd-balanced",
+        "pd-extreme",
+        "pd-ssd",
+    ]
     assert n2_instance["available_boot_disk_types"] == [
         "pd-standard",
         "pd-balanced",
@@ -184,6 +196,45 @@ async def test_get_available_instance_types_with_memory_constraints(
     assert len(result) == 1
     assert "n2-standard-4-lssd" in result
     assert "n1-standard-2" not in result
+
+
+@pytest.mark.asyncio
+async def test_get_available_instance_types_with_boot_disk_constraints(
+    gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
+) -> None:
+    """Test getting available instance types with boot disk constraints."""
+    gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
+
+    # Arrange
+    constraints = {
+        # n1 and n2 support pd-standard, pd-balanced, pd-extreme, pd-ssd
+        "boot_disk_types": ["pd-standard", "pd-extreme"],
+    }
+
+    # Act
+    result = await gcp_instance_manager_n1_n2.get_available_instance_types(constraints)
+
+    # Assert
+    assert len(result) == 2
+    assert "n1-standard-2" in result
+    assert result["n1-standard-2"]["available_boot_disk_types"] == ["pd-standard", "pd-extreme"]
+    assert result["n1-standard-2"]["supported_boot_disk_types"] == [
+        "pd-standard",
+        "pd-balanced",
+        "pd-extreme",
+        "pd-ssd",
+    ]
+    assert "n2-standard-4-lssd" in result
+    assert result["n2-standard-4-lssd"]["available_boot_disk_types"] == [
+        "pd-standard",
+        "pd-extreme",
+    ]
+    assert result["n2-standard-4-lssd"]["supported_boot_disk_types"] == [
+        "pd-standard",
+        "pd-balanced",
+        "pd-extreme",
+        "pd-ssd",
+    ]
 
 
 @pytest.mark.asyncio
