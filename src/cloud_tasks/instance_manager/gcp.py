@@ -1664,17 +1664,17 @@ class GCPComputeInstanceManager(InstanceManager):
 
         Returns:
             List of instance dictionaries with standardized fields:
-                id: Instance ID
-                type: Instance type
-                state: Instance state
-                creation_time: Instance creation time
-                zone: Instance zone
-                boot_disk_type: Boot disk type
-                boot_disk_iops: Boot disk IOPS
-                boot_disk_throughput: Boot disk throughput
-                private_ip: Private IP address
-                public_ip: Public IP address
-                job_id: Job ID
+                "id": Instance ID
+                "type": Instance type
+                "state": Instance state
+                "creation_time": Instance creation time
+                "zone": Instance zone
+                "boot_disk_type": Boot disk type
+                "boot_disk_iops": Boot disk IOPS
+                "boot_disk_throughput": Boot disk throughput
+                "private_ip": Private IP address
+                "public_ip": Public IP address
+                "job_id": Job ID
         """
         instances = []
         for instance in instances_list:

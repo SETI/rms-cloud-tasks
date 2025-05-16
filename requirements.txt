@@ -3,6 +3,7 @@ aiohttp
 asyncio
 click
 json-stream
+prettytable
 pydantic
 pyyaml
 rms-filecache

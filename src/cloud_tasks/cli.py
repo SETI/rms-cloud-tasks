@@ -13,6 +13,7 @@ from typing import Any, Dict, Iterable
 import yaml  # type: ignore
 
 from filecache import FCPath
+from prettytable import PrettyTable, TableStyle
 import pydantic
 
 from cloud_tasks.common.config import Config, load_config
@@ -457,37 +458,26 @@ async def list_running_instances_cmd(args: argparse.Namespace, config: Config) -
                 # Default sort by ID if no sort-by specified
                 instances.sort(key=lambda x: x.get("id", ""))
 
-            if not args.detail:
-                # Headers
-                if args.provider.lower() == "gcp":
-                    print(
-                        f"{'Job ID':<25} {'ID':<64} {'Type':<15} {'State':<11} {'Zone':<15} {'Created':<30}"
-                    )
-                    print("-" * 164)
-                else:
-                    print(f"{'Job ID':<25} {'ID':<74} {'Type':<15} {'State':<11} {'Created':<30}")
-                    print("-" * 121)
-
             instance_count = 0
             state_counts = {}
-            for instance in instances:
-                if not args.include_terminated and instance.get("state") == "terminated":
-                    continue
-                instance_count += 1
 
-                # Extract common fields with safe defaults
-                instance_id = instance.get("id", "N/A")[:64]
-                instance_type = instance.get("type", "N/A")
-                state = instance.get("state", "N/A")
-                created_at = instance.get("creation_time", instance.get("created_at", "N/A"))
-                zone = instance.get("zone", "N/A")
-                private_ip = instance.get("private_ip", "N/A")
-                public_ip = instance.get("public_ip", "N/A")
-                job_id = instance.get("job_id", "N/A")[:22]
-                state_counts[state] = state_counts.get(state, 0) + 1
+            if args.detail:
+                for instance in instances:
+                    if not args.include_terminated and instance.get("state") == "terminated":
+                        continue
+                    instance_count += 1
 
-                if args.detail:
-                    # More detailed output in detail mode with aligned values
+                    instance_id = instance.get("id", "N/A")[:64]
+                    instance_type = instance.get("type", "N/A")
+                    state = instance.get("state", "N/A")
+                    created_at = instance.get("creation_time", "N/A")
+                    zone = instance.get("zone", "N/A")
+                    private_ip = instance.get("private_ip", "N/A")
+                    public_ip = instance.get("public_ip", "N/A")
+                    job_id = instance.get("job_id", "N/A")
+
+                    state_counts[state] = state_counts.get(state, 0) + 1
+
                     print(f"Instance ID: {instance_id}")
                     print(f"Type:        {instance_type}")
                     print(f"State:       {state}")
@@ -505,17 +495,31 @@ async def list_running_instances_cmd(args: argparse.Namespace, config: Config) -
                     if public_ip:
                         print(f"Public IP:   {public_ip}")
                     print()
-                else:
-                    if args.provider.lower() == "gcp" and zone:
-                        print(
-                            f"{job_id:<25} {instance_id:<64} {instance_type:<15} {state:<11} "
-                            f"{zone:<15} {created_at:<30}"
-                        )
-                    else:
-                        print(
-                            f"{job_id:<25} {instance_id:<64} {instance_type:<15} {state:<11} "
-                            f"{created_at:<30} "
-                        )
+            else:
+                headers = ["Job ID", "ID", "Type", "State", "Zone", "Created"]
+                rows = []
+                for instance in instances:
+                    if not args.include_terminated and instance.get("state") == "terminated":
+                        continue
+                    instance_count += 1
+                    state = instance.get("state", "N/A")
+                    state_counts[state] = state_counts.get(state, 0) + 1
+                    rows.append(
+                        [
+                            instance.get("job_id", "N/A")[:25],
+                            instance.get("id", "N/A")[:64],
+                            instance.get("type", "N/A")[:15],
+                            instance.get("state", "N/A")[:11],
+                            instance.get("zone", "N/A")[:15],
+                            instance.get("creation_time", instance.get("created_at", "N/A"))[:30],
+                        ]
+                    )
+                table = PrettyTable()
+                table.field_names = headers
+                table.add_rows(rows)
+                table.align = "l"
+                table.set_style(TableStyle.SINGLE_BORDER)
+                print(table)
 
             print(f"\nSummary: {instance_count} total instances")
             for state, count in sorted(state_counts.items()):
@@ -711,31 +715,11 @@ async def list_images_cmd(args: argparse.Namespace, config: Config) -> None:
         print()
 
         # Format output based on provider
-        if args.provider.lower() == "aws":
-            print(f"{'Name':<80} {'Source':<6}")
-            print("-" * 90)
-            for img in images:
-                print(f"{img.get('name', 'N/A')[:78]:<80} {img.get('source', 'N/A'):<6}")
-                if args.detail:
-                    print(f"{img.get('description', 'N/A')}")
-                    print(f"ID: {img.get('id', 'N/A')}")
-                    print(
-                        f"CREATION DATE: "
-                        f"{img.get('creation_date', 'N/A')[:24]:<26}  STATUS: "
-                        f"{img.get('status', 'N/A'):<20}"
-                    )
-                    print(f"URL: {img.get('self_link', 'N/A')}")
-                    print()
-
-        elif args.provider.lower() == "gcp":
-            print(f"{'Family':<40} {'Name':<50} {'Project':<21} {'Source':<6}")
-            print("-" * 114)
-            for img in images:
-                print(
-                    f"{img.get('family', 'N/A')[:38]:<40} {img.get('name', 'N/A')[:48]:<50} "
-                    f"{img.get('project', 'N/A')[:19]:<21} {img.get('source', 'N/A'):<6}"
-                )
-                if args.detail:
+        if args.provider == "AWS":
+            if args.detail:
+                for img in images:
+                    print(f"Name:   {img.get('name', 'N/A')}")
+                    print(f"Source: {img.get('source', 'N/A')}")
                     print(f"{img.get('description', 'N/A')}")
                     print(
                         f"ID: {img.get('id', 'N/A'):<24}  CREATION DATE: "
@@ -744,7 +728,53 @@ async def list_images_cmd(args: argparse.Namespace, config: Config) -> None:
                     )
                     print(f"URL: {img.get('self_link', 'N/A')}")
                     print()
-        elif args.provider.lower() == "azure":
+            else:
+                headers = ["Name", "Source"]
+                rows = []
+                for img in images:
+                    rows.append([img.get("name", "N/A"), img.get("source", "N/A")])
+                table = PrettyTable()
+                table.field_names = headers
+                table.add_rows(rows)
+                table.align = "l"
+                table.set_style(TableStyle.SINGLE_BORDER)
+                print(table)
+
+        elif args.provider == "GCP":
+            if args.detail:
+                for img in images:
+                    print(f"Family:  {img.get('family', 'N/A')}")
+                    print(f"Name:    {img.get('name', 'N/A')}")
+                    print(f"Project: {img.get('project', 'N/A')}")
+                    print(f"Source:  {img.get('source', 'N/A')}")
+                    print(f"{img.get('description', 'N/A')}")
+                    print(
+                        f"ID: {img.get('id', 'N/A'):<24}  CREATION DATE: "
+                        f"{img.get('creation_date', 'N/A')[:32]:<34}  STATUS: "
+                        f"{img.get('status', 'N/A'):<20}"
+                    )
+                    print(f"URL: {img.get('self_link', 'N/A')}")
+                    print()
+            else:
+                headers = ["Family", "Name", "Project", "Source"]
+                rows = []
+                for img in images:
+                    rows.append(
+                        [
+                            img.get("family", "N/A")[:38],
+                            img.get("name", "N/A")[:48],
+                            img.get("project", "N/A")[:19],
+                            img.get("source", "N/A"),
+                        ]
+                    )
+                table = PrettyTable()
+                table.field_names = headers
+                table.add_rows(rows)
+                table.align = "l"
+                table.set_style(TableStyle.SINGLE_BORDER)
+                print(table)
+
+        elif args.provider == "AZURE":
             if any(img.get("source") == "Azure" for img in images):
                 print("MARKETPLACE IMAGES (Reference format: publisher:offer:sku:version)")
                 print(f"{'Publisher':<24} {'Offer':<24} {'SKU':<24} {'Latest Version':<16}")
@@ -776,15 +806,15 @@ async def list_images_cmd(args: argparse.Namespace, config: Config) -> None:
             "\nTo use a custom image with the 'run' or 'manage_pool' commands, use the "
             "--image parameter."
         )
-        if args.provider == "aws":
+        if args.provider == "AWS":
             print("For AWS, specify the AMI ID: --image ami-12345678")
-        elif args.provider == "gcp":
+        elif args.provider == "GCP":
             print(
                 "For GCP, specify the image family or full URI: --image ubuntu-2404-lts or "
                 "--image https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/"
                 "global/images/ubuntu-2404-lts-amd64-v20240416"
             )
-        elif args.provider.lower() == "azure":
+        elif args.provider == "AZURE":
             print(
                 "For Azure, specify as publisher:offer:sku:version or full resource ID: "
                 "--image Canonical:UbuntuServer:24_04-lts:latest"
@@ -976,59 +1006,137 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
         # Display results with pricing if available
         print()
 
-        underline = "-" * 117
-        header = (
-            f"{'Instance Type':<24} {'Arch':>10} {'vCPU':>4} {'Mem (GB)':>10} "
-            f"{'LSSD (GB)':>10} {'Disk (GB)':>10} {'Disk Type':<12} "
+        has_lssd = any(price_data["local_ssd_gb"] > 0 for price_data in pricing_data_list)
+        has_iops = any(price_data["boot_disk_iops_price"] > 0 for price_data in pricing_data_list)
+        has_throughput = any(
+            price_data["boot_disk_throughput_price"] > 0 for price_data in pricing_data_list
         )
 
-        if args.detail:
-            header += (
-                f"{'$/vCPU/Hr':>10} {'Mem $/GB/Hr':>12} {'LSSD $/GB/Hr':>13} {'Disk $/GB/Hr':>13} "
-                f"{'IOPS $/Hr':>13} {'Thruput $/Hr':>13} "
-            )
-        header += f"{'Total $/Hr':>11} "
-        if args.detail:
-            header += f"{'& $/vCPU/Hr':>11} "
-        header += f" {'Zone':<25} "
-        if args.detail:
-            header += f"{'Processor':<21} "
-            header += f"{'Ranking':>8}  "
-            header += f"{'Description':>10}"
-            underline += "-" * 170
+        # All of this complexity is because 1) prettytable doesn't support multi-line headers and
+        # 2) prettytable doesn't handle column alignment well when there aren't header fields
+        left_fields = []
+        field_num = 1
+        header1 = ["Instance Type", "Arch", "vCPU", "Mem"]
+        header2 = [
+            "",
+            "",
+            "",
+            "(GB)",
+        ]
+        left_fields += [f"Field {field_num}", f"Field {field_num+1}"]
+        field_num += 4
 
-        print(header)
-        print(underline)
+        if has_lssd:
+            header1 += ["LSSD"]
+            header2 += ["(GB)"]
+            field_num += 1
+
+        header1 += [
+            "Disk",
+            "Boot",
+        ]
+        header2 += [
+            "(GB)",
+            "Disk Type",
+        ]
+        left_fields += [f"Field {field_num+1}"]
+        field_num += 2
+
+        if args.detail:
+            header1 += ["vCPU $", "Mem $"]
+            header2 += [
+                "(/vCPU/Hr)",
+                "(/GB/Hr)",
+            ]
+            field_num += 2
+
+            if has_lssd:
+                header1 += ["LSSD $"]
+                header2 += ["(/GB/Hr)"]
+                field_num += 1
+
+            header1 += ["Disk $"]
+            header2 += ["(/GB/Hr)"]
+            field_num += 1
+            if has_iops:
+                header1 += ["IOPS $"]
+                header2 += ["(/Hr)"]
+                field_num += 1
+            if has_throughput:
+                header1 += ["Thruput $"]
+                header2 += ["(/Hr)"]
+                field_num += 1
+
+        header1 += ["Total $"]
+        header2 += ["(/Hr)"]
+        field_num += 1
+
+        if args.detail:
+            header1 += ["Total $"]
+            header2 += ["(/vCPU/Hr)"]
+            field_num += 1
+
+        header1 += ["Zone"]
+        header2 += [""]
+        left_fields += [f"Field {field_num}"]
+        field_num += 1
+
+        if args.detail:
+            header1 += ["Processor", "Perf", "Description"]
+            header2 += ["", "Rank", ""]
+        left_fields += [f"Field {field_num}", f"Field {field_num+2}"]
+
+        rows = []
         for price_data in pricing_data_list:
+            vcpu_str = f"{price_data['vcpu']:d}"
+            mem_gb_str = f"{price_data['mem_gb']:.2f}"
+            local_ssd_gb_str = f"{price_data['local_ssd_gb']:.2f}"
+            boot_disk_gb_str = f"{price_data['boot_disk_gb']:.2f}"
             cpu_price_str = f"${price_data['per_cpu_price']:.5f}"
             mem_price_str = f"${price_data['mem_per_gb_price']:.5f}"
             total_price_str = f"${price_data['total_price']:.4f}"
             total_price_per_cpu_str = f"${price_data['total_price_per_cpu']:.5f}"
-            local_ssd_price_str = f"${price_data['local_ssd_per_gb_price']:.8f}"
-            boot_disk_price_str = f"${price_data['boot_disk_per_gb_price']:.8f}"
+            local_ssd_price_str = f"${price_data['local_ssd_per_gb_price']:.6f}"
+            boot_disk_price_str = f"${price_data['boot_disk_per_gb_price']:.6f}"
             boot_disk_iops_price_str = f"${price_data['boot_disk_iops_price']:.5f}"
-            boot_disk_throughput_price_str = f"${price_data['boot_disk_throughput_price']:.5f}"
+            boot_disk_throughput_price_str = f"${price_data['boot_disk_throughput_price']:.6f}"
+            cpu_rank_str = f"{price_data['cpu_rank']:d}"
 
-            val = (
-                f"{price_data['name']:<24} {price_data['architecture']:>10} {price_data['vcpu']:>4} "
-                f"{price_data['mem_gb']:>10.1f} {price_data['local_ssd_gb']:>10} "
-                f"{price_data['boot_disk_gb']:>10} {price_data['boot_disk_type']:<12} "
-            )
+            row = [price_data["name"], price_data["architecture"], vcpu_str, mem_gb_str]
+            if has_lssd:
+                row += [local_ssd_gb_str]
+            row += [
+                boot_disk_gb_str,
+                price_data["boot_disk_type"],
+            ]
             if args.detail:
-                val += (
-                    f"{cpu_price_str:>10} {mem_price_str:>12} "
-                    f"{local_ssd_price_str:>13} {boot_disk_price_str:>13} "
-                    f"{boot_disk_iops_price_str:>13} {boot_disk_throughput_price_str:>13} "
-                )
-            val += f"{total_price_str:>11} "
+                row += [cpu_price_str, mem_price_str]
+                if has_lssd:
+                    row += [local_ssd_price_str]
+                row += [boot_disk_price_str]
+                if has_iops:
+                    row += [boot_disk_iops_price_str]
+                if has_throughput:
+                    row += [boot_disk_throughput_price_str]
+            row += [total_price_str]
             if args.detail:
-                val += f"{total_price_per_cpu_str:>11} "
-            val += f" {price_data['zone']:<25} "
+                row += [total_price_per_cpu_str]
+            row += [price_data["zone"]]
             if args.detail:
-                val += f"{price_data['cpu_family']:<21} "
-                val += f"{price_data['cpu_rank']:>8}  "
-                val += f"{price_data['description']}"
-            print(val)
+                row += [price_data["cpu_family"], cpu_rank_str, price_data["description"]]
+            rows.append(row)
+
+        table = PrettyTable()
+        table.add_row(header1)
+        table.add_row(header2)
+        table.add_divider()
+        table.add_rows(rows)
+        table.set_style(TableStyle.SINGLE_BORDER)
+        table.align = "r"
+        for left_field in left_fields:
+            table.align[left_field] = "l"
+        table.header = False
+        print(table)
 
     except Exception as e:
         logger.error(f"Error listing instance types: {e}", exc_info=True)
@@ -1064,38 +1172,45 @@ async def list_regions_cmd(args: argparse.Namespace, config: Config) -> None:
             print(f"Found {len(regions)} regions:")
         print()
 
-        print(f"{'Region':<25} {'Description':<40}")
-        print("-" * 100)
-
-        for region_name in sorted(regions):
-            region = regions[region_name]
-            print(f"{region['name']:<25} {region['description']:<40}")
-
-            skip_line = False
-            if args.zones:
-                if region["zones"]:
-                    print(f"  Availability Zones: {', '.join(sorted(region['zones']))}")
-                else:
-                    print("  No availability zones found")
-                skip_line = True
-
-            if args.detail:
-                if args.provider == "aws":
-                    print(f"  Opt-in Status: {region.get('opt_in_status', 'N/A')}")
+        if args.detail:
+            for region_name in sorted(regions):
+                region = regions[region_name]
+                print(f"Region: {region['name']}")
+                print(f"Description: {region['description']}")
+                print(f"Zones: {', '.join(sorted(region['zones'])) if region['zones'] else 'None'}")
+                if args.provider == "AWS":
+                    print(f"Opt-in Status: {region.get('opt_in_status', 'N/A')}")
                     skip_line = True
-                elif args.provider == "azure" and region.get("metadata"):
-                    print(f"  Geography: {region['metadata'].get('geography', 'N/A')}")
-                    print(f"  Geography Group: {region['metadata'].get('geography_group', 'N/A')}")
+                elif args.provider == "AZURE" and region.get("metadata"):
+                    print(f"Geography: {region['metadata'].get('geography', 'N/A')}")
+                    print(f"Geography Group: {region['metadata'].get('geography_group', 'N/A')}")
                     print(
-                        f"  Physical Location: {region['metadata'].get('physical_location', 'N/A')}"
+                        f"Physical Location: {region['metadata'].get('physical_location', 'N/A')}"
                     )
-                elif args.provider == "gcp":
-                    print(f"  Endpoint: {region['endpoint']}")
-                    print(f"  Status: {region['status']}")
-                    skip_line = True
-
-            if skip_line:
+                elif args.provider == "GCP":
+                    print(f"Endpoint: {region['endpoint']}")
+                    print(f"Status: {region['status']}")
                 print()
+        else:
+            headers = ["Region", "Description"]
+            if args.zones:
+                headers.append("Zones")
+            rows = []
+            for region_name in sorted(regions):
+                region = regions[region_name]
+                row = [region["name"], region["description"]]
+                if args.zones:
+                    if region["zones"]:
+                        row.append(", ".join(sorted(region["zones"])))
+                    else:
+                        row.append("None found")
+                rows.append(row)
+            table = PrettyTable()
+            table.field_names = headers
+            table.add_rows(rows)
+            table.align = "l"
+            table.set_style(TableStyle.SINGLE_BORDER)
+            print(table)
 
     except Exception as e:
         logger.error(f"Error listing regions: {e}", exc_info=True)

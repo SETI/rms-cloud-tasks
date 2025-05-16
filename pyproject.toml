@@ -13,15 +13,17 @@ dependencies = [
   "asyncio",
   "click",
   "json-stream",
+  "prettytable",
   "pydantic",
   "pyyaml",
+  "rms-filecache",
   "shortuuid",
   "tqdm",
   "boto3",
-  "google-cloud-pubsub",
-  "google-cloud-storage",
+  "google-cloud-billing",
   "google-cloud-compute",
-  "google-cloud-billing"
+  "google-cloud-pubsub",
+  "google-cloud-storage"
 ]
 license = {text = "Apache-2.0"}
 maintainers = [
@@ -38,6 +40,8 @@ classifiers = [
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
   "Operating System :: MacOS :: MacOS X",
   "Operating System :: POSIX :: Linux",
   "Operating System :: Microsoft :: Windows"

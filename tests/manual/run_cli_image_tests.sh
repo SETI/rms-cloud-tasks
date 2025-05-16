@@ -18,6 +18,13 @@ python -m src.cloud_tasks.cli list_images --config tests/manual/run_cli_config.y
 set +x
 
 echo
+echo "****** Listing 5 Ubutu images in reverse order with detail ******"
+echo
+set -x
+python -m src.cloud_tasks.cli list_images --config tests/manual/run_cli_config.yml --provider ${P} --filter ubuntu --sort-by=-name --limit 5 --detail ${ARGS}
+set +x
+
+echo
 echo "****** Listing user instances ******"
 echo
 set -x
