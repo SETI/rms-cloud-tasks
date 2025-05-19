@@ -100,6 +100,8 @@ Optional Parameters
 --max-runtime SECONDS            Maximum runtime for a task in seconds [or ``RMS_CLOUD_TASKS_MAX_RUNTIME``]
 --shutdown-grace-period SECONDS  Time in seconds to wait for tasks to complete during shutdown [or ``RMS_CLOUD_TASKS_SHUTDOWN_GRACE_PERIOD``]
 --use-new-process                Whether to use a new process for each task [or ``RMS_CLOUD_WORKER_USE_NEW_PROCESS``]
+--tasks-to-skip TASKS_TO_SKIP    Number of tasks to skip before processing any from the queue [or ``RMS_CLOUD_TASKS_TO_SKIP``]
+--max-num-tasks MAX_NUM_TASKS    Maximum number of tasks to process [or ``RMS_CLOUD_TASKS_MAX_NUM_TASKS``]
 
 .. _worker_spot_instances:
 

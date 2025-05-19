@@ -81,6 +81,7 @@ def _parse_args(args: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--is-spot",
         action="store_true",
+        default=None,
         help="Use spot instances [overrides $RMS_CLOUD_TASKS_INSTANCE_IS_SPOT]",
     )
     parser.add_argument(
@@ -110,7 +111,18 @@ def _parse_args(args: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--use-new-process",
         action="store_true",
+        default=None,
         help="Use new process for each task [overrides $RMS_CLOUD_WORKER_USE_NEW_PROCESS]",
+    )
+    parser.add_argument(
+        "--tasks-to-skip",
+        type=int,
+        help="Number of tasks to skip before processing any from the queue [overrides $RMS_CLOUD_TASKS_TO_SKIP]",
+    )
+    parser.add_argument(
+        "--max-num-tasks",
+        type=int,
+        help="Maximum number of tasks to process [overrides $RMS_CLOUD_TASKS_MAX_NUM_TASKS]",
     )
 
     return parser.parse_args(args)
@@ -160,10 +172,10 @@ class LocalTaskQueue:
                     ln = fp.readline()
                     if len(ln) == 0:
                         cont = False
-                    elif ln.startswith((" ", "-")):
+                    if not ln.startswith("-") and len(ln) != 0:
                         y = y + ln
-                    elif len(y) > 0:
-                        yield yaml.load(y)
+                    else:
+                        yield yaml.load(y, Loader=yaml.Loader)[0]
                         y = ln
 
     async def receive_tasks(self, max_count: int, visibility_timeout: int) -> List[Dict[str, Any]]:
@@ -295,7 +307,7 @@ class Worker:
         if self._is_spot is None:
             self._is_spot = os.getenv("RMS_CLOUD_TASKS_INSTANCE_IS_SPOT")
             if self._is_spot is not None:
-                self._is_spot = self._is_spot.lower() == "true"
+                self._is_spot = self._is_spot.lower() in ("true", "1")
         logger.info(f"Spot instance: {self._is_spot}")
 
         # Get price per hour from args or environment variable
@@ -339,11 +351,28 @@ class Worker:
         # Check if we should use new process for each task
         self._use_new_process = (
             parsed_args.use_new_process
-            if parsed_args.use_new_process
-            else os.getenv("RMS_CLOUD_WORKER_USE_NEW_PROCESS", "False").lower()
-            not in ("false", "0")
+            if parsed_args.use_new_process is not None
+            else os.getenv("RMS_CLOUD_WORKER_USE_NEW_PROCESS", "False").lower() in ("true", "1")
         )
         logger.info(f"Use new process per task: {self._use_new_process}")
+
+        # Get number of tasks to skip from args or environment variable
+        self._tasks_to_skip = parsed_args.tasks_to_skip
+        if self._tasks_to_skip is None:
+            self._tasks_to_skip = os.getenv("RMS_CLOUD_TASKS_TO_SKIP")
+        if self._tasks_to_skip is not None:
+            self._tasks_to_skip = int(self._tasks_to_skip)
+        logger.info(f"Tasks to skip: {self._tasks_to_skip}")
+
+        # Get maximum number of tasks to process from args or environment variable
+        self._max_num_tasks = parsed_args.max_num_tasks
+        if self._max_num_tasks is None:
+            self._max_num_tasks = os.getenv("RMS_CLOUD_TASKS_MAX_NUM_TASKS")
+        if self._max_num_tasks is not None:
+            self._max_num_tasks = int(self._max_num_tasks)
+        logger.info(f"Maximum number of tasks: {self._max_num_tasks}")
+        self._task_skip_count = self._tasks_to_skip
+        self._tasks_remaining = self._max_num_tasks
 
         # Check if we're using a local tasks file
         self._tasks_file = parsed_args.tasks
@@ -673,9 +702,15 @@ class Worker:
                         max_count=min(5, max_concurrent - self._num_active_tasks.value),
                         visibility_timeout=self._max_runtime,
                     )
-
                     if tasks:
                         for task in tasks:
+                            if self._task_skip_count > 0:
+                                self._task_skip_count -= 1
+                                continue
+                            if self._tasks_remaining is not None:
+                                if self._tasks_remaining <= 0:
+                                    break
+                                self._tasks_remaining -= 1
                             if self._use_new_process:
                                 # Start a new process for this task
                                 process_id = (
@@ -708,7 +743,6 @@ class Worker:
                             self._task_queue_mp.put(task)
                             with self._num_active_tasks.get_lock():
                                 self._num_active_tasks.value += 1
-                            print(task)
                             logger.debug(
                                 f"Queued task {task['task_id']}, active tasks: {self._num_active_tasks.value}"
                             )

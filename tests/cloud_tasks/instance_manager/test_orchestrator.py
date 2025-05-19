@@ -189,3 +189,42 @@ async def test_provision_instances_handles_failures(orchestrator):
 
     # Verify that start_instance was called 5 times (even if some failed)
     assert orchestrator._instance_manager.start_instance.call_count == instance_count
+
+
+@pytest.mark.asyncio
+async def test_dry_run_prevents_instance_creation(orchestrator):
+    """Test that dry_run mode prevents instance creation and sets running to False."""
+    # Arrange
+    orchestrator._dry_run = True
+    orchestrator._instance_manager.start_instance = AsyncMock()
+    orchestrator._task_queue.get_queue_depth = AsyncMock(return_value=10)  # Non-empty queue
+
+    # Mock the optimal instance info
+    optimal_instance_info = {
+        "name": "n1-standard-2",
+        "vcpu": 2,
+        "mem_gb": 8,
+        "local_ssd_gb": 0,
+        "total_price": 5.75,
+        "zone": "us-central1-a",
+        "boot_disk_type": "pd-balanced",
+        "boot_disk_iops": None,
+        "boot_disk_throughput": None,
+        "boot_disk_gb": 20,
+    }
+    orchestrator._instance_manager.get_optimal_instance_type = AsyncMock(
+        return_value=optimal_instance_info
+    )
+
+    # Act
+    await orchestrator.start()
+
+    # Assert
+    # Verify that no instances were started
+    orchestrator._instance_manager.start_instance.assert_not_called()
+
+    # Verify that running is set to False after start()
+    assert not orchestrator.is_running
+
+    # Verify that scaling task was not created
+    assert orchestrator._scaling_task is None

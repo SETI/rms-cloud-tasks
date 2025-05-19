@@ -60,10 +60,10 @@ def yield_tasks_from_file(tasks_file: str) -> Iterable[Dict[str, Any]]:
                 ln = fp.readline()
                 if len(ln) == 0:
                     cont = False
-                elif ln.startswith((" ", "-")):
+                if not ln.startswith("-") and len(ln) != 0:
                     y = y + ln
-                elif len(y) > 0:
-                    yield yaml.load(y)
+                else:
+                    yield yaml.load(y, Loader=yaml.Loader)[0]
                     y = ln
 
 
@@ -80,16 +80,23 @@ async def load_queue_cmd(args: argparse.Namespace, config: Config) -> None:
         provider_config = config.get_provider_config(provider)
         queue_name = provider_config.queue_name
 
-        print(f"Creating task queue '{queue_name}' on {provider} if necessary...")
-        task_queue = await create_queue(config)
+        if args.dry_run:
+            print("Dry run mode enabled. No task queue will be created.")
+            task_queue = None
+        else:
+            print(f"Creating task queue '{queue_name}' on {provider} if necessary...")
+            task_queue = await create_queue(config)
 
-        print(f"Populating task queue from {args.tasks}...")
+        if args.dry_run:
+            print("Dry run mode enabled. No tasks will be loaded.")
+        else:
+            print(f"Populating task queue from {args.tasks}...")
         num_tasks = 0
         tasks_to_skip = args.start_task - 1 if args.start_task else 0
         tasks_remaining = args.limit
 
         # Create a semaphore to limit concurrent tasks
-        semaphore = asyncio.Semaphore(args.max_concurrent_tasks)
+        semaphore = asyncio.Semaphore(args.max_concurrent_queue_operations)
         pending_tasks = set()
 
         load_failed_exception = None
@@ -118,7 +125,8 @@ async def load_queue_cmd(args: argparse.Namespace, config: Config) -> None:
                     )
                     return
                 try:
-                    await task_queue.send_task(task["task_id"], task["data"])
+                    if not args.dry_run:
+                        await task_queue.send_task(task["task_id"], task["data"])
                 except Exception as e:
                     load_failed_exception = e
 
@@ -129,16 +137,13 @@ async def load_queue_cmd(args: argparse.Namespace, config: Config) -> None:
                     tasks_to_skip -= 1
                     continue
 
-                # Check if we've reached the limit
-                if tasks_remaining is not None:
-                    if tasks_remaining <= 0:
-                        break
-                    tasks_remaining -= 1
-
                 if load_failed_exception:
                     raise load_failed_exception
 
-                logger.debug(f"Loading task: {task}")
+                if args.dry_run:
+                    logger.debug(f"Dry run mode - would load task: {task}")
+                else:
+                    logger.debug(f"Loading task: {task}")
 
                 # Create and track the task
                 task["task_num"] = task_num  # For errors
@@ -147,13 +152,20 @@ async def load_queue_cmd(args: argparse.Namespace, config: Config) -> None:
                 task_obj.add_done_callback(pending_tasks.discard)
 
                 # Update progress when tasks complete
-                while len(pending_tasks) >= args.max_concurrent_tasks:
+                while len(pending_tasks) >= args.max_concurrent_queue_operations:
                     done, pending_tasks = await asyncio.wait(
                         pending_tasks, return_when=asyncio.FIRST_COMPLETED
                     )
                     pbar.update(len(done))
                     num_tasks += len(done)
                     logger.debug(f"Increment of {len(done)} task(s)")
+
+                # Check if we've reached the limit
+                if tasks_remaining is not None:
+                    if tasks_remaining <= 0:
+                        break
+                    tasks_remaining -= 1
+
             # Wait for remaining tasks to complete
             if pending_tasks:
                 done, pending_tasks = await asyncio.wait(pending_tasks)
@@ -163,8 +175,11 @@ async def load_queue_cmd(args: argparse.Namespace, config: Config) -> None:
 
         print(f"Loaded {num_tasks} task(s)")
 
-        queue_depth = await task_queue.get_queue_depth()
-        print(f"Tasks loaded successfully. Queue depth (may be approximate): {queue_depth}")
+        if args.dry_run:
+            print("Dry run mode enabled. No queue depth will be shown.")
+        else:
+            queue_depth = await task_queue.get_queue_depth()
+            print(f"Tasks loaded successfully. Queue depth (may be approximate): {queue_depth}")
 
     except Exception as e:
         logger.fatal(f"Error loading tasks: {e}", exc_info=True)
@@ -355,7 +370,7 @@ async def manage_pool_cmd(args: argparse.Namespace, config: Config) -> None:
         # Create the orchestrator using only the config object
         # Configuration (including startup script, region, etc.) is handled
         # during the config loading phase in main()
-        orchestrator = InstanceOrchestrator(config=config)
+        orchestrator = InstanceOrchestrator(config=config, dry_run=args.dry_run)
 
         # Start orchestrator
         logger.info("Starting orchestrator")
@@ -934,7 +949,6 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
                 # cpu_price
                 "cpu_price": "cpu_price",
                 "cp": "cpu_price",
-                "per_cpu_price": "cpu_price",
                 "vcpu_price": "cpu_price",
                 # per_cpu_price
                 "per_cpu_price": "per_cpu_price",
@@ -1180,7 +1194,6 @@ async def list_regions_cmd(args: argparse.Namespace, config: Config) -> None:
                 print(f"Zones: {', '.join(sorted(region['zones'])) if region['zones'] else 'None'}")
                 if args.provider == "AWS":
                     print(f"Opt-in Status: {region.get('opt_in_status', 'N/A')}")
-                    skip_line = True
                 elif args.provider == "AZURE" and region.get("metadata"):
                     print(f"Geography: {region['metadata'].get('geography', 'N/A')}")
                     print(f"Geography Group: {region['metadata'].get('geography_group', 'N/A')}")
@@ -1280,10 +1293,10 @@ def add_load_queue_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--limit", type=int, help="Maximum number of tasks to enqueue")
     parser.add_argument(
-        "--max-concurrent-tasks",
+        "--max-concurrent-queue-operations",
         type=int,
         default=100,
-        help="Maximum number of concurrent tasks to enqueue (default: 100)",
+        help="Maximum number of concurrent queue operations while loading tasks (default: 100)",
     )
 
 
@@ -1554,6 +1567,11 @@ def main():
     add_load_queue_args(run_parser)
     add_instance_pool_args(run_parser)
     add_instance_args(run_parser)
+    run_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Do not actually load any tasks or create or delete any instances",
+    )
     run_parser.set_defaults(func=run_job_cmd)
 
     # --- Status command ---
@@ -1570,6 +1588,11 @@ def main():
     add_common_args(manage_pool_parser)
     add_instance_pool_args(manage_pool_parser)
     add_instance_args(manage_pool_parser)
+    manage_pool_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Do not actually create or delete any instances",
+    )
     manage_pool_parser.set_defaults(func=manage_pool_cmd)
 
     # --- Stop command ---

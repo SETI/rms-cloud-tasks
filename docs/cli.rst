@@ -510,6 +510,11 @@ TBD Stuff about what happens once the queue is empty.
      [VM options]
      [Boot options]
      [Worker and Manage Pool options]
+     [Additional options]
+
+Additional options:
+
+--dry-run           Do not actually load any tasks or create or delete any instances
 
 Examples:
 
@@ -549,10 +554,12 @@ command.
 
 Additional options:
 
---tasks TASKS_FILE         Path to tasks file (JSON or YAML)
---start-task N             Skip tasks until this task number (1-based)
---limit N                  Maximum number of tasks to enqueue
---max-concurrent-tasks N   Maximum concurrent tasks to enqueue (default: 100)
+--tasks TASKS_FILE                    Path to tasks file (JSON or YAML)
+--start-task N                        Skip tasks until this task number (1-based)
+--limit N                             Maximum number of tasks to enqueue
+--max-concurrent-queue-operations N   Maximum concurrent tasks to enqueue (default: 100)
+--dry-run                             Do not actually load any tasks or create or delete any
+                                      instances
 
 Examples:
 
@@ -665,10 +672,10 @@ of the queue.
 
 Additional options:
 
---tasks TASKS_FILE         Path to tasks file (JSON or YAML)
---start-task N             Skip tasks until this task number (1-based)
---limit N                  Maximum number of tasks to enqueue
---max-concurrent-tasks N   Maximum concurrent tasks to enqueue (default: 100)
+--tasks TASKS_FILE                    Path to tasks file (JSON or YAML)
+--start-task N                        Skip tasks until this task number (1-based)
+--limit N                             Maximum number of tasks to enqueue
+--max-concurrent-queue-operations N   Maximum concurrent queue operations (default: 100)
 
 Examples:
 
