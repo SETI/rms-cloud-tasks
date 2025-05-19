@@ -5,13 +5,14 @@ import json
 import os
 import pytest
 import tempfile
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch, call
 import sys
 import types
 import yaml
 import signal
 import multiprocessing
 from multiprocessing import Process
+import time
 
 from cloud_tasks.worker.worker import Worker, LocalTaskQueue
 
@@ -121,6 +122,20 @@ async def test_local_queue_complete_task(local_tasks_file_json):
 async def test_local_queue_fail_task(local_tasks_file_json):
     queue = LocalTaskQueue(local_tasks_file_json)
     await queue.fail_task("test-ack-1")  # This does nothing
+
+
+@pytest.mark.asyncio
+async def test_local_queue_receive_all_tasks(local_tasks_file_json):
+    """Test that LocalTaskQueue.receive_tasks returns all tasks when max_count is larger than available tasks."""
+    queue = LocalTaskQueue(local_tasks_file_json)
+    tasks = await queue.receive_tasks(max_count=5, visibility_timeout=30)
+    # The test file has two tasks
+    assert len(tasks) == 2
+    task_ids = {task["task_id"] for task in tasks}
+    assert task_ids == {"task1", "task2"}
+    # Ensure ack_id is present in each task
+    for task in tasks:
+        assert "ack_id" in task
 
 
 # Work __init__ tests
@@ -270,21 +285,45 @@ async def test_start_with_cloud_queue(mock_worker_function, mock_queue):
 async def test_handle_results(worker, mock_queue):
     worker._task_queue = mock_queue
     worker._running = True
+    worker._shutdown_grace_period = 0.01
+
+    # Set up the mock queue to return immediately
+    mock_queue.complete_task.return_value = asyncio.Future()
+    mock_queue.complete_task.return_value.set_result(None)
+    mock_queue.fail_task.return_value = asyncio.Future()
+    mock_queue.fail_task.return_value.set_result(None)
+
+    # Put tasks in the result queue
     worker._result_queue.put((1, "task1", "ack1", True, "success"))
     worker._result_queue.put((2, "task2", "ack2", False, "error"))
 
     async def shutdown_when_done():
-        # Wait until both counters are incremented or timeout
-        for _ in range(20):
+        # Wait for both tasks to be processed with a shorter timeout
+        start_time = time.time()
+        timeout = 0.5  # 500ms timeout
+
+        while time.time() - start_time < timeout:
             if worker._num_tasks_processed.value == 1 and worker._num_tasks_failed.value == 1:
                 break
-            await asyncio.sleep(0.02)
+            await asyncio.sleep(0.01)  # 10ms sleep
+
+        if worker._num_tasks_processed.value != 1 or worker._num_tasks_failed.value != 1:
+            pytest.fail("Timeout waiting for tasks to be processed")
+
+        # Set shutdown event and wait for a moment to ensure it's processed
         worker._shutdown_event.set()
+        await asyncio.sleep(0.1)  # Give time for shutdown to be processed
 
     handler_task = asyncio.create_task(worker._handle_results())
-    shutdown_task = asyncio.create_task(shutdown_when_done())
-    await asyncio.gather(handler_task, shutdown_task)
+    shutdown_task = asyncio.create_task(worker._wait_for_shutdown(interval=0.01))
+    done_task = asyncio.create_task(shutdown_when_done())
 
+    try:
+        await asyncio.wait_for(asyncio.gather(handler_task, shutdown_task, done_task), timeout=1.0)
+    except asyncio.TimeoutError:
+        pytest.fail("Test timed out waiting for tasks to complete")
+
+    # Verify the results
     assert worker._num_tasks_processed.value == 1
     assert worker._num_tasks_failed.value == 1
     mock_queue.complete_task.assert_called_once_with("ack1")
@@ -415,8 +454,14 @@ def test_exit_if_no_job_id_and_no_tasks(mock_worker_function):
                     )
                     # Patch _parse_args to return our args
                     with patch("cloud_tasks.worker.worker._parse_args", return_value=args):
-                        Worker(mock_worker_function)
-                        mock_exit.assert_called_once_with(1)
+                        with patch("cloud_tasks.worker.worker.create_queue", return_value=None):
+                            Worker(mock_worker_function)
+                            mock_exit.assert_called_once_with(1)
+                            mock_logger.error.assert_called_once_with(
+                                "Queue name not specified via --queue-name or "
+                                "RMS_CLOUD_TASKS_QUEUE_NAME or --job-id or RMS_CLOUD_TASKS_JOB_ID "
+                                "and no tasks file specified via --tasks"
+                            )
 
 
 def test_num_simultaneous_tasks_default(mock_worker_function):
@@ -855,3 +900,319 @@ async def test_create_single_task_process(mock_worker_function):
                 # Verify process was added to the list
                 assert len(worker._processes) == 1
                 assert worker._processes[0] == mock_proc
+
+
+def test_provider_from_command_line(mock_worker_function):
+    """Test that provider can be specified via command line."""
+    with patch.dict(os.environ, {}, clear=True):
+        with patch("sys.argv", ["worker.py", "--provider", "GCP", "--job-id", "test-job"]):
+            worker = Worker(mock_worker_function)
+            assert worker.provider == "GCP"
+
+
+def test_provider_from_environment(mock_worker_function):
+    """Test that provider can be specified via environment variable."""
+    with patch.dict(
+        os.environ,
+        {"RMS_CLOUD_TASKS_PROVIDER": "AWS", "RMS_CLOUD_TASKS_JOB_ID": "test-job"},
+        clear=True,
+    ):
+        with patch("sys.argv", ["worker.py"]):
+            worker = Worker(mock_worker_function)
+            assert worker.provider == "AWS"
+
+
+def test_provider_command_line_overrides_environment(mock_worker_function):
+    """Test that command line provider overrides environment variable."""
+    with patch.dict(
+        os.environ,
+        {"RMS_CLOUD_TASKS_PROVIDER": "AWS", "RMS_CLOUD_TASKS_JOB_ID": "test-job"},
+        clear=True,
+    ):
+        with patch("sys.argv", ["worker.py", "--provider", "GCP", "--job-id", "test-job"]):
+            worker = Worker(mock_worker_function)
+            assert worker.provider == "GCP"
+
+
+def test_provider_required_without_tasks(mock_worker_function):
+    """Test that provider is required when no tasks file is specified."""
+    with patch.dict(os.environ, {}, clear=True):
+        with patch("sys.argv", ["worker.py"]):
+            with patch("sys.exit") as mock_exit:
+                with patch("cloud_tasks.worker.worker.logger") as mock_logger:
+                    args = types.SimpleNamespace(
+                        provider=None,
+                        project_id=None,
+                        tasks=None,
+                        job_id="test-job",
+                        queue_name=None,
+                        instance_type=None,
+                        num_cpus=None,
+                        memory=None,
+                        local_ssd=None,
+                        boot_disk=None,
+                        is_spot=None,
+                        price=None,
+                        num_simultaneous_tasks=None,
+                        max_runtime=None,
+                        shutdown_grace_period=None,
+                        use_new_process=None,
+                        tasks_to_skip=None,
+                        max_num_tasks=None,
+                    )
+                    with patch("cloud_tasks.worker.worker._parse_args", return_value=args):
+                        Worker(mock_worker_function)
+                        mock_exit.assert_called_once_with(1)
+                        mock_logger.error.assert_called_once_with(
+                            "Provider not specified via --provider or RMS_CLOUD_TASKS_PROVIDER"
+                        )
+
+
+def test_provider_not_required_with_tasks(mock_worker_function):
+    """Test that provider is not required when tasks file is specified."""
+    with patch.dict(os.environ, {}, clear=True):
+        with patch("sys.argv", ["worker.py", "--tasks", "tasks.json"]):
+            with patch("cloud_tasks.worker.worker._parse_args") as mock_parse_args:
+                args = types.SimpleNamespace(
+                    provider=None,
+                    project_id=None,
+                    tasks="tasks.json",
+                    job_id=None,
+                    queue_name=None,
+                    instance_type=None,
+                    num_cpus=None,
+                    memory=None,
+                    local_ssd=None,
+                    boot_disk=None,
+                    is_spot=None,
+                    price=None,
+                    num_simultaneous_tasks=None,
+                    max_runtime=None,
+                    shutdown_grace_period=None,
+                    use_new_process=None,
+                    tasks_to_skip=None,
+                    max_num_tasks=None,
+                )
+                mock_parse_args.return_value = args
+                worker = Worker(mock_worker_function)
+                assert worker.provider is None
+
+
+@pytest.mark.asyncio
+async def test_check_termination_loop(mock_worker_function):
+    """Test that _check_termination_loop properly handles termination notices."""
+    with patch("sys.argv", ["worker.py", "--provider", "AWS", "--job-id", "test-job"]):
+        with patch("cloud_tasks.worker.worker.logger") as mock_logger:
+            with patch("asyncio.sleep") as mock_sleep:  # Patch sleep to run instantly
+                worker = Worker(mock_worker_function)
+                worker._running = True
+                worker._shutdown_event = MagicMock()
+                worker._shutdown_event.is_set.side_effect = [
+                    False,
+                    True,
+                ]  # Return False first, then True
+                worker._termination_event = MagicMock()
+                worker._termination_event.is_set.return_value = False
+
+                # Mock _check_termination_notice to return True once then False
+                async def mock_check_termination():
+                    mock_check_termination.call_count = (
+                        getattr(mock_check_termination, "call_count", 0) + 1
+                    )
+                    if mock_check_termination.call_count == 1:
+                        return True
+                    return False
+
+                worker._check_termination_notice = mock_check_termination
+
+                # Run the termination check loop
+                await worker._check_termination_loop()
+
+                # Verify termination event was set
+                worker._termination_event.set.assert_called_once()
+
+                # Verify logger was called with appropriate message
+                mock_logger.warning.assert_called_once_with("Instance termination notice received")
+
+                # Verify sleep was called with the correct duration
+                mock_sleep.assert_called_once_with(5)
+
+
+@pytest.mark.asyncio
+async def test_monitor_process_runtimes_pool_process(mock_worker_function, caplog):
+    """Test _monitor_process_runtimes with a pool process that exceeds max runtime."""
+    with patch("sys.argv", ["worker.py", "--provider", "AWS", "--job-id", "test-job"]):
+        with patch("asyncio.sleep") as mock_sleep:
+            # Make sleep raise an exception after first call to break the loop
+            mock_sleep.side_effect = [None, Exception("Test complete")]
+
+            worker = Worker(mock_worker_function)
+            worker._running = True
+            worker._max_runtime = 0.2
+            worker._use_new_process = False
+
+            # Create a mock process that will exceed max runtime
+            mock_process = MagicMock()
+            mock_process.pid = 123
+            mock_process.is_alive.return_value = False  # Process stays alive after terminate
+            worker._processes = [mock_process]
+
+            # Set up process info to indicate it's been running too long
+            worker._process_info = {123: (time.time() - 0.2, "task-1")}  # 0.2 seconds runtime
+
+            # Mock task queue for fail_task call
+            mock_queue = AsyncMock()
+            worker._task_queue = mock_queue
+
+            # Run the monitor for one iteration
+            with pytest.raises(Exception, match="Test complete"):
+                await worker._monitor_process_runtimes()
+
+            # Verify process was terminated
+            mock_process.terminate.assert_called_once()
+            # Verify two join calls since process stays alive
+            assert mock_process.join.call_count == 1
+            mock_process.join.assert_has_calls(
+                [
+                    call(timeout=1),  # First join after terminate
+                ]
+            )
+
+            # Verify task was marked as failed
+            mock_queue.fail_task.assert_called_once_with("task-1")
+
+            # Verify a new process was created to replace it
+            assert len(worker._processes) == 1
+            assert worker._processes[0] != mock_process  # New process instance
+
+            # Verify logging
+            assert "Process 123 (task task-1) exceeded max runtime of 0.2 seconds" in caplog.text
+            assert "Started replacement worker process #0" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_monitor_process_runtimes_pool_process_no_termination(mock_worker_function, caplog):
+    """Test _monitor_process_runtimes with a pool process that exceeds max runtime."""
+    with patch("sys.argv", ["worker.py", "--provider", "AWS", "--job-id", "test-job"]):
+        with patch("asyncio.sleep") as mock_sleep:
+            # Make sleep raise an exception after first call to break the loop
+            mock_sleep.side_effect = [None, Exception("Test complete")]
+
+            worker = Worker(mock_worker_function)
+            worker._running = True
+            worker._max_runtime = 0.2
+            worker._use_new_process = False
+
+            # Create a mock process that will exceed max runtime
+            mock_process = MagicMock()
+            mock_process.pid = 123
+            mock_process.is_alive.return_value = True  # Process stays alive after terminate
+            worker._processes = [mock_process]
+
+            # Set up process info to indicate it's been running too long
+            worker._process_info = {123: (time.time() - 0.2, "task-1")}  # 0.2 seconds runtime
+
+            # Mock task queue for fail_task call
+            mock_queue = AsyncMock()
+            worker._task_queue = mock_queue
+
+            # Run the monitor for one iteration
+            with pytest.raises(Exception, match="Test complete"):
+                await worker._monitor_process_runtimes()
+
+            # Verify process was terminated
+            mock_process.terminate.assert_called_once()
+            # Verify two join calls since process stays alive
+            assert mock_process.join.call_count == 2
+            mock_process.join.assert_has_calls(
+                [
+                    call(timeout=1),  # First join after terminate
+                    call(timeout=1),  # Second join after kill
+                ]
+            )
+            mock_process.kill.assert_called_once()  # Verify kill was called after second join
+
+            # Verify task was marked as failed
+            mock_queue.fail_task.assert_called_once_with("task-1")
+
+            # Verify a new process was created to replace it
+            assert len(worker._processes) == 1
+            assert worker._processes[0] != mock_process  # New process instance
+
+            # Verify logging
+            assert "Process 123 (task task-1) exceeded max runtime of 0.2 seconds" in caplog.text
+            assert "Started replacement worker process #0" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_monitor_process_runtimes_no_exceeded_processes(mock_worker_function, caplog):
+    """Test _monitor_process_runtimes when no processes exceed max runtime."""
+    with patch("sys.argv", ["worker.py", "--provider", "AWS", "--job-id", "test-job"]):
+        with patch("asyncio.sleep") as mock_sleep:
+            # Make sleep raise an exception after first call to break the loop
+            mock_sleep.side_effect = [None, Exception("Test complete")]
+
+            worker = Worker(mock_worker_function)
+            worker._running = True
+            worker._shutdown_event = MagicMock()
+            worker._shutdown_event.is_set.return_value = False
+            worker._max_runtime = 0.1
+
+            # Create a mock process that hasn't exceeded max runtime
+            mock_process = MagicMock()
+            mock_process.pid = 123
+            mock_process.is_alive.return_value = True
+            worker._processes = [mock_process]
+
+            # Set up process info to indicate it's been running for a short time
+            worker._process_info = {123: (time.time() - 0.05, "task-1")}  # 0.05 seconds runtime
+
+            # Run the monitor for one iteration
+            with pytest.raises(Exception, match="Test complete"):
+                await worker._monitor_process_runtimes()
+
+            # Verify process was not terminated
+            mock_process.terminate.assert_not_called()
+            mock_process.join.assert_not_called()
+
+            # Verify no new process was created
+            assert len(worker._processes) == 1
+            assert worker._processes[0] == mock_process
+
+            # Verify no logging of warnings or info messages
+            assert "Process 123 exceeded max runtime" not in caplog.text
+            assert "Terminating" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_monitor_process_runtimes_shutdown(mock_worker_function, caplog):
+    """Test _monitor_process_runtimes exits when shutdown is requested."""
+    with patch("sys.argv", ["worker.py", "--provider", "AWS", "--job-id", "test-job"]):
+        with patch("asyncio.sleep") as mock_sleep:
+            # Make sleep raise an exception after first call to break the loop
+            mock_sleep.side_effect = [None, Exception("Test complete")]
+
+            worker = Worker(mock_worker_function)
+            worker._running = True
+            worker._shutdown_event = MagicMock()
+            worker._shutdown_event.is_set.return_value = True  # Shutdown requested immediately
+            worker._max_runtime = 0.1
+
+            # Create a mock process that would exceed max runtime
+            mock_process = MagicMock()
+            mock_process.pid = 123
+            mock_process.is_alive.return_value = True
+            worker._processes = [mock_process]
+
+            # Set up process info to indicate it's been running too long
+            worker._process_info = {123: (time.time() - 0.2, "task-1")}  # 0.2 seconds runtime
+
+            await worker._monitor_process_runtimes()
+
+            # Verify process was not terminated (shutdown takes precedence)
+            mock_process.terminate.assert_not_called()
+            mock_process.join.assert_not_called()
+
+            # Verify no logging of warnings or info messages
+            assert "Process 123 exceeded max runtime" not in caplog.text
+            assert "Terminating" not in caplog.text
