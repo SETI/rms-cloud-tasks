@@ -115,19 +115,14 @@ def _parse_args(args: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "--max-runtime",
         type=int,
         help="Maximum allowed runtime in seconds; used to determine queue visibility "
-        "timeout and to kill tasks that are running too long [overrides $RMS_CLOUD_TASKS_MAX_RUNTIME]",
+        "timeout and to kill tasks that are running too long [overrides "
+        "$RMS_CLOUD_TASKS_MAX_RUNTIME] (default 3600 seconds)",
     )
     parser.add_argument(
         "--shutdown-grace-period",
         type=int,
         help="How long to wait in seconds for processes to gracefully finish after shutdown is "
-        "requested [overrides $RMS_CLOUD_TASKS_SHUTDOWN_GRACE_PERIOD] (default 120 seconds)",
-    )
-    parser.add_argument(
-        "--use-new-process",
-        action="store_true",
-        default=None,
-        help="Use new process for each task [overrides $RMS_CLOUD_WORKER_USE_NEW_PROCESS]",
+        "requested [overrides $RMS_CLOUD_TASKS_SHUTDOWN_GRACE_PERIOD] (default 30 seconds)",
     )
     parser.add_argument(
         "--tasks-to-skip",
@@ -138,6 +133,12 @@ def _parse_args(args: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "--max-num-tasks",
         type=int,
         help="Maximum number of tasks to process [overrides $RMS_CLOUD_TASKS_MAX_NUM_TASKS]",
+    )
+    parser.add_argument(
+        "--simulate-spot-termination-delay",
+        type=float,
+        help="Number of seconds after worker start to simulate a spot termination notice "
+        "[overrides $RMS_CLOUD_TASKS_SIMULATE_SPOT_TERMINATION_DELAY]",
     )
 
     return parser.parse_args(args)
@@ -330,6 +331,17 @@ class Worker:
             self._price_per_hour = float(self._price_per_hour)
         logger.info(f"Price per hour: {self._price_per_hour}")
 
+        # Get simulate spot termination delay from args or environment variable
+        self._simulate_spot_termination_delay = parsed_args.simulate_spot_termination_delay
+        if self._simulate_spot_termination_delay is None:
+            delay_str = os.getenv("RMS_CLOUD_TASKS_SIMULATE_SPOT_TERMINATION_DELAY")
+            if delay_str is not None:
+                self._simulate_spot_termination_delay = float(delay_str)
+        if self._simulate_spot_termination_delay is not None:
+            logger.info(
+                f"Simulating spot termination after {self._simulate_spot_termination_delay} seconds"
+            )
+
         # Determine number of tasks per worker
         self._num_simultaneous_tasks = parsed_args.num_simultaneous_tasks
         if self._num_simultaneous_tasks is None:
@@ -348,7 +360,9 @@ class Worker:
         self._max_runtime = parsed_args.max_runtime
         if self._max_runtime is None:
             self._max_runtime = os.getenv("RMS_CLOUD_TASKS_MAX_RUNTIME")
-        if self._max_runtime is not None:
+        if self._max_runtime is None:
+            self._max_runtime = 3600  # Default to 1 hour
+        else:
             self._max_runtime = int(self._max_runtime)
         logger.info(f"Maximum runtime: {self._max_runtime} seconds")
 
@@ -356,17 +370,9 @@ class Worker:
         self._shutdown_grace_period = (
             parsed_args.shutdown_grace_period
             if parsed_args.shutdown_grace_period is not None
-            else int(os.getenv("RMS_CLOUD_TASKS_SHUTDOWN_GRACE_PERIOD", 120))
+            else int(os.getenv("RMS_CLOUD_TASKS_SHUTDOWN_GRACE_PERIOD", 30))
         )
         logger.info(f"Shutdown grace period: {self._shutdown_grace_period} seconds")
-
-        # Check if we should use new process for each task
-        self._use_new_process = (
-            parsed_args.use_new_process
-            if parsed_args.use_new_process is not None
-            else os.getenv("RMS_CLOUD_WORKER_USE_NEW_PROCESS", "False").lower() in ("true", "1")
-        )
-        logger.info(f"Use new process per task: {self._use_new_process}")
 
         # Get number of tasks to skip from args or environment variable
         self._tasks_to_skip = parsed_args.tasks_to_skip
@@ -389,7 +395,7 @@ class Worker:
         # Check if we're using a local tasks file
         self._tasks_file = parsed_args.tasks
         if self._tasks_file:
-            logger.info(f"Using local tasks file: {self._tasks_file}")
+            logger.info(f'Using local tasks file: "{self._tasks_file}"')
         elif self._queue_name is None:
             logger.error(
                 "Queue name not specified via --queue-name or RMS_CLOUD_TASKS_QUEUE_NAME "
@@ -407,19 +413,13 @@ class Worker:
         self._termination_event: MP_Event = Event()  # type: ignore
 
         # Track processes
-        self._processes: List[Process] = []
-        self._num_active_tasks: MP_Value = Value("i", 0)  # type: ignore
-
-        # For results from worker processes
-        self._num_tasks_processed: MP_Value = Value("i", 0)  # type: ignore
-        self._num_tasks_failed: MP_Value = Value("i", 0)  # type: ignore
+        self._processes: Dict[int, Dict[str, Any]] = {}  # Maps worker # to process and task
+        self._num_tasks_succeeded: int = 0
+        self._num_tasks_failed: int = 0
+        self._num_tasks_timed_out: int = 0
 
         # Task queue for inter-process communication
-        self._task_queue_mp: MP_Queue = Queue()  # type: ignore
         self._result_queue: MP_Queue = Queue()  # type: ignore
-
-        # For tracking process start times and task IDs
-        self._process_info: Dict[int, Tuple[float, str]] = {}
 
         # Semaphores for synchronizing process operations
         self._process_ops_semaphore = asyncio.Semaphore(1)  # For process creation/monitoring
@@ -499,6 +499,11 @@ class Worker:
         """The grace period for shutting down the worker in seconds"""
         return self._shutdown_grace_period
 
+    @property
+    def received_termination_notice(self) -> bool:
+        """Whether the worker has received a termination notice"""
+        return self._termination_event.is_set()
+
     def _signal_handler(self, signum, frame):
         """Handle termination signals."""
         signal_name = signal.Signals(signum).name
@@ -517,14 +522,17 @@ class Worker:
         4. Run until shutdown is requested
         """
         if self._tasks_file:
-            logger.info(f"Starting worker for local tasks file '{self._tasks_file}'")
+            logger.info(f'Starting task scheduler for local tasks file "{self._tasks_file}"')
             try:
                 self._task_queue = LocalTaskQueue(self._tasks_file)
             except Exception as e:
                 logger.error(f"Error initializing local task queue: {e}", exc_info=True)
                 sys.exit(1)
         else:
-            logger.info(f"Starting worker for {self._provider.upper()} queue '{self._queue_name}'")
+            logger.info(
+                f"Starting task scheduler for {self._provider.upper()} queue "
+                f'"{self._queue_name}"'
+            )
             try:
                 self._task_queue = await create_queue(
                     provider=self._provider,
@@ -535,11 +543,8 @@ class Worker:
                 logger.error(f"Error initializing task queue: {e}", exc_info=True)
                 sys.exit(1)
 
+        self._start_time = time.time()
         self._running = True
-
-        if not self._use_new_process:
-            # Start worker processes if using process pool
-            self._start_worker_processes()
 
         # Start the result handler in the main process
         asyncio.create_task(self._handle_results())
@@ -557,32 +562,12 @@ class Worker:
         # Process tasks until shutdown
         await self._wait_for_shutdown()
 
+        total = self._num_tasks_succeeded + self._num_tasks_failed + self._num_tasks_timed_out
         logger.info(
-            f"Worker shutdown complete. Processed: {self._num_tasks_processed.value}, "
-            f"failed: {self._num_tasks_failed.value}"
+            f"Task scheduler shutdown complete. Succeeded: {self._num_tasks_succeeded}, "
+            f"Failed: {self._num_tasks_failed}, Timed out: {self._num_tasks_timed_out}, "
+            f"Total: {total}"
         )
-
-    def _start_worker_processes(self) -> None:
-        """Start worker processes for task processing."""
-        for i in range(self._num_simultaneous_tasks):
-            p = Process(
-                target=Worker._worker_process_main,
-                args=(
-                    i,
-                    self._user_worker_function,
-                    self,
-                    self._task_queue_mp,
-                    self._result_queue,
-                    self._shutdown_event,
-                    self._termination_event,
-                    self._num_active_tasks,
-                    False,  # is_single_task
-                ),
-            )
-            p.daemon = True
-            p.start()
-            self._processes.append(p)
-            logger.info(f"Started worker process #{i} (PID: {p.pid})")
 
     async def _handle_results(self) -> None:
         """Handle results from worker processes."""
@@ -590,20 +575,38 @@ class Worker:
             try:
                 # Use asyncio to check the queue without blocking
                 while not self._result_queue.empty():
-                    process_id, task_id, ack_id, success, result = self._result_queue.get_nowait()
+                    worker_id, success, result = self._result_queue.get_nowait()
+                    async with self._process_ops_semaphore:
+                        if worker_id not in self._processes:
+                            # Race condition with max_runtime most likely
+                            logger.warning(
+                                f"Worker #{worker_id} reported task completed but "
+                                "task had already timed out and was being terminated; "
+                                "it was marked as completed and will not be retried"
+                            )
+                            continue
+                        process_data = self._processes[worker_id]
+                        task = process_data["task"]
 
-                    if success:
-                        self._num_tasks_processed.value += 1
-                        logger.info(
-                            f"Task {task_id} completed successfully by process #{process_id}: {result}"
-                        )
-                        async with self._task_queue_semaphore:
-                            await self._task_queue.complete_task(ack_id)
-                    else:
-                        self._num_tasks_failed.value += 1
-                        logger.error(f"Task {task_id} failed in process #{process_id}: {result}")
-                        async with self._task_queue_semaphore:
-                            await self._task_queue.fail_task(ack_id)
+                        if success:
+                            self._num_tasks_succeeded += 1
+                            logger.info(
+                                f"Worker #{worker_id} reported task {task['task_id']} completed "
+                                f"successfully - {result}"
+                            )
+                            async with self._task_queue_semaphore:
+                                await self._task_queue.complete_task(task["ack_id"])
+                        else:
+                            self._num_tasks_failed += 1
+                            logger.error(
+                                f"Worker #{worker_id} reported task {task['task_id']} failed - "
+                                f"{result}"
+                            )
+                            async with self._task_queue_semaphore:
+                                await self._task_queue.fail_task(task["ack_id"])
+
+                        del self._processes[worker_id]
+
                 # Sleep briefly to avoid CPU hogging
                 await asyncio.sleep(0.1)
 
@@ -618,36 +621,41 @@ class Worker:
             await asyncio.sleep(interval)
 
         logger.info("Shutdown requested, stopping worker processes")
-        self._running = False
+        self._shutdown_event.set()
 
         # Allow processes some time to finish current tasks
         shutdown_start = time.time()
         while (
-            self._num_active_tasks.value > 0
-            and time.time() - shutdown_start < self._shutdown_grace_period
+            len(self._processes) > 0 and time.time() - shutdown_start < self._shutdown_grace_period
         ):
             remaining_time = self._shutdown_grace_period - (time.time() - shutdown_start)
             logger.info(
-                f"Waiting for {self._num_active_tasks.value} active tasks to complete;"
-                f"{remaining_time:.2f} seconds remaining"
+                f"Waiting for {len(self._processes)} active tasks to complete; "
+                f"{remaining_time:.0f} seconds remaining"
             )
             await asyncio.sleep(1)
 
         # Terminate any remaining processes
         async with self._process_ops_semaphore:
-            for p in self._processes:
+            for worker_id, process_data in self._processes.items():
+                p = process_data["process"]
                 if p.is_alive():
-                    logger.info(f"Terminating process {p.pid}")
+                    logger.info(f"Terminating process worker #{worker_id} (PID {p.pid})")
                     p.terminate()
 
             # Wait for processes to exit
-            for p in self._processes:
+            for worker_id, process_data in self._processes.items():
+                p = process_data["process"]
                 p.join(timeout=5)
                 if p.is_alive():
-                    logger.warning(f"Process {p.pid} did not exit, killing")
+                    logger.warning(
+                        f"Process worker #{worker_id} (PID {p.pid}) did not exit, killing"
+                    )
                     p.kill()
 
-            self._processes = []
+            self._processes = {}
+
+        self._running = False
 
     async def _check_termination_loop(self) -> None:
         """Periodically check if the instance is scheduled for termination."""
@@ -655,7 +663,7 @@ class Worker:
             try:
                 termination_notice = await self._check_termination_notice()
 
-                if termination_notice and not self._termination_event.is_set():
+                if termination_notice and not self.received_termination_notice:
                     logger.warning("Instance termination notice received")
                     self._termination_event.set()
                     # When the termination actually occurs, we don't need to do anything;
@@ -667,7 +675,7 @@ class Worker:
             except Exception as e:
                 logger.error(f"Error checking for termination: {e}", exc_info=True)
 
-            # Check every 15 seconds
+            # Check every 5 seconds
             await asyncio.sleep(5)
 
     async def _check_termination_notice(self) -> bool:
@@ -682,17 +690,26 @@ class Worker:
         Returns:
             True if the instance is scheduled for termination, False otherwise
         """
+        # Check for simulated termination first
+        if self._simulate_spot_termination_delay is not None:
+            elapsed_time = time.time() - self._start_time
+            if elapsed_time >= self._simulate_spot_termination_delay:
+                logger.info(
+                    f"Simulated spot termination notice received after {elapsed_time:.1f} seconds"
+                )
+                return True
+
         try:
             import requests  # type: ignore
 
-            if self._provider == "aws":
+            if self._provider == "AWS":
                 # AWS spot termination check
                 response = requests.get(
                     "http://169.254.169.254/latest/meta-data/spot/instance-action", timeout=2
                 )
                 return response.status_code == 200
 
-            elif self._provider == "gcp":
+            elif self._provider == "GCP":
                 # GCP preemption check
                 response = requests.get(
                     "http://metadata.google.internal/computeMetadata/v1/instance/preempted",
@@ -701,7 +718,7 @@ class Worker:
                 )
                 return response.text.strip().lower() == "true"
 
-            elif self._provider == "azure":
+            elif self._provider == "AZURE":
                 # TODO Azure doesn't have a direct API yet
                 return False
 
@@ -715,7 +732,7 @@ class Worker:
         while (
             self._running
             and not self._shutdown_event.is_set()
-            and not self._termination_event.is_set()
+            and not self.received_termination_notice
         ):
             try:
                 # Ensure task_queue is available
@@ -726,66 +743,66 @@ class Worker:
 
                 # Only fetch new tasks if we have capacity
                 max_concurrent = self._num_simultaneous_tasks
-                if self._num_active_tasks.value < max_concurrent:
-                    # Receive tasks
-                    async with self._task_queue_semaphore:
-                        tasks = await self._task_queue.receive_tasks(
-                            max_count=min(5, max_concurrent - self._num_active_tasks.value),
-                            visibility_timeout=self._max_runtime,
-                        )
-
-                    if tasks:
-                        for task in tasks:
-                            if self._task_skip_count > 0:
-                                self._task_skip_count -= 1
-                                continue
-                            if self._tasks_remaining is not None:
-                                if self._tasks_remaining <= 0:
-                                    break
-                                self._tasks_remaining -= 1
-
-                            async with self._process_ops_semaphore:
-                                if self._use_new_process:
-                                    # Start a new process for this task
-                                    process_id = (
-                                        self._num_tasks_processed.value
-                                        + self._num_tasks_failed.value
-                                        + self._num_active_tasks.value
-                                    )
-                                    p = Process(
-                                        target=self._worker_process_main,
-                                        args=(
-                                            process_id,
-                                            self._user_worker_function,
-                                            self,
-                                            self._task_queue_mp,
-                                            self._result_queue,
-                                            self._shutdown_event,
-                                            self._termination_event,
-                                            self._num_active_tasks,
-                                            True,  # is_single_task
-                                        ),
-                                    )
-                                    p.daemon = True
-                                    p.start()
-                                    self._processes.append(p)
-                                    logger.info(
-                                        f"Started single-task process #{process_id} (PID: {p.pid})"
-                                    )
-
-                                # Put task on the worker queue
-                                self._task_queue_mp.put(task)
-                                with self._num_active_tasks.get_lock():
-                                    self._num_active_tasks.value += 1
-                                logger.debug(
-                                    f"Queued task {task['task_id']}, active tasks: {self._num_active_tasks.value}"
-                                )
-                    else:
-                        # If no tasks, sleep to avoid hammering the queue
-                        await asyncio.sleep(1)
-                else:
+                if len(self._processes) >= max_concurrent:
                     # Wait for workers to process tasks
                     await asyncio.sleep(0.1)
+                    continue
+
+                # Receive tasks
+                async with self._task_queue_semaphore:
+                    tasks = await self._task_queue.receive_tasks(
+                        max_count=min(5, max_concurrent - len(self._processes)),
+                        visibility_timeout=self._max_runtime,
+                    )
+
+                if tasks:
+                    for task in tasks:
+                        if self._task_skip_count is not None and self._task_skip_count > 0:
+                            self._task_skip_count -= 1
+                            continue
+                        if self._tasks_remaining is not None:
+                            if self._tasks_remaining <= 0:
+                                break
+                            self._tasks_remaining -= 1
+
+                        async with self._process_ops_semaphore:
+                            # Start a new process for this task
+                            worker_id = (
+                                self._num_tasks_succeeded
+                                + self._num_tasks_failed
+                                + self._num_tasks_timed_out
+                                + len(self._processes)
+                            )
+                            p = Process(
+                                target=self._worker_process_main,
+                                args=(
+                                    worker_id,
+                                    self._user_worker_function,
+                                    self,
+                                    task,
+                                    self._result_queue,
+                                    self._shutdown_event,
+                                    self._termination_event,
+                                ),
+                            )
+                            p.daemon = True  # Guarantees exit when main process dies
+                            p.start()
+                            self._processes[worker_id] = {
+                                "worker_id": worker_id,
+                                "process": p,
+                                "start_time": time.time(),
+                                "task": task,
+                            }
+                            logger.info(
+                                f"Started single-task worker #{worker_id} " f"(PID {p.pid})"
+                            )
+                            logger.debug(
+                                f"Queued task {task['task_id']}, active tasks: "
+                                f"{len(self._processes)}"
+                            )
+                else:
+                    # If no tasks, sleep to avoid hammering the queue
+                    await asyncio.sleep(1)
 
             except Exception as e:
                 logger.error(f"Error fetching tasks: {e}", exc_info=True)
@@ -793,167 +810,126 @@ class Worker:
 
     async def _monitor_process_runtimes(self) -> None:
         """Monitor process runtimes and kill processes that exceed max_runtime."""
-        while self._running and not self._shutdown_event.is_set():
+        while self._running:
             current_time = time.time()
-            processes_to_replace = []
+            killed_one = False
 
             # Check each process's runtime
-            for process_id, (start_time, task_id) in list(self._process_info.items()):
-                runtime = current_time - start_time
-                if runtime > self._max_runtime:
+            async with self._process_ops_semaphore:
+                for worker_id, process_data in self._processes.items():
+                    start_time = process_data["start_time"]
+                    p = process_data["process"]
+                    task = process_data["task"]
+                    runtime = current_time - start_time
+                    if runtime <= self._max_runtime:
+                        continue
+
                     logger.warning(
-                        f"Process {process_id} (task {task_id}) "
-                        f"exceeded max runtime of {self._max_runtime} seconds (runtime: "
-                        f"{runtime:.1f} seconds)"
+                        f"Worker #{worker_id} (PID {p.pid}), task "
+                        f"{process_data['task']['task_id']} exceeded max runtime of "
+                        f"{self._max_runtime} seconds (actual runtime {runtime:.1f} seconds)"
                     )
-                    processes_to_replace.append((process_id, task_id))
 
-            # Kill and replace processes that exceeded runtime
-            for process_id, task_id in processes_to_replace:
-                async with self._process_ops_semaphore:
-                    # Find the process in the processes list
-                    process = next((p for p in self._processes if p.pid == process_id), None)
-                    if process:
-                        try:
-                            logger.info(f"Terminating process {process_id}")
-                            process.terminate()
-                            process.join(timeout=1)
-                            if process.is_alive():
-                                logger.warning(f"Process {process_id} did not terminate, killing")
-                                process.kill()
-                                process.join(timeout=1)
-                        except Exception as e:
-                            logger.error(f"Error terminating process {process_id}: {e}")
-
-                        # Mark task as failed in the queue
-                        try:
-                            async with self._task_queue_semaphore:
-                                await self._task_queue.fail_task(task_id)
-                                logger.info(f"Marked task {task_id} as failed due to timeout")
-                        except Exception as e:
-                            logger.error(f"Error marking task {task_id} as failed: {e}")
-
-                        # Remove from tracking
-                        self._process_info.pop(process_id, None)
-                        self._processes.remove(process)
-
-                        # If this was a pool process (not a single-task process), create a replacement
-                        if not self._use_new_process:
-                            new_process = Process(
-                                target=self._worker_process_main,
-                                args=(
-                                    len(self._processes),
-                                    self._user_worker_function,
-                                    self,
-                                    self._task_queue_mp,
-                                    self._result_queue,
-                                    self._shutdown_event,
-                                    self._termination_event,
-                                    self._num_active_tasks,
-                                    False,  # is_single_task
-                                ),
+                    # Kill the process that exceeded runtime
+                    try:
+                        logger.info(f"Terminating worker #{worker_id} (PID {p.pid})")
+                        p.terminate()
+                        p.join(timeout=1)
+                        if p.is_alive():
+                            logger.warning(
+                                f"Worker #{worker_id} (PID {p.pid}) did not terminate, killing"
                             )
-                            new_process.daemon = True
-                            new_process.start()
-                            self._processes.append(new_process)
+                            p.kill()
+                            p.join(timeout=1)
+                    except Exception as e:
+                        logger.error(
+                            f"Error terminating process worker #{worker_id} (PID " f"{p.pid}): {e}"
+                        )
+
+                    # Mark task as failed in the queue
+                    try:
+                        async with self._task_queue_semaphore:
                             logger.info(
-                                f"Started replacement worker process #{len(self._processes)-1} (PID: {new_process.pid})"
+                                f"Marking task {task['task_id']} as completed due to excessive "
+                                "runtime to avoid re-processing"
                             )
+                            await self._task_queue.complete_task(task["ack_id"])
+                    except Exception as e:
+                        logger.error(f"Error marking task {task['task_id']} as completed: {e}")
 
+                    # Remove from tracking
+                    del self._processes[worker_id]
+                    self._num_tasks_timed_out += 1
+                    killed_one = True
+
+                    break
+
+                if killed_one:
+                    continue
+
+            logger.info(f"Active processes: {len(self._processes)}")
             await asyncio.sleep(1)  # Check every second
 
     @staticmethod
     def _worker_process_main(
-        process_id: int,
+        worker_id: int,
         user_worker_function: Callable[[str, Dict[str, Any]], bool],
         worker: "Worker",
-        task_queue: MP_Queue,
+        task: Dict[str, Any],
         result_queue: MP_Queue,
         shutdown_event: MP_Event,
         termination_event: MP_Event,
-        active_tasks: MP_Value,
-        is_single_task: bool,
     ) -> None:
         """Main function for worker processes."""
+        # We inherited signal catching from the parent process, but we don't want that
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+
         # Set up logging for this process
         logging.basicConfig(
             level=logging.INFO,
-            format=f"%(asctime)s - Process-{process_id} - %(levelname)s - %(message)s",
+            format=f"%(asctime)s - Process-{worker_id} - %(levelname)s - %(message)s",
         )
-        logger = logging.getLogger(f"worker-{process_id}")
+        logger = logging.getLogger(f"worker-{worker_id}")
 
         # Initialize task execution environment
         try:
-            logger.info(f"Worker process #{process_id} started")
+            logger.info(f"Worker #{worker_id}: Started")
 
-            # Main processing loop
-            while not shutdown_event.is_set() and not termination_event.is_set():
-                try:
-                    # Get task with timeout
-                    try:
-                        task = task_queue.get(timeout=1)
-                    except Exception:
-                        # No task available or timeout
-                        if is_single_task:
-                            # If this is a single-task process and no task is available, exit
-                            break
-                        continue
+            # Extract task info
+            task_id = task["task_id"]
+            task_data = task["data"]
 
-                    # Extract task info
-                    task_id = task["task_id"]
-                    task_data = task["data"]
-                    ack_id = task["ack_id"]  # For removing from the main queue
+            logger.info(f"Worker #{worker_id}: Processing task {task_id}")
+            start_time = time.time()
 
-                    # Record start time and task ID for this task
-                    worker._process_info[process_id] = (time.time(), task_id)
+            # Process the task
+            try:
+                # Execute task in isolated environment
+                success, result = Worker._execute_task_isolated(
+                    task_id, task_data, worker, user_worker_function
+                )
+                processing_time = time.time() - start_time
 
-                    logger.info(f"Processing task {task_id} in process #{process_id}")
-                    start_time = time.time()
+                logger.info(
+                    f"Worker #{worker_id}: Completed task {task_id} in "
+                    f"{processing_time:.2f} seconds, success {success}"
+                )
 
-                    # Process the task
-                    try:
-                        # Execute task in isolated environment
-                        success, result = Worker._execute_task_isolated(
-                            task_id, task_data, worker, user_worker_function
-                        )
-                        processing_time = time.time() - start_time
+                # Send result back to main process
+                result_queue.put((worker_id, success, result))
 
-                        logger.info(
-                            f"Task {task_id} completed in {processing_time:.2f}s in process "
-                            f"#{process_id}, success: {success}"
-                        )
-
-                        # Send result back to main process
-                        result_queue.put((process_id, task_id, ack_id, success, result))
-
-                    except Exception as e:
-                        logger.error(f"Error executing task {task_id}: {e}")
-                        # Send failure back to main process
-                        result_queue.put((process_id, task_id, ack_id, False, str(e)))
-
-                    finally:
-                        # Update active task count
-                        with active_tasks.get_lock():
-                            active_tasks.value -= 1
-
-                        # Remove process from tracking
-                        worker._process_info.pop(process_id, None)
-
-                        if is_single_task:
-                            # If this is a single-task process, exit after processing
-                            break
-
-                except Exception as e:
-                    logger.error(f"Unhandled error in worker process: {e}")
-                    if is_single_task:
-                        break
-                    time.sleep(1)
-
-            logger.info(f"Worker process #{process_id} shutting down")
+            except Exception as e:
+                logger.error(
+                    f"Worker #{worker_id}: Error executing task {task_id}: {e}", exc_info=True
+                )
+                # Send failure back to main process
+                result_queue.put((worker_id, False, str(e)))
 
         except Exception as e:
-            logger.error(f"Fatal error in worker process {process_id}: {e}")
-            traceback.print_exc()
+            logger.error(f"Worker #{worker_id}: Unhandled error - {e}", exc_info=True)
+
+        logger.info(f"Worker #{worker_id}: Exiting")
 
     @staticmethod
     def _execute_task_isolated(

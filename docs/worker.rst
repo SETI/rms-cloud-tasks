@@ -87,26 +87,42 @@ Parameters Required if Tasks File is Not Specified, Optional Otherwise
 Optional Parameters
 ~~~~~~~~~~~~~~~~~~~
 
---project-id PROJECT_ID          Project ID (required for GCP) [or ``RMS_CLOUD_TASKS_PROJECT_ID``]
---queue-name QUEUE_NAME          Name of the task queue to process (derived from job ID if not specified) [or ``RMS_CLOUD_TASKS_QUEUE_NAME``]
---instance-type INSTANCE_TYPE    Instance type running on this computer [or ``RMS_CLOUD_TASKS_INSTANCE_TYPE``]
---num-cpus N                     Number of vCPUs on this computer [or ``RMS_CLOUD_TASKS_INSTANCE_NUM_VCPUS``]
---memory MEMORY_GB               Memory in GB on this computer [or ``RMS_CLOUD_TASKS_INSTANCE_MEM_GB``]
---local-ssd LOCAL_SSD_GB         Local SSD in GB on this computer [or ``RMS_CLOUD_TASKS_INSTANCE_SSD_GB``]
---boot-disk BOOT_DISK_GB         Boot disk in GB on this computer [or ``RMS_CLOUD_TASKS_INSTANCE_BOOT_DISK_GB``]
---is-spot                        Whether running on spot/preemptible instance [or ``RMS_CLOUD_TASKS_INSTANCE_IS_SPOT``]
---price PRICE_PER_HOUR           Price per hour for the instance [or ``RMS_CLOUD_TASKS_INSTANCE_PRICE``]
---num-simultaneous-tasks N       Number of concurrent tasks to process (defaults to number of vCPUs, or 1 if not specified) [or ``RMS_CLOUD_TASKS_NUM_TASKS_PER_INSTANCE``]
---max-runtime SECONDS            Maximum runtime for a task in seconds [or ``RMS_CLOUD_TASKS_MAX_RUNTIME``]
---shutdown-grace-period SECONDS  Time in seconds to wait for tasks to complete during shutdown [or ``RMS_CLOUD_TASKS_SHUTDOWN_GRACE_PERIOD``]
---use-new-process                Whether to use a new process for each task [or ``RMS_CLOUD_WORKER_USE_NEW_PROCESS``]
---tasks-to-skip TASKS_TO_SKIP    Number of tasks to skip before processing any from the queue [or ``RMS_CLOUD_TASKS_TO_SKIP``]
---max-num-tasks MAX_NUM_TASKS    Maximum number of tasks to process [or ``RMS_CLOUD_TASKS_MAX_NUM_TASKS``]
+--project-id PROJECT_ID                    Project ID (required for GCP) [or ``RMS_CLOUD_TASKS_PROJECT_ID``]
+--queue-name QUEUE_NAME                    Name of the task queue to process (derived from job ID if not specified) [or ``RMS_CLOUD_TASKS_QUEUE_NAME``]
+--instance-type INSTANCE_TYPE              Instance type running on this computer [or ``RMS_CLOUD_TASKS_INSTANCE_TYPE``]
+--num-cpus N                               Number of vCPUs on this computer [or ``RMS_CLOUD_TASKS_INSTANCE_NUM_VCPUS``]
+--memory MEMORY_GB                         Memory in GB on this computer [or ``RMS_CLOUD_TASKS_INSTANCE_MEM_GB``]
+--local-ssd LOCAL_SSD_GB                   Local SSD in GB on this computer [or ``RMS_CLOUD_TASKS_INSTANCE_SSD_GB``]
+--boot-disk BOOT_DISK_GB                   Boot disk in GB on this computer [or ``RMS_CLOUD_TASKS_INSTANCE_BOOT_DISK_GB``]
+--is-spot                                  Whether running on spot/preemptible instance [or ``RMS_CLOUD_TASKS_INSTANCE_IS_SPOT``]
+--price PRICE_PER_HOUR                     Price per hour for the instance [or ``RMS_CLOUD_TASKS_INSTANCE_PRICE``]
+--num-simultaneous-tasks N                 Number of concurrent tasks to process (defaults to number of vCPUs, or 1 if not specified) [or ``RMS_CLOUD_TASKS_NUM_TASKS_PER_INSTANCE``]
+--max-runtime SECONDS                      Maximum runtime for a task in seconds [or ``RMS_CLOUD_TASKS_MAX_RUNTIME``] (default 3600 seconds)
+--shutdown-grace-period SECONDS            Time in seconds to wait for tasks to complete during shutdown [or ``RMS_CLOUD_TASKS_SHUTDOWN_GRACE_PERIOD``] (default 30 seconds)
+--tasks-to-skip TASKS_TO_SKIP              Number of tasks to skip before processing any from the queue [or ``RMS_CLOUD_TASKS_TO_SKIP``]
+--max-num-tasks MAX_NUM_TASKS              Maximum number of tasks to process [or ``RMS_CLOUD_TASKS_MAX_NUM_TASKS``]
+--simulate-spot-termination-delay SECONDS  Number of seconds after worker start to simulate a spot termination notice [or ``RMS_CLOUD_TASKS_SIMULATE_SPOT_TERMINATION_DELAY``]
 
 .. _worker_spot_instances:
 
 Handling Spot Instance Termination
 ----------------------------------
+
+For some providers, it is possible to select instances that are preemptible (e.g. spot
+instances). Such instances are usually dramatically cheaper than regular instances, but
+they can be terminated at any time by the cloud provider with little notice. When using
+spot instances, the worker will monitor for the instance to be terminated and will notify
+all running worker processes so they can exit gracefully.
+
+To simulate a spot termination notice, you can use the ``--simulate-spot-termination-delay``
+argument or the ``RMS_CLOUD_TASKS_SIMULATE_SPOT_TERMINATION_DELAY`` environment variable.
+This is useful for testing the worker's shutdown behavior without waiting for an actual
+spot termination notice, which is unpredictable.
+
+It is recommended that a task check for impending termination before starting the process
+of committing results to storage, as the writing and copying process may be interrupted by
+the destruction of the instance, resulting in a partial write. This can be done by
+periodically checking the ``worker.is_terminating`` property.
 
 Worker Features
 ---------------
@@ -120,11 +136,9 @@ The worker uses Python's multiprocessing to achieve true parallelism:
 - Each process handles one task at a time
 - Tasks are distributed automatically among processes
 - Results are collected and reported back to the main process
-- When a task if complete, the process is reused for the next task; but if the
-  ``--use-new-process`` flag is set, the process is destroyed and a new process is created for
-  each task. This is useful when you need to ensure that each task releases all of its
-  resources, including allocated memory, open file handles, etc. before starting the next
-  task.
+- When a task if complete, the process is destroyed and a new process is created for
+  each task. This guarantees that each task releases all of its resources, including
+  allocated memory, open file handles, etc. before starting the next task.
 
 Task Processing
 ~~~~~~~~~~~~~~~
