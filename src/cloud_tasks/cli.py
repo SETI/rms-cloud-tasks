@@ -1372,18 +1372,6 @@ def add_instance_pool_args(parser: argparse.ArgumentParser) -> None:
         type=int,
         help="Maximum seconds a single worker job is allowed to run (default: 60)",
     )
-    parser.add_argument(
-        "--worker-use-new-process",
-        action="store_true",
-        default=None,
-        help="Use a new process for each task on each worker",
-    )
-    parser.add_argument(
-        "--no-worker-use-new-process",
-        action="store_false",
-        dest="worker_use_new_process",
-        help="Do not use a new process for each task on each worker (default)",
-    )
 
 
 def add_instance_args(parser: argparse.ArgumentParser) -> None:

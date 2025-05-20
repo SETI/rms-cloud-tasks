@@ -48,9 +48,6 @@ def process_task(task_id: str, task_data: Dict[str, Any], worker: Worker) -> Tup
 
         result = num1 + num2
 
-        output_dir = FCPath(os.getenv("ADDITION_OUTPUT_DIR", "results"))
-        output_file = output_dir / f"{task_id}.txt"
-
         task_delay = os.getenv("ADDITION_TASK_DELAY")
         if task_delay is not None:
             delay = float(task_delay)
@@ -58,12 +55,18 @@ def process_task(task_id: str, task_data: Dict[str, Any], worker: Worker) -> Tup
                 delay = random.uniform(0, abs(delay))
             time.sleep(delay)
 
+        output_dir = FCPath(os.getenv("ADDITION_OUTPUT_DIR", "results"))
+        output_file = output_dir / f"{task_id}.txt"
         with output_file.open(mode="w") as f:
             process_id = os.getpid()
             hostname = socket.gethostname()
             worker_id = multiprocessing.current_process().name
             f.write(f"Process {process_id} on {hostname} ({worker_id})\n")
             f.write(f"Task {task_id}: {num1} + {num2} = {result}\n")
+
+            if worker.received_termination_notice:
+                f.write("*** Received spot termination signal ***\n")
+        sys.exit(1)
 
         return True, output_file
 

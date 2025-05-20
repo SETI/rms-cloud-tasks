@@ -135,9 +135,23 @@ def _parse_args(args: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help="Maximum number of tasks to process [overrides $RMS_CLOUD_TASKS_MAX_NUM_TASKS]",
     )
     parser.add_argument(
-        "--simulate-spot-termination-delay",
+        "--no-retry-on-crash",
+        action="store_true",
+        default=None,
+        help="If specified, tasks will not be retried if the worker process crashes "
+        "[overrides $RMS_CLOUD_TASKS_NO_RETRY_ON_CRASH]",
+    )
+    parser.add_argument(
+        "--simulate-spot-termination-after",
         type=float,
         help="Number of seconds after worker start to simulate a spot termination notice "
+        "[overrides $RMS_CLOUD_TASKS_SIMULATE_SPOT_TERMINATION_AFTER]",
+    )
+    parser.add_argument(
+        "--simulate-spot-termination-delay",
+        type=float,
+        help="Number of seconds after a simulated spot termination notice to forcibly kill "
+        "all running tasks "
         "[overrides $RMS_CLOUD_TASKS_SIMULATE_SPOT_TERMINATION_DELAY]",
     )
 
@@ -254,34 +268,46 @@ class Worker:
         # Parse command line arguments if provided
         parsed_args = _parse_args(args)
 
+        logger.info("Configuration:")
+
         # Get provider from args or environment variable
         self._provider = parsed_args.provider or os.getenv("RMS_CLOUD_TASKS_PROVIDER")
         if self._provider is None and not parsed_args.tasks:
-            logger.error("Provider not specified via --provider or RMS_CLOUD_TASKS_PROVIDER")
+            logger.error(
+                "Provider not specified via --provider or RMS_CLOUD_TASKS_PROVIDER "
+                "and no tasks file specified via --tasks"
+            )
             sys.exit(1)
         if self._provider is not None:
             self._provider = self._provider.upper()
-        logger.info(f"Provider: {self._provider}")
+        logger.info(f"  Provider: {self._provider}")
 
         # Get project ID from args or environment variable (optional - only for GCP)
         self._project_id = parsed_args.project_id or os.getenv("RMS_CLOUD_TASKS_PROJECT_ID")
-        logger.info(f"Project ID: {self._project_id}")
+        logger.info(f"  Project ID: {self._project_id}")
 
         # Get job ID from args or environment variable
         self._job_id = parsed_args.job_id or os.getenv("RMS_CLOUD_TASKS_JOB_ID")
-        logger.info(f"Job ID: {self._job_id}")
+        logger.info(f"  Job ID: {self._job_id}")
 
         # Get queue name from args or environment variable
         self._queue_name = parsed_args.queue_name or os.getenv("RMS_CLOUD_TASKS_QUEUE_NAME")
         if self._queue_name is None:
             self._queue_name = self._job_id
-        logger.info(f"Queue name: {self._queue_name}")
+        logger.info(f"  Queue name: {self._queue_name}")
+
+        if self._queue_name is None and not parsed_args.tasks:
+            logger.error(
+                "Queue name not specified via --queue-name or RMS_CLOUD_TASKS_QUEUE_NAME "
+                "or --job-id or RMS_CLOUD_TASKS_JOB_ID and no tasks file specified via --tasks"
+            )
+            sys.exit(1)
 
         # Get instance type from args or environment variable
         self._instance_type = parsed_args.instance_type or os.getenv(
             "RMS_CLOUD_TASKS_INSTANCE_TYPE"
         )
-        logger.info(f"Instance type: {self._instance_type}")
+        logger.info(f"  Instance type: {self._instance_type}")
 
         # Get number of vCPUs from args or environment variable
         self._num_cpus = parsed_args.num_cpus
@@ -289,7 +315,7 @@ class Worker:
             self._num_cpus = os.getenv("RMS_CLOUD_TASKS_INSTANCE_NUM_VCPUS")
         if self._num_cpus is not None:
             self._num_cpus = int(self._num_cpus)
-        logger.info(f"Num CPUs: {self._num_cpus}")
+        logger.info(f"  Num CPUs: {self._num_cpus}")
 
         # Get memory from args or environment variable
         self._memory_gb = parsed_args.memory
@@ -297,7 +323,7 @@ class Worker:
             self._memory_gb = os.getenv("RMS_CLOUD_TASKS_INSTANCE_MEM_GB")
         if self._memory_gb is not None:
             self._memory_gb = float(self._memory_gb)
-        logger.info(f"Memory: {self._memory_gb} GB")
+        logger.info(f"  Memory: {self._memory_gb} GB")
 
         # Get local SSD from args or environment variable
         self._local_ssd_gb = parsed_args.local_ssd
@@ -305,7 +331,7 @@ class Worker:
             self._local_ssd_gb = os.getenv("RMS_CLOUD_TASKS_INSTANCE_SSD_GB")
         if self._local_ssd_gb is not None:
             self._local_ssd_gb = float(self._local_ssd_gb)
-        logger.info(f"Local SSD: {self._local_ssd_gb} GB")
+        logger.info(f"  Local SSD: {self._local_ssd_gb} GB")
 
         # Get boot disk size from args or environment variable
         self._boot_disk_gb = parsed_args.boot_disk
@@ -313,7 +339,7 @@ class Worker:
             self._boot_disk_gb = os.getenv("RMS_CLOUD_TASKS_INSTANCE_BOOT_DISK_GB")
         if self._boot_disk_gb is not None:
             self._boot_disk_gb = float(self._boot_disk_gb)
-        logger.info(f"Boot disk size: {self._boot_disk_gb} GB")
+        logger.info(f"  Boot disk size: {self._boot_disk_gb} GB")
 
         # Get spot instance flag from args or environment variable
         self._is_spot = parsed_args.is_spot
@@ -321,7 +347,7 @@ class Worker:
             self._is_spot = os.getenv("RMS_CLOUD_TASKS_INSTANCE_IS_SPOT")
             if self._is_spot is not None:
                 self._is_spot = self._is_spot.lower() in ("true", "1")
-        logger.info(f"Spot instance: {self._is_spot}")
+        logger.info(f"  Spot instance: {self._is_spot}")
 
         # Get price per hour from args or environment variable
         self._price_per_hour = parsed_args.price
@@ -329,18 +355,7 @@ class Worker:
             self._price_per_hour = os.getenv("RMS_CLOUD_TASKS_INSTANCE_PRICE")
         if self._price_per_hour is not None:
             self._price_per_hour = float(self._price_per_hour)
-        logger.info(f"Price per hour: {self._price_per_hour}")
-
-        # Get simulate spot termination delay from args or environment variable
-        self._simulate_spot_termination_delay = parsed_args.simulate_spot_termination_delay
-        if self._simulate_spot_termination_delay is None:
-            delay_str = os.getenv("RMS_CLOUD_TASKS_SIMULATE_SPOT_TERMINATION_DELAY")
-            if delay_str is not None:
-                self._simulate_spot_termination_delay = float(delay_str)
-        if self._simulate_spot_termination_delay is not None:
-            logger.info(
-                f"Simulating spot termination after {self._simulate_spot_termination_delay} seconds"
-            )
+        logger.info(f"  Price per hour: {self._price_per_hour}")
 
         # Determine number of tasks per worker
         self._num_simultaneous_tasks = parsed_args.num_simultaneous_tasks
@@ -348,13 +363,13 @@ class Worker:
             self._num_simultaneous_tasks = os.getenv("RMS_CLOUD_TASKS_NUM_TASKS_PER_INSTANCE")
         if self._num_simultaneous_tasks is not None:
             self._num_simultaneous_tasks = int(self._num_simultaneous_tasks)
-            logger.info(f"Num simultaneous tasks: {self._num_simultaneous_tasks}")
+            logger.info(f"  Num simultaneous tasks: {self._num_simultaneous_tasks}")
         else:
             if self._num_cpus is not None:
                 self._num_simultaneous_tasks = self._num_cpus
             else:
                 self._num_simultaneous_tasks = 1
-            logger.info(f"Num simultaneous tasks (default): {self._num_simultaneous_tasks}")
+            logger.info(f"  Num simultaneous tasks (default): {self._num_simultaneous_tasks}")
 
         # Get maximum runtime from args or environment variable
         self._max_runtime = parsed_args.max_runtime
@@ -364,7 +379,7 @@ class Worker:
             self._max_runtime = 3600  # Default to 1 hour
         else:
             self._max_runtime = int(self._max_runtime)
-        logger.info(f"Maximum runtime: {self._max_runtime} seconds")
+        logger.info(f"  Maximum runtime: {self._max_runtime} seconds")
 
         # Get shutdown grace period from args or environment variable
         self._shutdown_grace_period = (
@@ -372,7 +387,49 @@ class Worker:
             if parsed_args.shutdown_grace_period is not None
             else int(os.getenv("RMS_CLOUD_TASKS_SHUTDOWN_GRACE_PERIOD", 30))
         )
-        logger.info(f"Shutdown grace period: {self._shutdown_grace_period} seconds")
+        logger.info(f"  Shutdown grace period: {self._shutdown_grace_period} seconds")
+
+        # Get no retry on crash from args or environment variable
+        self._no_retry_on_crash = parsed_args.no_retry_on_crash
+        if self._no_retry_on_crash is None:
+            self._no_retry_on_crash = os.getenv("RMS_CLOUD_TASKS_NO_RETRY_ON_CRASH")
+            if self._no_retry_on_crash is not None:
+                self._no_retry_on_crash = self._no_retry_on_crash.lower() in ("true", "1")
+        logger.info(f"  No retry on crash: {self._no_retry_on_crash}")
+
+        # Get simulate spot termination after from args or environment variable
+        self._simulate_spot_termination_after = parsed_args.simulate_spot_termination_after
+        self._simulate_spot_termination_delay = None
+        if self._simulate_spot_termination_after is None:
+            delay_str = os.getenv("RMS_CLOUD_TASKS_SIMULATE_SPOT_TERMINATION_AFTER")
+            if delay_str is not None:
+                self._simulate_spot_termination_after = float(delay_str)
+        if self._simulate_spot_termination_after is not None:
+            logger.info(
+                f"  Simulating spot termination after {self._simulate_spot_termination_after} seconds"
+            )
+
+            # Get simulate spot termination delay from args or environment variable
+            self._simulate_spot_termination_delay = parsed_args.simulate_spot_termination_delay
+            if self._simulate_spot_termination_delay is None:
+                delay_str = os.getenv("RMS_CLOUD_TASKS_SIMULATE_SPOT_TERMINATION_DELAY")
+                if delay_str is not None:
+                    self._simulate_spot_termination_delay = float(delay_str)
+            if self._simulate_spot_termination_delay is not None:
+                logger.info(
+                    "    Simulating spot termination delay of "
+                    f"{self._simulate_spot_termination_delay} seconds"
+                )
+            else:
+                logger.warning(
+                    "  Simulating spot termination after but no delay specified; "
+                    "tasks will never be killed"
+                )
+
+        # Check if we're using a local tasks file
+        self._tasks_file = parsed_args.tasks
+        if self._tasks_file:
+            logger.info(f'  Using local tasks file: "{self._tasks_file}"')
 
         # Get number of tasks to skip from args or environment variable
         self._tasks_to_skip = parsed_args.tasks_to_skip
@@ -380,7 +437,7 @@ class Worker:
             self._tasks_to_skip = os.getenv("RMS_CLOUD_TASKS_TO_SKIP")
         if self._tasks_to_skip is not None:
             self._tasks_to_skip = int(self._tasks_to_skip)
-        logger.info(f"Tasks to skip: {self._tasks_to_skip}")
+        logger.info(f"  Tasks to skip: {self._tasks_to_skip}")
 
         # Get maximum number of tasks to process from args or environment variable
         self._max_num_tasks = parsed_args.max_num_tasks
@@ -388,20 +445,9 @@ class Worker:
             self._max_num_tasks = os.getenv("RMS_CLOUD_TASKS_MAX_NUM_TASKS")
         if self._max_num_tasks is not None:
             self._max_num_tasks = int(self._max_num_tasks)
-        logger.info(f"Maximum number of tasks: {self._max_num_tasks}")
+        logger.info(f"  Maximum number of tasks: {self._max_num_tasks}")
         self._task_skip_count = self._tasks_to_skip
         self._tasks_remaining = self._max_num_tasks
-
-        # Check if we're using a local tasks file
-        self._tasks_file = parsed_args.tasks
-        if self._tasks_file:
-            logger.info(f'Using local tasks file: "{self._tasks_file}"')
-        elif self._queue_name is None:
-            logger.error(
-                "Queue name not specified via --queue-name or RMS_CLOUD_TASKS_QUEUE_NAME "
-                "or --job-id or RMS_CLOUD_TASKS_JOB_ID and no tasks file specified via --tasks"
-            )
-            sys.exit(1)
 
         # State tracking
         self._running = False
@@ -477,7 +523,7 @@ class Worker:
     @property
     def is_spot(self) -> bool:
         """Whether this is a spot instance and might be preempted"""
-        return self._is_spot
+        return self._is_spot or self._simulate_spot_termination_after is not None
 
     @property
     def price_per_hour(self) -> float | None:
@@ -503,6 +549,11 @@ class Worker:
     def received_termination_notice(self) -> bool:
         """Whether the worker has received a termination notice"""
         return self._termination_event.is_set()
+
+    @property
+    def received_shutdown_request(self) -> bool:
+        """Whether the worker has received a shutdown request"""
+        return self._shutdown_event.is_set()
 
     def _signal_handler(self, signum, frame):
         """Handle termination signals."""
@@ -617,7 +668,10 @@ class Worker:
     async def _wait_for_shutdown(self, interval: float = 0.5) -> None:
         """Wait for the shutdown event and then clean up."""
         # Wait until shutdown is requested
-        while self._running and not self._shutdown_event.is_set():
+        while self._running and not self.received_shutdown_request:
+            if self.received_termination_notice and len(self._processes) == 0:
+                logger.info("Termination event set and all processes complete; exiting")
+                return
             await asyncio.sleep(interval)
 
         logger.info("Shutdown requested, stopping worker processes")
@@ -654,15 +708,13 @@ class Worker:
                     p.kill()
 
             self._processes = {}
-
-        self._running = False
+            self._running = False
 
     async def _check_termination_loop(self) -> None:
         """Periodically check if the instance is scheduled for termination."""
-        while self._running and not self._shutdown_event.is_set():
+        while self._running and not self.received_shutdown_request:
             try:
                 termination_notice = await self._check_termination_notice()
-
                 if termination_notice and not self.received_termination_notice:
                     logger.warning("Instance termination notice received")
                     self._termination_event.set()
@@ -671,12 +723,42 @@ class Worker:
                     # middle of doing something, they will be aborted at a random point.
                     # They had better be checking termination_event periodically or before
                     # they do something important.
+                    break
 
             except Exception as e:
                 logger.error(f"Error checking for termination: {e}", exc_info=True)
 
-            # Check every 5 seconds
-            await asyncio.sleep(5)
+            # Check every 5 seconds for real instance, .1 second for simulated
+            if self._simulate_spot_termination_after is not None:
+                await asyncio.sleep(0.1)
+            else:
+                await asyncio.sleep(5)
+
+        if self._running and self._simulate_spot_termination_delay is not None:
+            # If we're simulating a spot termination, wait for the delay and then kill all
+            # running processes
+            await asyncio.sleep(self._simulate_spot_termination_delay)
+            if self._running:
+                logger.info("Simulated spot termination delay complete, killing all processes")
+                async with self._process_ops_semaphore:
+                    for worker_id, process_data in self._processes.items():
+                        p = process_data["process"]
+                        if p.is_alive():
+                            logger.info(f"Terminating process worker #{worker_id} (PID {p.pid})")
+                            p.terminate()
+
+                    # Wait for processes to exit
+                    for worker_id, process_data in self._processes.items():
+                        p = process_data["process"]
+                        p.join(timeout=5)
+                        if p.is_alive():
+                            logger.warning(
+                                f"Process worker #{worker_id} (PID {p.pid}) did not exit, killing"
+                            )
+                            p.kill()
+
+                    self._processes = {}
+                    self._running = False
 
     async def _check_termination_notice(self) -> bool:
         """
@@ -691,13 +773,14 @@ class Worker:
             True if the instance is scheduled for termination, False otherwise
         """
         # Check for simulated termination first
-        if self._simulate_spot_termination_delay is not None:
+        if self._simulate_spot_termination_after is not None:
             elapsed_time = time.time() - self._start_time
-            if elapsed_time >= self._simulate_spot_termination_delay:
+            if elapsed_time >= self._simulate_spot_termination_after:
                 logger.info(
-                    f"Simulated spot termination notice received after {elapsed_time:.1f} seconds"
+                    f"Simulating spot termination notice received after {elapsed_time:.1f} seconds"
                 )
                 return True
+            return False
 
         try:
             import requests  # type: ignore
@@ -729,16 +812,32 @@ class Worker:
 
     async def _feed_tasks_to_workers(self) -> None:
         """Fetch tasks from the cloud queue and feed them to worker processes."""
-        while (
-            self._running
-            and not self._shutdown_event.is_set()
-            and not self.received_termination_notice
-        ):
+        while self._running:
             try:
-                # Ensure task_queue is available
-                if self._task_queue is None:
-                    logger.error("Task queue not initialized")
-                    await asyncio.sleep(1)
+                # Update the number of active processes in case one of them has exited
+                # prematurely
+                async with self._process_ops_semaphore:
+                    exited_worker_ids = []
+                    for worker_id, process_data in self._processes.items():
+                        p = process_data["process"]
+                        if not p.is_alive():
+                            logger.warning(f"Worker #{worker_id} (PID {p.pid}) exited prematurely")
+                            task = process_data["task"]
+                            async with self._task_queue_semaphore:
+                                if self._no_retry_on_crash:
+                                    # If we're not retrying on crash, mark it as complete
+                                    await self._task_queue.complete_task(task["ack_id"])
+                                else:
+                                    # Otherwise, set it to try again somewhere else
+                                    await self._task_queue.fail_task(task["ack_id"])
+                            exited_worker_ids.append(worker_id)
+                    # Do this separately so we don't modify the dictionary while iterating
+                    for worker_id in exited_worker_ids:
+                        del self._processes[worker_id]
+
+                if self.received_shutdown_request or self.received_termination_notice:
+                    # If we're shutting down for any reason, don't start any new tasks
+                    await asyncio.sleep(1)  # Wait a bit longer on error
                     continue
 
                 # Only fetch new tasks if we have capacity
@@ -867,7 +966,6 @@ class Worker:
                 if killed_one:
                     continue
 
-            logger.info(f"Active processes: {len(self._processes)}")
             await asyncio.sleep(1)  # Check every second
 
     @staticmethod

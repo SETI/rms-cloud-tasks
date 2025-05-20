@@ -219,7 +219,6 @@ class RunConfig(BaseModel, validate_assignment=True):
     scaling_check_interval: Optional[PositiveInt] = None
     instance_termination_delay: Optional[PositiveInt] = None
     max_runtime: Optional[PositiveInt] = None  # Use for queue timeout and workout task kill
-    worker_use_new_process: Optional[bool] = None
 
 
 class ProviderConfig(RunConfig, validate_assignment=True):
@@ -432,8 +431,6 @@ class Config(BaseModel, validate_assignment=True):
             self.run.instance_termination_delay = 60
         if self.run.max_runtime is None:
             self.run.max_runtime = 60
-        if self.run.worker_use_new_process is None:
-            self.run.worker_use_new_process = False
         if self.run.architecture is None:
             self.run.architecture = "X86_64"
         if self.run.local_ssd_base_size is None:

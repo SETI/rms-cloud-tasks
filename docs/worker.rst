@@ -35,10 +35,11 @@ Here's a simple example of how to implement a worker:
                local environment and polling for shutdown notifications)
 
        Returns:
-           Tuple of (requeue: bool, result: str or dict)
-           - requeue: True if task failed in a way that it should be re-queded for some other
-             process to try it again; False to indicate that the task is complete (whether
-             it succeeded or failed) and should not be retried
+           Tuple of (success: bool, result: str or dict)
+           - success: True if task succeeded or failed in a way that it should not be
+             re-queued for some other process to try it again; False to indicate that the
+             task failed in a way that it should be re-queued for some other process to
+             try it again
            - result: String or dict describing the result; this will be sent to the local
              log file or the result queue to be picked up by the pool manager
        """
@@ -46,15 +47,43 @@ Here's a simple example of how to implement a worker:
            print(f"Processing task {task_id}")
            # Your processing logic here
            print(f"Task data: {task_data}")
-           return False, "Task completed successfully"
+           return True, "Task completed successfully"
        except Exception as e:
-           return False, str(e)  # Don't retry on failure
+           return True, str(e)  # Don't retry on failure
 
    # Create and start the worker
    if __name__ == "__main__":
        worker = Worker(process_task, args=sys.argv[1:])
        asyncio.run(worker.start())
 
+
+Returning a Result
+-------------------
+
+The top-level worker function should return a tuple of (``success``, ``result``).
+Returning a ``success`` value of ``True`` fundamentally indicates that the task should not
+be re-tried. This could mean it actually succeeded in whatever you wanted it to do, or it
+failed in such a way that you don't want to retry it (for example, an unhandled exception
+which is likely to recur on future attempts). Returning a ``success`` value of False
+indicates that the task failed in a way that it should be re-queued for some other process
+to try it again. This normally would indicate some kind of transient error, such as
+running out of disk space or memory or hitting some other kind of temporary resource
+limit that you expect to not repeat.
+
+The ``result`` value can be a string or a dictionary. This value will be returned in the
+results queue to the pool manager so that you can log it to a local file. For example,
+you might return a dictionary that contains a flag indicating whether the task truly
+succeeded or not, and a string message with more details.
+
+If your worker process exits by calling ``sys.exit()`` or by crashing due to a system problem
+or unhandled exception, it is automatically assumed to have failed in a way that should
+be re-tried. If the program will always crash in the same way, this could conceivably
+result in an infinite task loop where the task keeps getting re-queued and retried. This is
+why it is important to monitor the returned results and abort the pool manager if no
+progress is being made. This behavior can be changed with the ``--no-retry-on-crash`` command
+line option or the ``RMS_CLOUD_TASKS_NO_RETRY_ON_CRASH`` environment variable.
+
+Note that if you are using a local task file, the task manager will never re-queue a task.
 
 .. _worker_environment_variables:
 
@@ -64,7 +93,26 @@ Environment Variables and Command Line Arguments
 The worker is configured using the following environment variables and/or command line
 arguments. All parameters will first be set from the command line arguments, and if not
 specified, will then be set from the environment variables. If neither is available,
-the parameter will be set to ``None``.
+the parameter will be set to ``None`` or the given default. When a worker is run on
+a remote compute instance, these environment variables are set automatically based on
+information in the Cloud Tasks configuration file (or command line arguments), or
+from information derived from the instance type:
+
+```
+RMS_CLOUD_TASKS_PROVIDER
+RMS_CLOUD_TASKS_PROJECT_ID
+RMS_CLOUD_TASKS_JOB_ID
+RMS_CLOUD_TASKS_QUEUE_NAME
+RMS_CLOUD_TASKS_INSTANCE_TYPE
+RMS_CLOUD_TASKS_INSTANCE_NUM_VCPUS
+RMS_CLOUD_TASKS_INSTANCE_MEM_GB
+RMS_CLOUD_TASKS_INSTANCE_SSD_GB
+RMS_CLOUD_TASKS_INSTANCE_BOOT_DISK_GB
+RMS_CLOUD_TASKS_INSTANCE_IS_SPOT
+RMS_CLOUD_TASKS_INSTANCE_PRICE
+RMS_CLOUD_TASKS_NUM_TASKS_PER_INSTANCE
+RMS_CLOUD_TASKS_MAX_RUNTIME
+```
 
 Tasks File
 ~~~~~~~~~~
@@ -101,7 +149,8 @@ Optional Parameters
 --shutdown-grace-period SECONDS            Time in seconds to wait for tasks to complete during shutdown [or ``RMS_CLOUD_TASKS_SHUTDOWN_GRACE_PERIOD``] (default 30 seconds)
 --tasks-to-skip TASKS_TO_SKIP              Number of tasks to skip before processing any from the queue [or ``RMS_CLOUD_TASKS_TO_SKIP``]
 --max-num-tasks MAX_NUM_TASKS              Maximum number of tasks to process [or ``RMS_CLOUD_TASKS_MAX_NUM_TASKS``]
---simulate-spot-termination-delay SECONDS  Number of seconds after worker start to simulate a spot termination notice [or ``RMS_CLOUD_TASKS_SIMULATE_SPOT_TERMINATION_DELAY``]
+--simulate-spot-termination-after SECONDS  Number of seconds after worker start to simulate a spot termination notice [or ``RMS_CLOUD_TASKS_SIMULATE_SPOT_TERMINATION_AFTER``]
+--simulate-spot-termination-delay SECONDS  Number of seconds after a simulated spot termination notice to forcibly kill all running tasks [or ``RMS_CLOUD_TASKS_SIMULATE_SPOT_TERMINATION_DELAY``]
 
 .. _worker_spot_instances:
 
@@ -111,101 +160,20 @@ Handling Spot Instance Termination
 For some providers, it is possible to select instances that are preemptible (e.g. spot
 instances). Such instances are usually dramatically cheaper than regular instances, but
 they can be terminated at any time by the cloud provider with little notice. When using
-spot instances, the worker will monitor for the instance to be terminated and will notify
-all running worker processes so they can exit gracefully.
+spot instances, the worker will monitor for the instance to be terminated and will attempt
+to notify all running worker processes so they can exit gracefully.
 
-To simulate a spot termination notice, you can use the ``--simulate-spot-termination-delay``
-argument or the ``RMS_CLOUD_TASKS_SIMULATE_SPOT_TERMINATION_DELAY`` environment variable.
-This is useful for testing the worker's shutdown behavior without waiting for an actual
-spot termination notice, which is unpredictable.
+To simulate a spot termination notice and subsequent forced shutdown of the compute
+instance, you can use the ``--simulate-spot-termination-after`` and
+``--simulate-spot-termination-delay`` arguments or the
+``RMS_CLOUD_TASKS_SIMULATE_SPOT_TERMINATION_AFTER`` and
+``RMS_CLOUD_TASKS_SIMULATE_SPOT_TERMINATION_DELAY`` environment variables. This is useful
+for testing the worker's shutdown behavior without waiting for an actual spot termination
+notice, which is unpredictable.
 
-It is recommended that a task check for impending termination before starting the process
-of committing results to storage, as the writing and copying process may be interrupted by
-the destruction of the instance, resulting in a partial write. This can be done by
-periodically checking the ``worker.is_terminating`` property.
-
-Worker Features
----------------
-
-Parallel Processing
-~~~~~~~~~~~~~~~~~~~
-
-The worker uses Python's multiprocessing to achieve true parallelism:
-
-- Creates one worker process per vCPU (or as specified by ``--num-simultaneous-tasks``)
-- Each process handles one task at a time
-- Tasks are distributed automatically among processes
-- Results are collected and reported back to the main process
-- When a task if complete, the process is destroyed and a new process is created for
-  each task. This guarantees that each task releases all of its resources, including
-  allocated memory, open file handles, etc. before starting the next task.
-
-Task Processing
-~~~~~~~~~~~~~~~
-
-Tasks are processed with the following guarantees:
-
-- Automatic visibility timeout management
-- Task acknowledgement after successful processing
-- Failed task handling and reporting
-- Graceful shutdown with task completion
-- Spot instance termination handling
-
-Health Checks and Monitoring
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-The worker includes built-in monitoring features:
-
-- Automatic spot/preemptible instance termination detection
-- Active task count tracking
-- Task success/failure statistics
-- Process health monitoring
-
-Graceful Shutdown
-~~~~~~~~~~~~~~~~~
-
-The worker implements graceful shutdown handling:
-
-- Catches SIGTERM and SIGINT signals
-- Allows in-progress tasks to complete
-- Configurable grace period for task completion
-- Proper process cleanup and termination
-
-
-Error Handling
---------------
-
-The worker implements comprehensive error handling:
-
-- Task processing errors are caught and reported
-- Failed tasks are properly acknowledged
-- Process crashes are detected and handled
-- Queue connection errors are handled with retries
-- Graceful degradation on cloud API failures
-
-Best Practices
---------------
-
-1. **Task Processing Function**
-   - Keep the function stateless
-   - Handle all exceptions
-   - Return clear success/failure status
-   - Include informative result messages
-
-2. **Resource Management**
-   - Close file handles and connections
-   - Clean up temporary files
-   - Release system resources
-   - Monitor memory usage
-
-3. **Error Handling**
-   - Log errors with sufficient context
-   - Include stack traces for debugging
-   - Return meaningful error messages
-   - Handle both expected and unexpected errors
-
-4. **Performance**
-   - Optimize CPU-intensive operations
-   - Minimize memory allocations
-   - Use appropriate batch sizes
-   - Monitor processing times
+It is recommended that a task check for impending termination before starting to commit
+results to storage, as the writing and copying process may be interrupted by the
+destruction of the instance, resulting in a partial write. This can be done by checking
+the ``worker.received_termination_notice`` property. However, note that providers do not
+guarantee a particular instance lifetime after the termination notice is sent, so a worker
+must still be able to tolerate an unexpected shutdown at any point in its execution.

@@ -164,7 +164,38 @@ def env_setup_teardown(monkeypatch):
     monkeypatch.setenv("RMS_CLOUD_TASKS_SHUTDOWN_GRACE_PERIOD", "300")
     monkeypatch.setenv("RMS_CLOUD_TASKS_TO_SKIP", "5")
     monkeypatch.setenv("RMS_CLOUD_TASKS_MAX_NUM_TASKS", "10")
-    monkeypatch.setenv("RMS_CLOUD_TASKS_SIMULATE_SPOT_TERMINATION_DELAY", "32")
+    monkeypatch.setenv("RMS_CLOUD_TASKS_SIMULATE_SPOT_TERMINATION_AFTER", "32")
+    monkeypatch.setenv("RMS_CLOUD_TASKS_SIMULATE_SPOT_TERMINATION_DELAY", "33")
+    monkeypatch.setenv("RMS_CLOUD_TASKS_NO_RETRY_ON_CRASH", "true")
+    # Provide the modified environment
+    yield
+
+    # Teardown: Restore original environment variables
+    os.environ.clear()
+    os.environ.update(original_env)
+
+
+@pytest.fixture
+def env_setup_teardown_false(monkeypatch):
+    # Setup: Store original environment variables
+    original_env = os.environ.copy()
+    monkeypatch.setenv("RMS_CLOUD_TASKS_PROVIDER", "AWS")
+    monkeypatch.setenv("RMS_CLOUD_TASKS_JOB_ID", "test-job")
+    monkeypatch.setenv("RMS_CLOUD_TASKS_INSTANCE_TYPE", "t2.micro")
+    monkeypatch.setenv("RMS_CLOUD_TASKS_INSTANCE_NUM_VCPUS", "2")
+    monkeypatch.setenv("RMS_CLOUD_TASKS_INSTANCE_MEM_GB", "4")
+    monkeypatch.setenv("RMS_CLOUD_TASKS_INSTANCE_SSD_GB", "100")
+    monkeypatch.setenv("RMS_CLOUD_TASKS_INSTANCE_BOOT_DISK_GB", "20")
+    monkeypatch.setenv("RMS_CLOUD_TASKS_INSTANCE_IS_SPOT", "false")
+    monkeypatch.setenv("RMS_CLOUD_TASKS_INSTANCE_PRICE", "0.1")
+    monkeypatch.setenv("RMS_CLOUD_TASKS_NUM_TASKS_PER_INSTANCE", "4")
+    monkeypatch.setenv("RMS_CLOUD_TASKS_MAX_RUNTIME", "3600")
+    monkeypatch.setenv("RMS_CLOUD_TASKS_SHUTDOWN_GRACE_PERIOD", "300")
+    monkeypatch.setenv("RMS_CLOUD_TASKS_TO_SKIP", "5")
+    monkeypatch.setenv("RMS_CLOUD_TASKS_MAX_NUM_TASKS", "10")
+    monkeypatch.setenv("RMS_CLOUD_TASKS_SIMULATE_SPOT_TERMINATION_AFTER", "32")
+    monkeypatch.setenv("RMS_CLOUD_TASKS_SIMULATE_SPOT_TERMINATION_DELAY", "33")
+    monkeypatch.setenv("RMS_CLOUD_TASKS_NO_RETRY_ON_CRASH", "false")
     # Provide the modified environment
     yield
 
@@ -185,6 +216,7 @@ def test_init_with_env_vars(mock_worker_function, env_setup_teardown):
         assert worker.memory_gb == 4.0
         assert worker.local_ssd_gb == 100.0
         assert worker.boot_disk_gb == 20.0
+        assert worker._is_spot is True
         assert worker.is_spot is True
         assert worker.price_per_hour == 0.1
         assert worker.num_simultaneous_tasks == 4
@@ -192,10 +224,37 @@ def test_init_with_env_vars(mock_worker_function, env_setup_teardown):
         assert worker.shutdown_grace_period == 300
         assert worker._task_skip_count == 5
         assert worker._max_num_tasks == 10
-        assert worker._simulate_spot_termination_delay == 32
+        assert worker._simulate_spot_termination_after == 32
+        assert worker._simulate_spot_termination_delay == 33
+        assert worker._no_retry_on_crash is True
 
 
-def test_init_with_args(mock_worker_function, env_setup_teardown):
+def test_init_with_env_vars_false(mock_worker_function, env_setup_teardown_false):
+
+    with patch("sys.argv", ["worker.py"]):
+        worker = Worker(mock_worker_function)
+        assert worker.provider == "AWS"
+        assert worker.job_id == "test-job"
+        assert worker.queue_name == "test-job"
+        assert worker.instance_type == "t2.micro"
+        assert worker.num_cpus == 2
+        assert worker.memory_gb == 4.0
+        assert worker.local_ssd_gb == 100.0
+        assert worker.boot_disk_gb == 20.0
+        assert worker._is_spot is False
+        assert worker.is_spot is True  # Because of simulate_spot_termination_after
+        assert worker.price_per_hour == 0.1
+        assert worker.num_simultaneous_tasks == 4
+        assert worker.max_runtime == 3600
+        assert worker.shutdown_grace_period == 300
+        assert worker._task_skip_count == 5
+        assert worker._max_num_tasks == 10
+        assert worker._simulate_spot_termination_after == 32
+        assert worker._simulate_spot_termination_delay == 33
+        assert worker._no_retry_on_crash is False
+
+
+def test_init_with_args(mock_worker_function, env_setup_teardown_false):
     args = [
         "worker.py",
         "--provider",
@@ -229,8 +288,11 @@ def test_init_with_args(mock_worker_function, env_setup_teardown):
         "7",
         "--max-num-tasks",
         "10",
-        "--simulate-spot-termination-delay",
+        "--simulate-spot-termination-after",
         "16",
+        "--simulate-spot-termination-delay",
+        "17",
+        "--no-retry-on-crash",
     ]
     with patch("sys.argv", args):
         worker = Worker(mock_worker_function)
@@ -243,6 +305,7 @@ def test_init_with_args(mock_worker_function, env_setup_teardown):
         assert worker.memory_gb == 2.0
         assert worker.local_ssd_gb == 50.0
         assert worker.boot_disk_gb == 10.0
+        assert worker._is_spot is True
         assert worker.is_spot is True
         assert worker.price_per_hour == 0.2
         assert worker.num_simultaneous_tasks == 2
@@ -250,7 +313,9 @@ def test_init_with_args(mock_worker_function, env_setup_teardown):
         assert worker.shutdown_grace_period == 150
         assert worker._task_skip_count == 7
         assert worker._max_num_tasks == 10
-        assert worker._simulate_spot_termination_delay == 16
+        assert worker._simulate_spot_termination_after == 16
+        assert worker._simulate_spot_termination_delay == 17
+        assert worker._no_retry_on_crash is True
 
 
 def test_num_simultaneous_tasks_default(mock_worker_function):
@@ -275,7 +340,9 @@ def test_num_simultaneous_tasks_default(mock_worker_function):
                 shutdown_grace_period=None,
                 tasks_to_skip=None,
                 max_num_tasks=None,
+                simulate_spot_termination_after=None,
                 simulate_spot_termination_delay=None,
+                no_retry_on_crash=None,
             )
             mock_parse_args.return_value = args
             worker = Worker(mock_worker_function)
@@ -301,7 +368,9 @@ def test_num_simultaneous_tasks_default(mock_worker_function):
                 shutdown_grace_period=None,
                 tasks_to_skip=None,
                 max_num_tasks=None,
+                simulate_spot_termination_after=None,
                 simulate_spot_termination_delay=None,
+                no_retry_on_crash=None,
             )
             mock_parse_args.return_value = args
             worker = Worker(mock_worker_function)
@@ -332,13 +401,15 @@ def test_provider_required_without_tasks(mock_worker_function):
                         shutdown_grace_period=None,
                         tasks_to_skip=None,
                         max_num_tasks=None,
+                        simulate_spot_termination_after=None,
                         simulate_spot_termination_delay=None,
+                        no_retry_on_crash=None,
                     )
                     with patch("cloud_tasks.worker.worker._parse_args", return_value=args):
                         Worker(mock_worker_function)
                         mock_exit.assert_called_once_with(1)
                         mock_logger.error.assert_called_once_with(
-                            "Provider not specified via --provider or RMS_CLOUD_TASKS_PROVIDER"
+                            "Provider not specified via --provider or RMS_CLOUD_TASKS_PROVIDER and no tasks file specified via --tasks"
                         )
 
 
@@ -365,7 +436,9 @@ def test_provider_not_required_with_tasks(mock_worker_function):
                     shutdown_grace_period=None,
                     tasks_to_skip=None,
                     max_num_tasks=None,
+                    simulate_spot_termination_after=None,
                     simulate_spot_termination_delay=None,
+                    no_retry_on_crash=None,
                 )
                 mock_parse_args.return_value = args
                 worker = Worker(mock_worker_function)
@@ -486,9 +559,9 @@ async def test_feed_tasks_to_workers(worker, mock_queue, sample_task):
 
     # Directly call the coroutine instead of relying on background task
     async def run_once():
-        # Set shutdown after one iteration to break the loop
+        # Set running to False after one iteration to break the loop
         async def fake_receive_tasks(*a, **kw):
-            worker._shutdown_event.set()
+            worker._running = False
             return [sample_task]
 
         mock_queue.receive_tasks.side_effect = fake_receive_tasks
@@ -572,7 +645,9 @@ def test_exit_if_no_job_id_and_no_tasks(mock_worker_function):
                         shutdown_grace_period=None,
                         tasks_to_skip=None,
                         max_num_tasks=None,
+                        simulate_spot_termination_after=None,
                         simulate_spot_termination_delay=None,
+                        no_retry_on_crash=None,
                     )
                     # Patch _parse_args to return our args
                     with patch("cloud_tasks.worker.worker._parse_args", return_value=args):
@@ -607,7 +682,9 @@ def test_worker_properties(mock_worker_function):
                 shutdown_grace_period=200,
                 tasks_to_skip=1,
                 max_num_tasks=10,
-                simulate_spot_termination_delay=32,
+                simulate_spot_termination_after=32,
+                simulate_spot_termination_delay=33,
+                no_retry_on_crash=None,
             )
             mock_parse_args.return_value = args
             worker = Worker(mock_worker_function)
@@ -648,7 +725,9 @@ def test_signal_handler(mock_worker_function):
                 shutdown_grace_period=None,
                 tasks_to_skip=None,
                 max_num_tasks=None,
+                simulate_spot_termination_after=None,
                 simulate_spot_termination_delay=None,
+                no_retry_on_crash=None,
             )
             mock_parse_args.return_value = args
             worker = Worker(mock_worker_function)
@@ -803,6 +882,7 @@ async def test_create_single_task_process(mock_worker_function):
                 async def trigger_shutdown():
                     await asyncio.sleep(0.1)
                     worker._shutdown_event.set()
+                    worker._running = False
 
                 # Start the shutdown task
                 shutdown_task = asyncio.create_task(trigger_shutdown())
@@ -849,10 +929,7 @@ async def test_check_termination_loop(mock_worker_function):
                 worker = Worker(mock_worker_function)
                 worker._running = True
                 worker._shutdown_event = MagicMock()
-                worker._shutdown_event.is_set.side_effect = [
-                    False,
-                    True,
-                ]  # Return False first, then True
+                worker._shutdown_event.is_set.return_value = False
                 worker._termination_event = MagicMock()
                 worker._termination_event.is_set.return_value = False
 
@@ -861,7 +938,7 @@ async def test_check_termination_loop(mock_worker_function):
                     mock_check_termination.call_count = (
                         getattr(mock_check_termination, "call_count", 0) + 1
                     )
-                    if mock_check_termination.call_count == 1:
+                    if mock_check_termination.call_count == 2:
                         return True
                     return False
 
@@ -1059,13 +1136,13 @@ async def test_worker_with_simulate_spot_termination_delay():
                 "AWS",
                 "--job-id",
                 "test-job",
-                "--simulate-spot-termination-delay",
+                "--simulate-spot-termination-after",
                 "0.1",
             ],
         )
 
-        # Verify the delay was set
-        assert worker._simulate_spot_termination_delay == 0.1
+        # Verify the after was set
+        assert worker._simulate_spot_termination_after == 0.1
         worker._start_time = time.time()
 
         # Test before delay is exceeded

@@ -185,7 +185,6 @@ def test_update_run_config_from_provider_config_defaults():
     c.run.scaling_check_interval = None
     c.run.instance_termination_delay = None
     c.run.max_runtime = None
-    c.run.worker_use_new_process = None
 
     c.update_run_config_from_provider_config()
 
@@ -196,7 +195,6 @@ def test_update_run_config_from_provider_config_defaults():
     assert c.run.scaling_check_interval == 60
     assert c.run.instance_termination_delay == 60
     assert c.run.max_runtime == 60
-    assert c.run.worker_use_new_process is False
     assert c.run.architecture == "X86_64"
     assert c.run.local_ssd_base_size == 0
     assert c.run.total_boot_disk_size == 10
@@ -246,7 +244,6 @@ def test_update_run_config_from_provider_config_defaults():
     c.run.scaling_check_interval = 30
     c.run.instance_termination_delay = 45
     c.run.max_runtime = 90
-    c.run.worker_use_new_process = True
     c.run.architecture = "arm64"
     c.run.local_ssd_base_size = 20
     c.run.total_boot_disk_size = 50
@@ -267,7 +264,6 @@ def test_update_run_config_from_provider_config_defaults():
     assert c.run.scaling_check_interval == 30
     assert c.run.instance_termination_delay == 45
     assert c.run.max_runtime == 90
-    assert c.run.worker_use_new_process is True
     assert c.run.architecture == "ARM64"  # Should be uppercased
     assert c.run.local_ssd_base_size == 20
     assert c.run.total_boot_disk_size == 50
