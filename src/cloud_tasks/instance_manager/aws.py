@@ -357,13 +357,13 @@ class AWSEC2InstanceManager(InstanceManager):
                         ]
                     else:
                         self._logger.warning(
-                            f"Processor family '{processor_family}' is not in the processor type "
+                            f'Processor family "{processor_family}" is not in the processor type '
                             "ranking; ranking will be 0"
                         )
                 else:
                     self._logger.warning(
-                        f"Instance type {instance_type["InstanceType"]} with family "
-                        f"'{instance_type_family}' is not in the processor family mapping; "
+                        f'Instance type "{instance_type["InstanceType"]}" with family '
+                        f'"{instance_type_family}" is not in the processor family mapping; '
                         "performance ranking will be 0"
                     )
 
