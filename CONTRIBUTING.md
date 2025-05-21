@@ -33,11 +33,11 @@ to <matt@seti.org>.
 
 > Please read the available documentation!
 
-Before asking a question, you can search for existing [issues](https://github.com/SETI/rms-starcat/issues) that might help you. If you find a suitable issue and still need clarification, you can write your question in that issue.
+Before asking a question, you can search for existing [issues](https://github.com/SETI/rms-cloud-tasks/issues) that might help you. If you find a suitable issue and still need clarification, you can write your question in that issue.
 
 If you can't find an appropriate issue and still want to ask a question, we recommend the following:
 
-- Open an [issue](https://github.com/SETI/rms-starcat/issues/new).
+- Open an [issue](https://github.com/SETI/rms-cloud-tasks/issues/new).
 - Provide as much context and detail as you can.
 - Provide project and platform versions (operating system, Python version, etc.), depending on what seems relevant.
 
@@ -53,7 +53,7 @@ A good bug report shouldn't leave others needing to chase you for more informati
 - Make sure that you are using the latest version of this software and its supporting packages.
 - Make sure that you have read the documentation.
 - Determine that your bug really is a bug and not an error in your code or a misunderstanding in how to use our software.
-- To see if other users have experienced (and potentially solved) the same issue you're having, check if there is an existing issue for your bug or error in the [bug tracker](https://github.com/SETI/rms-starcat/issues).
+- To see if other users have experienced (and potentially solved) the same issue you're having, check if there is an existing issue for your bug or error in the [bug tracker](https://github.com/SETI/rms-cloud-tasks/issues).
 - Collect information about the bug:
   - Stack trace (Traceback)
   - OS and version (Windows/Linux/macOS), processor (x86/ARM/M1), Python version
@@ -65,7 +65,7 @@ A good bug report shouldn't leave others needing to chase you for more informati
 
 We use GitHub Issues to track bugs and errors. If you run into an issue with the project:
 
-- Open an [issue](https://github.com/SETI/rms-starcat/issues/new) with a **clear and descriptive title**. Please label the issue as `A-Bug` with no other labels.
+- Open an [issue](https://github.com/SETI/rms-cloud-tasks/issues/new) with a **clear and descriptive title**. Please label the issue as `A-Bug` with no other labels.
 - Explain the **behavior you would expect** and the **behavior observed**.
 - Provide as much context as possible and describe the **detailed steps** that someone can follow to reproduce the problem. This usually includes providing your code; for a good bug report you should isolate the problem and create a reduced test case.
 - Provide other information collected in the previous section, such as the operating system and language version.
@@ -85,21 +85,21 @@ This section guides you through submitting an enhancement, **including completel
 
 - Make sure that you are using the latest version of this software and its supporting packages.
 - Make sure that you have read the documentation to see if the desired functionality is already provided.
-- Perform a [search](https://github.com/SETI/rms-starcat/issues) to see if the enhancement has already been suggested. If it has, add a comment to the existing issue instead of opening a new one.
+- Perform a [search](https://github.com/SETI/rms-cloud-tasks/issues) to see if the enhancement has already been suggested. If it has, add a comment to the existing issue instead of opening a new one.
 - Find out whether your idea fits within the scope and aims of the project. It's up to you to make a strong case to convince the project's developers of the merits of this feature. Keep in mind that we want features that will be useful to the majority of our users and not just a small subset. If you're just targeting a minority of users, consider writing an add-on/plugin library.
 
 ### How Do I Submit a Good Enhancement Suggestion?
 
 We use GitHub Issues to track enhancement requests. If you want to suggest an enhancement:
 
-- Open an [issue](https://github.com/SETI/rms-starcat/issues/new) with a **clear and descriptive title**. Please label the issue as `A-Enhancement` with no other labels.
+- Open an [issue](https://github.com/SETI/rms-cloud-tasks/issues/new) with a **clear and descriptive title**. Please label the issue as `A-Enhancement` with no other labels.
 - Provide a **detailed** description of the suggested enhancement.
 - **Explain why this enhancement would be useful** to most users.
 
 
 ## I Want To Contribute Code
 
-> ### Legal Notice 
+> ### Legal Notice
 > When contributing to this project, you must agree that you have authored 100% of the content, that you have the necessary rights to the content, and that the content you contribute may be provided under the project license.
 
 We welcome all code contributions, including bug fixes, new features, and improvements to documentation.
