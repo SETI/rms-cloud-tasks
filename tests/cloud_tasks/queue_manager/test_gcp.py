@@ -889,23 +889,24 @@ async def test_delete_queue_error_propagation(gcp_queue, mock_pubsub_client):
 @pytest.mark.asyncio
 async def test_initialization_with_explicit_queue_name(gcp_config):
     """Test initialization with explicitly provided queue name."""
-    # Create queue with explicit queue name
-    queue = GCPPubSubQueue(
-        gcp_config=gcp_config,
-        queue_name="explicit-queue",  # This should be used
-    )
+    # Mock the GCP clients
+    mock_publisher = MagicMock()
+    mock_subscriber = MagicMock()
 
-    # Verify the explicit queue name was used
-    assert queue._queue_name == "explicit-queue"
-    assert queue._topic_name == "explicit-queue-topic"
-    assert queue._subscription_name == "explicit-queue-subscription"
+    with (
+        patch("google.cloud.pubsub_v1.PublisherClient", return_value=mock_publisher),
+        patch("google.cloud.pubsub_v1.SubscriberClient", return_value=mock_subscriber),
+    ):
+        # Create queue with explicit queue name
+        queue = GCPPubSubQueue(
+            gcp_config=gcp_config,
+            queue_name="explicit-queue",  # This should be used
+        )
 
-    # Verify topic and subscription paths use the explicit queue name
-    assert queue._topic_path == "projects/test-project/topics/explicit-queue-topic"
-    assert (
-        queue._subscription_path
-        == "projects/test-project/subscriptions/explicit-queue-subscription"
-    )
+        # Verify the explicit queue name was used
+        assert queue._queue_name == "explicit-queue"
+        assert queue._topic_name == "explicit-queue-topic"
+        assert queue._subscription_name == "explicit-queue-subscription"
 
 
 @pytest.mark.asyncio

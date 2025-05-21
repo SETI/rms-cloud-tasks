@@ -17,7 +17,7 @@ async def test_get_image_from_family(
     """Test getting image from a family."""
     # Arrange
     gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
-    mock_credentials = copy.deepcopy(mock_credentials)
+    gcp_instance_manager_n1_n2._credentials = mock_credentials
     family_name = "ubuntu-2404-lts"
 
     # Create mock image data

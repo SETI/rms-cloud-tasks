@@ -535,7 +535,10 @@ async def gcp_instance_manager_n1_n2(
     """Create a GCP instance manager with mocked dependencies."""
     start = time.time()
     with (
-        patch("google.auth.default", return_value=mock_default_credentials),
+        patch(
+            "cloud_tasks.instance_manager.gcp.get_default_credentials",
+            return_value=mock_default_credentials,
+        ),
         patch("google.cloud.compute_v1.InstancesClient", return_value=MagicMock()),
         patch("google.cloud.compute_v1.ZonesClient", return_value=MagicMock()),
         patch("google.cloud.compute_v1.RegionsClient", return_value=MagicMock()),
@@ -561,7 +564,10 @@ async def gcp_instance_manager_n1_2_4(
     """Create a GCP instance manager with mocked dependencies."""
     start = time.time()
     with (
-        patch("google.auth.default", return_value=mock_default_credentials),
+        patch(
+            "cloud_tasks.instance_manager.gcp.get_default_credentials",
+            return_value=mock_default_credentials,
+        ),
         patch("google.cloud.compute_v1.InstancesClient", return_value=MagicMock()),
         patch("google.cloud.compute_v1.ZonesClient", return_value=MagicMock()),
         patch("google.cloud.compute_v1.RegionsClient", return_value=MagicMock()),
