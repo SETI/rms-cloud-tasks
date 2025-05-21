@@ -626,7 +626,7 @@ class Worker:
             try:
                 # Use asyncio to check the queue without blocking
                 while not self._result_queue.empty():
-                    worker_id, success, result = self._result_queue.get_nowait()
+                    worker_id, retry, result = self._result_queue.get_nowait()
                     async with self._process_ops_semaphore:
                         if worker_id not in self._processes:
                             # Race condition with max_runtime most likely
@@ -639,19 +639,19 @@ class Worker:
                         process_data = self._processes[worker_id]
                         task = process_data["task"]
 
-                        if success:
+                        if retry:
                             self._num_tasks_succeeded += 1
                             logger.info(
                                 f"Worker #{worker_id} reported task {task['task_id']} completed "
-                                f"successfully - {result}"
+                                f"with no retry - {result}"
                             )
                             async with self._task_queue_semaphore:
                                 await self._task_queue.complete_task(task["ack_id"])
                         else:
                             self._num_tasks_failed += 1
                             logger.error(
-                                f"Worker #{worker_id} reported task {task['task_id']} failed - "
-                                f"{result}"
+                                f"Worker #{worker_id} reported task {task['task_id']} completed "
+                                f"with retry - {result}"
                             )
                             async with self._task_queue_semaphore:
                                 await self._task_queue.fail_task(task["ack_id"])
@@ -856,6 +856,7 @@ class Worker:
 
                 if tasks:
                     for task in tasks:
+                        print(self._task_skip_count, self._tasks_remaining)
                         if self._task_skip_count is not None and self._task_skip_count > 0:
                             self._task_skip_count -= 1
                             continue
@@ -1004,25 +1005,25 @@ class Worker:
             # Process the task
             try:
                 # Execute task in isolated environment
-                success, result = Worker._execute_task_isolated(
+                retry, result = Worker._execute_task_isolated(
                     task_id, task_data, worker, user_worker_function
                 )
                 processing_time = time.time() - start_time
 
                 logger.info(
                     f"Worker #{worker_id}: Completed task {task_id} in "
-                    f"{processing_time:.2f} seconds, success {success}"
+                    f"{processing_time:.2f} seconds, retry {retry}"
                 )
 
                 # Send result back to main process
-                result_queue.put((worker_id, success, result))
+                result_queue.put((worker_id, retry, result))
 
             except Exception as e:
                 logger.error(
                     f"Worker #{worker_id}: Error executing task {task_id}: {e}", exc_info=True
                 )
                 # Send failure back to main process
-                result_queue.put((worker_id, False, str(e)))
+                result_queue.put((worker_id, worker._no_retry_on_crash, str(e)))
 
         except Exception as e:
             logger.error(f"Worker #{worker_id}: Unhandled error - {e}", exc_info=True)

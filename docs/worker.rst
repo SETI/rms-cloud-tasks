@@ -35,9 +35,9 @@ Here's a simple example of how to implement a worker:
                local environment and polling for shutdown notifications)
 
        Returns:
-           Tuple of (success: bool, result: str or dict)
-           - success: True if task succeeded or failed in a way that it should not be
-             re-queued for some other process to try it again; False to indicate that the
+           Tuple of (retry: bool, result: str or dict)
+           - retry: False if task succeeded or failed in a way that it should not be
+             re-queued for some other process to try it again; True to indicate that the
              task failed in a way that it should be re-queued for some other process to
              try it again
            - result: String or dict describing the result; this will be sent to the local
@@ -47,9 +47,9 @@ Here's a simple example of how to implement a worker:
            print(f"Processing task {task_id}")
            # Your processing logic here
            print(f"Task data: {task_data}")
-           return True, "Task completed successfully"
+           return False, "Task completed successfully"
        except Exception as e:
-           return True, str(e)  # Don't retry on failure
+           return False, str(e)  # Don't retry on failure
 
    # Create and start the worker
    if __name__ == "__main__":
@@ -60,11 +60,11 @@ Here's a simple example of how to implement a worker:
 Returning a Result
 -------------------
 
-The top-level worker function should return a tuple of (``success``, ``result``).
-Returning a ``success`` value of ``True`` fundamentally indicates that the task should not
+The top-level worker function should return a tuple of (``retry``, ``result``).
+Returning a ``retry`` value of ``False`` fundamentally indicates that the task should not
 be re-tried. This could mean it actually succeeded in whatever you wanted it to do, or it
 failed in such a way that you don't want to retry it (for example, an unhandled exception
-which is likely to recur on future attempts). Returning a ``success`` value of False
+which is likely to recur on future attempts). Returning a ``retry`` value of ``True``
 indicates that the task failed in a way that it should be re-queued for some other process
 to try it again. This normally would indicate some kind of transient error, such as
 running out of disk space or memory or hitting some other kind of temporary resource

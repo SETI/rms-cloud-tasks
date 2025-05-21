@@ -1215,3 +1215,256 @@ async def test_worker_without_is_spot():
 
         # Verify _check_termination_loop was not called
         mock_loop.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_check_termination_loop_with_simulated_delay(mock_worker_function, caplog):
+    """Test that _check_termination_loop properly handles simulated spot termination delay."""
+    with patch("sys.argv", ["worker.py", "--provider", "AWS", "--job-id", "test-job"]):
+        worker = Worker(mock_worker_function)
+        worker._start_time = time.time() - 0.2
+        worker._running = True
+        worker._simulate_spot_termination_after = 0.1
+        worker._simulate_spot_termination_delay = None
+
+        # Create mock processes
+        mock_process1 = MagicMock()
+        mock_process1.is_alive.return_value = True
+        mock_process1.pid = 123
+        mock_process1.join.return_value = None
+
+        mock_process2 = MagicMock()
+        mock_process2.is_alive.return_value = True
+        mock_process2.pid = 456
+        mock_process2.join.return_value = None
+
+        worker._processes = {
+            1: {"process": mock_process1, "worker_id": 1},
+            2: {"process": mock_process2, "worker_id": 2},
+        }
+
+        # Start the termination check loop
+        with patch("asyncio.sleep") as mock_sleep:
+            mock_sleep.return_value = None
+            # await worker._check_termination_loop()
+
+            worker._simulate_spot_termination_delay = 0.2
+
+            await worker._check_termination_loop()
+
+            # Verify processes were terminated
+            mock_process1.terminate.assert_called_once()
+            mock_process2.terminate.assert_called_once()
+            mock_process1.join.assert_called_once_with(timeout=5)
+            mock_process2.join.assert_called_once_with(timeout=5)
+
+            # Verify processes were cleaned up
+            assert len(worker._processes) == 0
+            assert not worker._running
+
+        # Verify logging
+        assert "Simulated spot termination delay complete, killing all processes" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_feed_tasks_to_workers_shutdown_and_termination(mock_worker_function):
+    """Should not fetch tasks if shutdown or termination notice is set."""
+    with patch("sys.argv", ["worker.py", "--provider", "AWS", "--job-id", "test-job"]):
+        worker = Worker(mock_worker_function)
+        worker._running = True
+        worker._num_simultaneous_tasks = 2
+        mock_queue = AsyncMock()
+        worker._task_queue = mock_queue
+
+        # Set running to False after one iteration
+        async def fake_sleep(*a, **kw):
+            worker._running = False
+            return []
+
+        # fake receive tasks
+        async def fake_receive_tasks(*a, **kw):
+            return []
+
+        # Patch asyncio.sleep to return immediately
+        with patch("asyncio.sleep") as mock_sleep:
+            mock_sleep.side_effect = fake_sleep
+            mock_queue.receive_tasks.side_effect = fake_receive_tasks
+            worker._shutdown_event.set()
+            await worker._feed_tasks_to_workers()
+            mock_sleep.assert_called_once_with(1)
+            mock_queue.receive_tasks.assert_not_called()
+
+            # Reset
+            worker._shutdown_event.clear()
+            worker._termination_event.set()
+            worker._running = True
+            mock_queue.receive_tasks.reset_mock()
+
+            await worker._feed_tasks_to_workers()
+            mock_queue.receive_tasks.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_feed_tasks_to_workers_at_capacity(mock_worker_function):
+    """Should not fetch tasks if already at capacity."""
+    with patch("sys.argv", ["worker.py", "--provider", "AWS", "--job-id", "test-job"]):
+        worker = Worker(mock_worker_function)
+        worker._running = True
+        worker._num_simultaneous_tasks = 2
+        mock_queue = AsyncMock()
+        worker._task_queue = mock_queue
+        worker._processes = {
+            1: {"process": MagicMock(), "worker_id": 1},
+            2: {"process": MagicMock(), "worker_id": 2},
+        }
+
+        # Set running to False after one iteration
+        async def fake_sleep(*a, **kw):
+            worker._running = False
+            return []
+
+        # fake receive tasks
+        async def fake_receive_tasks(*a, **kw):
+            return []
+
+        # Patch asyncio.sleep to return immediately
+        with patch("asyncio.sleep") as mock_sleep:
+            mock_sleep.side_effect = fake_sleep
+            mock_queue.receive_tasks.side_effect = fake_receive_tasks
+            await worker._feed_tasks_to_workers()
+            mock_sleep.assert_called_once_with(0.1)
+            mock_queue.receive_tasks.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_feed_tasks_to_workers_error_handling(mock_worker_function):
+    """Should log error if receive_tasks raises an exception."""
+    with patch("sys.argv", ["worker.py", "--provider", "AWS", "--job-id", "test-job"]):
+        with patch("cloud_tasks.worker.worker.logger") as mock_logger:
+            worker = Worker(mock_worker_function)
+            worker._running = True
+            worker._num_simultaneous_tasks = 2
+            mock_queue = AsyncMock()
+            worker._task_queue = mock_queue
+
+            # Set running to False after one iteration
+            async def fake_sleep(*a, **kw):
+                worker._running = False
+                return []
+
+            # Set running to False after one iteration
+            async def fake_receive_tasks(*a, **kw):
+                raise Exception("Test error")
+
+            # Patch asyncio.sleep to return immediately
+            with patch("asyncio.sleep") as mock_sleep:
+                mock_sleep.side_effect = fake_sleep
+                mock_queue.receive_tasks.side_effect = fake_receive_tasks
+                await worker._feed_tasks_to_workers()
+                mock_sleep.assert_called_once_with(1)
+                mock_queue.receive_tasks.assert_called_once()
+                mock_logger.error.assert_called_with(
+                    "Error fetching tasks: Test error", exc_info=True
+                )
+
+
+@pytest.mark.asyncio
+async def test_feed_tasks_to_workers_task_skip_logic(mock_worker_function):
+    """Should skip the correct number of tasks based on _task_skip_count and respect _max_num_tasks."""
+    with patch("sys.argv", ["worker.py", "--provider", "AWS", "--job-id", "test-job"]):
+        worker = Worker(mock_worker_function)
+        worker._running = True
+        worker._num_simultaneous_tasks = 2
+        mock_queue = AsyncMock()
+        worker._task_queue = mock_queue
+        worker._task_skip_count = 1
+        worker._tasks_remaining = 1
+
+        # Set running to False after one iteration
+        async def fake_receive_tasks(*a, **kw):
+            worker._running = False
+            return [
+                {"task_id": "task1", "data": {}, "ack_id": "ack1"},
+                {"task_id": "task2", "data": {}, "ack_id": "ack2"},
+                {"task_id": "task3", "data": {}, "ack_id": "ack3"},
+            ]
+
+        mock_queue.receive_tasks.side_effect = fake_receive_tasks
+        await worker._feed_tasks_to_workers()
+
+        # Verify task skipping
+        assert len(worker._processes) == 1
+        assert worker._tasks_remaining == 0
+        assert "task1" not in str(worker._processes.values())
+        assert "task2" in str(worker._processes.values())
+        assert "task3" not in str(worker._processes.values())
+
+
+@pytest.mark.asyncio
+async def test_feed_tasks_to_workers_handle_exit(mock_worker_function):
+    """Should properly handle worker process exits and task retry logic."""
+    with patch("sys.argv", ["worker.py", "--provider", "AWS", "--job-id", "test-job"]):
+        with patch("cloud_tasks.worker.worker.logger") as mock_logger:
+            worker = Worker(mock_worker_function)
+            worker._running = True
+            worker._num_simultaneous_tasks = 2
+            mock_queue = AsyncMock()
+            worker._task_queue = mock_queue
+
+            # Create a mock process that will exit
+            mock_process = MagicMock()
+            mock_process.pid = 123
+            mock_process.is_alive.return_value = False
+            mock_process.exitcode = 1
+
+            # Set up initial process
+            task = {"task_id": "test-task", "data": {}, "ack_id": "test-ack"}
+            worker._processes = {
+                1: {
+                    "worker_id": 1,
+                    "process": mock_process,
+                    "start_time": time.time(),
+                    "task": task,
+                }
+            }
+
+            async def fake_sleep(*a, **kw):
+                worker._running = False
+                return []
+
+            # Set running to False after one iteration
+            async def fake_receive_tasks(*a, **kw):
+                return []
+
+            with patch("asyncio.sleep") as mock_sleep:
+                mock_sleep.side_effect = fake_sleep
+                mock_queue.receive_tasks.side_effect = fake_receive_tasks
+
+                # Test with no_retry_on_crash=True
+                worker._no_retry_on_crash = True
+                await worker._feed_tasks_to_workers()
+                mock_queue.complete_task.assert_called_once_with("test-ack")
+                mock_queue.fail_task.assert_not_called()
+                assert len(worker._processes) == 0
+                mock_logger.warning.assert_called_with("Worker #1 (PID 123) exited prematurely")
+
+                # Reset for next test
+                mock_queue.reset_mock()
+                mock_logger.reset_mock()
+                worker._processes = {
+                    1: {
+                        "worker_id": 1,
+                        "process": mock_process,
+                        "start_time": time.time(),
+                        "task": task,
+                    }
+                }
+                worker._running = True
+
+                # Test with no_retry_on_crash=False
+                worker._no_retry_on_crash = False
+                await worker._feed_tasks_to_workers()
+                mock_queue.fail_task.assert_called_once_with("test-ack")
+                mock_queue.complete_task.assert_not_called()
+                assert len(worker._processes) == 0
+                mock_logger.warning.assert_called_with("Worker #1 (PID 123) exited prematurely")
