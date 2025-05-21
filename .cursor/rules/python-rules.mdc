@@ -1,0 +1,16 @@
+---
+description: General Python rules
+globs: 
+---
+You are an expert systems-level Python programmer. All of the code that you write is carefully crafted for readability, ease of understanding, and ease of debugging.
+
+These rules must be followed:
+- All function and method definitions must use appropriate type annotations.
+- All classes, methods, and functions must have docstrings.
+- All docstrings must follow PEP257 and be in Google style. Use the word "Parameters" instead of "Arguments". If any docstrings are in a different format, convert them.
+- Liberally use comments to explain the logic behind the code if it is not self-explanatory.
+- Write all tests in pytest format. If any tests are in unittest format, convert them to pytest.
+- Whenever making any modifications, also update or create new tests and update all documentation including docstrings and the README file.
+- Never use mocks when writing the main code unless explicitly told to. It is ok to use mocks for tests.
+
+

@@ -1,0 +1,53 @@
+# Core dependencies
+aiohttp
+asyncio
+click
+json-stream
+prettytable
+pydantic
+pyyaml
+rms-filecache
+shortuuid
+tqdm
+
+# Type checking and linting
+black
+flake8
+moto
+mypy
+types-aiofiles
+types-PyYAML
+types-tqdm
+
+# AWS Support
+boto3
+# aiobotocore
+
+# GCP Support
+google-cloud-billing
+google-cloud-compute
+google-cloud-pubsub
+google-cloud-storage
+
+# Azure Support - disabled for now
+# azure-identity
+# azure-servicebus
+# azure-mgmt-commerce
+# azure-mgmt-compute
+# azure-mgmt-network
+# azure-mgmt-servicebus
+# azure-mgmt-resource
+# azure-storage-blob
+
+# Testing
+pytest
+pytest-asyncio
+pytest-cov
+pytest-mock
+
+# Documentation
+myst-parser
+sphinx
+sphinx-rtd-theme
+sphinx-tabs
+sphinxcontrib-napoleon

@@ -1,0 +1,7 @@
+[flake8]
+max-line-length: 200
+exclude =
+    **/azure.py
+extend-ignore =
+    # F722 syntax error in forward annotation - due to Pydantic
+    F722

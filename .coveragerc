@@ -1,0 +1,5 @@
+[run]
+branch = false
+omit =
+    tests/*
+    azure.py

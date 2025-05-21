@@ -1,0 +1,17 @@
+# provider: gcp
+
+aws:
+  region: us-west-2
+  job_id: fred-aws
+
+gcp:
+  project_id: rms-node-419806
+  region: us-central1
+  job_id: fred-gcp
+
+azure:
+  subscription_id: YOUR_AZURE_SUBSCRIPTION_ID
+  tenant_id: YOUR_AZURE_TENANT_ID
+  client_id: YOUR_AZURE_CLIENT_ID
+  client_secret: YOUR_AZURE_CLIENT_SECRET
+  job_id: fred-azure
