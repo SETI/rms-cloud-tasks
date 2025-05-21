@@ -81,12 +81,26 @@ Running tasks consists of:
 
 These steps are performed automatically.
 
+For Google Cloud, the permissions granted to compute instances are determined by a
+:ref:`service account <gcp_service_account>`. This account can be specified in the configuration
+file (``service_account:``) or on the command line using ``--service-account``.
+
+Finally, the location of the output bucket needs to be specified in the startup script in
+the configuration file, since that is user-specific. Change this line in the file
+``examples/parallel_addition/config.yml`` before running ``manage_pool``:
+
+.. code-block:: yaml
+
+    export ADDITION_OUTPUT_DIR=gs://<BUCKET>/addition-results
+
+Be sure that the bucket exists and that the service account you provide has write access to it.
+
 Here is an example command that will find the cheapest compute instance in the specified region with
 exactly 8 CPUs and at least 2 GB memory per CPU and create 5 of them.
 
 .. code-block:: bash
 
-    cloud_tasks manage_pool --config examples/parallel_addition/config.yml --provider gcp --project-id my-project --job-id addition --min-cpu 8 --max-cpu 8 --min-memory-per-cpu 2 --max-instances 5
+    cloud_tasks manage_pool --config examples/parallel_addition/config.yml --provider gcp --project-id my-project --service-account <SERVICE_ACCOUNT> --job-id addition --min-cpu 8 --max-cpu 8 --min-memory-per-cpu 2 --max-instances 5
 
 .. note::
    - manage_pool uses info logging which is turned off by default

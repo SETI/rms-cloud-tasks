@@ -36,6 +36,16 @@ GCP-Specific Documentation
   - Extreme
 - Pricing will not include any negotiated discounts
 
+.. _gcp_service_account:
+
+Service Accounts
+================
+
+For Google Cloud, the permissions granted to compute instances are determined by a
+"service account". This account can be specified in the configuration file
+(``service_account:``) or on the command line using ``--service-account``. See the
+`Google Cloud documentation <https://cloud.google.com/iam/docs/service-account-overview>`_
+for information on creating and managing them.
 
 .. _gcp_boot_disk_types:
 
