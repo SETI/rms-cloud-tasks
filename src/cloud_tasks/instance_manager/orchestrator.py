@@ -75,6 +75,7 @@ class InstanceOrchestrator:
         self._optimal_instance_info = None
         self._optimal_instance_boot_disk_size = None
         self._optimal_instance_num_tasks = None
+        self._image_uri = None
         self._all_instance_info = None
         self._pricing_info = None
 
@@ -179,7 +180,6 @@ class InstanceOrchestrator:
             f"  Instance termination delay: {self._instance_termination_delay} seconds"
         )
         self._logger.info(f"  Max runtime: {self._run_config.max_runtime} seconds")
-        self._logger.info(f"  Worker use new process: {self._run_config.worker_use_new_process}")
         self._logger.info(f"  Max parallel instance creations: {self._start_instance_max_threads}")
         self._logger.info(f"  Image: {self._run_config.image}")
         self._logger.info("  Startup script:")
@@ -309,8 +309,28 @@ export RMS_CLOUD_TASKS_MAX_RUNTIME={self._run_config.max_runtime}
         if self._region is None:
             raise RuntimeError("Region is required")
 
-        if self._run_config.image is None:
-            raise RuntimeError("Image is required")
+        # Get image - either custom or default
+        image = self._run_config.image
+        if image is not None:
+            # If it's a full URI, use it directly
+            if image.startswith("https://") or "/" in image:
+                self._logger.info(f"Using image: {image}")
+                self._image_uri = image
+            else:
+                # Assume it's a family name in one of the standard projects
+                self._image_uri = await self._instance_manager.get_image_from_family(image)
+                if self._image_uri is None:
+                    raise RuntimeError(f'No image found for family "{image}"')
+                self._logger.info(
+                    f'Using most recent image from family "{image}": {self._image_uri}'
+                )
+        else:
+            # Get default image
+            self._image_uri = await self._instance_manager.get_default_image()
+            if self._image_uri is None:
+                raise RuntimeError("No default image found")
+            self._logger.info(f"Using current default image: {self._image_uri}")
+
         # Get optimal instance type based on requirements from config
         optimal_instance_info = await self._instance_manager.get_optimal_instance_type(
             vars(self._run_config)
@@ -425,7 +445,7 @@ export RMS_CLOUD_TASKS_MAX_RUNTIME={self._run_config.max_runtime}
         running_cpus = 0
         running_price = 0
         if len(running_instances_by_type) == 0:
-            summary = "No instances found"
+            summary = "No running instances found"
             return num_running, running_cpus, running_price, summary
 
         summary = ""
@@ -752,7 +772,7 @@ export RMS_CLOUD_TASKS_MAX_RUNTIME={self._run_config.max_runtime}
                             startup_script=startup_script,
                             job_id=self._job_id,
                             use_spot=self._run_config.use_spot,
-                            image=self._run_config.image,
+                            image=self._image_uri,
                             zone=self._optimal_instance_info["zone"],
                         )
                         self._logger.info(
@@ -823,149 +843,3 @@ export RMS_CLOUD_TASKS_MAX_RUNTIME={self._run_config.max_runtime}
 
         queue_depth = await self.task_queue.get_queue_depth()
         self._logger.info(f"Queue depth: {queue_depth}")
-
-    # async def check_scaling(self) -> None:
-    #     """
-    #     Check if we need to scale up or down based on queue depth.
-    #     """
-    #     self._logger.debug("Checking if scaling is needed")
-
-    #         # If queue has been empty for a while and we have more than min_instances,
-    #         # terminate excess instances
-    #         if (
-    #             self._empty_queue_since is not None
-    #             and float(time.time()) - self._empty_queue_since
-    #             > self._instance_termination_delay_seconds
-    #             and total_instances > self._min_instances
-    #         ):
-    #             # Calculate how many instances to terminate
-    #             instances_to_terminate = total_instances - self._min_instances
-    #             self._logger.info(
-    #                 f"Queue has been empty for {float(time.time()) - self._empty_queue_since}s, "
-    #                 f"terminating {instances_to_terminate} instances"
-    #             )
-
-    #             # Create a semaphore to limit concurrent terminations
-    #             semaphore = asyncio.Semaphore(self._start_instance_max_threads)
-
-    #             # Define the function to terminate a single instance with semaphore control
-    #             async def terminate_single_instance(instance):
-    #                 async with semaphore:
-    #                     try:
-    #                         self._logger.info(f"Terminating instance: {instance['id']}")
-    #                         await self._instance_manager.terminate_instance(
-    #                             instance["id"], instance["zone"]
-    #                         )
-    #                         self._logger.info(f"Terminated instance: {instance['id']}")
-    #                         return True
-    #                     except Exception as e:
-    #                         self._logger.error(
-    #                             f"Failed to terminate instance {instance['id']}: {e}", exc_info=True
-    #                         )
-    #                         return False
-
-    #             # Filter running instances and create termination tasks
-    #             running_instances = [i for i in current_instances if i["state"] == "running"]
-    #             instances_to_terminate = running_instances[:instances_to_terminate]
-    #             tasks = [terminate_single_instance(instance) for instance in instances_to_terminate]
-    #             results = await asyncio.gather(*tasks)
-
-    #             # Count successful terminations
-    #             terminate_count = sum(1 for result in results if result)
-    #             self._logger.info(f"Successfully terminated {terminate_count} instances")
-
-    #         # Scale up if needed
-    #         if total_instances < desired_instances:
-    #             instances_to_add = desired_instances - total_instances
-    #             self._logger.info(
-    #                 f"Scaling up: Adding {instances_to_add} instances (from {total_instances} to {desired_instances})"
-    #             )
-    #             new_price = self._optimal_instance_info["total_price"] * desired_instances
-    #             total_cpus = self._optimal_instance_info["vcpu"] * desired_instances
-    #             simultaneous_tasks = int(total_cpus / cpus_per_task)
-    #             price_str = f"*** ESTIMATED TOTAL PRICE: ${new_price:.2f}/hour ***"
-    #             hdr_str = "*" * len(price_str)
-    #             self._logger.info(hdr_str)
-    #             self._logger.info(price_str)
-    #             self._logger.info(hdr_str)
-    #             self._logger.info(
-    #                 f"{total_cpus} vCPUs running {simultaneous_tasks} " "simultaneous tasks"
-    #             )
-
-    #             try:
-    #                 new_instance_ids = await self.provision_instances(instances_to_add)
-    #             except Exception as e:
-    #                 self._logger.error(f"Failed to provision instances: {e}", exc_info=True)
-    #         else:
-    #             self._logger.debug(
-    #                 f"No scaling needed. Current: {total_instances}, Desired: {desired_instances}"
-    #             )
-
-    #     # Update last scaling time
-    #     self._last_scaling_time = float(time.time())
-
-    # queue_depth = await orchestrator.task_queue.get_queue_depth()
-    # initial_queue_depth = queue_depth
-
-    # if initial_queue_depth == 0:
-    #     logger.warning(
-    #         "Queue is empty. Add tasks using the 'load_tasks' command before starting "
-    #         "the pool."
-    #     )
-
-    # # We might want a way to keep this running indefinitely even if queue is empty
-    # # if min_instances > 0, or have a separate command just to maintain a pool.
-    # # For now, it exits if the queue becomes empty.
-    # with tqdm(total=initial_queue_depth, desc="Processing tasks") as pbar:
-    #     last_depth = queue_depth
-
-    #     while queue_depth > 0:  # TODO or orchestrator.num_running_instances > 0:
-    #         # Check if the orchestrator is still running
-    #         if not orchestrator.running:
-    #             logger.info("Orchestrator stopped, exiting monitor loop.")
-    #             break
-
-    #         await asyncio.sleep(5)  # Shorter sleep for responsiveness
-
-    #         # Check instance health/count (optional, orchestrator loop does this)
-    #         status = await orchestrator.get_job_status()
-    #         running_count = status["instances"]["running"]
-    #         starting_count = status["instances"]["starting"]
-    #         total_instances = running_count + starting_count
-
-    #         try:
-    #             queue_depth = await orchestrator.task_queue.get_queue_depth()
-    #         except Exception as q_err:
-    #             logger.error(f"Error getting queue depth in monitor loop: {q_err}")
-    #             # Decide how to handle this - continue, break, etc.
-    #             continue  # Continue for now
-
-    #         # Update progress bar only if queue depth decreases
-    #         processed = last_depth - queue_depth
-    #         if processed > 0:
-    #             pbar.update(processed)
-    #             last_depth = queue_depth
-
-    #         # Print job status if verbose
-    #         if args.verbose >= 2:  # Use INFO level for status updates
-    #             instances_info = f"{running_count} running, {starting_count} starting"
-    #             logger.info(f"Queue depth: {queue_depth}, Instances: {instances_info}")
-
-    #         # Exit condition if queue is empty and no minimum instances required
-    #         if queue_depth == 0:  # TODO and orchestrator.min_instances == 0:
-    #             logger.info("Queue is empty and min_instances is 0, finishing up.")
-    #             # Wait briefly for any final processing or scaling down
-    #             await asyncio.sleep(orchestrator.check_interval_seconds)
-    #             break
-
-    #     # Ensure progress bar reaches 100% if there were initial tasks
-    #     if initial_queue_depth > 0:
-    #         pbar.update(max(0, pbar.total - pbar.n))
-
-    # logger.info("Monitoring complete or queue is empty.")
-
-    # # Stop orchestrator gracefully
-    # logger.info("Stopping orchestrator")
-    # await orchestrator.stop()
-
-    # logger.info(f"Job {orchestrator.job_id} management finished.")

@@ -56,9 +56,9 @@ async def test_start_instance_basic(
     # Mock the UUID generation to have a predictable instance ID
     mock_uuid = _uuid.UUID("12345678-1234-5678-1234-567812345678")
     with patch("uuid.uuid4", return_value=mock_uuid):
-        # Mock _get_image_from_family to return a predictable image path
+        # Mock get_image_from_family to return a predictable image path
         with patch.object(
-            gcp_instance_manager_n1_n2, "_get_image_from_family", new=AsyncMock()
+            gcp_instance_manager_n1_n2, "get_image_from_family", new=AsyncMock()
         ) as mock_get_image:
             mock_get_image.return_value = "https://compute.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-2404-lts"
 
@@ -88,7 +88,7 @@ async def test_start_instance_basic(
                         startup_script=startup_script,
                         job_id=job_id,
                         use_spot=use_spot,
-                        image=image,
+                        image_uri=image,
                         zone=gcp_instance_manager_n1_n2._zone,
                     )
 
@@ -146,9 +146,9 @@ async def test_start_instance_spot(
     # Mock the UUID generation to have a predictable instance ID
     mock_uuid = _uuid.UUID("12345678-1234-5678-1234-567812345678")
     with patch("uuid.uuid4", return_value=mock_uuid):
-        # Mock _get_image_from_family to return a predictable image path
+        # Mock get_image_from_family to return a predictable image path
         with patch.object(
-            gcp_instance_manager_n1_n2, "_get_image_from_family", new=AsyncMock()
+            gcp_instance_manager_n1_n2, "get_image_from_family", new=AsyncMock()
         ) as mock_get_image:
             mock_get_image.return_value = "https://compute.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-2404-lts"
 
@@ -180,7 +180,7 @@ async def test_start_instance_spot(
                     startup_script=startup_script,
                     job_id=job_id,
                     use_spot=use_spot,
-                    image=image,
+                    image_uri=image,
                     zone=gcp_instance_manager_n1_n2._zone,
                 )
 
@@ -223,9 +223,9 @@ async def test_start_instance_with_service_account(
     # Mock the UUID generation to have a predictable instance ID
     mock_uuid = _uuid.UUID("12345678-1234-5678-1234-567812345678")
     with patch("uuid.uuid4", return_value=mock_uuid):
-        # Mock _get_image_from_family to return a predictable image path
+        # Mock get_image_from_family to return a predictable image path
         with patch.object(
-            gcp_instance_manager_n1_n2, "_get_image_from_family", new=AsyncMock()
+            gcp_instance_manager_n1_n2, "get_image_from_family", new=AsyncMock()
         ) as mock_get_image:
             mock_get_image.return_value = "https://compute.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-2404-lts"
 
@@ -257,7 +257,7 @@ async def test_start_instance_with_service_account(
                     startup_script=startup_script,
                     job_id=job_id,
                     use_spot=use_spot,
-                    image=image,
+                    image_uri=image,
                     zone=gcp_instance_manager_n1_n2._zone,
                 )
 
@@ -322,7 +322,7 @@ async def test_start_instance_with_custom_image_uri(
                 startup_script=startup_script,
                 job_id=job_id,
                 use_spot=use_spot,
-                image=custom_image,
+                image_uri=custom_image,
                 zone=gcp_instance_manager_n1_n2._zone,
             )
 
@@ -337,7 +337,7 @@ async def test_start_instance_with_custom_image_uri(
             instance_config = call_args[1]["instance_resource"]
 
             assert instance_config.disks[0].initialize_params.source_image == custom_image
-            # _get_image_from_family should not have been called since we provided a full image URI
+            # get_image_from_family should not have been called since we provided a full image URI
 
 
 @pytest.mark.asyncio
@@ -366,9 +366,9 @@ async def test_start_instance_with_random_zone(
         # Mock the UUID generation to have a predictable instance ID
         mock_uuid = _uuid.UUID("12345678-1234-5678-1234-567812345678")
         with patch("uuid.uuid4", return_value=mock_uuid):
-            # Mock _get_image_from_family to return a predictable image path
+            # Mock get_image_from_family to return a predictable image path
             with patch.object(
-                gcp_instance_manager_n1_n2, "_get_image_from_family", new=AsyncMock()
+                gcp_instance_manager_n1_n2, "get_image_from_family", new=AsyncMock()
             ) as mock_get_image:
                 mock_get_image.return_value = "https://compute.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-2404-lts"
 
@@ -400,7 +400,7 @@ async def test_start_instance_with_random_zone(
                         startup_script=startup_script,
                         job_id=job_id,
                         use_spot=use_spot,
-                        image=image,
+                        image_uri=image,
                         zone=wildcard_zone,
                     )
 
@@ -436,9 +436,9 @@ async def test_start_instance_error_handling(
     # Mock the UUID generation to have a predictable instance ID
     mock_uuid = _uuid.UUID("12345678-1234-5678-1234-567812345678")
     with patch("uuid.uuid4", return_value=mock_uuid):
-        # Mock _get_image_from_family to return a predictable image path
+        # Mock get_image_from_family to return a predictable image path
         with patch.object(
-            gcp_instance_manager_n1_n2, "_get_image_from_family", new=AsyncMock()
+            gcp_instance_manager_n1_n2, "get_image_from_family", new=AsyncMock()
         ) as mock_get_image:
             mock_get_image.return_value = "https://compute.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-2404-lts"
 
@@ -459,7 +459,7 @@ async def test_start_instance_error_handling(
                     startup_script=startup_script,
                     job_id=job_id,
                     use_spot=use_spot,
-                    image=image,
+                    image_uri=image,
                     zone=gcp_instance_manager_n1_n2._zone,
                 )
 

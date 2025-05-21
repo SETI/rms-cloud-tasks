@@ -38,6 +38,12 @@ class TestInstanceManager:
             async def list_running_instances(self, job_id=None, include_non_job=False):
                 pass
 
+            async def get_image_from_family(self, family_name):
+                pass
+
+            async def get_default_image(self):
+                pass
+
             async def list_available_images(self):
                 pass
 

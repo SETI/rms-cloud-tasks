@@ -1148,7 +1148,8 @@ async def test_get_instance_pricing_lssd_instance_no_local_ssd_sku(
         )
     assert result["n2-standard-4-lssd"] == {}
     assert any(
-        "No local SSD SKU found for LSSD instance type n2-standard-4-lssd" in record.message
+        "No local SSD SKU found for instance family n2 in region us-central1; ignoring these instance types"
+        in record.message
         for record in caplog.records
     )
 
@@ -1182,49 +1183,6 @@ async def test_get_instance_pricing_preemptible_mismatch(
     )
     pricing = result["n1-standard-2"][f"{gcp_instance_manager_n1_n2._region}-*"]["pd-standard"]
     assert pricing["cpu_price"] == N1_PREEMPTIBLE_CPU_PRICE * 2
-
-
-@pytest.mark.asyncio
-async def test_get_instance_pricing_z3_storage_optimized_warning(
-    gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
-    caplog,
-    cpu_pricing_n1_sku: MagicMock,
-) -> None:
-    """Test get_instance_pricing for z3 storage-optimized instance triggers warning."""
-    # Arrange: create a mock z3 instance type
-    gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
-    z3_instance_type = "z3-highmem-8-lssd"
-    mock_instance_types_n1_n2 = {
-        z3_instance_type: {
-            "name": z3_instance_type,
-            "vcpu": 8,
-            "mem_gb": 64,
-            "local_ssd_gb": 3000,  # Example value
-            "boot_disk_gb": 0,
-            "architecture": "X86_64",
-            "supports_spot": True,
-            "description": "8 vCPUs, 64 GB RAM, 8 local SSD",
-        }
-    }
-    # Provide a minimal SKU list that will not match z3
-    gcp_instance_manager_n1_n2._billing_compute_skus = [
-        cpu_pricing_n1_sku,
-    ]
-
-    with caplog.at_level("WARNING"):
-        result = await gcp_instance_manager_n1_n2.get_instance_pricing(
-            mock_instance_types_n1_n2, use_spot=False
-        )
-
-    # Assert: warning about Z3 storage-optimized instances should be present
-    assert any(
-        "Z3 storage-optimized instances have no pricing information for local SSDs"
-        in record.message
-        for record in caplog.records
-    )
-    # The result should contain the z3 instance type with an empty pricing dict
-    assert z3_instance_type in result
-    assert result[z3_instance_type] == {}
 
 
 @pytest.mark.asyncio

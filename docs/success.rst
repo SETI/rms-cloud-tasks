@@ -46,3 +46,6 @@ Principles for Greatest Success (and Least Frustration)
   specific to the current task. The
   `FileCache package <https://rms-filecache.readthedocs.io/>` is a good way to do this,
   using the unique Task ID as the name of the cache.
+
+- Always specify one or more boot disk types that you are willing to use. If you don't, the
+  cheapest type will be chosen, which may be a slow HDD.

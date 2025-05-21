@@ -375,6 +375,29 @@ class InstanceManager(ABC):
         pass  # pragma: no cover
 
     @abstractmethod
+    async def get_image_from_family(self, family_name: str) -> str:
+        """
+        Get the latest image from a specific family.
+
+        Args:
+            family_name: Image family name
+
+        Returns:
+            Image URI
+        """
+        pass  # pragma: no cover
+
+    @abstractmethod
+    async def get_default_image(self) -> str:
+        """
+        Get the latest Ubuntu 24.04 LTS image for Compute Engine.
+
+        Returns:
+            Image URI
+        """
+        pass  # pragma: no cover
+
+    @abstractmethod
     async def get_available_regions(self) -> Dict[str, Any]:
         """Get all available regions and their attributes."""
         pass  # pragma: no cover

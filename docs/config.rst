@@ -253,7 +253,8 @@ Options to specify the boot process
     to pass as a command line argument)
   * ``startup_script_file``: The path to a file containing the startup script
 
-* ``image``: The image to use for the VM
+* ``image``: The image to use for the VM. If no image is specified, the default image for the
+  provider will be used. This is most commonly the latest release of Ubuntu 24.04 LTS.
 
 .. _config_worker_and_manage_pool_options:
 

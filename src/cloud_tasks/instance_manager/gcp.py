@@ -473,19 +473,26 @@ class GCPComputeInstanceManager(InstanceManager):
         return self._billing_compute_skus
 
     def _extract_pricing_info(
-        self, machine_family: str, sku: Any, expected_unit: str, component_name: str
+        self,
+        machine_family: str,
+        sku: Any,
+        expected_units: str | Tuple[str, ...],
+        component_name: str,
     ) -> Optional[Any]:
         """
         Extract pricing information from a SKU.
 
         Args:
             sku: The SKU object containing pricing information
-            expected_unit: Expected usage unit (e.g., 'h', 'GiBy.h', 'GiBy.mo')
+            expected_units: Expected usage unit (e.g., 'h', 'GiBy.h', 'GiBy.mo')
             component_name: Name of the component (e.g., 'core', 'ram', 'local SSD')
 
         Returns:
             Pricing tier information if successful, None if any validation fails
         """
+        if isinstance(expected_units, str):
+            expected_units = (expected_units,)
+
         pricing_info = list(sku.pricing_info)
         if len(pricing_info) == 0:
             self._logger.warning(
@@ -501,10 +508,10 @@ class GCPComputeInstanceManager(InstanceManager):
             return None
 
         usage_unit = pricing_info[0].pricing_expression.usage_unit
-        if usage_unit != expected_unit:
+        if usage_unit not in expected_units:
             self._logger.warning(
                 f'{machine_family} {component_name} SKU "{sku.description}" '
-                f"has unknown pricing unit: {usage_unit} (expected {expected_unit}); "
+                f"has unknown pricing unit: {usage_unit} (expected {expected_units}); "
                 "these instance types will be ignored"
             )
             return None
@@ -625,22 +632,17 @@ class GCPComputeInstanceManager(InstanceManager):
             is_lssd = False
             if machine_name_parts[-1] == "lssd":
                 is_lssd = True
-                machine_family_for_cache = machine_name_parts[0] + "-" + machine_name_parts[-2]
+                machine_family_for_cache = machine_name_parts[0] + "-" + machine_name_parts[-1]
             else:
                 machine_family_for_cache = machine_name_parts[0]
-            # Z3 storage-optimized instances also have local SSDs but they don't have pricing SKUs
-            if machine_name_parts[0] == "z3":
-                self._logger.warning(
-                    f"Instance type {machine_type}: Z3 storage-optimized instances have no pricing "
-                    "information for local SSDs; total price will be incorrect"
-                )
+            cache_key = (machine_family_for_cache, use_spot)
 
             # GCP pricing is specific to a machine family, which is then scaled by the number of
             # vCPUs and memory, so we just cache the pricing for the machine family and use that for
             # all instance types in the family.
-            if (machine_family_for_cache, use_spot) in self._instance_pricing_cache:
+            if cache_key in self._instance_pricing_cache:
                 # Cache hit!
-                ret_val = self._instance_pricing_cache[(machine_family_for_cache, use_spot)]
+                ret_val = self._instance_pricing_cache[cache_key]
                 if ret_val is None:  # No pricing info available
                     ret[machine_type] = {}
                     continue
@@ -721,7 +723,7 @@ class GCPComputeInstanceManager(InstanceManager):
             local_ssd_sku = None
 
             # Save None to mark we tried, even if we don't eventually find a match
-            self._instance_pricing_cache[(machine_family_for_cache, use_spot)] = None
+            self._instance_pricing_cache[cache_key] = None
 
             # Find matching SKU for the instance type in this region.
             # This is kind of a hack because we are figuring out which SKU to use based on
@@ -890,6 +892,7 @@ class GCPComputeInstanceManager(InstanceManager):
                     f"{self._region}; ignoring these instance types"
                 )
                 continue
+
             if boot_disk_skus["pd-standard"] is None:
                 self._logger.warning(
                     f"No PD Standard boot disk SKU found for instance family {machine_family} "
@@ -920,6 +923,7 @@ class GCPComputeInstanceManager(InstanceManager):
                     f"in region {self._region}; ignoring these instance types"
                 )
                 continue
+
             if pd_extreme_iops_sku is None:
                 self._logger.warning(
                     f"No PD Extreme IOPS SKU found for instance family {machine_family} "
@@ -935,6 +939,13 @@ class GCPComputeInstanceManager(InstanceManager):
             if hd_balanced_throughput_sku is None:
                 self._logger.warning(
                     f"No HD Balanced Throughput SKU found for instance family {machine_family} "
+                    f"in region {self._region}; ignoring these instance types"
+                )
+                continue
+
+            if is_lssd and local_ssd_sku is None:
+                self._logger.warning(
+                    f"No local SSD SKU found for instance family {machine_family} "
                     f"in region {self._region}; ignoring these instance types"
                 )
                 continue
@@ -975,7 +986,11 @@ class GCPComputeInstanceManager(InstanceManager):
                 continue
 
             # Extract price info for RAM
-            ram_pricing_info = self._extract_pricing_info(machine_family, ram_sku, "GiBy.h", "ram")
+            # TODO Supporting both GiBy.h and GBy.h is probably wrong because we're dividing
+            # by the wrong number, but hopefully it won't make a big difference
+            ram_pricing_info = self._extract_pricing_info(
+                machine_family, ram_sku, ("GiBy.h", "GBy.h"), "ram"
+            )
             if ram_pricing_info is None:
                 continue
 
@@ -1041,12 +1056,6 @@ class GCPComputeInstanceManager(InstanceManager):
                     f"Local SSD price: ${per_gb_local_ssd_price:.6f}/GB/hour "
                     f"({local_ssd_price:.6f}/hour)"
                 )
-            elif is_lssd:
-                self._logger.warning(
-                    f"No local SSD SKU found for LSSD instance type {machine_type} "
-                    f"in region {self._region}"
-                )
-                continue
 
             # Now go through each boot disk type and create a separate pricing entry for
             # it for this instance type
@@ -1149,7 +1158,7 @@ class GCPComputeInstanceManager(InstanceManager):
                 }
 
             # We only cache the pricing info for the machine family
-            self._instance_pricing_cache[(machine_family_for_cache, use_spot)] = ret_val
+            self._instance_pricing_cache[cache_key] = ret_val
 
             if pricing_by_boot_disk == {}:
                 self._logger.warning(
@@ -1303,7 +1312,7 @@ class GCPComputeInstanceManager(InstanceManager):
         startup_script: str,
         job_id: str,
         use_spot: bool,
-        image: str,
+        image_uri: str,
         boot_disk_type: str,
         boot_disk_size: int,  # GB
         boot_disk_iops: Optional[int] = None,
@@ -1318,7 +1327,7 @@ class GCPComputeInstanceManager(InstanceManager):
             startup_script: The startup script
             job_id: Job ID to use for the instance
             use_spot: Whether to use a spot instance
-            image: Image to use
+            image_uri: Image URI to use
             boot_disk_type: Boot disk type to use
             boot_disk_size: Boot disk size in GB
             provisioned_iops: Number of provisioned IOPS; must be specified for `pd-extreme` and
@@ -1350,19 +1359,6 @@ class GCPComputeInstanceManager(InstanceManager):
             )
             zone = random_zone
 
-        # Get image - either custom or default
-        if image:
-            self._logger.debug(f"Using image: {image}")
-            # If it's a full URI, use it directly
-            if image.startswith("https://") or "/" in image:
-                source_image = image
-            else:
-                # Assuming it's a family name in ubuntu-os-cloud
-                source_image = await self._get_image_from_family(image)
-        else:
-            # Get default image
-            source_image = await self._get_default_image()
-
         # Encode the startup script as metadata
         # https://cloud.google.com/python/docs/reference/compute/latest/google.cloud.compute_v1.types.Metadata
         metadata = {"items": [{"key": "startup-script", "value": startup_script}]}
@@ -1387,7 +1383,7 @@ class GCPComputeInstanceManager(InstanceManager):
             "boot": True,
             "auto_delete": True,
             "initialize_params": {
-                "source_image": source_image,
+                "source_image": image_uri,
                 "disk_size_gb": boot_disk_size,
                 "disk_type": f"zones/{zone}/diskTypes/{gcp_disk_type}",
             },
@@ -1751,69 +1747,6 @@ class GCPComputeInstanceManager(InstanceManager):
 
         return instances
 
-    async def _get_image_from_family(
-        self, family_name: str, project: str = "ubuntu-os-cloud"
-    ) -> str:
-        """
-        Get the latest image from a specific family.
-
-        Args:
-            family_name: Image family name
-            project: Project that contains the image family (default: ubuntu-os-cloud)
-
-        Returns:
-            Image URI
-        """
-        self._logger.debug(
-            f"Retrieving latest image from family {family_name} in project {project}"
-        )
-
-        request = compute_v1.GetFromFamilyImageRequest(project=project, family=family_name)
-
-        try:
-            image = self._images_client.get_from_family(request=request)
-            self._logger.debug(f"Found image: {image.name}, created on {image.creation_timestamp}")
-            return image.self_link
-        except Exception as e:
-            self._logger.error(f"Error getting image from family {family_name}: {e}")
-            raise ValueError(
-                f"Could not find image in family {family_name} in project {project}: {e}"
-            )
-
-    async def _get_default_image(self) -> str:
-        """
-        Get the latest Ubuntu 24.04 LTS image for Compute Engine.
-
-        Returns:
-            Image URI
-        """
-        # Note: For public images, we use the 'ubuntu-os-cloud' project, not our project ID
-        # This is an intentional exception to our rule of always using self._project_id
-        image_project = "ubuntu-os-cloud"
-
-        self._logger.debug(f"Retrieving latest Ubuntu 24.04 LTS image from {image_project} project")
-
-        # Get the latest Ubuntu 24.04 LTS image
-        request = compute_v1.ListImagesRequest(
-            project=image_project,  # This is intentionally using the public image project
-            filter="family = 'ubuntu-2404-lts'",
-        )
-
-        images = self._images_client.list(request=request)
-        newest_image = None
-
-        for image in images:
-            if newest_image is None or image.creation_timestamp > newest_image.creation_timestamp:
-                newest_image = image
-
-        if newest_image is None:
-            raise ValueError(f"No Ubuntu 24.04 LTS image found in {image_project} project")
-
-        self._logger.debug(
-            f"Found image: {newest_image.name}, created on {newest_image.creation_timestamp}"
-        )
-        return newest_image.self_link
-
     async def list_available_images(self) -> List[Dict[str, Any]]:
         """
         List available VM images in GCP.
@@ -1944,8 +1877,46 @@ class GCPComputeInstanceManager(InstanceManager):
         # Sort by creation date
         all_images.sort(key=lambda x: x.get("creation_date", ""), reverse=True)  # type: ignore
 
-        self._logger.info(f"Found {len(all_images)} available images")
+        self._logger.debug(f"Found {len(all_images)} available images")
+
         return all_images
+
+    async def get_image_from_family(self, family_name: str) -> str | None:
+        """
+        Get the latest image from a specific family.
+
+        Args:
+            family_name: Image family name
+
+        Returns:
+            Image URI
+        """
+        self._logger.debug(f"Retrieving latest image from family {family_name}")
+
+        images = await self.list_available_images()
+        for image in images:
+            if image["family"] == family_name:
+                return image["self_link"]
+        return None
+
+    async def get_default_image(self) -> str | None:
+        """
+        Get the latest Ubuntu 24.04 LTS image for Compute Engine.
+
+        Returns:
+            Image URI
+        """
+        self._logger.debug(f"Retrieving latest Ubuntu 24.04 LTS image")
+
+        image = self._images_client.get_from_family(
+            project="ubuntu-os-cloud", family="ubuntu-2404-lts-amd64"
+        )
+
+        if image is None:
+            return None
+
+        self._logger.debug(f"Found image: {image.name}, created on {image.creation_timestamp}")
+        return image.self_link
 
     async def _wait_for_operation(self, operation, zone: str, verbose_name: str) -> Any:
         """

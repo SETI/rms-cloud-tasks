@@ -3,4 +3,3 @@ branch = false
 omit =
     tests/*
     azure.py
-    src/cloud_tasks/queue_manager/queue_manager.py
