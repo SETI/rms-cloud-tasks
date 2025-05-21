@@ -959,7 +959,7 @@ class AWSEC2InstanceManager(InstanceManager):
         total_price = selected_price_info["total_price"]
         self._logger.debug(
             f"Selected {selected_type} in {selected_zone} at ${total_price:.6f} per hour "
-            f"{' (spot)' if constraints["use_spot"] else '(on demand)'}"
+            f"{' (spot)' if constraints['use_spot'] else '(on demand)'}"
         )
 
         return selected_price_info
