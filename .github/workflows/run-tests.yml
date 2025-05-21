@@ -65,7 +65,7 @@ jobs:
 
       - name: Test with coverage
         run: |
-          coverage run -m pytest
+          pytest --cov
 
       - name: Print coverage report
         run: |
