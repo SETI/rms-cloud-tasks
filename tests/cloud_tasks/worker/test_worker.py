@@ -573,11 +573,9 @@ async def test_feed_tasks_to_workers(worker, mock_queue, sample_task):
 
 
 def test_worker_process_main(mock_worker_function):
-    task_queue = MagicMock()
     result_queue = MagicMock()
     shutdown_event = MagicMock()
     termination_event = MagicMock()
-    active_tasks = MagicMock()
     task = {
         "task_id": "test-task",
         "data": {"key": "value"},

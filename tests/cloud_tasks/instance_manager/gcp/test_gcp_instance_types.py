@@ -1,41 +1,10 @@
 """Unit tests for the GCP Compute Engine instance manager."""
 
-import asyncio
-import copy
-import random
-from typing import Any, Dict, Tuple, List
-from unittest.mock import MagicMock, patch, AsyncMock
-
 import pytest
-from google.api_core.exceptions import NotFound  # type: ignore
-from google.cloud import billing
-import uuid as _uuid  # Import uuid module with alias to avoid conflicts
 
 from cloud_tasks.instance_manager.gcp import GCPComputeInstanceManager
 
-from .conftest import (
-    deepcopy_gcp_instance_manager,
-    N1_2_CPU_PRICE,
-    N1_2_RAM_PRICE,
-    N1_4_CPU_PRICE,
-    N1_4_RAM_PRICE,
-    N2_CPU_PRICE,
-    N2_RAM_PRICE,
-    N1_PREEMPTIBLE_CPU_PRICE,
-    N1_PREEMPTIBLE_RAM_PRICE,
-    N2_PREEMPTIBLE_CPU_PRICE,
-    N2_PREEMPTIBLE_RAM_PRICE,
-    PD_STANDARD_PRICE,
-    PD_BALANCED_PRICE,
-    PD_SSD_PRICE,
-    PD_EXTREME_PRICE,
-    HD_BALANCED_PRICE,
-    PD_EXTREME_IOPS_PRICE,
-    HD_BALANCED_IOPS_PRICE,
-    HD_BALANCED_THROUGHPUT_PRICE,
-    LSSD_PRICE,
-    LSSD_PREEMPTIBLE_PRICE,
-)
+from .conftest import deepcopy_gcp_instance_manager
 
 
 @pytest.mark.asyncio

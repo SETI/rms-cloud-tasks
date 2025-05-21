@@ -914,7 +914,7 @@ async def test_initialization_existing_queue_logging(mock_pubsub_client, caplog)
     mock_publisher, mock_subscriber = mock_pubsub_client
 
     # First create a queue
-    queue1 = GCPPubSubQueue(
+    _ = GCPPubSubQueue(
         gcp_config=MagicMock(queue_name="test-queue"),
     )
 
@@ -928,7 +928,7 @@ async def test_initialization_existing_queue_logging(mock_pubsub_client, caplog)
 
     # Create a second queue with the same name
     with caplog.at_level(logging.DEBUG):
-        queue2 = GCPPubSubQueue(
+        _ = GCPPubSubQueue(
             gcp_config=MagicMock(queue_name="test-queue"),
         )
 

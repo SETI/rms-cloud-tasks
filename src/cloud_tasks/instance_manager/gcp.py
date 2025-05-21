@@ -466,10 +466,6 @@ class GCPComputeInstanceManager(InstanceManager):
         sku_request = billing.ListSkusRequest(parent=compute_service.name)
         self._billing_compute_skus = list(self._billing_client.list_skus(request=sku_request))
 
-        import pprint
-
-        # with open("skus.txt", "w") as f:
-        #     f.write(pprint.pformat(self._billing_compute_skus))
         return self._billing_compute_skus
 
     def _extract_pricing_info(
@@ -1906,7 +1902,7 @@ class GCPComputeInstanceManager(InstanceManager):
         Returns:
             Image URI
         """
-        self._logger.debug(f"Retrieving latest Ubuntu 24.04 LTS image")
+        self._logger.debug("Retrieving latest Ubuntu 24.04 LTS image")
 
         image = self._images_client.get_from_family(
             project="ubuntu-os-cloud", family="ubuntu-2404-lts-amd64"

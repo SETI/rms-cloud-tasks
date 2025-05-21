@@ -13,11 +13,10 @@ import os
 import signal
 import sys
 import time
-import traceback
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Callable, Sequence
 import uuid
 import yaml
-from multiprocessing import Process, Queue, Manager, Event, Value
+from multiprocessing import Process, Queue, Manager, Event
 
 from filecache import FCPath
 

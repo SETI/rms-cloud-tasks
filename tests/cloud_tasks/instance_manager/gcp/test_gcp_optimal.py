@@ -1,15 +1,10 @@
 """Unit tests for the GCP Compute Engine instance manager."""
 
-import asyncio
 import copy
-import random
-from typing import Any, Dict, Tuple, List
-from unittest.mock import MagicMock, patch, AsyncMock
+from typing import Any, Dict, List
+from unittest.mock import MagicMock
 
 import pytest
-from google.api_core.exceptions import NotFound  # type: ignore
-from google.cloud import billing
-import uuid as _uuid  # Import uuid module with alias to avoid conflicts
 
 from cloud_tasks.instance_manager.gcp import GCPComputeInstanceManager
 
@@ -21,18 +16,10 @@ from .conftest import (
     N1_4_RAM_PRICE,
     N2_CPU_PRICE,
     N2_RAM_PRICE,
-    N1_PREEMPTIBLE_CPU_PRICE,
-    N1_PREEMPTIBLE_RAM_PRICE,
     N2_PREEMPTIBLE_CPU_PRICE,
     N2_PREEMPTIBLE_RAM_PRICE,
     PD_STANDARD_PRICE,
     PD_BALANCED_PRICE,
-    PD_SSD_PRICE,
-    PD_EXTREME_PRICE,
-    HD_BALANCED_PRICE,
-    PD_EXTREME_IOPS_PRICE,
-    HD_BALANCED_IOPS_PRICE,
-    HD_BALANCED_THROUGHPUT_PRICE,
     LSSD_PRICE,
     LSSD_PREEMPTIBLE_PRICE,
 )
@@ -312,9 +299,7 @@ async def test_get_optimal_instance_type_logs_sorted_instances(
     ] + boot_disk_pricing_default_skus
 
     with caplog.at_level("DEBUG"):
-        selected_price_info = await gcp_instance_manager_n1_n2.get_optimal_instance_type(
-            constraints
-        )
+        await gcp_instance_manager_n1_n2.get_optimal_instance_type(constraints)
     # Assert: log should contain the sorted instance types by price
     assert any(
         "Instance types sorted by price (cheapest and most vCPUs first):" in record.message
