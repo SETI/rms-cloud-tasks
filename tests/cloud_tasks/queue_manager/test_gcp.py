@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 from google.api_core import exceptions as gcp_exceptions
 import logging
+import json
 
 # Add the src directory to the path so we can import cloud_tasks modules
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -976,3 +977,112 @@ async def test_create_topic_subscription_already_exists(gcp_queue, mock_pubsub_c
     # Verify both flags were set to True
     assert gcp_queue._topic_exists is True
     assert gcp_queue._subscription_exists is True
+
+
+@pytest.mark.asyncio
+async def test_send_message(gcp_queue, mock_pubsub_client):
+    """Test sending a message to the queue."""
+    mock_publisher, mock_subscriber = mock_pubsub_client
+
+    # Setup mock for publisher.publish
+    future = MagicMock()
+    future.result.return_value = "message-id-1234"
+    mock_publisher.publish.return_value = future
+
+    # Send message
+    message_data = {"value": 42}
+    await gcp_queue.send_message(message_data)
+
+    # Verify publish was called
+    mock_publisher.publish.assert_called_once()
+    args, kwargs = mock_publisher.publish.call_args
+    assert args[0] == gcp_queue._topic_path
+    # Verify the message data was sent correctly
+    assert json.loads(kwargs["data"].decode("utf-8")) == message_data
+
+
+@pytest.mark.asyncio
+async def test_receive_messages(gcp_queue, mock_pubsub_client):
+    """Test receiving messages from the queue."""
+    mock_publisher, mock_subscriber = mock_pubsub_client
+
+    # Create a mock message
+    mock_message = MagicMock()
+    mock_message.ack_id = "test-ack-id"
+    mock_message.message = MagicMock()
+    mock_message.message.data = ('{"key": "value"}').encode("utf-8")
+
+    # Create a mock response with the message
+    mock_response = MagicMock()
+    mock_response.received_messages = [mock_message]
+    mock_subscriber.pull.return_value = mock_response
+
+    # Receive messages
+    messages = await gcp_queue.receive_messages(max_count=2)
+
+    # Verify pull was called
+    mock_subscriber.pull.assert_called_with(
+        request={
+            "subscription": gcp_queue._subscription_path,
+            "max_messages": 2,
+        }
+    )
+
+    # Verify acknowledge was called immediately
+    mock_subscriber.acknowledge.assert_called_with(
+        request={
+            "subscription": gcp_queue._subscription_path,
+            "ack_ids": ["test-ack-id"],
+        }
+    )
+
+    # Verify returned messages
+    assert len(messages) == 1
+    assert messages[0]["message_id"] == mock_message.message.message_id
+    assert messages[0]["data"] == {"key": "value"}
+    assert messages[0]["ack_id"] == "test-ack-id"
+
+
+@pytest.mark.asyncio
+async def test_send_message_error(gcp_queue, mock_pubsub_client):
+    """Test error handling during message sending."""
+    mock_publisher, mock_subscriber = mock_pubsub_client
+    future = MagicMock()
+    future.result.side_effect = gcp_exceptions.DeadlineExceeded("Deadline exceeded")
+    mock_publisher.publish.return_value = future
+
+    with pytest.raises(gcp_exceptions.DeadlineExceeded):
+        await gcp_queue.send_message({"data": "test"})
+
+
+@pytest.mark.asyncio
+async def test_receive_messages_error(gcp_queue, mock_pubsub_client):
+    """Test error handling during message receiving."""
+    mock_publisher, mock_subscriber = mock_pubsub_client
+    mock_subscriber.pull.side_effect = gcp_exceptions.DeadlineExceeded("Deadline exceeded")
+
+    with pytest.raises(gcp_exceptions.DeadlineExceeded):
+        await gcp_queue.receive_messages()
+
+
+@pytest.mark.asyncio
+async def test_receive_messages_acknowledge_error(gcp_queue, mock_pubsub_client):
+    """Test error handling during message acknowledgment."""
+    mock_publisher, mock_subscriber = mock_pubsub_client
+
+    # Create a mock message
+    mock_message = MagicMock()
+    mock_message.ack_id = "test-ack-id"
+    mock_message.message = MagicMock()
+    mock_message.message.data = ('{"key": "value"}').encode("utf-8")
+
+    # Create a mock response with the message
+    mock_response = MagicMock()
+    mock_response.received_messages = [mock_message]
+    mock_subscriber.pull.return_value = mock_response
+
+    # Setup acknowledge to raise an error
+    mock_subscriber.acknowledge.side_effect = gcp_exceptions.InvalidArgument("Invalid ack_id")
+
+    with pytest.raises(gcp_exceptions.InvalidArgument):
+        await gcp_queue.receive_messages()

@@ -85,6 +85,7 @@ line option or the ``RMS_CLOUD_TASKS_NO_RETRY_ON_CRASH`` environment variable.
 
 Note that if you are using a local task file, the task manager will never re-queue a task.
 
+
 .. _worker_environment_variables:
 
 Environment Variables and Command Line Arguments
@@ -137,20 +138,38 @@ Optional Parameters
 
 --project-id PROJECT_ID                    Project ID (required for GCP) [or ``RMS_CLOUD_TASKS_PROJECT_ID``]
 --queue-name QUEUE_NAME                    Name of the task queue to process (derived from job ID if not specified) [or ``RMS_CLOUD_TASKS_QUEUE_NAME``]
+--event-log-file EVENT_LOG_FILE            File to write events to; if not specified will not write events to a file [or ``RMS_CLOUD_TASKS_EVENT_LOG_FILE``]
+--event-log-to-queue                       If specified, events will be written to a cloud-based queue [or ``RMS_CLOUD_TASKS_EVENT_LOG_QUEUE`` is "1" or "true"]
+--no-event-log-to-queue                    If specified, events will not be written to a cloud-based queue [or ``RMS_CLOUD_TASKS_EVENT_LOG_QUEUE`` is "0" or "false"]
 --instance-type INSTANCE_TYPE              Instance type running on this computer [or ``RMS_CLOUD_TASKS_INSTANCE_TYPE``]
 --num-cpus N                               Number of vCPUs on this computer [or ``RMS_CLOUD_TASKS_INSTANCE_NUM_VCPUS``]
 --memory MEMORY_GB                         Memory in GB on this computer [or ``RMS_CLOUD_TASKS_INSTANCE_MEM_GB``]
 --local-ssd LOCAL_SSD_GB                   Local SSD in GB on this computer [or ``RMS_CLOUD_TASKS_INSTANCE_SSD_GB``]
 --boot-disk BOOT_DISK_GB                   Boot disk in GB on this computer [or ``RMS_CLOUD_TASKS_INSTANCE_BOOT_DISK_GB``]
---is-spot                                  Whether running on spot/preemptible instance [or ``RMS_CLOUD_TASKS_INSTANCE_IS_SPOT``]
+--is-spot                                  Whether running on spot/preemptible instance [or ``RMS_CLOUD_TASKS_INSTANCE_IS_SPOT`` is "1" or "true"]
+--no-is-spot                               Whether running on spot/preemptible instance [or ``RMS_CLOUD_TASKS_INSTANCE_IS_SPOT`` is "0" or "false"]
 --price PRICE_PER_HOUR                     Price per hour for the instance [or ``RMS_CLOUD_TASKS_INSTANCE_PRICE``]
 --num-simultaneous-tasks N                 Number of concurrent tasks to process (defaults to number of vCPUs, or 1 if not specified) [or ``RMS_CLOUD_TASKS_NUM_TASKS_PER_INSTANCE``]
 --max-runtime SECONDS                      Maximum runtime for a task in seconds [or ``RMS_CLOUD_TASKS_MAX_RUNTIME``] (default 3600 seconds)
 --shutdown-grace-period SECONDS            Time in seconds to wait for tasks to complete during shutdown [or ``RMS_CLOUD_TASKS_SHUTDOWN_GRACE_PERIOD``] (default 30 seconds)
 --tasks-to-skip TASKS_TO_SKIP              Number of tasks to skip before processing any from the queue [or ``RMS_CLOUD_TASKS_TO_SKIP``]
 --max-num-tasks MAX_NUM_TASKS              Maximum number of tasks to process [or ``RMS_CLOUD_TASKS_MAX_NUM_TASKS``]
+--retry-on-crash                           If specified, retry tasks on crash [or ``RMS_CLOUD_TASKS_RETRY_ON_CRASH`` is "1" or "true"]
+--no-retry-on-crash                        If specified, do not retry tasks on crash [or ``RMS_CLOUD_TASKS_RETRY_ON_CRASH`` is "0" or "false"]
 --simulate-spot-termination-after SECONDS  Number of seconds after worker start to simulate a spot termination notice [or ``RMS_CLOUD_TASKS_SIMULATE_SPOT_TERMINATION_AFTER``]
 --simulate-spot-termination-delay SECONDS  Number of seconds after a simulated spot termination notice to forcibly kill all running tasks [or ``RMS_CLOUD_TASKS_SIMULATE_SPOT_TERMINATION_DELAY``]
+--verbose                                  Set the console log level to DEBUG instead of INFO
+
+.. _worker_logging_events:
+
+Logging Events
+--------------
+
+Various events can be logged to a local file or a cloud-based queue. The events are written
+in a structured format that can be parsed by the pool manager or other software to update
+the status and results of the tasks.
+
+
 
 .. _worker_spot_instances:
 

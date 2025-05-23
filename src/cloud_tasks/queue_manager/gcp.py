@@ -163,6 +163,35 @@ class GCPPubSubQueue(QueueManager):
                 # )
                 raise
 
+    async def send_message(self, message: Dict[str, Any]) -> None:
+        """
+        Send a message to the Pub/Sub topic.
+
+        Args:
+            message: Message to be sent
+        """
+        self._logger.debug(f'Sending message to queue "{self._queue_name}"')
+
+        self._create_topic_subscription()
+
+        data = json.dumps(message).encode("utf-8")
+        try:
+            # Create the publish future
+            future = self._publisher.publish(self._topic_path, data=data)
+
+            # Convert the synchronous future to an asyncio future
+            loop = asyncio.get_event_loop()
+            message_id = await loop.run_in_executor(None, future.result, 30)
+
+            self._logger.debug(f'Published message "{message_id}" on queue "{self._queue_name}"')
+        except Exception:
+            # self._logger.error(
+            #     f"Failed to publish task '{task_id}' to Pub/Sub on queue "
+            #     f"'{self._queue_name}': {str(e)}",
+            #     exc_info=True,
+            # )
+            raise
+
     async def send_task(self, task_id: str, task_data: Dict[str, Any]) -> None:
         """
         Send a task to the Pub/Sub topic.
@@ -171,7 +200,7 @@ class GCPPubSubQueue(QueueManager):
             task_id: Unique identifier for the task
             task_data: Task data to be sent
         """
-        self._logger.debug(f"Sending task '{task_id}' to queue '{self._queue_name}'")
+        self._logger.debug(f'Sending task "{task_id}" to queue "{self._queue_name}"')
 
         self._create_topic_subscription()
 
@@ -196,6 +225,77 @@ class GCPPubSubQueue(QueueManager):
             # self._logger.error(
             #     f"Failed to publish task '{task_id}' to Pub/Sub on queue "
             #     f"'{self._queue_name}': {str(e)}",
+            #     exc_info=True,
+            # )
+            raise
+
+    async def receive_messages(
+        self,
+        max_count: int = 1,
+    ) -> List[Dict[str, Any]]:
+        """
+        Receive messages from the Pub/Sub subscription.
+
+        Args:
+            max_count: Maximum number of messages to receive
+
+        Returns:
+            List of message dictionaries, each containing:
+                - 'message_id' (str): Pub/Sub message ID
+                - 'data' (Dict[str, Any]): Message payload
+                - 'ack_id' (str): Pub/Sub acknowledgment ID used for completing or failing the message
+        """
+        self._logger.debug(f"Receiving up to {max_count} messages from queue '{self._queue_name}'")
+
+        self._create_topic_subscription()
+
+        try:
+            # Get the event loop
+            loop = asyncio.get_event_loop()
+
+            # Pull messages from the subscription in a thread pool
+            response = await loop.run_in_executor(
+                None,
+                lambda: self._subscriber.pull(
+                    request={
+                        "subscription": self._subscription_path,
+                        "max_messages": max_count,
+                    }
+                ),
+            )
+
+            messages = []
+            for received_message in response.received_messages:
+                # Parse message data
+                message_data = json.loads(received_message.message.data.decode("utf-8"))
+
+                messages.append(
+                    {
+                        "message_id": received_message.message.message_id,
+                        "data": message_data,
+                        "ack_id": received_message.ack_id,
+                    }
+                )
+
+                # Acknowledge the message immediately
+                await loop.run_in_executor(
+                    None,
+                    lambda: self._subscriber.acknowledge(
+                        request={
+                            "subscription": self._subscription_path,
+                            "ack_ids": [received_message.ack_id],
+                        }
+                    ),
+                )
+
+            self._logger.debug(
+                f"Received and acknowledged {len(messages)} messages from subscription"
+            )
+            return messages
+
+        except Exception:
+            # self._logger.error(
+            #     f"Error receiving messages from Pub/Sub queue '{self._queue_name}': {str(e)}",
             #     exc_info=True,
             # )
             raise

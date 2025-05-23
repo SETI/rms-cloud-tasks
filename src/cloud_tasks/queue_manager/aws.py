@@ -108,6 +108,35 @@ class AWSSQSQueue(QueueManager):
                 )
                 raise
 
+    async def send_message(self, message: Dict[str, Any]) -> None:
+        """
+        Send a message to the SQS queue.
+
+        Args:
+            message: Message to be sent
+        """
+        self._logger.debug(f'Sending message to queue "{self._queue_name}"')
+
+        self._create_queue()
+
+        try:
+            # Get the event loop
+            loop = asyncio.get_event_loop()
+
+            # Run the blocking SQS operation in a thread pool
+            await loop.run_in_executor(
+                None,
+                lambda: self._sqs.send_message(
+                    QueueUrl=self._queue_url,
+                    MessageBody=json.dumps(message),
+                ),
+            )
+
+            self._logger.debug(f"Published message to queue {self._queue_name}")
+        except Exception as e:
+            self._logger.error(f"Failed to send message to AWS SQS queue: {str(e)}")
+            raise
+
     async def send_task(self, task_id: str, task_data: Dict[str, Any]) -> None:
         """
         Send a task to the SQS queue.
@@ -139,6 +168,70 @@ class AWSSQSQueue(QueueManager):
             self._logger.debug(f"Published message for task {task_id}")
         except Exception as e:
             self._logger.error(f"Failed to send task to AWS SQS queue: {str(e)}")
+            raise
+
+    async def receive_messages(
+        self,
+        max_count: int = 1,
+    ) -> List[Dict[str, Any]]:
+        """
+        Receive messages from the SQS queue.
+
+        Args:
+            max_count: Maximum number of messages to receive
+
+        Returns:
+            List of message dictionaries, each containing:
+                - 'message_id' (str): SQS message ID
+                - 'data' (Dict[str, Any]): Message payload
+                - 'receipt_handle' (str): SQS receipt handle used for completing or failing the message
+        """
+        self._logger.debug(f"Receiving up to {max_count} messages from queue '{self._queue_name}'")
+
+        self._create_queue()
+
+        try:
+            # SQS limits max_count to 10
+            max_count = min(max_count, 10)
+
+            # Get the event loop
+            loop = asyncio.get_event_loop()
+
+            # Run the blocking receive operation in a thread pool
+            response = await loop.run_in_executor(
+                None,
+                lambda: self._sqs.receive_message(
+                    QueueUrl=self._queue_url,
+                    MaxNumberOfMessages=max_count,
+                    MessageAttributeNames=["All"],
+                    WaitTimeSeconds=10,  # Using long polling
+                ),
+            )
+
+            messages = []
+            if "Messages" in response:
+                for message in response["Messages"]:
+                    body = json.loads(message["Body"])
+                    messages.append(
+                        {
+                            "message_id": message["MessageId"],
+                            "data": body,
+                            "receipt_handle": message["ReceiptHandle"],
+                        }
+                    )
+
+                    # Delete the message immediately
+                    await loop.run_in_executor(
+                        None,
+                        lambda: self._sqs.delete_message(
+                            QueueUrl=self._queue_url, ReceiptHandle=message["ReceiptHandle"]
+                        ),
+                    )
+
+            self._logger.debug(f"Received and deleted {len(messages)} messages from SQS queue")
+            return messages
+        except Exception as e:
+            self._logger.error(f"Error receiving messages: {str(e)}")
             raise
 
     async def receive_tasks(

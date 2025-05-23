@@ -12,8 +12,18 @@ class QueueManager(ABC):
         pass  # pragma: no cover
 
     @abstractmethod
+    async def send_message(self, message: Dict[str, Any]) -> None:
+        """Send a message to the queue."""
+        pass  # pragma: no cover
+
+    @abstractmethod
     async def send_task(self, task_id: str, task_data: Dict[str, Any]) -> None:
         """Send a task to the queue."""
+        pass  # pragma: no cover
+
+    @abstractmethod
+    async def receive_messages(self, max_count: int = 1) -> List[Dict[str, Any]]:
+        """Receive messages from the queue."""
         pass  # pragma: no cover
 
     @abstractmethod
