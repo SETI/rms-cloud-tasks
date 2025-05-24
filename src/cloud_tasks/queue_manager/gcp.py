@@ -303,14 +303,14 @@ class GCPPubSubQueue(QueueManager):
     async def receive_tasks(
         self,
         max_count: int = 1,
-        visibility_timeout_seconds: int = 30,
+        visibility_timeout: int = 30,
     ) -> List[Dict[str, Any]]:
         """
         Receive tasks from the Pub/Sub subscription.
 
         Args:
             max_count: Maximum number of messages to receive
-            visibility_timeout_seconds: Duration in seconds for ack deadline
+            visibility_timeout: Duration in seconds for ack deadline
 
         Returns:
             List of task dictionaries, each containing:
@@ -346,7 +346,7 @@ class GCPPubSubQueue(QueueManager):
                         request={
                             "subscription": self._subscription_path,
                             "ack_ids": [received_message.ack_id],
-                            "ack_deadline_seconds": visibility_timeout_seconds,
+                            "ack_deadline_seconds": visibility_timeout,
                         }
                     ),
                 )

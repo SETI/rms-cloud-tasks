@@ -108,7 +108,7 @@ async def test_receive_tasks(aws_queue, mock_sqs_client):
     }
 
     # Receive tasks
-    tasks = await aws_queue.receive_tasks(max_count=2, visibility_timeout_seconds=60)
+    tasks = await aws_queue.receive_tasks(max_count=2, visibility_timeout=60)
 
     # Verify receive_message was called
     mock_sqs_client.receive_message.assert_called_with(

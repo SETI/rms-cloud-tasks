@@ -28,7 +28,7 @@ class QueueManager(ABC):
 
     @abstractmethod
     async def receive_tasks(
-        self, max_count: int = 1, visibility_timeout_seconds: int = 30
+        self, max_count: int = 1, visibility_timeout: int = 30
     ) -> List[Dict[str, Any]]:
         """Receive tasks from the queue with a visibility timeout."""
         pass  # pragma: no cover

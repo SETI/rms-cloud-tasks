@@ -146,7 +146,7 @@ def _parse_args(args: Optional[Sequence[str]] = None) -> argparse.Namespace:
         type=int,
         help="Maximum allowed runtime in seconds; used to determine queue visibility "
         "timeout and to kill tasks that are running too long [overrides "
-        "$RMS_CLOUD_TASKS_MAX_RUNTIME] (default 3600 seconds)",
+        "$RMS_CLOUD_TASKS_MAX_RUNTIME] (default 600 seconds)",
     )
     parser.add_argument(
         "--shutdown-grace-period",
@@ -450,7 +450,7 @@ class Worker:
         if self._max_runtime is None:
             self._max_runtime = os.getenv("RMS_CLOUD_TASKS_MAX_RUNTIME")
         if self._max_runtime is None:
-            self._max_runtime = 3600  # Default to 1 hour
+            self._max_runtime = 600  # Default to 10 minutes
         else:
             self._max_runtime = int(self._max_runtime)
         logger.info(f"  Maximum runtime: {self._max_runtime} seconds")

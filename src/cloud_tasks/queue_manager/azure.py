@@ -120,14 +120,14 @@ class AzureServiceBusQueue(QueueManager):
     async def receive_tasks(
         self,
         max_count: int = 1,
-        visibility_timeout_seconds: int = 30,  # TODO Default visibility timeout in seconds
+        visibility_timeout: int = 30,  # TODO Default visibility timeout in seconds
     ) -> List[Dict[str, Any]]:
         """
         Receive tasks from the Service Bus queue with a lock.
 
         Args:
             max_count: Maximum number of messages to receive
-            visibility_timeout_seconds: Duration in seconds for message lock
+            visibility_timeout: Duration in seconds for message lock
 
         Returns:
             List of task dictionaries with task_id, data, and lock_token
@@ -157,9 +157,7 @@ class AzureServiceBusQueue(QueueManager):
                     # Renew lock with the specified visibility timeout in a thread pool
                     await loop.run_in_executor(
                         None,
-                        lambda: receiver.renew_message_lock(
-                            message, timeout=visibility_timeout_seconds
-                        ),
+                        lambda: receiver.renew_message_lock(message, timeout=visibility_timeout),
                     )
 
                     tasks.append(

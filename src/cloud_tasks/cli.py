@@ -225,9 +225,7 @@ async def show_queue_cmd(args: argparse.Namespace, config: Config) -> None:
         if args.detail:
             print("\nAttempting to peek at first message...")
             try:
-                messages = await task_queue.receive_tasks(
-                    max_count=1, visibility_timeout_seconds=10
-                )
+                messages = await task_queue.receive_tasks(max_count=1, visibility_timeout=10)
 
                 if messages:
                     message = messages[0]
@@ -695,8 +693,8 @@ async def run_job_cmd(args: argparse.Namespace, config: Config) -> None:
     Parameters:
         args: Command-line arguments
     """
-    load_queue_cmd(args, config)
-    manage_pool_cmd(args, config)
+    await load_queue_cmd(args, config)
+    await manage_pool_cmd(args, config)
 
 
 async def status_job_cmd(args: argparse.Namespace, config: Config) -> None:

@@ -237,14 +237,14 @@ class AWSSQSQueue(QueueManager):
     async def receive_tasks(
         self,
         max_count: int = 1,
-        visibility_timeout_seconds: int = 30,
+        visibility_timeout: int = 30,
     ) -> List[Dict[str, Any]]:
         """
         Receive tasks from the SQS queue.
 
         Args:
             max_count: Maximum number of messages to receive
-            visibility_timeout_seconds: Duration in seconds that messages are hidden
+            visibility_timeout: Duration in seconds that messages are hidden
 
         Returns:
             List of task dictionaries, each containing:
@@ -269,7 +269,7 @@ class AWSSQSQueue(QueueManager):
                 lambda: self._sqs.receive_message(
                     QueueUrl=self._queue_url,
                     MaxNumberOfMessages=max_count,
-                    VisibilityTimeout=visibility_timeout_seconds,
+                    VisibilityTimeout=visibility_timeout,
                     MessageAttributeNames=["All"],
                     WaitTimeSeconds=10,  # Using long polling
                 ),

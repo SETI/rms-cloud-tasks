@@ -144,7 +144,7 @@ async def test_receive_tasks(gcp_queue, mock_pubsub_client):
     mock_subscriber.pull.return_value = mock_response
 
     # Receive tasks
-    tasks = await gcp_queue.receive_tasks(max_count=2, visibility_timeout_seconds=60)
+    tasks = await gcp_queue.receive_tasks(max_count=2, visibility_timeout=60)
 
     # Verify pull was called
     mock_subscriber.pull.assert_called_with(
