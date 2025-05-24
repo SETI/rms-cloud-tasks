@@ -292,36 +292,73 @@ async def purge_queue_cmd(args: argparse.Namespace, config: Config) -> None:
     """
     provider = config.provider
     provider_config = config.get_provider_config(provider)
-    queue_name = provider_config.queue_name
-    task_queue = await create_queue(config)
+    task_queue_name = provider_config.queue_name
+    results_queue_name = f"{task_queue_name}-results"
 
-    queue_depth = await task_queue.get_queue_depth()
+    if not args.results_queue_only:
+        task_queue = await create_queue(config)
+    if not args.task_queue_only:
+        results_queue = await create_queue(config, queue_name=results_queue_name)
 
-    if queue_depth == 0:
-        print(f"Queue '{queue_name}' on '{provider}' is already empty (0 messages).")
-        return
+    if not args.results_queue_only:
+        queue_depth = await task_queue.get_queue_depth()
 
-    # Confirm with the user if not using --force
-    if not args.force:
-        confirm = input(
-            f"\nWARNING: This will permanently delete all {queue_depth}+ messages from queue "
-            f"'{queue_name}' on '{provider}'."
-            f"\nType 'EMPTY {queue_name}' to confirm: "
-        )
-        if confirm != f"EMPTY {queue_name}":
-            print("Operation cancelled.")
-            return
+        if queue_depth == 0:
+            print(f"Queue '{task_queue_name}' on '{provider}' is already empty (0 messages).")
+        else:
+            # Confirm with the user if not using --force
+            if not args.force:
+                confirm = input(
+                    f"\nWARNING: This will permanently delete all {queue_depth}+ messages from queue "
+                    f"'{task_queue_name}' on '{provider}'."
+                    f"\nType 'EMPTY {task_queue_name}' to confirm: "
+                )
+                if confirm != f"EMPTY {task_queue_name}":
+                    print("Operation cancelled.")
+                    return
 
-    print(f"Emptying queue '{queue_name}'...")
-    await task_queue.purge_queue()
+            print(f"Emptying queue '{task_queue_name}'...")
+            await task_queue.purge_queue()
+            new_depth = await task_queue.get_queue_depth()
+            if new_depth == 0:
+                print(
+                    f"Queue '{task_queue_name}' has been emptied. Removed {queue_depth}+ message(s)."
+                )
+            else:
+                print(
+                    f"WARNING: Queue purge operation completed but {new_depth} messages still remain."
+                )
+                print("Some messages may be in flight or locked by consumers.")
 
-    # Verify the queue is now empty
-    new_depth = await task_queue.get_queue_depth()
-    if new_depth == 0:
-        print(f"Queue '{queue_name}' has been emptied. Removed {queue_depth}+ message(s).")
-    else:
-        print(f"WARNING: Queue purge operation completed but {new_depth} messages still remain.")
-        print("Some messages may be in flight or locked by consumers.")
+    if not args.task_queue_only:
+        queue_depth = await results_queue.get_queue_depth()
+
+        if queue_depth == 0:
+            print(f"Queue '{results_queue_name}' on '{provider}' is already empty (0 messages).")
+        else:
+            # Confirm with the user if not using --force
+            if not args.force:
+                confirm = input(
+                    f"\nWARNING: This will permanently delete all {queue_depth}+ messages from queue "
+                    f"'{results_queue_name}' on '{provider}'."
+                    f"\nType 'EMPTY {results_queue_name}' to confirm: "
+                )
+                if confirm != f"EMPTY {results_queue_name}":
+                    print("Operation cancelled.")
+                    return
+
+            print(f"Emptying queue '{results_queue_name}'...")
+            await results_queue.purge_queue()
+            new_depth = await results_queue.get_queue_depth()
+            if new_depth == 0:
+                print(
+                    f"Queue '{results_queue_name}' has been emptied. Removed {queue_depth}+ message(s)."
+                )
+            else:
+                print(
+                    f"WARNING: Queue purge operation completed but {new_depth} messages still remain."
+                )
+                print("Some messages may be in flight or locked by consumers.")
 
 
 async def delete_queue_cmd(args: argparse.Namespace, config: Config) -> None:
@@ -333,27 +370,53 @@ async def delete_queue_cmd(args: argparse.Namespace, config: Config) -> None:
     """
     provider = config.provider
     provider_config = config.get_provider_config(provider)
-    queue_name = provider_config.queue_name
+    task_queue_name = provider_config.queue_name
+    results_queue_name = f"{task_queue_name}-results"
 
-    # Confirm with the user if not using --force
-    if not args.force:
-        confirm = input(
-            f"\nWARNING: This will permanently delete the queue '{queue_name}' from {provider}.\n"
-            f"This operation cannot be undone and will remove all infrastructure.\n"
-            f"Type 'DELETE {queue_name}' to confirm: "
-        )
-        if confirm != f"DELETE {queue_name}":
-            print("Operation cancelled.")
-            return
-
-    try:
-        print(f"Deleting queue '{queue_name}' from {provider}...")
+    if not args.results_queue_only:
         task_queue = await create_queue(config)
-        await task_queue.delete_queue()
-        print(f"Queue '{queue_name}' has been deleted.")
-    except Exception as e:
-        logger.fatal(f"Error deleting queue: {e}", exc_info=True)
-        sys.exit(1)
+    if not args.task_queue_only:
+        results_queue = await create_queue(config, queue_name=results_queue_name)
+
+    if not args.results_queue_only:
+        # Confirm with the user if not using --force
+        if not args.force:
+            confirm = input(
+                f"\nWARNING: This will permanently delete the queue '{task_queue_name}' from {provider}.\n"
+                f"This operation cannot be undone and will remove all infrastructure.\n"
+                f"Type 'DELETE {task_queue_name}' to confirm: "
+            )
+            if confirm != f"DELETE {task_queue_name}":
+                print("Operation cancelled.")
+                return
+
+        try:
+            print(f"Deleting queue '{task_queue_name}' from {provider}...")
+            await task_queue.delete_queue()
+            print(f"Queue '{task_queue_name}' has been deleted.")
+        except Exception as e:
+            logger.fatal(f"Error deleting task queue: {e}", exc_info=True)
+            sys.exit(1)
+
+    if not args.task_queue_only:
+        # Confirm with the user if not using --force
+        if not args.force:
+            confirm = input(
+                f"\nWARNING: This will permanently delete the queue '{results_queue_name}' from {provider}.\n"
+                f"This operation cannot be undone and will remove all infrastructure.\n"
+                f"Type 'DELETE {results_queue_name}' to confirm: "
+            )
+            if confirm != f"DELETE {results_queue_name}":
+                print("Operation cancelled.")
+                return
+
+        try:
+            print(f"Deleting queue '{results_queue_name}' from {provider}...")
+            await results_queue.delete_queue()
+            print(f"Queue '{results_queue_name}' has been deleted.")
+        except Exception as e:
+            logger.fatal(f"Error deleting results queue: {e}", exc_info=True)
+            sys.exit(1)
 
 
 async def manage_pool_cmd(args: argparse.Namespace, config: Config) -> None:
@@ -1527,6 +1590,17 @@ def main():
         "purge_queue", help="Purge a task queue by removing all messages"
     )
     add_common_args(purge_queue_parser)
+    me_group = purge_queue_parser.add_mutually_exclusive_group()
+    me_group.add_argument(
+        "--task-queue-only",
+        action="store_true",
+        help="Purge only the task queue (not the results queue)",
+    )
+    me_group.add_argument(
+        "--results-queue-only",
+        action="store_true",
+        help="Purge only the results queue (not the task queue)",
+    )
     purge_queue_parser.add_argument(
         "--force", "-f", action="store_true", help="Purge the queue without confirmation prompt"
     )
@@ -1538,6 +1612,17 @@ def main():
         "delete_queue", help="Permanently delete a task queue and its infrastructure"
     )
     add_common_args(delete_queue_parser)
+    me_group = delete_queue_parser.add_mutually_exclusive_group()
+    me_group.add_argument(
+        "--task-queue-only",
+        action="store_true",
+        help="Delete only the task queue (not the results queue)",
+    )
+    me_group.add_argument(
+        "--results-queue-only",
+        action="store_true",
+        help="Delete only the results queue (not the task queue)",
+    )
     delete_queue_parser.add_argument(
         "--force", "-f", action="store_true", help="Delete the queue without confirmation prompt"
     )

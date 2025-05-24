@@ -648,7 +648,7 @@ class Worker:
     _EVENT_TYPE_FATAL_EXCEPTION = "fatal_exception"
     _EVENT_TYPE_SPOT_TERMINATION = "spot_termination"
 
-    def _log_event(self, event: Dict[str, Any]) -> None:
+    async def _log_event(self, event: Dict[str, Any]) -> None:
         """Log an event to the event log."""
         event["timestamp"] = datetime.datetime.now().isoformat()
         event["hostname"] = self._hostname
@@ -656,13 +656,13 @@ class Worker:
             self._event_logger_fp.write(json.dumps(event) + "\n")
             self._event_logger_fp.flush()
         if self._event_logger_queue:
-            self._event_logger_queue.send_message(json.dumps(event))
+            await self._event_logger_queue.send_message(json.dumps(event))
 
-    def _log_task_completed(
+    async def _log_task_completed(
         self, task_id: str, *, elapsed_time: float, retry: bool, result: Any
     ) -> None:
         """Log a task completed event."""
-        self._log_event(
+        await self._log_event(
             {
                 "event_type": self._EVENT_TYPE_TASK_COMPLETED,
                 "task_id": task_id,
@@ -672,9 +672,9 @@ class Worker:
             }
         )
 
-    def _log_task_timed_out(self, task_id: str, runtime: float) -> None:
+    async def _log_task_timed_out(self, task_id: str, runtime: float) -> None:
         """Log a task timed out event."""
-        self._log_event(
+        await self._log_event(
             {
                 "event_type": self._EVENT_TYPE_TASK_TIMED_OUT,
                 "task_id": task_id,
@@ -682,9 +682,9 @@ class Worker:
             }
         )
 
-    def _log_task_exited(self, task_id: str, exit_code: int) -> None:
+    async def _log_task_exited(self, task_id: str, exit_code: int) -> None:
         """Log a task exited event."""
-        self._log_event(
+        await self._log_event(
             {
                 "event_type": self._EVENT_TYPE_TASK_EXITED,
                 "task_id": task_id,
@@ -692,15 +692,15 @@ class Worker:
             }
         )
 
-    def _log_non_fatal_exception(self, exception: Exception) -> None:
+    async def _log_non_fatal_exception(self, exception: Exception) -> None:
         """Log a non-fatal exception event."""
-        self._log_event(
+        await self._log_event(
             {"event_type": self._EVENT_TYPE_NON_FATAL_EXCEPTION, "exception": str(exception)}
         )
 
-    def _log_fatal_exception(self, exception: Exception) -> None:
+    async def _log_fatal_exception(self, exception: Exception) -> None:
         """Log a fatal exception event."""
-        self._log_event(
+        await self._log_event(
             {
                 "event_type": self._EVENT_TYPE_FATAL_EXCEPTION,
                 "exception": str(exception),
@@ -708,9 +708,9 @@ class Worker:
             }
         )
 
-    def _log_spot_termination(self) -> None:
+    async def _log_spot_termination(self) -> None:
         """Log a spot termination event."""
-        self._log_event({"event_type": self._EVENT_TYPE_SPOT_TERMINATION})
+        await self._log_event({"event_type": self._EVENT_TYPE_SPOT_TERMINATION})
 
     async def start(self) -> None:
         """Start the worker and begin processing tasks."""
@@ -741,7 +741,7 @@ class Worker:
                 self._task_queue = LocalTaskQueue(self._tasks_file)
             except Exception as e:
                 logger.error(f"Error initializing local task queue: {e}", exc_info=True)
-                self._log_fatal_exception(e)
+                await self._log_fatal_exception(e)
                 sys.exit(1)
         else:
             logger.debug(
@@ -756,7 +756,7 @@ class Worker:
                 )
             except Exception as e:
                 logger.error(f"Error initializing task queue: {e}", exc_info=True)
-                self._log_fatal_exception(e)
+                await self._log_fatal_exception(e)
                 sys.exit(1)
 
         self._start_time = time.time()
@@ -833,7 +833,7 @@ class Worker:
                                 f"Worker #{worker_id} reported task {task['task_id']} completed "
                                 f"in {elapsed_time:.1f} seconds but will be retried; result: {result}"
                             )
-                            self._log_task_completed(
+                            await self._log_task_completed(
                                 task["task_id"],
                                 elapsed_time=elapsed_time,
                                 retry=True,
@@ -847,7 +847,7 @@ class Worker:
                                 f"Worker #{worker_id} reported task {task['task_id']} completed "
                                 f"in {elapsed_time:.1f} seconds with no retry; result: {result}"
                             )
-                            self._log_task_completed(
+                            await self._log_task_completed(
                                 task["task_id"],
                                 elapsed_time=elapsed_time,
                                 retry=False,
@@ -873,7 +873,7 @@ class Worker:
                             f'"{task["task_id"]}" exited prematurely with exit code '
                             f"{exit_code}"
                         )
-                        self._log_task_exited(task["task_id"], exit_code)
+                        await self._log_task_exited(task["task_id"], exit_code)
 
                         async with self._task_queue_semaphore:
                             if self._retry_on_crash:
@@ -890,7 +890,7 @@ class Worker:
 
             except Exception as e:
                 logger.error(f"Error handling results: {e}", exc_info=True)
-                self._log_non_fatal_exception(e)
+                await self._log_non_fatal_exception(e)
                 await asyncio.sleep(1)  # Wait a bit longer on error
 
     async def _wait_for_shutdown(self, interval: float = 0.5) -> None:
@@ -946,7 +946,7 @@ class Worker:
                 if termination_notice and not self.received_termination_notice:
                     logger.warning("Instance termination notice received")
                     self._termination_event.set()
-                    self._log_spot_termination()
+                    await self._log_spot_termination()
                     # When the termination actually occurs, we don't need to do anything;
                     # this instance will simply stop running. If the workers were in the
                     # middle of doing something, they will be aborted at a random point.
@@ -956,7 +956,7 @@ class Worker:
 
             except Exception as e:
                 logger.error(f"Error checking for termination: {e}", exc_info=True)
-                self._log_non_fatal_exception(e)
+                await self._log_non_fatal_exception(e)
             # Check every 5 seconds for real instance, .1 second for simulated
             if self._simulate_spot_termination_after is not None:
                 await asyncio.sleep(0.1)
@@ -1111,7 +1111,7 @@ class Worker:
 
             except Exception as e:
                 logger.error(f"Error fetching tasks: {e}", exc_info=True)
-                self._log_non_fatal_exception(e)
+                await self._log_non_fatal_exception(e)
                 await asyncio.sleep(1)  # Wait a bit longer on error
 
     async def _monitor_process_runtimes(self) -> None:
@@ -1137,7 +1137,7 @@ class Worker:
                         f"{self._max_runtime} seconds (actual runtime {runtime:.1f} seconds); "
                         "terminating"
                     )
-                    self._log_task_timed_out(task["task_id"], runtime)
+                    await self._log_task_timed_out(task["task_id"], runtime)
 
                     # Kill the process that exceeded runtime
                     try:
@@ -1153,7 +1153,7 @@ class Worker:
                         logger.error(
                             f"Error terminating process worker #{worker_id} (PID " f"{p.pid}): {e}"
                         )
-                        self._log_non_fatal_exception(e)
+                        await self._log_non_fatal_exception(e)
 
                     # Mark task as failed in the queue
                     try:
@@ -1165,7 +1165,7 @@ class Worker:
                             await self._task_queue.complete_task(task["ack_id"])
                     except Exception as e:
                         logger.error(f"Error marking task {task['task_id']} as completed: {e}")
-                        self._log_non_fatal_exception(e)
+                        await self._log_non_fatal_exception(e)
 
                     # Remove from tracking
                     processes_to_delete.append(worker_id)

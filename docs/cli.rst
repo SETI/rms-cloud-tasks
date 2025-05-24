@@ -781,8 +781,8 @@ Examples:
 purge_queue
 ~~~~~~~~~~~
 
-Remove all messages from a queue. This can be used to delete any remaining tasks; you can
-then reload the queue with new tasks if needed.
+Remove all messages from the task and results queues. This allows you to start fresh by loading
+new tasks.
 
 .. code-block:: none
 
@@ -794,7 +794,9 @@ then reload the queue with new tasks if needed.
 
 Additional options:
 
---force           Purge without confirmation
+--task-queue-only      Purge only the task queue (not the results queue)
+--results-queue-only   Purge only the results queue (not the task queue)
+--force                Purge without confirmation
 
 Examples:
 
@@ -828,8 +830,9 @@ Examples:
 delete_queue
 ~~~~~~~~~~~~
 
-Delete a queue and its infrastructure. This permanently frees up the resources used by the
-queue. Only do this if there are no processes running that use the queue.
+Delete the task and results queues and their infrastructure. This permanently frees up the
+resources used by the queues. Only do this if there are no processes running that use the
+queues.
 
 .. code-block:: none
 
@@ -841,7 +844,9 @@ queue. Only do this if there are no processes running that use the queue.
 
 Additional options:
 
---force           Delete without confirmation
+--task-queue-only      Purge only the task queue (not the results queue)
+--results-queue-only   Purge only the results queue (not the task queue)
+--force                Delete without confirmation
 
 Examples:
 
