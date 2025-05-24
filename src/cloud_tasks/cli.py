@@ -293,7 +293,7 @@ async def purge_queue_cmd(args: argparse.Namespace, config: Config) -> None:
     provider = config.provider
     provider_config = config.get_provider_config(provider)
     task_queue_name = provider_config.queue_name
-    results_queue_name = f"{task_queue_name}-results"
+    results_queue_name = f"{task_queue_name}-events"
 
     if not args.results_queue_only:
         task_queue = await create_queue(config)
@@ -371,7 +371,7 @@ async def delete_queue_cmd(args: argparse.Namespace, config: Config) -> None:
     provider = config.provider
     provider_config = config.get_provider_config(provider)
     task_queue_name = provider_config.queue_name
-    results_queue_name = f"{task_queue_name}-results"
+    results_queue_name = f"{task_queue_name}-events"
 
     if not args.results_queue_only:
         task_queue = await create_queue(config)
@@ -611,6 +611,80 @@ async def list_running_instances_cmd(args: argparse.Namespace, config: Config) -
     except Exception as e:
         logger.error(f"Error listing running instances: {e}", exc_info=True)
         sys.exit(1)
+
+
+async def monitor_event_queue_cmd(args: argparse.Namespace, config: Config) -> None:
+    """
+    Monitor the event queue and display or save events as they arrive.
+
+    Parameters:
+        args: Command-line arguments
+        config: Configuration
+    """
+    provider = config.provider
+    provider_config = config.get_provider_config(provider)
+    event_queue_name = f"{provider_config.queue_name}-events"
+
+    # Open results file if specified
+    output_file = None
+    if args.output_file:
+        try:
+            output_file = open(args.output_file, "a")
+            logger.info(f"Writing events to {args.output_file}")
+        except Exception as e:
+            logger.fatal(f"Error opening events file: {e}", exc_info=True)
+            sys.exit(1)
+
+    try:
+        # Create results queue
+        events_queue = await create_queue(config, queue_name=event_queue_name)
+        print(f"Monitoring event queue '{event_queue_name}' on {provider}...")
+
+        # Main monitoring loop
+        while True:
+            try:
+                # Receive a batch of messages
+                messages = await events_queue.receive_messages(max_count=10)
+
+                if messages:
+                    for message in messages:
+                        try:
+                            # Extract and parse the JSON data
+                            data = json.loads(message.get("data", "{}"))
+
+                            # Format the output
+                            output = json.dumps(data)
+
+                            # Write to file if specified
+                            if output_file:
+                                output_file.write(output + "\n")
+                                output_file.flush()
+
+                            # Always print to stdout
+                            print(output)
+
+                        except json.JSONDecodeError as e:
+                            logger.error(f"Error decoding message: {e}")
+                        except Exception as e:
+                            logger.error(f"Error processing message: {e}")
+                else:
+                    # Sleep briefly to avoid hammering the queue
+                    await asyncio.sleep(1)
+
+            except KeyboardInterrupt:
+                print("\nMonitoring stopped by user")
+                break
+            except Exception as e:
+                logger.error(f"Error receiving messages: {e}")
+                await asyncio.sleep(5)  # Wait longer on error
+
+    except Exception as e:
+        logger.fatal(f"Error monitoring event queue: {e}", exc_info=True)
+        sys.exit(1)
+    finally:
+        # Clean up
+        if output_file:
+            output_file.close()
 
 
 async def run_job_cmd(args: argparse.Namespace, config: Config) -> None:
@@ -1597,7 +1671,7 @@ def main():
         help="Purge only the task queue (not the results queue)",
     )
     me_group.add_argument(
-        "--results-queue-only",
+        "--event-queue-only",
         action="store_true",
         help="Purge only the results queue (not the task queue)",
     )
@@ -1619,7 +1693,7 @@ def main():
         help="Delete only the task queue (not the results queue)",
     )
     me_group.add_argument(
-        "--results-queue-only",
+        "--event-queue-only",
         action="store_true",
         help="Delete only the results queue (not the task queue)",
     )
@@ -1706,6 +1780,19 @@ def main():
         "--detail", action="store_true", help="Show additional provider-specific information"
     )
     list_running_instances_parser.set_defaults(func=list_running_instances_cmd)
+
+    # --- Monitor results queue command ---
+
+    monitor_events_parser = subparsers.add_parser(
+        "monitor_event_queue",
+        help="Monitor the event queue and display or save events as they arrive",
+    )
+    add_common_args(monitor_events_parser)
+    monitor_events_parser.add_argument(
+        "--output-file",
+        help="File to write events to (will be opened in append mode)",
+    )
+    monitor_events_parser.set_defaults(func=monitor_event_queue_cmd)
 
     # ------------------------------ #
     # INFORMATION GATHERING COMMANDS #

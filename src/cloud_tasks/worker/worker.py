@@ -312,7 +312,7 @@ class Worker:
         parsed_args = _parse_args(args)
 
         if parsed_args.verbose:
-            logger.setLevel(logging.DEBUG)
+            logging.getLogger().setLevel(logging.DEBUG)
 
         logger.info("Configuration:")
 
@@ -650,13 +650,18 @@ class Worker:
 
     async def _log_event(self, event: Dict[str, Any]) -> None:
         """Log an event to the event log."""
-        event["timestamp"] = datetime.datetime.now().isoformat()
-        event["hostname"] = self._hostname
+        # Reorder so these fields are first in the diction to make the display nicer
+        new_event = {
+            "timestamp": datetime.datetime.now().isoformat(),
+            "hostname": self._hostname,
+            "event_type": event["event_type"],
+            **event,
+        }
         if self._event_logger_fp:
-            self._event_logger_fp.write(json.dumps(event) + "\n")
+            self._event_logger_fp.write(json.dumps(new_event) + "\n")
             self._event_logger_fp.flush()
         if self._event_logger_queue:
-            await self._event_logger_queue.send_message(json.dumps(event))
+            await self._event_logger_queue.send_message(json.dumps(new_event))
 
     async def _log_task_completed(
         self, task_id: str, *, elapsed_time: float, retry: bool, result: Any

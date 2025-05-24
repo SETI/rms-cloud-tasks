@@ -31,16 +31,16 @@ async def create_queue(config: Optional[Config] = None, **kwargs: Any) -> QueueM
                 # We import these here to avoid requiring the dependencies for unused providers
                 from .aws import AWSSQSQueue
 
-                queue: QueueManager = AWSSQSQueue(cast(AWSConfig, provider_config))
+                queue: QueueManager = AWSSQSQueue(cast(AWSConfig, provider_config), **kwargs)
             case "GCP":
                 from .gcp import GCPPubSubQueue
 
-                queue = GCPPubSubQueue(cast(GCPConfig, provider_config))
+                queue = GCPPubSubQueue(cast(GCPConfig, provider_config), **kwargs)
             case "AZURE":  # pragma: no cover
                 # TODO Implement Azure Service Bus queue
                 from .azure import AzureServiceBusQueue
 
-                queue = AzureServiceBusQueue(cast(AzureConfig, provider_config))
+                queue = AzureServiceBusQueue(cast(AzureConfig, provider_config), **kwargs)
             case _:  # pragma: no cover
                 # Can't get here because get_provider_config() raises an error
                 raise ValueError(f"Unsupported queue provider: {provider}")
