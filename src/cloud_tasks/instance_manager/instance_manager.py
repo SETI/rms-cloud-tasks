@@ -325,7 +325,7 @@ class InstanceManager(ABC):
         startup_script: str,
         job_id: str,
         use_spot: bool,
-        image: str,
+        image_uri: str,
         zone: Optional[str] = None,
     ) -> Tuple[str, str]:
         """
@@ -336,7 +336,7 @@ class InstanceManager(ABC):
             startup_script: The startup script
             job_id: Job ID to use for the instance
             use_spot: Whether to use a spot instance
-            image: Image to use
+            image_uri: Image URI to use
             zone: Zone to use for the instance; if not specified use the default zone,
                 or if none choose a random zone
 

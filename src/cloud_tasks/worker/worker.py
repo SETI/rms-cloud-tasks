@@ -7,12 +7,16 @@ It uses multiprocessing to achieve true parallelism across multiple CPU cores.
 
 import argparse
 import asyncio
+import datetime
+import json
 import json_stream
 import logging
 import os
 import signal
+import socket
 import sys
 import time
+import traceback
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Callable, Sequence
 import uuid
 import yaml
@@ -48,7 +52,7 @@ def _parse_args(args: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "--project-id", help="Project ID (required for GCP) [overrides $RMS_CLOUD_TASKS_PROJECT_ID]"
     )
     parser.add_argument(
-        "--tasks",
+        "--task-file",
         help="Path to JSON file containing tasks to process; if specified, cloud-based task "
         "queues are ignored",
     )
@@ -61,6 +65,25 @@ def _parse_args(args: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "--queue-name",
         help="Cloud-based task queue name; if not specified will be derived from the job ID "
         "[overrides $RMS_CLOUD_TASKS_QUEUE_NAME]",
+    )
+    parser.add_argument(
+        "--event-log-file",
+        help="File to write events to; if not specified will not write events to a file "
+        "[overrides $RMS_CLOUD_TASKS_EVENT_LOG_FILE]",
+    )
+    parser.add_argument(
+        "--event-log-to-queue",
+        action="store_true",
+        default=None,
+        help="If specified, events will be written to a cloud-based queue "
+        "[overrides $RMS_CLOUD_TASKS_EVENT_LOG_TO_QUEUE]",
+    )
+    parser.add_argument(
+        "--no-event-log-to-queue",
+        action="store_false",
+        dest="event_log_to_queue",
+        help="If specified, events will not be written to a cloud-based queue (default) "
+        "[overrides $RMS_CLOUD_TASKS_EVENT_LOG_TO_QUEUE]",
     )
     parser.add_argument(
         "--instance-type",
@@ -99,6 +122,14 @@ def _parse_args(args: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "to unexpected termination [overrides $RMS_CLOUD_TASKS_INSTANCE_IS_SPOT]",
     )
     parser.add_argument(
+        "--no-is-spot",
+        action="store_false",
+        dest="is_spot",
+        help="If supported by the provider, specify that this is not a spot instance "
+        "and is not subject to unexpected termination (default) "
+        "[overrides $RMS_CLOUD_TASKS_INSTANCE_IS_SPOT]",
+    )
+    parser.add_argument(
         "--price",
         type=float,
         help="Price per hour on this computer; optional information for the worker processes "
@@ -115,7 +146,7 @@ def _parse_args(args: Optional[Sequence[str]] = None) -> argparse.Namespace:
         type=int,
         help="Maximum allowed runtime in seconds; used to determine queue visibility "
         "timeout and to kill tasks that are running too long [overrides "
-        "$RMS_CLOUD_TASKS_MAX_RUNTIME] (default 3600 seconds)",
+        "$RMS_CLOUD_TASKS_MAX_RUNTIME] (default 600 seconds)",
     )
     parser.add_argument(
         "--shutdown-grace-period",
@@ -134,11 +165,18 @@ def _parse_args(args: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help="Maximum number of tasks to process [overrides $RMS_CLOUD_TASKS_MAX_NUM_TASKS]",
     )
     parser.add_argument(
-        "--no-retry-on-crash",
+        "--retry-on-crash",
         action="store_true",
         default=None,
-        help="If specified, tasks will not be retried if the worker process crashes "
-        "[overrides $RMS_CLOUD_TASKS_NO_RETRY_ON_CRASH]",
+        help="If specified, tasks will be retried if the worker process (or user function) crashes "
+        "[overrides $RMS_CLOUD_TASKS_RETRY_ON_CRASH]",
+    )
+    parser.add_argument(
+        "--no-retry-on-crash",
+        action="store_false",
+        dest="retry_on_crash",
+        help="If specified, tasks will not be retried if the worker process (or user function) "
+        "crashes (default) [overrides $RMS_CLOUD_TASKS_RETRY_ON_CRASH]",
     )
     parser.add_argument(
         "--simulate-spot-termination-after",
@@ -152,6 +190,12 @@ def _parse_args(args: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help="Number of seconds after a simulated spot termination notice to forcibly kill "
         "all running tasks "
         "[overrides $RMS_CLOUD_TASKS_SIMULATE_SPOT_TERMINATION_DELAY]",
+    )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="If specified, set the log level to DEBUG",
     )
 
     return parser.parse_args(args)
@@ -267,16 +311,25 @@ class Worker:
         # Parse command line arguments if provided
         parsed_args = _parse_args(args)
 
+        if parsed_args.verbose:
+            logging.getLogger().setLevel(logging.DEBUG)
+
         logger.info("Configuration:")
 
         # Get provider from args or environment variable
         self._provider = parsed_args.provider or os.getenv("RMS_CLOUD_TASKS_PROVIDER")
-        if self._provider is None and not parsed_args.tasks:
-            logger.error(
-                "Provider not specified via --provider or RMS_CLOUD_TASKS_PROVIDER "
-                "and no tasks file specified via --tasks"
-            )
-            sys.exit(1)
+        if self._provider is None:
+            if not parsed_args.task_file:
+                logger.error(
+                    "Provider not specified via --provider or RMS_CLOUD_TASKS_PROVIDER "
+                    "and no tasks file specified via --task-file"
+                )
+                sys.exit(1)
+            if parsed_args.event_log_to_queue:
+                logger.error(
+                    "--event-log-to-queue requires either --provider or RMS_CLOUD_TASKS_PROVIDER"
+                )
+                sys.exit(1)
         if self._provider is not None:
             self._provider = self._provider.upper()
         logger.info(f"  Provider: {self._provider}")
@@ -295,12 +348,34 @@ class Worker:
             self._queue_name = self._job_id
         logger.info(f"  Queue name: {self._queue_name}")
 
-        if self._queue_name is None and not parsed_args.tasks:
+        if self._queue_name is None and not parsed_args.task_file:
             logger.error(
                 "Queue name not specified via --queue-name or RMS_CLOUD_TASKS_QUEUE_NAME "
-                "or --job-id or RMS_CLOUD_TASKS_JOB_ID and no tasks file specified via --tasks"
+                "or --job-id or RMS_CLOUD_TASKS_JOB_ID and no tasks file specified via --task-file"
             )
             sys.exit(1)
+
+        # Get event log file from args or environment variable
+        self._event_log_file = parsed_args.event_log_file or os.getenv(
+            "RMS_CLOUD_TASKS_EVENT_LOG_FILE"
+        )
+        logger.info(f"  Event log file: {self._event_log_file}")
+
+        self._event_log_to_queue = parsed_args.event_log_to_queue
+        if self._event_log_to_queue is None:
+            self._event_log_to_queue = os.getenv("RMS_CLOUD_TASKS_EVENT_LOG_TO_QUEUE")
+            if self._event_log_to_queue is not None:
+                self._event_log_to_queue = self._event_log_to_queue.lower() in ("true", "1")
+        logger.info(f"  Event log to queue: {self._event_log_to_queue}")
+
+        self._event_log_queue_name = None
+        if self._event_log_to_queue:
+            if self._queue_name:
+                self._event_log_queue_name = f"{self._queue_name}-events"
+                logger.info(f"  Event log queue name: {self._event_log_queue_name}")
+            else:
+                logger.error("--event-log-to-queue requires either --job-id or --queue-name")
+                sys.exit(1)
 
         # Get instance type from args or environment variable
         self._instance_type = parsed_args.instance_type or os.getenv(
@@ -375,7 +450,7 @@ class Worker:
         if self._max_runtime is None:
             self._max_runtime = os.getenv("RMS_CLOUD_TASKS_MAX_RUNTIME")
         if self._max_runtime is None:
-            self._max_runtime = 3600  # Default to 1 hour
+            self._max_runtime = 600  # Default to 10 minutes
         else:
             self._max_runtime = int(self._max_runtime)
         logger.info(f"  Maximum runtime: {self._max_runtime} seconds")
@@ -388,13 +463,13 @@ class Worker:
         )
         logger.info(f"  Shutdown grace period: {self._shutdown_grace_period} seconds")
 
-        # Get no retry on crash from args or environment variable
-        self._no_retry_on_crash = parsed_args.no_retry_on_crash
-        if self._no_retry_on_crash is None:
-            self._no_retry_on_crash = os.getenv("RMS_CLOUD_TASKS_NO_RETRY_ON_CRASH")
-            if self._no_retry_on_crash is not None:
-                self._no_retry_on_crash = self._no_retry_on_crash.lower() in ("true", "1")
-        logger.info(f"  No retry on crash: {self._no_retry_on_crash}")
+        # Get retry on crash from args or environment variable
+        self._retry_on_crash = parsed_args.retry_on_crash
+        if self._retry_on_crash is None:
+            self._retry_on_crash = os.getenv("RMS_CLOUD_TASKS_RETRY_ON_CRASH")
+            if self._retry_on_crash is not None:
+                self._retry_on_crash = self._retry_on_crash.lower() in ("true", "1")
+        logger.info(f"  Retry on crash: {self._retry_on_crash}")
 
         # Get simulate spot termination after from args or environment variable
         self._simulate_spot_termination_after = parsed_args.simulate_spot_termination_after
@@ -426,7 +501,7 @@ class Worker:
                 )
 
         # Check if we're using a local tasks file
-        self._tasks_file = parsed_args.tasks
+        self._tasks_file = parsed_args.task_file
         if self._tasks_file:
             logger.info(f'  Using local tasks file: "{self._tasks_file}"')
 
@@ -459,8 +534,8 @@ class Worker:
 
         # Track processes
         self._processes: Dict[int, Dict[str, Any]] = {}  # Maps worker # to process and task
-        self._num_tasks_succeeded: int = 0
-        self._num_tasks_failed: int = 0
+        self._num_tasks_not_retried: int = 0
+        self._num_tasks_retried: int = 0
         self._num_tasks_timed_out: int = 0
 
         # Task queue for inter-process communication
@@ -473,6 +548,10 @@ class Worker:
         # Register signal handlers
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
+
+        self._hostname = socket.gethostname()
+        self._event_logger_fp = None
+        self._event_logger_queue = None
 
     @property
     def provider(self) -> str | None:
@@ -557,29 +636,125 @@ class Worker:
     def _signal_handler(self, signum, frame):
         """Handle termination signals."""
         signal_name = signal.Signals(signum).name
-        logger.info(f"Received signal {signal_name}, initiating graceful shutdown")
+        logger.warning(f"Received signal {signal_name}, initiating graceful shutdown")
         self._shutdown_event.set()
         signal.signal(signal.SIGINT, signal.SIG_DFL)  # So a second time will kill the process
         signal.signal(signal.SIGTERM, signal.SIG_DFL)
 
-    async def start(self) -> None:
-        """Start the worker and begin processing tasks.
+    _EVENT_TYPE_TASK_COMPLETED = "task_completed"
+    _EVENT_TYPE_TASK_TIMED_OUT = "task_timed_out"
+    _EVENT_TYPE_TASK_EXITED = "task_exited"
+    _EVENT_TYPE_NON_FATAL_EXCEPTION = "non_fatal_exception"
+    _EVENT_TYPE_FATAL_EXCEPTION = "fatal_exception"
+    _EVENT_TYPE_SPOT_TERMINATION = "spot_termination"
 
-        This method will:
-        1. Initialize the task queue connection
-        2. Start worker processes
-        3. Begin task processing
-        4. Run until shutdown is requested
-        """
+    async def _log_event(self, event: Dict[str, Any]) -> None:
+        """Log an event to the event log."""
+        # Reorder so these fields are first in the diction to make the display nicer
+        new_event = {
+            "timestamp": datetime.datetime.now().isoformat(),
+            "hostname": self._hostname,
+            "event_type": event["event_type"],
+            **event,
+        }
+        if self._event_logger_fp:
+            self._event_logger_fp.write(json.dumps(new_event) + "\n")
+            self._event_logger_fp.flush()
+        if self._event_logger_queue:
+            await self._event_logger_queue.send_message(json.dumps(new_event))
+
+    async def _log_task_completed(
+        self, task_id: str, *, elapsed_time: float, retry: bool, result: Any
+    ) -> None:
+        """Log a task completed event."""
+        await self._log_event(
+            {
+                "event_type": self._EVENT_TYPE_TASK_COMPLETED,
+                "task_id": task_id,
+                "elapsed_time": elapsed_time,
+                "retry": retry,
+                "result": result,
+            }
+        )
+
+    async def _log_task_timed_out(self, task_id: str, *, runtime: float) -> None:
+        """Log a task timed out event."""
+        await self._log_event(
+            {
+                "event_type": self._EVENT_TYPE_TASK_TIMED_OUT,
+                "task_id": task_id,
+                "elapsed_time": runtime,
+            }
+        )
+
+    async def _log_task_exited(self, task_id: str, *, elapsed_time: float, exit_code: int) -> None:
+        """Log a task exited event."""
+        await self._log_event(
+            {
+                "event_type": self._EVENT_TYPE_TASK_EXITED,
+                "task_id": task_id,
+                "elapsed_time": elapsed_time,
+                "exit_code": exit_code,
+            }
+        )
+
+    async def _log_non_fatal_exception(self, exception: Exception) -> None:
+        """Log a non-fatal exception event."""
+        await self._log_event(
+            {
+                "event_type": self._EVENT_TYPE_NON_FATAL_EXCEPTION,
+                "exception": str(exception),
+                "stack_trace": traceback.format_exc(),
+            }
+        )
+
+    async def _log_fatal_exception(self, exception: Exception) -> None:
+        """Log a fatal exception event."""
+        await self._log_event(
+            {
+                "event_type": self._EVENT_TYPE_FATAL_EXCEPTION,
+                "exception": str(exception),
+                "stack_trace": traceback.format_exc(),
+            }
+        )
+
+    async def _log_spot_termination(self) -> None:
+        """Log a spot termination event."""
+        await self._log_event({"event_type": self._EVENT_TYPE_SPOT_TERMINATION})
+
+    async def start(self) -> None:
+        """Start the worker and begin processing tasks."""
+
+        if self._event_log_file:
+            logger.debug(f'Starting event logger for file "{self._event_log_file}"')
+            try:
+                self._event_logger_fp = open(self._event_log_file, "a")
+            except Exception as e:
+                logger.error(f"Error opening event log file: {e}", exc_info=True)
+                sys.exit(1)
+
+        if self._event_log_to_queue:
+            logger.debug(f'Starting event logger for queue "{self._event_log_queue_name}"')
+            try:
+                self._event_logger_queue = await create_queue(
+                    provider=self._provider,
+                    queue_name=self._event_log_queue_name,
+                    project_id=self._project_id,
+                )
+            except Exception as e:
+                logger.error(f"Error initializing event log queue: {e}", exc_info=True)
+                sys.exit(1)
+
         if self._tasks_file:
-            logger.info(f'Starting task scheduler for local tasks file "{self._tasks_file}"')
+            logger.debug(f'Starting task scheduler for local tasks file "{self._tasks_file}"')
             try:
                 self._task_queue = LocalTaskQueue(self._tasks_file)
             except Exception as e:
                 logger.error(f"Error initializing local task queue: {e}", exc_info=True)
+                await self._log_fatal_exception(e)
                 sys.exit(1)
         else:
-            logger.info(
+            logger.debug(
                 f"Starting task scheduler for {self._provider.upper()} queue "
                 f'"{self._queue_name}"'
             )
@@ -591,6 +766,7 @@ class Worker:
                 )
             except Exception as e:
                 logger.error(f"Error initializing task queue: {e}", exc_info=True)
+                await self._log_fatal_exception(e)
                 sys.exit(1)
 
         self._start_time = time.time()
@@ -612,48 +788,114 @@ class Worker:
         # Process tasks until shutdown
         await self._wait_for_shutdown()
 
-        total = self._num_tasks_succeeded + self._num_tasks_failed + self._num_tasks_timed_out
+        total = self._num_tasks_not_retried + self._num_tasks_retried + self._num_tasks_timed_out
         logger.info(
-            f"Task scheduler shutdown complete. Succeeded: {self._num_tasks_succeeded}, "
-            f"Failed: {self._num_tasks_failed}, Timed out: {self._num_tasks_timed_out}, "
+            f"Task scheduler shutdown complete. Not retried: {self._num_tasks_not_retried}, "
+            f"Retried: {self._num_tasks_retried}, Timed out: {self._num_tasks_timed_out}, "
             f"Total: {total}"
         )
+        # We don't log an event here because this only happens when the user hits Ctrl-C
 
     async def _handle_results(self) -> None:
         """Handle results from worker processes."""
         while self._running:
             try:
-                # Use asyncio to check the queue without blocking
-                while not self._result_queue.empty():
-                    worker_id, retry, result = self._result_queue.get_nowait()
-                    async with self._process_ops_semaphore:
+                # We primarily look for processes that have exited. Once we find one,
+                # we check the result queue to find the results from that process. If the
+                # results aren't there, then the process exited prematurely.
+                # Update the number of active processes in case one of them has exited
+                # prematurely
+                async with self._process_ops_semaphore:
+                    exited_processes = {}
+                    for worker_id, process_data in self._processes.items():
+                        p = process_data["process"]
+                        if not p.is_alive():
+                            logger.debug(f"Worker #{worker_id} (PID {p.pid}) has exited")
+                            exited_processes[worker_id] = process_data
+
+                    # Now go through the result queue
+                    while not self._result_queue.empty():
+                        worker_id, retry, result = self._result_queue.get_nowait()
+
                         if worker_id not in self._processes:
                             # Race condition with max_runtime most likely
-                            logger.warning(
-                                f"Worker #{worker_id} reported task completed but "
-                                "task had already timed out and was being terminated; "
-                                "it was marked as completed and will not be retried"
+                            logger.debug(
+                                f"Worker #{worker_id} report results but process had previously "
+                                "exited; this is probably due to a race condition with "
+                                "max_runtime and should be ignored"
                             )
                             continue
+
                         process_data = self._processes[worker_id]
+                        p = process_data["process"]
                         task = process_data["task"]
 
+                        if worker_id not in exited_processes:
+                            # We caught this process between the time it sent a result and the
+                            # time it exited. It's possible it's wedged, or that we were
+                            # just lucky. Either way, we'll kill it off just to be safe.
+                            p.kill()
+
+                        elapsed_time = time.time() - process_data["start_time"]
                         if retry:
-                            self._num_tasks_succeeded += 1
+                            self._num_tasks_retried += 1
                             logger.info(
                                 f"Worker #{worker_id} reported task {task['task_id']} completed "
-                                f"with no retry - {result}"
+                                f"in {elapsed_time:.1f} seconds but will be retried; result: {result}"
                             )
-                            async with self._task_queue_semaphore:
-                                await self._task_queue.complete_task(task["ack_id"])
-                        else:
-                            self._num_tasks_failed += 1
-                            logger.error(
-                                f"Worker #{worker_id} reported task {task['task_id']} completed "
-                                f"with retry - {result}"
+                            await self._log_task_completed(
+                                task["task_id"],
+                                elapsed_time=elapsed_time,
+                                retry=True,
+                                result=result,
                             )
                             async with self._task_queue_semaphore:
                                 await self._task_queue.fail_task(task["ack_id"])
+                        else:
+                            self._num_tasks_not_retried += 1
+                            logger.info(
+                                f"Worker #{worker_id} reported task {task['task_id']} completed "
+                                f"in {elapsed_time:.1f} seconds with no retry; result: {result}"
+                            )
+                            await self._log_task_completed(
+                                task["task_id"],
+                                elapsed_time=elapsed_time,
+                                retry=False,
+                                result=result,
+                            )
+                            async with self._task_queue_semaphore:
+                                await self._task_queue.complete_task(task["ack_id"])
+
+                        del self._processes[worker_id]
+                        if worker_id in exited_processes:
+                            del exited_processes[worker_id]
+
+                    # Check for processes that exited prematurely; we didn't get result messages
+                    # from these
+                    for worker_id, process_data in exited_processes.items():
+                        try:
+                            exit_code = process_data["process"].exitcode
+                        except Exception:
+                            exit_code = None
+                        task = process_data["task"]
+                        elapsed_time = time.time() - process_data["start_time"]
+                        logger.warning(
+                            f"Worker #{worker_id} (PID {p.pid}) processing task "
+                            f'"{task["task_id"]}" exited prematurely in {elapsed_time:.1f} seconds '
+                            f"with exit code {exit_code}; "
+                            f"{'retrying' if self._retry_on_crash else 'not retrying'}"
+                        )
+                        await self._log_task_exited(
+                            task["task_id"], elapsed_time=elapsed_time, exit_code=exit_code
+                        )
+
+                        async with self._task_queue_semaphore:
+                            if self._retry_on_crash:
+                                # If we're retrying on crash, mark it as failed
+                                await self._task_queue.fail_task(task["ack_id"])
+                            else:
+                                # If we're not retrying on crash, mark it as complete
+                                await self._task_queue.complete_task(task["ack_id"])
 
                         del self._processes[worker_id]
 
@@ -662,6 +904,7 @@ class Worker:
 
             except Exception as e:
                 logger.error(f"Error handling results: {e}", exc_info=True)
+                await self._log_non_fatal_exception(e)
                 await asyncio.sleep(1)  # Wait a bit longer on error
 
     async def _wait_for_shutdown(self, interval: float = 0.5) -> None:
@@ -717,6 +960,7 @@ class Worker:
                 if termination_notice and not self.received_termination_notice:
                     logger.warning("Instance termination notice received")
                     self._termination_event.set()
+                    await self._log_spot_termination()
                     # When the termination actually occurs, we don't need to do anything;
                     # this instance will simply stop running. If the workers were in the
                     # middle of doing something, they will be aborted at a random point.
@@ -726,7 +970,7 @@ class Worker:
 
             except Exception as e:
                 logger.error(f"Error checking for termination: {e}", exc_info=True)
-
+                await self._log_non_fatal_exception(e)
             # Check every 5 seconds for real instance, .1 second for simulated
             if self._simulate_spot_termination_after is not None:
                 await asyncio.sleep(0.1)
@@ -813,30 +1057,9 @@ class Worker:
         """Fetch tasks from the cloud queue and feed them to worker processes."""
         while self._running:
             try:
-                # Update the number of active processes in case one of them has exited
-                # prematurely
-                async with self._process_ops_semaphore:
-                    exited_worker_ids = []
-                    for worker_id, process_data in self._processes.items():
-                        p = process_data["process"]
-                        if not p.is_alive():
-                            logger.warning(f"Worker #{worker_id} (PID {p.pid}) exited prematurely")
-                            task = process_data["task"]
-                            async with self._task_queue_semaphore:
-                                if self._no_retry_on_crash:
-                                    # If we're not retrying on crash, mark it as complete
-                                    await self._task_queue.complete_task(task["ack_id"])
-                                else:
-                                    # Otherwise, set it to try again somewhere else
-                                    await self._task_queue.fail_task(task["ack_id"])
-                            exited_worker_ids.append(worker_id)
-                    # Do this separately so we don't modify the dictionary while iterating
-                    for worker_id in exited_worker_ids:
-                        del self._processes[worker_id]
-
                 if self.received_shutdown_request or self.received_termination_notice:
                     # If we're shutting down for any reason, don't start any new tasks
-                    await asyncio.sleep(1)  # Wait a bit longer on error
+                    await asyncio.sleep(1)
                     continue
 
                 # Only fetch new tasks if we have capacity
@@ -855,20 +1078,21 @@ class Worker:
 
                 if tasks:
                     for task in tasks:
-                        print(self._task_skip_count, self._tasks_remaining)
                         if self._task_skip_count is not None and self._task_skip_count > 0:
                             self._task_skip_count -= 1
+                            logger.info("Skipping")
                             continue
                         if self._tasks_remaining is not None:
                             if self._tasks_remaining <= 0:
                                 break
                             self._tasks_remaining -= 1
+                            logger.info("Remaining tasks: %d", self._tasks_remaining)
 
                         async with self._process_ops_semaphore:
                             # Start a new process for this task
                             worker_id = (
-                                self._num_tasks_succeeded
-                                + self._num_tasks_failed
+                                self._num_tasks_not_retried
+                                + self._num_tasks_retried
                                 + self._num_tasks_timed_out
                                 + len(self._processes)
                             )
@@ -892,9 +1116,7 @@ class Worker:
                                 "start_time": time.time(),
                                 "task": task,
                             }
-                            logger.info(
-                                f"Started single-task worker #{worker_id} " f"(PID {p.pid})"
-                            )
+                            logger.info(f"Started single-task worker #{worker_id} (PID {p.pid})")
                             logger.debug(
                                 f"Queued task {task['task_id']}, active tasks: "
                                 f"{len(self._processes)}"
@@ -905,15 +1127,16 @@ class Worker:
 
             except Exception as e:
                 logger.error(f"Error fetching tasks: {e}", exc_info=True)
+                await self._log_non_fatal_exception(e)
                 await asyncio.sleep(1)  # Wait a bit longer on error
 
     async def _monitor_process_runtimes(self) -> None:
         """Monitor process runtimes and kill processes that exceed max_runtime."""
         while self._running:
             current_time = time.time()
-            killed_one = False
 
             # Check each process's runtime
+            processes_to_delete = []
             async with self._process_ops_semaphore:
                 for worker_id, process_data in self._processes.items():
                     start_time = process_data["start_time"]
@@ -926,12 +1149,13 @@ class Worker:
                     logger.warning(
                         f"Worker #{worker_id} (PID {p.pid}), task "
                         f"{process_data['task']['task_id']} exceeded max runtime of "
-                        f"{self._max_runtime} seconds (actual runtime {runtime:.1f} seconds)"
+                        f"{self._max_runtime} seconds (actual runtime {runtime:.1f} seconds); "
+                        "terminating"
                     )
+                    await self._log_task_timed_out(task["task_id"], runtime=runtime)
 
                     # Kill the process that exceeded runtime
                     try:
-                        logger.info(f"Terminating worker #{worker_id} (PID {p.pid})")
                         p.terminate()
                         p.join(timeout=1)
                         if p.is_alive():
@@ -944,6 +1168,7 @@ class Worker:
                         logger.error(
                             f"Error terminating process worker #{worker_id} (PID " f"{p.pid}): {e}"
                         )
+                        await self._log_non_fatal_exception(e)
 
                     # Mark task as failed in the queue
                     try:
@@ -955,16 +1180,14 @@ class Worker:
                             await self._task_queue.complete_task(task["ack_id"])
                     except Exception as e:
                         logger.error(f"Error marking task {task['task_id']} as completed: {e}")
+                        await self._log_non_fatal_exception(e)
 
                     # Remove from tracking
-                    del self._processes[worker_id]
+                    processes_to_delete.append(worker_id)
                     self._num_tasks_timed_out += 1
-                    killed_one = True
 
-                    break
-
-                if killed_one:
-                    continue
+                for worker_id in processes_to_delete:
+                    del self._processes[worker_id]
 
             await asyncio.sleep(1)  # Check every second
 
@@ -1022,12 +1245,13 @@ class Worker:
                     f"Worker #{worker_id}: Error executing task {task_id}: {e}", exc_info=True
                 )
                 # Send failure back to main process
-                result_queue.put((worker_id, worker._no_retry_on_crash, str(e)))
+                result_queue.put((worker_id, worker._retry_on_crash, str(e)))
 
         except Exception as e:
             logger.error(f"Worker #{worker_id}: Unhandled error - {e}", exc_info=True)
 
         logger.info(f"Worker #{worker_id}: Exiting")
+        sys.exit(0)
 
     @staticmethod
     def _execute_task_isolated(

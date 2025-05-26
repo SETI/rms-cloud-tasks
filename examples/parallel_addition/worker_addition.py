@@ -67,7 +67,7 @@ def process_task(task_id: str, task_data: Dict[str, Any], worker: Worker) -> Tup
             if worker.received_termination_notice:
                 f.write("*** Received spot termination signal ***\n")
 
-        return False, output_file
+        return False, str(output_file)
 
     except Exception as e:
         # We still return False because we don't want to retry the task

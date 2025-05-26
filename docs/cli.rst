@@ -415,58 +415,6 @@ Examples:
          n2-highmem-96                X86_64   96      768.0          0          0     $6.2887  us-central1-*
 
 
-.. _cli_list_running_instances:
-
-list_running_instances
-~~~~~~~~~~~~~~~~~~~~~~
-
-List currently running instances. By default only active instances created by Cloud Tasks
-are shown. If only a region is specified, instances in all zones in that region are shown. If a
-zone is specified, only instances in that zone are shown.
-
-.. code-block:: none
-
-   cloud_tasks list_running_instances
-     [Common options]
-     [Provider-specific options]
-     [Additional options]
-
-Additional options:
-
---job-id JOB_ID         Filter by job ID
---all-instances         Show all instances including ones that were not created by Cloud Tasks
---include-terminated    Include terminated instances
---sort-by FIELDS        Sort results by comma-separated fields (e.g.,
-                        "state,type" or "-created,id"). Available fields: id, type, state,
-                        zone, creation_time. Prefix with "-" for descending order. Partial
-                        field names like "t" for "type" or "s" for "state" are supported.
---detail                Show detailed information
-
-Examples:
-
-.. tabs::
-
-   .. tab:: AWS
-
-      TODO
-
-   .. tab:: GCP
-
-      .. code-block:: none
-
-         $ cloud_tasks list_running_instances --provider gcp --project my-project --region us-central1 --all-instances --include-terminated
-         Listing all instances including ones not created by cloud tasks
-
-         Job ID           ID                                                               Type            State       Zone            Created
-         -----------------------------------------------------------------------------------------------------------------------------------------------------------
-         N/A              personal-instance-1                                              e2-micro        running     us-central1-c   2025-04-28T14:33:46.974-07:00
-         my-job           rmscr-my-job-b2siduvm6a88og25yu5z76kkd                           e2-micro        terminated  us-central1-b   2025-04-28T14:22:01.786-07:00
-         my-job           rmscr-my-job-cjh38y7dttesfqkdbx4ew6kxb                           e2-micro        running     us-central1-a   2025-04-28T14:22:01.585-07:00
-
-         Summary: 3 total instances
-         2 running
-         1 terminated
-
 .. _cli_job_management_commands:
 
 Job Management Commands
@@ -554,7 +502,7 @@ command.
 
 Additional options:
 
---tasks TASKS_FILE                    Path to tasks file (JSON or YAML)
+--task-file TASK_FILE                 Path to tasks file (JSON or YAML)
 --start-task N                        Skip tasks until this task number (1-based)
 --limit N                             Maximum number of tasks to enqueue
 --max-concurrent-queue-operations N   Maximum concurrent tasks to enqueue (default: 100)
@@ -651,8 +599,109 @@ Examples:
          Job 'my-job' stopped
 
 
+.. _cli_list_running_instances:
+
+list_running_instances
+~~~~~~~~~~~~~~~~~~~~~~
+
+List currently running instances. By default only active instances created by Cloud Tasks
+are shown. If only a region is specified, instances in all zones in that region are shown. If a
+zone is specified, only instances in that zone are shown.
+
+.. code-block:: none
+
+   cloud_tasks list_running_instances
+     [Common options]
+     [Provider-specific options]
+     [Additional options]
+
+Additional options:
+
+--job-id JOB_ID         Filter by job ID
+--all-instances         Show all instances including ones that were not created by Cloud Tasks
+--include-terminated    Include terminated instances
+--sort-by FIELDS        Sort results by comma-separated fields (e.g.,
+                        "state,type" or "-created,id"). Available fields: id, type, state,
+                        zone, creation_time. Prefix with "-" for descending order. Partial
+                        field names like "t" for "type" or "s" for "state" are supported.
+--detail                Show detailed information
+
+Examples:
+
+.. tabs::
+
+   .. tab:: AWS
+
+      TODO
+
+   .. tab:: GCP
+
+      .. code-block:: none
+
+         $ cloud_tasks list_running_instances --provider gcp --project my-project --region us-central1 --all-instances --include-terminated
+         Listing all instances including ones not created by cloud tasks
+
+         Job ID           ID                                                               Type            State       Zone            Created
+         -----------------------------------------------------------------------------------------------------------------------------------------------------------
+         N/A              personal-instance-1                                              e2-micro        running     us-central1-c   2025-04-28T14:33:46.974-07:00
+         my-job           rmscr-my-job-b2siduvm6a88og25yu5z76kkd                           e2-micro        terminated  us-central1-b   2025-04-28T14:22:01.786-07:00
+         my-job           rmscr-my-job-cjh38y7dttesfqkdbx4ew6kxb                           e2-micro        running     us-central1-a   2025-04-28T14:22:01.585-07:00
+
+         Summary: 3 total instances
+         2 running
+         1 terminated
+
+
+
+
+
 Queue Management Commands
 -------------------------
+
+.. _cli_monitor_event_queue:
+
+monitor_event_queue
+~~~~~~~~~~~~~~~~~~
+
+Monitor the event queue and display and save events as they arrive. For safety, saving to a
+file is not optional and the `--output-file` option is required. New events will be appended
+to this file so be careful to delete any previous file if you want the list of events to start
+fresh.
+
+.. code-block:: none
+
+   cloud_tasks monitor_event_queue
+     [Common options]
+     [Provider-specific options]
+     [Additional options]
+
+Additional options:
+
+--output-file FILE    File to write events to (will be opened in append mode) [required]
+
+Examples:
+
+.. tabs::
+
+   .. tab:: AWS
+
+      .. code-block:: none
+
+         XXX Update this
+         $ cloud_tasks monitor_event_queue --provider aws --job-id my-job --output-file events.json
+         Monitoring event queue 'my-job-events' on AWS...
+         {"event_type": "task_started", "task_id": "task-001", "timestamp": "2025-04-28T14:33:46.974Z"}
+         {"event_type": "task_completed", "task_id": "task-001", "timestamp": "2025-04-28T14:33:47.123Z"}
+
+   .. tab:: GCP
+
+      .. code-block:: none
+
+         $ cloud_tasks monitor_event_queue --provider gcp --job-id my-job --project my-project --output-file events.json
+         Monitoring event queue 'my-job-events' on GCP...
+         {"event_type": "task_started", "task_id": "task-001", "timestamp": "2025-04-28T14:33:46.974Z"}
+         {"event_type": "task_completed", "task_id": "task-001", "timestamp": "2025-04-28T14:33:47.123Z"}
+
 
 .. _load_queue_cmd:
 
@@ -672,7 +721,7 @@ of the queue.
 
 Additional options:
 
---tasks TASKS_FILE                    Path to tasks file (JSON or YAML)
+--task-file TASK_FILE                 Path to tasks file (JSON or YAML)
 --start-task N                        Skip tasks until this task number (1-based)
 --limit N                             Maximum number of tasks to enqueue
 --max-concurrent-queue-operations N   Maximum concurrent queue operations (default: 100)
@@ -685,7 +734,7 @@ Examples:
 
       .. code-block:: none
 
-         $ cloud_tasks load_queue --provider aws --job-id my-job --tasks examples/parallel_addition/addition_tasks.json
+         $ cloud_tasks load_queue --provider aws --job-id my-job --task-file examples/parallel_addition/addition_tasks.json
          Creating task queue 'my-job' on AWS if necessary...
          Populating task queue from examples/parallel_addition/addition_tasks.json...
          Enqueueing tasks: 10000it [00:13, 735.74it/s]
@@ -696,7 +745,7 @@ Examples:
 
       .. code-block:: none
 
-         $ cloud_tasks load_queue --provider gcp --job-id my-job --project my-project --tasks examples/parallel_addition/addition_tasks.json
+         $ cloud_tasks load_queue --provider gcp --job-id my-job --project my-project --task-file examples/parallel_addition/addition_tasks.json
          Creating task queue 'my-job' on GCP if necessary...
          Populating task queue from examples/parallel_addition/addition_tasks.json...
          Enqueueing tasks: 10000it [00:07, 1414.18it/s]
@@ -781,8 +830,8 @@ Examples:
 purge_queue
 ~~~~~~~~~~~
 
-Remove all messages from a queue. This can be used to delete any remaining tasks; you can
-then reload the queue with new tasks if needed.
+Remove all messages from the task and event queues. This allows you to start fresh by loading
+new tasks.
 
 .. code-block:: none
 
@@ -794,7 +843,9 @@ then reload the queue with new tasks if needed.
 
 Additional options:
 
---force           Purge without confirmation
+--task-queue-only      Purge only the task queue (not the event queue)
+--event-queue-only     Purge only the event queue (not the task queue)
+--force                Purge without confirmation
 
 Examples:
 
@@ -804,6 +855,7 @@ Examples:
 
       .. code-block:: none
 
+         XXX Update this
          $ cloud_tasks purge_queue --provider aws --job-id my-job
 
          WARNING: This will permanently delete all 10000+ messages from queue 'my-job' on 'AWS'.
@@ -828,8 +880,9 @@ Examples:
 delete_queue
 ~~~~~~~~~~~~
 
-Delete a queue and its infrastructure. This permanently frees up the resources used by the
-queue. Only do this if there are no processes running that use the queue.
+Delete the task and event queues and their infrastructure. This permanently frees up the
+resources used by the queues. Only do this if there are no processes running that use the
+queues.
 
 .. code-block:: none
 
@@ -841,7 +894,9 @@ queue. Only do this if there are no processes running that use the queue.
 
 Additional options:
 
---force           Delete without confirmation
+--task-queue-only      Delete only the task queue (not the event queue)
+--event-queue-only     Delete only the event queue (not the task queue)
+--force                Delete without confirmation
 
 Examples:
 
@@ -859,6 +914,12 @@ Examples:
          Deleting queue 'my-job' from AWS...
          Queue 'my-job' has been deleted.
 
+         WARNING: This will permanently delete the queue 'my-job-results' from AWS.
+         This operation cannot be undone and will remove all infrastructure.
+         Type 'DELETE my-job-results' to confirm: DELETE my-job-results
+         Deleting queue 'my-job-results' from AWS...
+         Queue 'my-job-results' has been deleted.
+
    .. tab:: GCP
 
       .. code-block:: none
@@ -870,6 +931,12 @@ Examples:
          Type 'DELETE my-job' to confirm: DELETE my-job
          Deleting queue 'my-job' from GCP...
          Queue 'my-job' has been deleted.
+
+         WARNING: This will permanently delete the queue 'my-job-results' from GCP.
+         This operation cannot be undone and will remove all infrastructure.
+         Type 'DELETE my-job-results' to confirm: DELETE my-job-results
+         Deleting queue 'my-job-results' from GCP...
+         Queue 'my-job-results' has been deleted.
 
 
 Exit Status

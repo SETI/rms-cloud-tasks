@@ -222,6 +222,7 @@ export RMS_CLOUD_TASKS_PROVIDER={self._provider}
 {gcp_supplement}
 export RMS_CLOUD_TASKS_JOB_ID={self._job_id}
 export RMS_CLOUD_TASKS_QUEUE_NAME={self._queue_name}
+export RMS_CLOUD_TASKS_EVENT_LOG_TO_QUEUE=1
 export RMS_CLOUD_TASKS_INSTANCE_TYPE={self._optimal_instance_info["name"]}
 export RMS_CLOUD_TASKS_INSTANCE_NUM_VCPUS={self._optimal_instance_info["vcpu"]}
 export RMS_CLOUD_TASKS_INSTANCE_MEM_GB={self._optimal_instance_info["mem_gb"]}
@@ -231,6 +232,7 @@ export RMS_CLOUD_TASKS_INSTANCE_IS_SPOT={self._run_config.use_spot}
 export RMS_CLOUD_TASKS_INSTANCE_PRICE={self._optimal_instance_info["total_price"]}
 export RMS_CLOUD_TASKS_NUM_TASKS_PER_INSTANCE={self._optimal_instance_num_tasks}
 export RMS_CLOUD_TASKS_MAX_RUNTIME={self._run_config.max_runtime}
+export RMS_CLOUD_TASKS_RETRY_ON_CRASH={self._run_config.retry_on_crash}
 """
         if not self._run_config.startup_script:
             raise RuntimeError("No startup script provided")
@@ -772,7 +774,7 @@ export RMS_CLOUD_TASKS_MAX_RUNTIME={self._run_config.max_runtime}
                             startup_script=startup_script,
                             job_id=self._job_id,
                             use_spot=self._run_config.use_spot,
-                            image=self._image_uri,
+                            image_uri=self._image_uri,
                             zone=self._optimal_instance_info["zone"],
                         )
                         self._logger.info(
