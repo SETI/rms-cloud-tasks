@@ -1080,11 +1080,13 @@ class Worker:
                     for task in tasks:
                         if self._task_skip_count is not None and self._task_skip_count > 0:
                             self._task_skip_count -= 1
+                            logger.info("Skipping")
                             continue
                         if self._tasks_remaining is not None:
                             if self._tasks_remaining <= 0:
                                 break
                             self._tasks_remaining -= 1
+                            logger.info("Remaining tasks: %d", self._tasks_remaining)
 
                         async with self._process_ops_semaphore:
                             # Start a new process for this task

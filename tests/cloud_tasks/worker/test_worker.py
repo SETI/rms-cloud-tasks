@@ -31,7 +31,7 @@ def sample_task():
 @pytest.fixture
 def mock_worker_function():
     def worker_func(task_id, task_data, worker):
-        return True, "success"
+        return False, "success"
 
     return worker_func
 
@@ -680,10 +680,8 @@ def test_execute_task_isolated(mock_worker_function):
     task_id = "test-task"
     task_data = {"key": "value"}
     worker = MagicMock()
-    success, result = Worker._execute_task_isolated(
-        task_id, task_data, worker, mock_worker_function
-    )
-    assert success is True
+    retry, result = Worker._execute_task_isolated(task_id, task_data, worker, mock_worker_function)
+    assert retry is False
     assert result == "success"
 
 
@@ -1755,3 +1753,78 @@ async def test_event_logging_queue_error(mock_worker_function, caplog):
                     assert "Error initializing event log queue" in caplog.text
                 finally:
                     worker._running = False
+
+
+@pytest.mark.asyncio
+async def test_tasks_to_skip_and_limit(mock_worker_function, caplog):
+    """Test that tasks-to-skip and task-limit options work correctly."""
+    with patch(
+        "sys.argv",
+        [
+            "worker.py",
+            "--provider",
+            "AWS",
+            "--job-id",
+            "test-job",
+            "--tasks-to-skip",
+            "2",
+            "--max-num-tasks",
+            "3",
+        ],
+    ):
+        with patch("cloud_tasks.worker.worker.create_queue") as mock_create_queue:
+            mock_queue = AsyncMock()
+            mock_create_queue.return_value = mock_queue
+
+            # Create tasks that will be returned by the queue
+            tasks = [{"task_id": f"task-{i}", "data": {}, "ack_id": f"ack-{i}"} for i in range(6)]
+            mock_queue.receive_tasks.side_effect = [
+                [tasks[0]],  # First batch - should be skipped
+                [tasks[1]],  # Second batch - should be skipped
+                [tasks[2]],  # Third batch - should be processed
+                [tasks[3]],  # Fourth batch - should be processed
+                [tasks[4]],  # Fifth batch - should be processed
+                [tasks[5]],  # Sixth batch - should not get here
+                [],
+            ]
+
+            worker = Worker(mock_worker_function)
+            worker._running = True
+
+            # Create a task to set shutdown event after processing
+            async def trigger_shutdown():
+                await asyncio.sleep(0.4)
+                worker._shutdown_event.set()
+
+            # Start the shutdown task
+            shutdown_task = asyncio.create_task(trigger_shutdown())
+
+            # Start the worker
+            await worker.start()
+
+            # Wait for shutdown task to complete
+            await shutdown_task
+
+            # Verify tasks were skipped and processed correctly
+            assert worker._task_skip_count == 0  # Should have used up all skips
+            assert worker._tasks_remaining == 0  # Should have used up all task limit
+            assert worker._num_tasks_not_retried == 3  # Should have processed 3 tasks
+            assert worker._num_tasks_retried == 0  # No retries
+
+            # Verify logging of started workers for tasks 2-4
+            log_lines = caplog.text.split("\n")
+            worker_start_lines = [
+                line for line in log_lines if "Started single-task worker" in line
+            ]
+            assert len(worker_start_lines) == 3  # Should have started 3 workers
+
+            # Verify each worker was started with the correct task
+            for worker_id in range(3):
+                expected_line = f"Started single-task worker #{worker_id}"
+                assert any(
+                    expected_line in line for line in worker_start_lines
+                ), f"Missing log entry for worker {worker_id}"
+
+            # Verify queue interactions
+            assert mock_queue.receive_tasks.call_count == 7  # 6 batches + empty batch
+            assert mock_queue.complete_task.call_count == 3  # Should have completed 3 tasks
