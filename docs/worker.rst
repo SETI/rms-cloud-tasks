@@ -118,7 +118,7 @@ RMS_CLOUD_TASKS_MAX_RUNTIME
 Tasks File
 ~~~~~~~~~~
 
---tasks TASKS_FILE      The name of a local file containing tasks to process; if not
+--task-file TASK_FILE   The name of a local file containing tasks to process; if not
                         specified, the worker will pull tasks from the cloud provider
                         queue (see below). The filename can also be a cloud storage
                         path like gs://bucket/file, s3://bucket/file, or

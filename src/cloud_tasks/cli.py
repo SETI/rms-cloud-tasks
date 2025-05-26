@@ -90,7 +90,7 @@ async def load_queue_cmd(args: argparse.Namespace, config: Config) -> None:
         if args.dry_run:
             print("Dry run mode enabled. No tasks will be loaded.")
         else:
-            print(f"Populating task queue from {args.tasks}...")
+            print(f"Populating task queue from {args.task_file}...")
         num_tasks = 0
         tasks_to_skip = args.start_task - 1 if args.start_task else 0
         tasks_remaining = args.limit
@@ -131,7 +131,7 @@ async def load_queue_cmd(args: argparse.Namespace, config: Config) -> None:
                     load_failed_exception = e
 
         with tqdm(desc="Enqueueing tasks") as pbar:
-            for task_num, task in enumerate(yield_tasks_from_file(args.tasks)):
+            for task_num, task in enumerate(yield_tasks_from_file(args.task_file)):
                 # Skip tasks until we reach the start_task
                 if tasks_to_skip > 0:
                     tasks_to_skip -= 1
@@ -1422,7 +1422,7 @@ def add_common_args(
 
 def add_load_queue_args(parser: argparse.ArgumentParser) -> None:
     """Add load queue specific arguments."""
-    parser.add_argument("--tasks", required=True, help="Path to tasks file (JSON or YAML)")
+    parser.add_argument("--task-file", required=True, help="Path to tasks file (JSON or YAML)")
     parser.add_argument(
         "--start-task", type=int, help="Skip tasks until this task number (1-based indexing)"
     )

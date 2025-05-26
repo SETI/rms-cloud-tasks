@@ -502,7 +502,7 @@ command.
 
 Additional options:
 
---tasks TASKS_FILE                    Path to tasks file (JSON or YAML)
+--task-file TASK_FILE                 Path to tasks file (JSON or YAML)
 --start-task N                        Skip tasks until this task number (1-based)
 --limit N                             Maximum number of tasks to enqueue
 --max-concurrent-queue-operations N   Maximum concurrent tasks to enqueue (default: 100)
@@ -721,7 +721,7 @@ of the queue.
 
 Additional options:
 
---tasks TASKS_FILE                    Path to tasks file (JSON or YAML)
+--task-file TASK_FILE                 Path to tasks file (JSON or YAML)
 --start-task N                        Skip tasks until this task number (1-based)
 --limit N                             Maximum number of tasks to enqueue
 --max-concurrent-queue-operations N   Maximum concurrent queue operations (default: 100)
@@ -734,7 +734,7 @@ Examples:
 
       .. code-block:: none
 
-         $ cloud_tasks load_queue --provider aws --job-id my-job --tasks examples/parallel_addition/addition_tasks.json
+         $ cloud_tasks load_queue --provider aws --job-id my-job --task-file examples/parallel_addition/addition_tasks.json
          Creating task queue 'my-job' on AWS if necessary...
          Populating task queue from examples/parallel_addition/addition_tasks.json...
          Enqueueing tasks: 10000it [00:13, 735.74it/s]
@@ -745,7 +745,7 @@ Examples:
 
       .. code-block:: none
 
-         $ cloud_tasks load_queue --provider gcp --job-id my-job --project my-project --tasks examples/parallel_addition/addition_tasks.json
+         $ cloud_tasks load_queue --provider gcp --job-id my-job --project my-project --task-file examples/parallel_addition/addition_tasks.json
          Creating task queue 'my-job' on GCP if necessary...
          Populating task queue from examples/parallel_addition/addition_tasks.json...
          Enqueueing tasks: 10000it [00:07, 1414.18it/s]

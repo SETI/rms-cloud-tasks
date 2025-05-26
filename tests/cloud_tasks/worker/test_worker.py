@@ -329,7 +329,7 @@ def test_num_simultaneous_tasks_default(mock_worker_function):
             args = types.SimpleNamespace(
                 provider="AWS",
                 project_id=None,
-                tasks=None,
+                task_file=None,
                 job_id="jid",
                 queue_name=None,
                 instance_type=None,
@@ -360,7 +360,7 @@ def test_num_simultaneous_tasks_default(mock_worker_function):
             args = types.SimpleNamespace(
                 provider="AWS",
                 project_id=None,
-                tasks=None,
+                task_file=None,
                 job_id="jid",
                 queue_name=None,
                 instance_type=None,
@@ -395,7 +395,7 @@ def test_provider_required_without_tasks(mock_worker_function, caplog):
                 args = types.SimpleNamespace(
                     provider=None,
                     project_id=None,
-                    tasks=None,
+                    task_file=None,
                     job_id="test-job",
                     queue_name=None,
                     instance_type=None,
@@ -421,7 +421,7 @@ def test_provider_required_without_tasks(mock_worker_function, caplog):
                     Worker(mock_worker_function)
                     mock_exit.assert_called_once_with(1)
                     assert (
-                        "Provider not specified via --provider or RMS_CLOUD_TASKS_PROVIDER and no tasks file specified via --tasks"
+                        "Provider not specified via --provider or RMS_CLOUD_TASKS_PROVIDER and no tasks file specified via --task-file"
                         in caplog.text
                     )
 
@@ -429,12 +429,12 @@ def test_provider_required_without_tasks(mock_worker_function, caplog):
 def test_provider_not_required_with_tasks(mock_worker_function):
     """Test that provider is not required when tasks file is specified."""
     with patch.dict(os.environ, {}, clear=True):
-        with patch("sys.argv", ["worker.py", "--tasks", "tasks.json"]):
+        with patch("sys.argv", ["worker.py", "--task-file", "tasks.json"]):
             with patch("cloud_tasks.worker.worker._parse_args") as mock_parse_args:
                 args = types.SimpleNamespace(
                     provider=None,
                     project_id=None,
-                    tasks="tasks.json",
+                    task_file="tasks.json",
                     job_id=None,
                     queue_name=None,
                     instance_type=None,
@@ -463,7 +463,7 @@ def test_provider_not_required_with_tasks(mock_worker_function):
 
 @pytest.mark.asyncio
 async def test_start_with_local_tasks(mock_worker_function, local_tasks_file_json):
-    with patch("sys.argv", ["worker.py", "--tasks", local_tasks_file_json]):
+    with patch("sys.argv", ["worker.py", "--task-file", local_tasks_file_json]):
         worker = Worker(mock_worker_function)
         with patch.object(worker, "_wait_for_shutdown") as mock_wait:
             mock_wait.side_effect = asyncio.CancelledError()
@@ -707,7 +707,7 @@ def test_exit_if_no_job_id_and_no_tasks(mock_worker_function, caplog):
                 args = types.SimpleNamespace(
                     provider="AWS",
                     project_id=None,
-                    tasks=None,
+                    task_file=None,
                     job_id=None,
                     queue_name=None,
                     instance_type=None,
@@ -735,7 +735,7 @@ def test_exit_if_no_job_id_and_no_tasks(mock_worker_function, caplog):
                         Worker(mock_worker_function)
                         mock_exit.assert_called_once_with(1)
                         assert (
-                            "Queue name not specified via --queue-name or RMS_CLOUD_TASKS_QUEUE_NAME or --job-id or RMS_CLOUD_TASKS_JOB_ID and no tasks file specified via --tasks"
+                            "Queue name not specified via --queue-name or RMS_CLOUD_TASKS_QUEUE_NAME or --job-id or RMS_CLOUD_TASKS_JOB_ID and no tasks file specified via --task-file"
                             in caplog.text
                         )
 
@@ -746,7 +746,7 @@ def test_worker_properties(mock_worker_function):
             args = types.SimpleNamespace(
                 provider="AWS",
                 project_id="pid",
-                tasks=None,
+                task_file=None,
                 job_id="jid",
                 queue_name="qname",
                 instance_type="itype",
@@ -792,7 +792,7 @@ def test_signal_handler(mock_worker_function, caplog):
             args = types.SimpleNamespace(
                 provider="AWS",
                 project_id=None,
-                tasks=None,
+                task_file=None,
                 job_id="jid",
                 queue_name=None,
                 instance_type=None,
@@ -1418,7 +1418,7 @@ async def test_handle_results_process_exit_retry_on_crash(mock_worker_function):
 
 
 @pytest.mark.asyncio
-async def test_event_logging_to_file(mock_worker_function, tmp_path):
+async def test_event_logging_to_file(mock_worker_function, tmp_path, local_tasks_file_json):
     """Test event logging to file for various event types."""
     event_log_file = tmp_path / "events.log"
 
@@ -1432,6 +1432,8 @@ async def test_event_logging_to_file(mock_worker_function, tmp_path):
             "test-job",
             "--event-log-file",
             str(event_log_file),
+            "--task-file",
+            str(local_tasks_file_json),
         ],
     ):
         worker = Worker(mock_worker_function)

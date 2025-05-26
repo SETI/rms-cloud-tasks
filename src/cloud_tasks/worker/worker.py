@@ -52,7 +52,7 @@ def _parse_args(args: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "--project-id", help="Project ID (required for GCP) [overrides $RMS_CLOUD_TASKS_PROJECT_ID]"
     )
     parser.add_argument(
-        "--tasks",
+        "--task-file",
         help="Path to JSON file containing tasks to process; if specified, cloud-based task "
         "queues are ignored",
     )
@@ -319,10 +319,10 @@ class Worker:
         # Get provider from args or environment variable
         self._provider = parsed_args.provider or os.getenv("RMS_CLOUD_TASKS_PROVIDER")
         if self._provider is None:
-            if not parsed_args.tasks:
+            if not parsed_args.task_file:
                 logger.error(
                     "Provider not specified via --provider or RMS_CLOUD_TASKS_PROVIDER "
-                    "and no tasks file specified via --tasks"
+                    "and no tasks file specified via --task-file"
                 )
                 sys.exit(1)
             if parsed_args.event_log_to_queue:
@@ -348,10 +348,10 @@ class Worker:
             self._queue_name = self._job_id
         logger.info(f"  Queue name: {self._queue_name}")
 
-        if self._queue_name is None and not parsed_args.tasks:
+        if self._queue_name is None and not parsed_args.task_file:
             logger.error(
                 "Queue name not specified via --queue-name or RMS_CLOUD_TASKS_QUEUE_NAME "
-                "or --job-id or RMS_CLOUD_TASKS_JOB_ID and no tasks file specified via --tasks"
+                "or --job-id or RMS_CLOUD_TASKS_JOB_ID and no tasks file specified via --task-file"
             )
             sys.exit(1)
 
@@ -501,7 +501,7 @@ class Worker:
                 )
 
         # Check if we're using a local tasks file
-        self._tasks_file = parsed_args.tasks
+        self._tasks_file = parsed_args.task_file
         if self._tasks_file:
             logger.info(f'  Using local tasks file: "{self._tasks_file}"')
 
