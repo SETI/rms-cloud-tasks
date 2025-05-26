@@ -291,14 +291,14 @@ async def purge_queue_cmd(args: argparse.Namespace, config: Config) -> None:
     provider = config.provider
     provider_config = config.get_provider_config(provider)
     task_queue_name = provider_config.queue_name
-    results_queue_name = f"{task_queue_name}-events"
+    event_queue_name = f"{task_queue_name}-events"
 
-    if not args.results_queue_only:
-        task_queue = await create_queue(config)
     if not args.task_queue_only:
-        results_queue = await create_queue(config, queue_name=results_queue_name)
+        task_queue = await create_queue(config)
+    if not args.event_queue_only:
+        event_queue = await create_queue(config, queue_name=event_queue_name)
 
-    if not args.results_queue_only:
+    if not args.event_queue_only:
         queue_depth = await task_queue.get_queue_depth()
 
         if queue_depth == 0:
@@ -329,28 +329,28 @@ async def purge_queue_cmd(args: argparse.Namespace, config: Config) -> None:
                 print("Some messages may be in flight or locked by consumers.")
 
     if not args.task_queue_only:
-        queue_depth = await results_queue.get_queue_depth()
+        queue_depth = await event_queue.get_queue_depth()
 
         if queue_depth == 0:
-            print(f"Queue '{results_queue_name}' on '{provider}' is already empty (0 messages).")
+            print(f"Queue '{event_queue_name}' on '{provider}' is already empty (0 messages).")
         else:
             # Confirm with the user if not using --force
             if not args.force:
                 confirm = input(
                     f"\nWARNING: This will permanently delete all {queue_depth}+ messages from queue "
-                    f"'{results_queue_name}' on '{provider}'."
-                    f"\nType 'EMPTY {results_queue_name}' to confirm: "
+                    f"'{event_queue_name}' on '{provider}'."
+                    f"\nType 'EMPTY {event_queue_name}' to confirm: "
                 )
-                if confirm != f"EMPTY {results_queue_name}":
+                if confirm != f"EMPTY {event_queue_name}":
                     print("Operation cancelled.")
                     return
 
-            print(f"Emptying queue '{results_queue_name}'...")
-            await results_queue.purge_queue()
-            new_depth = await results_queue.get_queue_depth()
+            print(f"Emptying queue '{event_queue_name}'...")
+            await event_queue.purge_queue()
+            new_depth = await event_queue.get_queue_depth()
             if new_depth == 0:
                 print(
-                    f"Queue '{results_queue_name}' has been emptied. Removed {queue_depth}+ message(s)."
+                    f"Queue '{event_queue_name}' has been emptied. Removed {queue_depth}+ message(s)."
                 )
             else:
                 print(
@@ -369,14 +369,14 @@ async def delete_queue_cmd(args: argparse.Namespace, config: Config) -> None:
     provider = config.provider
     provider_config = config.get_provider_config(provider)
     task_queue_name = provider_config.queue_name
-    results_queue_name = f"{task_queue_name}-events"
+    event_queue_name = f"{task_queue_name}-events"
 
-    if not args.results_queue_only:
-        task_queue = await create_queue(config)
     if not args.task_queue_only:
-        results_queue = await create_queue(config, queue_name=results_queue_name)
+        task_queue = await create_queue(config)
+    if not args.event_queue_only:
+        event_queue = await create_queue(config, queue_name=event_queue_name)
 
-    if not args.results_queue_only:
+    if not args.event_queue_only:
         # Confirm with the user if not using --force
         if not args.force:
             confirm = input(
@@ -400,18 +400,18 @@ async def delete_queue_cmd(args: argparse.Namespace, config: Config) -> None:
         # Confirm with the user if not using --force
         if not args.force:
             confirm = input(
-                f"\nWARNING: This will permanently delete the queue '{results_queue_name}' from {provider}.\n"
+                f"\nWARNING: This will permanently delete the queue '{event_queue_name}' from {provider}.\n"
                 f"This operation cannot be undone and will remove all infrastructure.\n"
-                f"Type 'DELETE {results_queue_name}' to confirm: "
+                f"Type 'DELETE {event_queue_name}' to confirm: "
             )
-            if confirm != f"DELETE {results_queue_name}":
+            if confirm != f"DELETE {event_queue_name}":
                 print("Operation cancelled.")
                 return
 
         try:
-            print(f"Deleting queue '{results_queue_name}' from {provider}...")
-            await results_queue.delete_queue()
-            print(f"Queue '{results_queue_name}' has been deleted.")
+            print(f"Deleting queue '{event_queue_name}' from {provider}...")
+            await event_queue.delete_queue()
+            print(f"Queue '{event_queue_name}' has been deleted.")
         except Exception as e:
             logger.fatal(f"Error deleting results queue: {e}", exc_info=True)
             sys.exit(1)
@@ -642,7 +642,7 @@ async def monitor_event_queue_cmd(args: argparse.Namespace, config: Config) -> N
         while True:
             try:
                 # Receive a batch of messages
-                messages = await events_queue.receive_messages(max_count=10)
+                messages = await events_queue.receive_messages(max_count=100)
 
                 if messages:
                     for message in messages:
@@ -656,7 +656,6 @@ async def monitor_event_queue_cmd(args: argparse.Namespace, config: Config) -> N
                             # Write to file if specified
                             if output_file:
                                 output_file.write(output + "\n")
-                                output_file.flush()
 
                             # Always print to stdout
                             print(output)
@@ -665,6 +664,7 @@ async def monitor_event_queue_cmd(args: argparse.Namespace, config: Config) -> N
                             logger.error(f"Error decoding message: {e}")
                         except Exception as e:
                             logger.error(f"Error processing message: {e}")
+                    output_file.flush()
                 else:
                     # Sleep briefly to avoid hammering the queue
                     await asyncio.sleep(1)
@@ -1788,7 +1788,8 @@ def main():
     add_common_args(monitor_events_parser)
     monitor_events_parser.add_argument(
         "--output-file",
-        help="File to write events to (will be opened in append mode)",
+        default="events.log",
+        help='File to write events to (will be opened in append mode); default is "events.log"',
     )
     monitor_events_parser.set_defaults(func=monitor_event_queue_cmd)
 

@@ -8,7 +8,6 @@ gcp:
     cd /root
     git clone https://github.com/SETI/rms-cloud-tasks.git
     cd rms-cloud-tasks
-    git checkout initial_version
     python3 -m venv venv
     source venv/bin/activate
     pip install -e .

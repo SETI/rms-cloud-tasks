@@ -186,14 +186,14 @@ class AWSSQSQueue(QueueManager):
                 - 'data' (Dict[str, Any]): Message payload
                 - 'receipt_handle' (str): SQS receipt handle used for completing or failing the message
         """
+        # SQS limits max_count to 10
+        max_count = min(max_count, 10)
+
         self._logger.debug(f"Receiving up to {max_count} messages from queue '{self._queue_name}'")
 
         self._create_queue()
 
         try:
-            # SQS limits max_count to 10
-            max_count = min(max_count, 10)
-
             # Get the event loop
             loop = asyncio.get_event_loop()
 
@@ -252,6 +252,9 @@ class AWSSQSQueue(QueueManager):
                 - 'data' (Dict[str, Any]): Task payload/parameters
                 - 'receipt_handle' (str): SQS receipt handle used for completing or failing the task
         """
+        # SQS limits max_count to 10
+        max_count = min(max_count, 10)
+
         self._logger.debug(f"Receiving up to {max_count} tasks from queue '{self._queue_name}'")
 
         self._create_queue()

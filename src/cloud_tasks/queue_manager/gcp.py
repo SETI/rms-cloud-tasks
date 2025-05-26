@@ -245,6 +245,7 @@ class GCPPubSubQueue(QueueManager):
                 - 'data' (Dict[str, Any]): Message payload
                 - 'ack_id' (str): Pub/Sub acknowledgment ID used for completing or failing the message
         """
+        max_count = min(max_count, 1000)  # GCP limit
         self._logger.debug(f"Receiving up to {max_count} messages from queue '{self._queue_name}'")
 
         self._create_topic_subscription()
@@ -318,6 +319,7 @@ class GCPPubSubQueue(QueueManager):
                 - 'data' (Dict[str, Any]): Task payload/parameters
                 - 'ack_id' (str): Pub/Sub acknowledgment ID used for completing or failing the task
         """
+        max_count = min(max_count, 1000)  # GCP limit
         self._logger.debug(f"Receiving up to {max_count} tasks from queue '{self._queue_name}'")
 
         self._create_topic_subscription()
