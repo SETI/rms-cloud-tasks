@@ -1788,8 +1788,8 @@ def main():
     add_common_args(monitor_events_parser)
     monitor_events_parser.add_argument(
         "--output-file",
-        default="events.log",
-        help='File to write events to (will be opened in append mode); default is "events.log"',
+        required=True,
+        help="File to write events to (will be opened in append mode)",
     )
     monitor_events_parser.set_defaults(func=monitor_event_queue_cmd)
 

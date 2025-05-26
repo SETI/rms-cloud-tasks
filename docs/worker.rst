@@ -167,8 +167,49 @@ Logging Events
 
 Various events can be logged to a local file or a cloud-based queue. The events are written
 in a structured format that can be parsed by the pool manager or other software to update
-the status and results of the tasks.
+the status and results of the tasks. An example entry is:
 
+```json
+{"timestamp": "2025-05-26T01:56:26.321172",
+ "hostname": "rmscr-parallel-addition-job-0g23gxetnyyavtxjrul6gberr",
+ "event_type": "task_completed",
+ "task_id": "addition-task-009684",
+ "elapsed_time": 0.13359451293945312,
+ "retry": false,
+ "result": "Success!"
+}
+```
+
+The ``timestamp`` and ``hostname`` fields are always present.
+
+The ``event_type`` field can have the following values:
+
+- ``task_completed``: Indicates that the task completed normally. The ``task_id`` field will
+  contain the task ID as given in the task file. The ``retry`` and ``result``
+  fields will contain the values returned by the task function. The ``elapsed_time`` field
+  will contain the number of fractional seconds the task took to complete, including process
+  creation and destruction overhead.
+- ``task_timed_out``: Indicates that the task timed out (exceeded the time set by the
+  ``--max-runtime`` option). The ``task_id`` field will contain the task ID as given in the
+  task file. The ``elapsed_time`` field will contain the number of fractional seconds the
+  task ran before being killed.
+- ``task_exited``: Indicates that the task exited prematurely. The ``task_id`` field will
+  contain the task ID as given in the task file. The ``elapsed_time`` and ``exit_code``
+  fields will contain the number of seconds the task took to complete and the exit code of
+  the task, respectively.
+- ``non_fatal_exception``: Indicates that the task manager encountered an exception that
+  was deemed non-fatal and continued to run. The ``exception`` field will contain the
+  exception message. The ``stack_trace`` field will contain the stack trace of the exception.
+- ``fatal_exception``: Indicates that the task manager encountered an exception that
+  was deemed fatal and has exited. No further tasks will be processed and no events
+  collected or reported. If this occurred on a cloud-based compute instance, be aware that
+  the instance is now costing money without performing any work. The ``exception`` field
+  will contain the exception message. The ``stack_trace`` field will contain the stack
+  trace of the exception.
+- ``spot_termination``: Indicates that the worker received a spot termination notice.
+  No further tasks will be accepted and any existing tasks may be terminated prematurely
+  if the instance is destroyed before they finish. Any existing tasks that complete before
+  the instance is destroyed will have their results reported as usual.
 
 
 .. _worker_spot_instances:

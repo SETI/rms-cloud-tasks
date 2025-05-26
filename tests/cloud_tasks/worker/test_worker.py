@@ -1347,7 +1347,7 @@ async def test_check_termination_loop_with_simulated_delay(mock_worker_function,
 
 
 @pytest.mark.asyncio
-async def test_handle_results_process_exit(mock_worker_function):
+async def test_handle_results_process_exit_retry_on_crash(mock_worker_function):
     """Should properly handle worker process exits and task retry logic."""
     with patch("sys.argv", ["worker.py", "--provider", "AWS", "--job-id", "test-job"]):
         with patch("cloud_tasks.worker.worker.logger") as mock_logger:
@@ -1388,8 +1388,8 @@ async def test_handle_results_process_exit(mock_worker_function):
                 mock_queue.fail_task.assert_not_called()
                 assert len(worker._processes) == 0
                 mock_logger.warning.assert_called_with(
-                    'Worker #1 (PID 123) processing task "test-task" exited prematurely with '
-                    "exit code 1"
+                    'Worker #1 (PID 123) processing task "test-task" exited prematurely in '
+                    "0.0 seconds with exit code 1; not retrying"
                 )
 
                 # Reset for next test
@@ -1412,8 +1412,8 @@ async def test_handle_results_process_exit(mock_worker_function):
                 mock_queue.complete_task.assert_not_called()
                 assert len(worker._processes) == 0
                 mock_logger.warning.assert_called_with(
-                    'Worker #1 (PID 123) processing task "test-task" exited prematurely with '
-                    "exit code 1"
+                    'Worker #1 (PID 123) processing task "test-task" exited prematurely in '
+                    "0.0 seconds with exit code 1; retrying"
                 )
 
 
@@ -1452,7 +1452,7 @@ async def test_event_logging_to_file(mock_worker_function, tmp_path):
         await worker._log_task_timed_out("task2", runtime=2.5)
 
         # Test task exit logging
-        await worker._log_task_exited("task3", exit_code=1)
+        await worker._log_task_exited("task3", elapsed_time=2.5, exit_code=1)
 
         # Test non-fatal exception logging
         await worker._log_non_fatal_exception(ValueError("test error"))
@@ -1492,6 +1492,7 @@ async def test_event_logging_to_file(mock_worker_function, tmp_path):
         # Verify task exit event
         exit_event = next(e for e in events if e["event_type"] == worker._EVENT_TYPE_TASK_EXITED)
         assert exit_event["task_id"] == "task3"
+        assert exit_event["elapsed_time"] == 2.5
         assert exit_event["exit_code"] == 1
 
         # Verify non-fatal exception event
@@ -1546,7 +1547,7 @@ async def test_event_logging_to_queue(mock_worker_function):
             await worker._log_task_timed_out("task2", runtime=2.5)
 
             # Test task exit logging
-            await worker._log_task_exited("task3", exit_code=1)
+            await worker._log_task_exited("task3", elapsed_time=2.5, exit_code=1)
 
             # Test non-fatal exception logging
             await worker._log_non_fatal_exception(ValueError("test error"))
@@ -1584,6 +1585,7 @@ async def test_event_logging_to_queue(mock_worker_function):
                 e for e in messages if e["event_type"] == worker._EVENT_TYPE_TASK_EXITED
             )
             assert exit_event["task_id"] == "task3"
+            assert exit_event["elapsed_time"] == 2.5
             assert exit_event["exit_code"] == 1
 
             # Verify non-fatal exception event

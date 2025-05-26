@@ -663,8 +663,10 @@ Queue Management Commands
 monitor_event_queue
 ~~~~~~~~~~~~~~~~~~
 
-Monitor the event queue and display or save events as they arrive. This command continuously
-monitors the event queue for new messages and can optionally save them to a file.
+Monitor the event queue and display and save events as they arrive. For safety, saving to a
+file is not optional and the `--output-file` option is required. New events will be appended
+to this file so be careful to delete any previous file if you want the list of events to start
+fresh.
 
 .. code-block:: none
 
@@ -675,7 +677,7 @@ monitors the event queue for new messages and can optionally save them to a file
 
 Additional options:
 
---output-file FILE    File to write events to (will be opened in append mode)
+--output-file FILE    File to write events to (will be opened in append mode) [required]
 
 Examples:
 
@@ -828,7 +830,7 @@ Examples:
 purge_queue
 ~~~~~~~~~~~
 
-Remove all messages from the task and results queues. This allows you to start fresh by loading
+Remove all messages from the task and event queues. This allows you to start fresh by loading
 new tasks.
 
 .. code-block:: none
@@ -841,8 +843,8 @@ new tasks.
 
 Additional options:
 
---task-queue-only      Purge only the task queue (not the results queue)
---results-queue-only   Purge only the results queue (not the task queue)
+--task-queue-only      Purge only the task queue (not the event queue)
+--event-queue-only     Purge only the event queue (not the task queue)
 --force                Purge without confirmation
 
 Examples:
@@ -878,7 +880,7 @@ Examples:
 delete_queue
 ~~~~~~~~~~~~
 
-Delete the task and results queues and their infrastructure. This permanently frees up the
+Delete the task and event queues and their infrastructure. This permanently frees up the
 resources used by the queues. Only do this if there are no processes running that use the
 queues.
 
@@ -892,8 +894,8 @@ queues.
 
 Additional options:
 
---task-queue-only      Purge only the task queue (not the results queue)
---results-queue-only   Purge only the results queue (not the task queue)
+--task-queue-only      Delete only the task queue (not the event queue)
+--event-queue-only     Delete only the event queue (not the task queue)
 --force                Delete without confirmation
 
 Examples:

@@ -677,7 +677,7 @@ class Worker:
             }
         )
 
-    async def _log_task_timed_out(self, task_id: str, runtime: float) -> None:
+    async def _log_task_timed_out(self, task_id: str, *, runtime: float) -> None:
         """Log a task timed out event."""
         await self._log_event(
             {
@@ -687,12 +687,13 @@ class Worker:
             }
         )
 
-    async def _log_task_exited(self, task_id: str, exit_code: int) -> None:
+    async def _log_task_exited(self, task_id: str, *, elapsed_time: float, exit_code: int) -> None:
         """Log a task exited event."""
         await self._log_event(
             {
                 "event_type": self._EVENT_TYPE_TASK_EXITED,
                 "task_id": task_id,
+                "elapsed_time": elapsed_time,
                 "exit_code": exit_code,
             }
         )
@@ -700,7 +701,11 @@ class Worker:
     async def _log_non_fatal_exception(self, exception: Exception) -> None:
         """Log a non-fatal exception event."""
         await self._log_event(
-            {"event_type": self._EVENT_TYPE_NON_FATAL_EXCEPTION, "exception": str(exception)}
+            {
+                "event_type": self._EVENT_TYPE_NON_FATAL_EXCEPTION,
+                "exception": str(exception),
+                "stack_trace": traceback.format_exc(),
+            }
         )
 
     async def _log_fatal_exception(self, exception: Exception) -> None:
@@ -873,12 +878,16 @@ class Worker:
                         except Exception:
                             exit_code = None
                         task = process_data["task"]
+                        elapsed_time = time.time() - process_data["start_time"]
                         logger.warning(
                             f"Worker #{worker_id} (PID {p.pid}) processing task "
-                            f'"{task["task_id"]}" exited prematurely with exit code '
-                            f"{exit_code}"
+                            f'"{task["task_id"]}" exited prematurely in {elapsed_time:.1f} seconds '
+                            f"with exit code {exit_code}; "
+                            f"{'retrying' if self._retry_on_crash else 'not retrying'}"
                         )
-                        await self._log_task_exited(task["task_id"], exit_code)
+                        await self._log_task_exited(
+                            task["task_id"], elapsed_time=elapsed_time, exit_code=exit_code
+                        )
 
                         async with self._task_queue_semaphore:
                             if self._retry_on_crash:
@@ -1123,7 +1132,6 @@ class Worker:
         """Monitor process runtimes and kill processes that exceed max_runtime."""
         while self._running:
             current_time = time.time()
-            killed_one = False
 
             # Check each process's runtime
             processes_to_delete = []
@@ -1142,7 +1150,7 @@ class Worker:
                         f"{self._max_runtime} seconds (actual runtime {runtime:.1f} seconds); "
                         "terminating"
                     )
-                    await self._log_task_timed_out(task["task_id"], runtime)
+                    await self._log_task_timed_out(task["task_id"], runtime=runtime)
 
                     # Kill the process that exceeded runtime
                     try:
@@ -1175,7 +1183,6 @@ class Worker:
                     # Remove from tracking
                     processes_to_delete.append(worker_id)
                     self._num_tasks_timed_out += 1
-                    killed_one = True
 
                 for worker_id in processes_to_delete:
                     del self._processes[worker_id]
