@@ -232,7 +232,8 @@ export RMS_CLOUD_TASKS_INSTANCE_IS_SPOT={self._run_config.use_spot}
 export RMS_CLOUD_TASKS_INSTANCE_PRICE={self._optimal_instance_info["total_price"]}
 export RMS_CLOUD_TASKS_NUM_TASKS_PER_INSTANCE={self._optimal_instance_num_tasks}
 export RMS_CLOUD_TASKS_MAX_RUNTIME={self._run_config.max_runtime}
-export RMS_CLOUD_TASKS_RETRY_ON_CRASH={self._run_config.retry_on_crash}
+export RMS_CLOUD_TASKS_RETRY_ON_EXIT={self._run_config.retry_on_exit}
+export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
 """
         if not self._run_config.startup_script:
             raise RuntimeError("No startup script provided")

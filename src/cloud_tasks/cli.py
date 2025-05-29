@@ -9,7 +9,7 @@ import json_stream
 import logging
 import sys
 from tqdm import tqdm  # type: ignore
-from typing import Any, Dict, Iterable
+from typing import Any, Dict, Iterable, Optional
 import yaml  # type: ignore
 
 from filecache import FCPath
@@ -28,7 +28,9 @@ configure_logging(level=logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
-def yield_tasks_from_file(tasks_file: str) -> Iterable[Dict[str, Any]]:
+def yield_tasks_from_file(
+    task_file: str, start_task: Optional[int] = None, limit: Optional[int] = None
+) -> Iterable[Dict[str, Any]]:
     """
     Yield tasks from a JSON or YAML file as an iterator.
 
@@ -37,6 +39,8 @@ def yield_tasks_from_file(tasks_file: str) -> Iterable[Dict[str, Any]]:
 
     Parameters:
         tasks_file: Path to the tasks file
+        start_task: Index of the first task to yield
+        limit: Number of tasks to yield
 
     Yields:
         Task dictionaries (expected to have "task_id" and "data" keys)
@@ -44,14 +48,21 @@ def yield_tasks_from_file(tasks_file: str) -> Iterable[Dict[str, Any]]:
     Raises:
         ValueError: If the file cannot be read
     """
-    if not tasks_file.endswith((".json", ".yaml", ".yml")):
+    if not task_file.endswith((".json", ".yaml", ".yml")):
         raise ValueError(
-            f"Unsupported file format for tasks: {tasks_file}; must be .json, .yml, or .yaml"
+            f"Unsupported file format for tasks: {task_file}; must be .json, .yml, or .yaml"
         )
-    with FCPath(tasks_file).open(mode="r") as fp:
-        if tasks_file.endswith(".json"):
+    if limit is not None and limit <= 0:
+        return
+
+    with FCPath(task_file).open(mode="r") as fp:
+        if task_file.endswith(".json"):
             for task in json_stream.load(fp):
-                yield json_stream.to_standard_types(task)  # Convert to a dict
+                ret = json_stream.to_standard_types(task)  # Convert to a dict
+                if start_task is not None and start_task > 0:
+                    start_task -= 1
+                    continue
+                yield ret
         else:
             # See https://stackoverflow.com/questions/429162/how-to-process-a-yaml-stream-in-python
             y = fp.readline()
@@ -63,8 +74,16 @@ def yield_tasks_from_file(tasks_file: str) -> Iterable[Dict[str, Any]]:
                 if not ln.startswith("-") and len(ln) != 0:
                     y = y + ln
                 else:
-                    yield yaml.load(y, Loader=yaml.Loader)[0]
+                    ret = yaml.load(y, Loader=yaml.Loader)[0]
                     y = ln
+                    if start_task is not None and start_task > 0:
+                        start_task -= 1
+                        continue
+                    yield ret
+        if limit is not None:
+            limit -= 1
+            if limit == 0:
+                return
 
 
 async def load_queue_cmd(args: argparse.Namespace, config: Config) -> None:
@@ -92,8 +111,6 @@ async def load_queue_cmd(args: argparse.Namespace, config: Config) -> None:
         else:
             print(f"Populating task queue from {args.task_file}...")
         num_tasks = 0
-        tasks_to_skip = args.start_task - 1 if args.start_task else 0
-        tasks_remaining = args.limit
 
         # Create a semaphore to limit concurrent tasks
         semaphore = asyncio.Semaphore(args.max_concurrent_queue_operations)
@@ -131,12 +148,9 @@ async def load_queue_cmd(args: argparse.Namespace, config: Config) -> None:
                     load_failed_exception = e
 
         with tqdm(desc="Enqueueing tasks") as pbar:
-            for task_num, task in enumerate(yield_tasks_from_file(args.task_file)):
-                # Skip tasks until we reach the start_task
-                if tasks_to_skip > 0:
-                    tasks_to_skip -= 1
-                    continue
-
+            for task_num, task in enumerate(
+                yield_tasks_from_file(args.task_file, args.start_task, args.limit)
+            ):
                 if load_failed_exception:
                     raise load_failed_exception
 
@@ -159,12 +173,6 @@ async def load_queue_cmd(args: argparse.Namespace, config: Config) -> None:
                     pbar.update(len(done))
                     num_tasks += len(done)
                     logger.debug(f"Increment of {len(done)} task(s)")
-
-                # Check if we've reached the limit
-                if tasks_remaining is not None:
-                    if tasks_remaining <= 0:
-                        break
-                    tasks_remaining -= 1
 
             # Wait for remaining tasks to complete
             if pending_tasks:
@@ -623,14 +631,84 @@ async def monitor_event_queue_cmd(args: argparse.Namespace, config: Config) -> N
     provider_config = config.get_provider_config(provider)
     event_queue_name = f"{provider_config.queue_name}-events"
 
-    # Open results file if specified
+    # If a tasks file was specified, read it and get the list of task_ids
+    task_ids = set()
+    if args.task_file:
+        print(f'Reading tasks from "{args.task_file}"')
+        for task in yield_tasks_from_file(args.task_file, args.start_task, args.limit):
+            task_ids.add(task["task_id"])
+
+    event_type_counts = {}
+    task_ids_completed_no_retry = set()
+    task_ids_completed_retry = set()
+    task_ids_timed_out = set()
+    task_ids_exited = set()
+    task_ids_duplicated_no_retry = set()
+    non_fatal_exceptions = {}
+    fatal_exceptions = {}
+    spot_termination_hosts = set()
+
+    def _process_log_entry(log_entry: Dict[str, Any]) -> None:
+        event_type = log_entry["event_type"]
+        retry = log_entry.get("retry")
+        task_id = log_entry.get("task_id")
+        exception = log_entry.get("exception")
+        if exception:
+            exception_split = [line.strip() for line in exception.strip().split("\n")]
+            exception_head = "; ".join(exception_split[1:3])
+            exception_tail = "; ".join(exception_split[-2:])
+            exception_str = f"{exception_head}; ...; {exception_tail}"
+        else:
+            exception_str = ""
+        hostname = log_entry.get("hostname")
+        match event_type:
+            case "task_completed":
+                if task_id in task_ids_completed_no_retry and not retry:
+                    task_ids_duplicated_no_retry.add(task_id)
+                if retry:
+                    task_ids_completed_retry.add(task_id)
+                else:
+                    task_ids_completed_no_retry.add(task_id)
+            case "task_timed_out":
+                task_ids_timed_out.add(task_id)
+            case "task_exited":
+                task_ids_exited.add(task_id)
+            case "non_fatal_exception":
+                non_fatal_exceptions[exception_str] = non_fatal_exceptions.get(exception_str, 0) + 1
+            case "fatal_exception":
+                fatal_exceptions[exception_str] = fatal_exceptions.get(exception_str, 0) + 1
+            case "spot_termination":
+                spot_termination_hosts.add(hostname)
+            case _:
+                pass
+
+        key = (event_type, retry)
+        event_type_counts[key] = event_type_counts.get(key, 0) + 1
+
     output_file = None
     if args.output_file:
+        # If the results file already exists, read it and summarize the results
+        try:
+            with open(args.output_file, "r") as f:
+                print(f'Reading previous events from "{args.output_file}"')
+                while s := f.readline():
+                    log_entry = json.loads(s)
+                    _process_log_entry(log_entry)
+        except FileNotFoundError:
+            print("No previous events found...starting statistics from scratch")
+            pass
+        except json.decoder.JSONDecodeError as e:
+            print(f'Error parsing results file "{args.output_file}"')
+            print(e)
+        except Exception as e:
+            logger.fatal(f'Error reading results file "{args.output_file}": {e}', exc_info=True)
+            sys.exit(1)
+
         try:
             output_file = open(args.output_file, "a")
-            logger.info(f"Writing events to {args.output_file}")
+            logger.info(f'Writing events to "{args.output_file}"')
         except Exception as e:
-            logger.fatal(f"Error opening events file: {e}", exc_info=True)
+            logger.fatal(f'Error opening events file "{args.output_file}": {e}', exc_info=True)
             sys.exit(1)
 
     try:
@@ -639,7 +717,38 @@ async def monitor_event_queue_cmd(args: argparse.Namespace, config: Config) -> N
         print(f"Monitoring event queue '{event_queue_name}' on {provider}...")
 
         # Main monitoring loop
+        something_changed = True  # Start out with a summary
         while True:
+            if something_changed:
+                print()
+                if args.task_file:
+                    tasks_remaining = str(len(task_ids) - len(task_ids_completed_no_retry))
+                else:
+                    tasks_remaining = "Unknown"
+                print("Summary:")
+                for (event_type, retry), count in sorted(event_type_counts.items()):
+                    print(f"  {event_type:<19s} (retry={str(retry):>5s}): {count:6d}")
+
+                print(
+                    f"  {len(task_ids_duplicated_no_retry)} tasks executed more than once "
+                    "but shouldn't have"
+                )
+                print(f"  {tasks_remaining} tasks remaining including pending retries")
+                if fatal_exceptions:
+                    print("Fatal exceptions:")
+                    for exception, count in sorted(fatal_exceptions.items()):
+                        print(f"  {count:6d}: {exception:s}")
+                if non_fatal_exceptions:
+                    print("Non-fatal exceptions:")
+                    for exception, count in sorted(non_fatal_exceptions.items()):
+                        print(f"  {count:6d}: {exception:s}")
+                if spot_termination_hosts:
+                    print("Spot terminations:")
+                    for host in sorted(spot_termination_hosts):
+                        print(f"  {host:s}")
+                print()
+                something_changed = False
+
             try:
                 # Receive a batch of messages
                 messages = await events_queue.receive_messages(max_count=100)
@@ -659,6 +768,8 @@ async def monitor_event_queue_cmd(args: argparse.Namespace, config: Config) -> N
 
                             # Always print to stdout
                             print(output)
+
+                            _process_log_entry(data)
 
                         except json.JSONDecodeError as e:
                             logger.error(f"Error decoding message: {e}")
@@ -1420,19 +1531,24 @@ def add_common_args(
     )
 
 
-def add_load_queue_args(parser: argparse.ArgumentParser) -> None:
+def add_load_queue_args(
+    parser: argparse.ArgumentParser, task_required: bool = True, include_max_concurrent: bool = True
+) -> None:
     """Add load queue specific arguments."""
-    parser.add_argument("--task-file", required=True, help="Path to tasks file (JSON or YAML)")
+    parser.add_argument(
+        "--task-file", required=task_required, help="Path to tasks file (JSON or YAML)"
+    )
     parser.add_argument(
         "--start-task", type=int, help="Skip tasks until this task number (1-based indexing)"
     )
     parser.add_argument("--limit", type=int, help="Maximum number of tasks to enqueue")
-    parser.add_argument(
-        "--max-concurrent-queue-operations",
-        type=int,
-        default=100,
-        help="Maximum number of concurrent queue operations while loading tasks (default: 100)",
-    )
+    if include_max_concurrent:
+        parser.add_argument(
+            "--max-concurrent-queue-operations",
+            type=int,
+            default=100,
+            help="Maximum number of concurrent queue operations while loading tasks (default: 100)",
+        )
 
 
 def add_instance_pool_args(parser: argparse.ArgumentParser) -> None:
@@ -1505,7 +1621,47 @@ def add_instance_pool_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--max-runtime",
         type=int,
-        help="Maximum seconds a single worker job is allowed to run (default: 60)",
+        help="Maximum seconds a single worker job is allowed to run (default: 600)",
+    )
+    parser.add_argument(
+        "--retry-on-exit",
+        action="store_true",
+        default=None,
+        help="If specified, tasks will be retried if the worker exits prematurely",
+    )
+    parser.add_argument(
+        "--no-retry-on-exit",
+        action="store_false",
+        dest="retry_on_exit",
+        help="If specified, tasks will not be retried if the worker exits prematurely (default)",
+    )
+    parser.add_argument(
+        "--retry-on-exception",
+        action="store_true",
+        default=None,
+        help="If specified, tasks will be retried if the user function raises an unhandled "
+        "exception",
+    )
+    parser.add_argument(
+        "--no-retry-on-exception",
+        action="store_false",
+        dest="retry_on_exception",
+        help="If specified, tasks will not be retried if the user function raises an unhandled "
+        "exception (default)",
+    )
+    parser.add_argument(
+        "--retry-on-timeout",
+        action="store_true",
+        default=None,
+        help="If specified, tasks will be retried if they exceed the maximum runtime specified "
+        "by --max-runtime",
+    )
+    parser.add_argument(
+        "--no-retry-on-timeout",
+        action="store_false",
+        dest="retry_on_timeout",
+        help="If specified, tasks will not be retried if they exceed the maximum runtime specified "
+        "by --max-runtime (default)",
     )
 
 
@@ -1786,11 +1942,13 @@ def main():
         help="Monitor the event queue and display or save events as they arrive",
     )
     add_common_args(monitor_events_parser)
+    add_load_queue_args(monitor_events_parser, task_required=False, include_max_concurrent=False)
     monitor_events_parser.add_argument(
         "--output-file",
         required=True,
         help="File to write events to (will be opened in append mode)",
     )
+
     monitor_events_parser.set_defaults(func=monitor_event_queue_cmd)
 
     # ------------------------------ #

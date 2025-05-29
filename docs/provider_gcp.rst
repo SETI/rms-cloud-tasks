@@ -43,9 +43,31 @@ Service Accounts
 
 For Google Cloud, the permissions granted to compute instances are determined by a
 "service account". This account can be specified in the configuration file
-(``service_account:``) or on the command line using ``--service-account``. See the
+(``service_account:``) or on the command line using ``--service-account``.
+
+Here is the basic process for creating a service account using the Google Cloud
+web interface:
+
+1. Go to the `IAM & Admin` page in the Google Cloud console.
+2. Click on `Service Accounts` in the left sidebar.
+3. Click on `Create service account`.
+4. Enter a name for the service account.
+5. Note the email address of the service account. This is the value to use for the
+   ``service_account`` configuration option or the ``--service-account`` command line
+   option.
+6. Click on `Create and continue`.
+7. Grant the role "Pub/Sub Editor" (this is required for the Cloud Tasks system to work)
+8. Grant other roles as needed, for example "Storage Object User" (if the tasks need to read
+   and write buckets).
+9. Click on `Done` to save the changes.
+
+
+
+
+See the
 `Google Cloud documentation <https://cloud.google.com/iam/docs/service-account-overview>`_
 for information on creating and managing them.
+
 
 .. _gcp_boot_disk_types:
 

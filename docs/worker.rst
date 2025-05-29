@@ -43,13 +43,10 @@ Here's a simple example of how to implement a worker:
            - result: String or dict describing the result; this will be sent to the local
              log file or the result queue to be picked up by the pool manager
        """
-       try:
-           print(f"Processing task {task_id}")
-           # Your processing logic here
-           print(f"Task data: {task_data}")
-           return False, "Task completed successfully"
-       except Exception as e:
-           return False, str(e)  # Don't retry on failure
+       print(f"Processing task {task_id}")
+       # Your processing logic here
+       print(f"Task data: {task_data}")
+       return False, "Task completed successfully"
 
    # Create and start the worker
    if __name__ == "__main__":
@@ -70,20 +67,29 @@ to try it again. This normally would indicate some kind of transient error, such
 running out of disk space or memory or hitting some other kind of temporary resource
 limit that you expect to not repeat.
 
-The ``result`` value can be a string or a dictionary. This value will be returned in the
-results queue to the pool manager so that you can log it to a local file. For example,
-you might return a dictionary that contains a flag indicating whether the task truly
-succeeded or not, and a string message with more details.
+The ``result`` value can be a string or a JSON-serializable dictionary. This value will be
+returned in the results queue to the pool manager so that you can log it to a local file.
+For example, you might return a dictionary that contains a flag indicating whether the
+task truly succeeded or not, and a string message with more details.
 
-If your worker process exits by calling ``sys.exit()`` or by crashing due to a system problem
-or unhandled exception, it is automatically assumed to have failed in a way that should
-be re-tried. If the program will always crash in the same way, this could conceivably
-result in an infinite task loop where the task keeps getting re-queued and retried. This is
-why it is important to monitor the returned results and abort the pool manager if no
-progress is being made. This behavior can be changed with the ``--no-retry-on-crash`` command
-line option or the ``RMS_CLOUD_TASKS_NO_RETRY_ON_CRASH`` environment variable.
+If the task does not complete successfully (meaning it returned a retry value and a result
+data structure), there are three possibilities:
 
-Note that if you are using a local task file, the task manager will never re-queue a task.
+1. The task timed out (exceeded the time set by the ``--max-runtime`` option).
+2. The task exited prematurely, e.g. due to a crash or by calling ``sys.exit()``.
+3. The task raised an unhandled exception.
+
+In each case, you have the option of deciding whether to automatically retry the task by
+using the worker command line options ``--retry-on-timeout``, ``--retry-on-exit``, and
+``--retry-on-exception``, or their corresponding environment variables. Note that if you
+turn on retry for a particular type of failure, but your program will always fail in the
+same way for a particular task, this could result in an infinite task loop where the task
+keeps getting re-queued and retried. Thus these options should be used with caution. This
+is also why it is important to monitor the returned results and abort the pool manager if
+no progress is being made.
+
+Note that if you are using a local task file, the task manager will never re-queue a task,
+regardless of the retry options you set.
 
 
 .. _worker_environment_variables:
@@ -93,11 +99,11 @@ Environment Variables and Command Line Arguments
 
 The worker is configured using the following environment variables and/or command line
 arguments. All parameters will first be set from the command line arguments, and if not
-specified, will then be set from the environment variables. If neither is available,
-the parameter will be set to ``None`` or the given default. When a worker is run on
-a remote compute instance, these environment variables are set automatically based on
-information in the Cloud Tasks configuration file (or command line arguments), or
-from information derived from the instance type:
+specified, will then be set from the environment variables. If neither is available, the
+parameter will be set to ``None`` or the given default. *When a worker is run on a remote
+compute instance, the following subset of environment variables are set automatically
+based on information in the Cloud Tasks configuration file (or command line arguments
+given to ``manage_pool`` or ``run``), or from information derived from the instance type*:
 
 ```
 RMS_CLOUD_TASKS_PROVIDER
@@ -113,6 +119,9 @@ RMS_CLOUD_TASKS_INSTANCE_IS_SPOT
 RMS_CLOUD_TASKS_INSTANCE_PRICE
 RMS_CLOUD_TASKS_NUM_TASKS_PER_INSTANCE
 RMS_CLOUD_TASKS_MAX_RUNTIME
+RMS_CLOUD_TASKS_RETRY_ON_EXIT
+RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION
+RMS_CLOUD_TASKS_RETRY_ON_TIMEOUT
 ```
 
 Tasks File
@@ -154,8 +163,12 @@ Optional Parameters
 --shutdown-grace-period SECONDS            Time in seconds to wait for tasks to complete during shutdown [or ``RMS_CLOUD_TASKS_SHUTDOWN_GRACE_PERIOD``] (default 30 seconds)
 --tasks-to-skip TASKS_TO_SKIP              Number of tasks to skip before processing any from the queue [or ``RMS_CLOUD_TASKS_TO_SKIP``]
 --max-num-tasks MAX_NUM_TASKS              Maximum number of tasks to process [or ``RMS_CLOUD_TASKS_MAX_NUM_TASKS``]
---retry-on-crash                           If specified, retry tasks on crash [or ``RMS_CLOUD_TASKS_RETRY_ON_CRASH`` is "1" or "true"]
---no-retry-on-crash                        If specified, do not retry tasks on crash [or ``RMS_CLOUD_TASKS_RETRY_ON_CRASH`` is "0" or "false"]
+--retry-on-exit                            If specified, retry tasks on premature exit [or ``RMS_CLOUD_TASKS_RETRY_ON_EXIT`` is "1" or "true"]
+--no-retry-on-exit                         If specified, do not retry tasks on premature exit [or ``RMS_CLOUD_TASKS_RETRY_ON_EXIT`` is "0" or "false"]
+--retry-on-exception                       If specified, retry tasks on unhandled exception [or ``RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION`` is "1" or "true"]
+--no-retry-on-exception                    If specified, do not retry tasks on unhandled exception [or ``RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION`` is "0" or "false"]
+--retry-on-timeout                         If specified, retry tasks on timeout [or ``RMS_CLOUD_TASKS_RETRY_ON_TIMEOUT`` is "1" or "true"]
+--no-retry-on-timeout                      If specified, do not retry tasks on timeout [or ``RMS_CLOUD_TASKS_RETRY_ON_TIMEOUT`` is "0" or "false"]
 --simulate-spot-termination-after SECONDS  Number of seconds after worker start to simulate a spot termination notice [or ``RMS_CLOUD_TASKS_SIMULATE_SPOT_TERMINATION_AFTER``]
 --simulate-spot-termination-delay SECONDS  Number of seconds after a simulated spot termination notice to forcibly kill all running tasks [or ``RMS_CLOUD_TASKS_SIMULATE_SPOT_TERMINATION_DELAY``]
 --verbose                                  Set the console log level to DEBUG instead of INFO

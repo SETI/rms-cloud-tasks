@@ -186,9 +186,18 @@ options in the configuration file (see :ref:`config_worker_and_manage_pool_optio
 --instance-termination-delay SECONDS   The delay to wait before terminating an instance
                                        (defaults to 60)
 --max-runtime SECONDS                  The maximum runtime for a task (defaults to 60)
---worker-use-new-process               Use a new process for each task instead of reusing the
-                                       same process (defaults to ``False``)
-
+--retry-on-exit                        If specified, tasks will be retried if the worker exits
+                                       prematurely, e.g. due to a crash
+--no-retry-on-exit                     If specified, tasks will not be retried if the worker exits
+                                       prematurely, e.g. due to a crash (default)
+--retry-on-exception                   If specified, tasks will be retried if the user function
+                                       raises an unhandled exception
+--no-retry-on-exception                If specified, tasks will not be retried if the user function
+                                       raises an unhandled exception (default)
+--retry-on-timeout                     If specified, tasks will be retried if they exceed the
+                                       maximum runtime specified by --max-runtime
+--no-retry-on-timeout                  If specified, tasks will not be retried if they exceed the
+                                       maximum runtime specified by --max-runtime (default)
 
 .. _cli_information_commands:
 

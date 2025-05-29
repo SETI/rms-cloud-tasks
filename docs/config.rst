@@ -267,11 +267,14 @@ Options to specify the worker and manage_pool processes
   once the task queue is empty (defaults to 60)
 * ``max_runtime``: The maximum runtime for a task in seconds (defaults to 60); this is used
   to set the retry timeout in the task queue such that any task that takes longer than this
-  is assumed to have crashed and will be retried and should be set to a value significantly
-  greater than the longest runtime expected for a task
-* ``worker_use_new_process``: Use a new process for each task instead of reusing the
-  same process (defaults to ``False``)
-
+  is assumed to have had an internal error and should be set to a value
+  significantly greater than the longest runtime expected for a task
+* ``retry_on_exit``: If True, tasks will be retried if the worker exits prematurely, e.g. due
+  to a crash
+* ``retry_on_exception``: If True, tasks will be retried if the user function raises an
+  unhandled exception
+* ``retry_on_timeout``: If True, tasks will be retried if they exceed the maximum runtime
+  specified by ``max_runtime``
 
 .. _config_provider_specific_options:
 

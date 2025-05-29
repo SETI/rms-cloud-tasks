@@ -15,4 +15,7 @@ gcp:
     pip install -r examples/parallel_addition/requirements.txt
     export ADDITION_OUTPUT_DIR=gs://<BUCKET>/addition-results
     export ADDITION_TASK_DELAY=1
+    export ADDITION_EXCEPTION_PROBABILITY=0.1
+    export ADDITION_TIMEOUT_PROBABILITY=0.05
+    export ADDITION_EXIT_PROBABILITY=0.05
     python3 examples/parallel_addition/worker_addition.py

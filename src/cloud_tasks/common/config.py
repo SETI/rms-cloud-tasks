@@ -219,7 +219,9 @@ class RunConfig(BaseModel, validate_assignment=True):
     scaling_check_interval: Optional[PositiveInt] = None
     instance_termination_delay: Optional[PositiveInt] = None
     max_runtime: Optional[PositiveInt] = None  # Use for queue timeout and workout task kill
-    retry_on_crash: Optional[bool] = None
+    retry_on_exit: Optional[bool] = None
+    retry_on_exception: Optional[bool] = None
+    retry_on_timeout: Optional[bool] = None
 
 
 class ProviderConfig(RunConfig, validate_assignment=True):

@@ -10,6 +10,7 @@ import types
 import yaml
 import signal
 import time
+from multiprocessing import Process
 
 from cloud_tasks.worker.worker import Worker, LocalTaskQueue
 
@@ -162,12 +163,15 @@ def env_setup_teardown(monkeypatch):
     monkeypatch.setenv("RMS_CLOUD_TASKS_INSTANCE_PRICE", "0.1")
     monkeypatch.setenv("RMS_CLOUD_TASKS_NUM_TASKS_PER_INSTANCE", "4")
     monkeypatch.setenv("RMS_CLOUD_TASKS_MAX_RUNTIME", "3600")
+    monkeypatch.setenv("RMS_CLOUD_TASKS_RETRY_ON_TIMEOUT", "true")
+    monkeypatch.setenv("RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION", "true")
+    monkeypatch.setenv("RMS_CLOUD_TASKS_RETRY_ON_EXIT", "true")
     monkeypatch.setenv("RMS_CLOUD_TASKS_SHUTDOWN_GRACE_PERIOD", "300")
     monkeypatch.setenv("RMS_CLOUD_TASKS_TO_SKIP", "5")
     monkeypatch.setenv("RMS_CLOUD_TASKS_MAX_NUM_TASKS", "10")
     monkeypatch.setenv("RMS_CLOUD_TASKS_SIMULATE_SPOT_TERMINATION_AFTER", "32")
     monkeypatch.setenv("RMS_CLOUD_TASKS_SIMULATE_SPOT_TERMINATION_DELAY", "33")
-    monkeypatch.setenv("RMS_CLOUD_TASKS_RETRY_ON_CRASH", "true")
+    monkeypatch.setenv("RMS_CLOUD_TASKS_RETRY_ON_EXIT", "true")
     # Provide the modified environment
     yield
 
@@ -192,12 +196,15 @@ def env_setup_teardown_false(monkeypatch):
     monkeypatch.setenv("RMS_CLOUD_TASKS_INSTANCE_PRICE", "0.1")
     monkeypatch.setenv("RMS_CLOUD_TASKS_NUM_TASKS_PER_INSTANCE", "4")
     monkeypatch.setenv("RMS_CLOUD_TASKS_MAX_RUNTIME", "3600")
+    monkeypatch.setenv("RMS_CLOUD_TASKS_RETRY_ON_TIMEOUT", "false")
+    monkeypatch.setenv("RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION", "false")
+    monkeypatch.setenv("RMS_CLOUD_TASKS_RETRY_ON_EXIT", "false")
     monkeypatch.setenv("RMS_CLOUD_TASKS_SHUTDOWN_GRACE_PERIOD", "300")
     monkeypatch.setenv("RMS_CLOUD_TASKS_TO_SKIP", "5")
     monkeypatch.setenv("RMS_CLOUD_TASKS_MAX_NUM_TASKS", "10")
     monkeypatch.setenv("RMS_CLOUD_TASKS_SIMULATE_SPOT_TERMINATION_AFTER", "32")
     monkeypatch.setenv("RMS_CLOUD_TASKS_SIMULATE_SPOT_TERMINATION_DELAY", "33")
-    monkeypatch.setenv("RMS_CLOUD_TASKS_RETRY_ON_CRASH", "false")
+    monkeypatch.setenv("RMS_CLOUD_TASKS_RETRY_ON_EXIT", "false")
     # Provide the modified environment
     yield
 
@@ -224,12 +231,15 @@ def test_init_with_env_vars(mock_worker_function, env_setup_teardown):
         assert worker.price_per_hour == 0.1
         assert worker.num_simultaneous_tasks == 4
         assert worker.max_runtime == 3600
+        assert worker._retry_on_timeout is True
+        assert worker._retry_on_exception is True
+        assert worker._retry_on_exit is True
         assert worker.shutdown_grace_period == 300
         assert worker._task_skip_count == 5
         assert worker._max_num_tasks == 10
         assert worker._simulate_spot_termination_after == 32
         assert worker._simulate_spot_termination_delay == 33
-        assert worker._retry_on_crash is True
+        assert worker._retry_on_exit is True
 
 
 def test_init_with_env_vars_false(mock_worker_function, env_setup_teardown_false):
@@ -250,12 +260,83 @@ def test_init_with_env_vars_false(mock_worker_function, env_setup_teardown_false
         assert worker.price_per_hour == 0.1
         assert worker.num_simultaneous_tasks == 4
         assert worker.max_runtime == 3600
+        assert worker._retry_on_timeout is False
+        assert worker._retry_on_exception is False
+        assert worker._retry_on_exit is False
         assert worker.shutdown_grace_period == 300
         assert worker._task_skip_count == 5
         assert worker._max_num_tasks == 10
         assert worker._simulate_spot_termination_after == 32
         assert worker._simulate_spot_termination_delay == 33
-        assert worker._retry_on_crash is False
+        assert worker._retry_on_exit is False
+
+
+def test_init_with_args_true(mock_worker_function, env_setup_teardown):
+    args = [
+        "worker.py",
+        "--provider",
+        "GCP",
+        "--project-id",
+        "test-project",
+        "--job-id",
+        "gcp-test-job",
+        "--queue-name",
+        "aws-test-queue",
+        "--instance-type",
+        "n1-standard-1",
+        "--num-cpus",
+        "1",
+        "--memory",
+        "2",
+        "--local-ssd",
+        "50",
+        "--boot-disk",
+        "10",
+        "--no-is-spot",
+        "--price",
+        "0.2",
+        "--num-simultaneous-tasks",
+        "2",
+        "--max-runtime",
+        "1800",
+        "--shutdown-grace-period",
+        "150",
+        "--tasks-to-skip",
+        "7",
+        "--max-num-tasks",
+        "10",
+        "--simulate-spot-termination-after",
+        "16",
+        "--simulate-spot-termination-delay",
+        "17",
+        "--no-retry-on-exit",
+        "--no-retry-on-timeout",
+        "--no-retry-on-exception",
+    ]
+    with patch("sys.argv", args):
+        worker = Worker(mock_worker_function)
+        assert worker.provider == "GCP"
+        assert worker.project_id == "test-project"
+        assert worker.job_id == "gcp-test-job"
+        assert worker.queue_name == "aws-test-queue"
+        assert worker.instance_type == "n1-standard-1"
+        assert worker.num_cpus == 1
+        assert worker.memory_gb == 2.0
+        assert worker.local_ssd_gb == 50.0
+        assert worker.boot_disk_gb == 10.0
+        assert worker._is_spot is False
+        assert worker.is_spot is True  # because of simulate_spot_termination_after
+        assert worker.price_per_hour == 0.2
+        assert worker.num_simultaneous_tasks == 2
+        assert worker.max_runtime == 1800
+        assert worker.shutdown_grace_period == 150
+        assert worker._task_skip_count == 7
+        assert worker._max_num_tasks == 10
+        assert worker._simulate_spot_termination_after == 16
+        assert worker._simulate_spot_termination_delay == 17
+        assert worker._retry_on_exit is False
+        assert worker._retry_on_timeout is False
+        assert worker._retry_on_exception is False
 
 
 def test_init_with_args(mock_worker_function, env_setup_teardown_false):
@@ -296,7 +377,9 @@ def test_init_with_args(mock_worker_function, env_setup_teardown_false):
         "16",
         "--simulate-spot-termination-delay",
         "17",
-        "--no-retry-on-crash",
+        "--retry-on-exit",
+        "--retry-on-timeout",
+        "--retry-on-exception",
     ]
     with patch("sys.argv", args):
         worker = Worker(mock_worker_function)
@@ -319,7 +402,9 @@ def test_init_with_args(mock_worker_function, env_setup_teardown_false):
         assert worker._max_num_tasks == 10
         assert worker._simulate_spot_termination_after == 16
         assert worker._simulate_spot_termination_delay == 17
-        assert worker._retry_on_crash is False
+        assert worker._retry_on_exit is True
+        assert worker._retry_on_timeout is True
+        assert worker._retry_on_exception is True
 
 
 def test_num_simultaneous_tasks_default(mock_worker_function):
@@ -346,10 +431,12 @@ def test_num_simultaneous_tasks_default(mock_worker_function):
                 max_num_tasks=None,
                 simulate_spot_termination_after=None,
                 simulate_spot_termination_delay=None,
-                retry_on_crash=None,
                 event_log_file=None,
                 event_log_to_queue=False,
                 verbose=False,
+                retry_on_timeout=None,
+                retry_on_exception=None,
+                retry_on_exit=None,
             )
             mock_parse_args.return_value = args
             worker = Worker(mock_worker_function)
@@ -377,10 +464,12 @@ def test_num_simultaneous_tasks_default(mock_worker_function):
                 max_num_tasks=None,
                 simulate_spot_termination_after=None,
                 simulate_spot_termination_delay=None,
-                retry_on_crash=None,
                 event_log_file=None,
                 event_log_to_queue=False,
                 verbose=False,
+                retry_on_timeout=None,
+                retry_on_exception=None,
+                retry_on_exit=None,
             )
             mock_parse_args.return_value = args
             worker = Worker(mock_worker_function)
@@ -412,10 +501,12 @@ def test_provider_required_without_tasks(mock_worker_function, caplog):
                     max_num_tasks=None,
                     simulate_spot_termination_after=None,
                     simulate_spot_termination_delay=None,
-                    retry_on_crash=None,
                     event_log_file=None,
                     event_log_to_queue=False,
                     verbose=False,
+                    retry_on_timeout=None,
+                    retry_on_exception=None,
+                    retry_on_exit=None,
                 )
                 with patch("cloud_tasks.worker.worker._parse_args", return_value=args):
                     Worker(mock_worker_function)
@@ -451,10 +542,12 @@ def test_provider_not_required_with_tasks(mock_worker_function):
                     max_num_tasks=None,
                     simulate_spot_termination_after=None,
                     simulate_spot_termination_delay=None,
-                    retry_on_crash=None,
                     event_log_file=None,
                     event_log_to_queue=False,
                     verbose=False,
+                    retry_on_timeout=None,
+                    retry_on_exception=None,
+                    retry_on_exit=None,
                 )
                 mock_parse_args.return_value = args
                 worker = Worker(mock_worker_function)
@@ -583,7 +676,7 @@ async def test_check_termination_notice_azure(worker):
 
 
 @pytest.mark.asyncio
-async def test_handle_results_process_exit(worker, mock_queue):
+async def test_handle_results_process_normal(worker, mock_queue):
     try:
         worker._task_queue = mock_queue
         worker._running = True
@@ -649,6 +742,95 @@ async def test_handle_results_process_exit(worker, mock_queue):
         worker._running = False
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("retry_on_exception", [True, False])
+async def test_handle_results_process_exception(worker, mock_queue, retry_on_exception):
+    try:
+        # Create a worker function that raises an exception
+        def exception_worker_function(task_id, task_data, worker):
+            raise ValueError("Test exception")
+
+        worker._task_queue = mock_queue
+        worker._running = True
+        worker._shutdown_grace_period = 0.01
+        worker._user_worker_function = exception_worker_function
+        worker._retry_on_exception = retry_on_exception
+
+        # Set up the mock queue to return immediately
+        mock_queue.complete_task.return_value = asyncio.Future()
+        mock_queue.complete_task.return_value.set_result(None)
+        mock_queue.fail_task.return_value = asyncio.Future()
+        mock_queue.fail_task.return_value.set_result(None)
+
+        # Create a process that will run the worker function
+        process = Process(
+            target=Worker._worker_process_main,
+            args=(
+                1,
+                exception_worker_function,
+                worker,
+                {"task_id": "task1", "data": {}, "ack_id": "ack1"},
+                worker._result_queue,
+                worker._shutdown_event,
+                worker._termination_event,
+            ),
+        )
+        process.start()
+
+        worker._processes = {
+            1: {
+                "process": process,
+                "task": {"task_id": "task1", "ack_id": "ack1"},
+                "start_time": time.time(),
+            }
+        }
+
+        async def shutdown_when_done():
+            # Wait for the task to be processed with a shorter timeout
+            start_time = time.time()
+            timeout = 0.5  # 500ms timeout
+
+            while time.time() - start_time < timeout:
+                print(f"worker._num_tasks_retried: {worker._num_tasks_retried}")
+                print(f"worker._num_tasks_not_retried: {worker._num_tasks_not_retried}")
+                if worker._num_tasks_retried == 1 or worker._num_tasks_not_retried == 1:
+                    break
+                await asyncio.sleep(0.01)  # 10ms sleep
+
+            if worker._num_tasks_retried != 1 and worker._num_tasks_not_retried != 1:
+                pytest.fail("Timeout waiting for task to be processed")
+
+            # Set shutdown event and wait for a moment to ensure it's processed
+            worker._shutdown_event.set()
+            await asyncio.sleep(0.1)  # Give time for shutdown to be processed
+
+        handler_task = asyncio.create_task(worker._handle_results())
+        shutdown_task = asyncio.create_task(worker._wait_for_shutdown(interval=0.01))
+        done_task = asyncio.create_task(shutdown_when_done())
+
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(handler_task, shutdown_task, done_task), timeout=1.0
+            )
+        except asyncio.TimeoutError:
+            pytest.fail("Test timed out waiting for tasks to complete")
+
+        # Verify the results
+        if retry_on_exception:
+            assert worker._num_tasks_retried == 1
+            assert worker._num_tasks_not_retried == 0
+            mock_queue.fail_task.assert_called_once_with("ack1")
+        else:
+            assert worker._num_tasks_retried == 0
+            assert worker._num_tasks_not_retried == 1
+            mock_queue.complete_task.assert_called_once_with("ack1")
+    finally:
+        worker._running = False
+        if process.is_alive():
+            process.terminate()
+            process.join()
+
+
 def test_worker_process_main(mock_worker_function):
     result_queue = MagicMock()
     shutdown_event = MagicMock()
@@ -693,9 +875,7 @@ def test_execute_task_isolated_error():
     task_id = "test-task"
     task_data = {"key": "value"}
     worker = MagicMock()
-    success, result = Worker._execute_task_isolated(task_id, task_data, worker, error_func)
-    assert success is False
-    assert "Test error" in result
+    pytest.raises(ValueError, Worker._execute_task_isolated, task_id, task_data, worker, error_func)
 
 
 def test_exit_if_no_job_id_and_no_tasks(mock_worker_function, caplog):
@@ -722,10 +902,12 @@ def test_exit_if_no_job_id_and_no_tasks(mock_worker_function, caplog):
                     max_num_tasks=None,
                     simulate_spot_termination_after=None,
                     simulate_spot_termination_delay=None,
-                    retry_on_crash=None,
                     event_log_file=None,
                     event_log_to_queue=False,
                     verbose=False,
+                    retry_on_timeout=None,
+                    retry_on_exception=None,
+                    retry_on_exit=None,
                 )
                 # Patch _parse_args to return our args
                 with patch("cloud_tasks.worker.worker._parse_args", return_value=args):
@@ -761,10 +943,12 @@ def test_worker_properties(mock_worker_function):
                 max_num_tasks=10,
                 simulate_spot_termination_after=32,
                 simulate_spot_termination_delay=33,
-                retry_on_crash=None,
-                event_log_file=None,
-                event_log_to_queue=False,
+                event_log_file="temp_log.json",
+                event_log_to_queue=True,
                 verbose=False,
+                retry_on_timeout=None,
+                retry_on_exception=None,
+                retry_on_exit=None,
             )
             mock_parse_args.return_value = args
             worker = Worker(mock_worker_function)
@@ -782,6 +966,9 @@ def test_worker_properties(mock_worker_function):
             assert worker.num_simultaneous_tasks == 2
             assert worker.max_runtime == 100
             assert worker.shutdown_grace_period == 200
+            assert worker.event_log_to_queue is True
+            assert worker.event_log_queue_name == "qname-events"
+            assert worker.event_log_file == "temp_log.json"
 
 
 def test_signal_handler(mock_worker_function, caplog):
@@ -807,10 +994,12 @@ def test_signal_handler(mock_worker_function, caplog):
                 max_num_tasks=None,
                 simulate_spot_termination_after=None,
                 simulate_spot_termination_delay=None,
-                retry_on_crash=None,
                 event_log_file=None,
                 event_log_to_queue=False,
                 verbose=False,
+                retry_on_timeout=None,
+                retry_on_exception=None,
+                retry_on_exit=None,
             )
             mock_parse_args.return_value = args
             worker = Worker(mock_worker_function)
@@ -956,6 +1145,7 @@ async def test_create_single_task_process(mock_worker_function, caplog):
                 [],
             ]
             worker._task_queue = mock_queue
+            worker._next_worker_id = 3
 
             # Create a task to set shutdown event after process creation
             async def trigger_shutdown():
@@ -1036,7 +1226,8 @@ async def test_check_termination_loop(mock_worker_function, caplog):
 
 
 @pytest.mark.asyncio
-async def test_monitor_process_runtimes(mock_worker_function, caplog):
+@pytest.mark.parametrize("retry_on_timeout", [True, False])
+async def test_monitor_process_runtimes(mock_worker_function, caplog, retry_on_timeout):
     """Test _monitor_process_runtimes with a process that exceeds max runtime."""
     with patch("sys.argv", ["worker.py", "--provider", "AWS", "--job-id", "test-job"]):
         with patch("asyncio.sleep") as mock_sleep:
@@ -1046,6 +1237,7 @@ async def test_monitor_process_runtimes(mock_worker_function, caplog):
             worker = Worker(mock_worker_function)
             worker._running = True
             worker._max_runtime = 0.2
+            worker._retry_on_timeout = retry_on_timeout
 
             # Create a mock process that will exceed max runtime
             mock_process = MagicMock()
@@ -1081,7 +1273,14 @@ async def test_monitor_process_runtimes(mock_worker_function, caplog):
             )
 
             # Verify task was marked as failed
-            mock_queue.complete_task.assert_called_once_with("ack1")
+            if retry_on_timeout:
+                mock_queue.fail_task.assert_called_once_with("ack1")
+                mock_queue.complete_task.assert_not_called()
+                assert "Worker #123: Task task-1 will be retried" in caplog.text
+            else:
+                mock_queue.complete_task.assert_called_once_with("ack1")
+                mock_queue.fail_task.assert_not_called()
+                assert "Worker #123: Task task-1 will not be retried" in caplog.text
 
             # Verify no new process was created to replace it
             assert len(worker._processes) == 0
@@ -1345,7 +1544,7 @@ async def test_check_termination_loop_with_simulated_delay(mock_worker_function,
 
 
 @pytest.mark.asyncio
-async def test_handle_results_process_exit_retry_on_crash(mock_worker_function):
+async def test_handle_results_process_exit_retry_on_exit(mock_worker_function):
     """Should properly handle worker process exits and task retry logic."""
     with patch("sys.argv", ["worker.py", "--provider", "AWS", "--job-id", "test-job"]):
         with patch("cloud_tasks.worker.worker.logger") as mock_logger:
@@ -1379,8 +1578,8 @@ async def test_handle_results_process_exit_retry_on_crash(mock_worker_function):
             with patch("asyncio.sleep") as mock_sleep:
                 mock_sleep.side_effect = fake_sleep
 
-                # Test with retry_on_crash=False
-                worker._retry_on_crash = False
+                # Test with retry_on_exit=False
+                worker._retry_on_exit = False
                 await worker._handle_results()
                 mock_queue.complete_task.assert_called_once_with("test-ack")
                 mock_queue.fail_task.assert_not_called()
@@ -1403,8 +1602,8 @@ async def test_handle_results_process_exit_retry_on_crash(mock_worker_function):
                 }
                 worker._running = True
 
-                # Test with retry_on_crash=True
-                worker._retry_on_crash = True
+                # Test with retry_on_exit=True
+                worker._retry_on_exit = True
                 await worker._handle_results()
                 mock_queue.fail_task.assert_called_once_with("test-ack")
                 mock_queue.complete_task.assert_not_called()
@@ -1449,16 +1648,21 @@ async def test_event_logging_to_file(mock_worker_function, tmp_path, local_tasks
         await worker._log_task_completed("task1", elapsed_time=1.5, retry=False, result="success")
 
         # Test task timeout logging
-        await worker._log_task_timed_out("task2", runtime=2.5)
+        await worker._log_task_timed_out("task2", retry=False, runtime=2.5)
 
         # Test task exit logging
-        await worker._log_task_exited("task3", elapsed_time=2.5, exit_code=1)
+        await worker._log_task_exited("task3", retry=False, elapsed_time=2.5, exit_code=1)
+
+        # Test task exception logging
+        await worker._log_task_exception(
+            "task4", retry=False, elapsed_time=2.5, exception="test error"
+        )
 
         # Test non-fatal exception logging
-        await worker._log_non_fatal_exception(ValueError("test error"))
+        await worker._log_non_fatal_exception("ValueError: test error")
 
         # Test fatal exception logging
-        await worker._log_fatal_exception(RuntimeError("fatal error"))
+        await worker._log_fatal_exception("RuntimeError: fatal error")
 
         # Test spot termination logging
         await worker._log_spot_termination()
@@ -1471,7 +1675,7 @@ async def test_event_logging_to_file(mock_worker_function, tmp_path, local_tasks
         with open(event_log_file) as f:
             events = [json.loads(line) for line in f]
 
-        assert len(events) == 6
+        assert len(events) == 7
 
         # Verify task completion event
         completion_event = next(
@@ -1495,18 +1699,25 @@ async def test_event_logging_to_file(mock_worker_function, tmp_path, local_tasks
         assert exit_event["elapsed_time"] == 2.5
         assert exit_event["exit_code"] == 1
 
+        # Verify task exception event
+        exception_event = next(
+            e for e in events if e["event_type"] == worker._EVENT_TYPE_TASK_EXCEPTION
+        )
+        assert exception_event["task_id"] == "task4"
+        assert exception_event["elapsed_time"] == 2.5
+        assert exception_event["exception"] == "test error"
+
         # Verify non-fatal exception event
         non_fatal_event = next(
             e for e in events if e["event_type"] == worker._EVENT_TYPE_NON_FATAL_EXCEPTION
         )
-        assert non_fatal_event["exception"] == "test error"
+        assert non_fatal_event["exception"] == "ValueError: test error"
 
         # Verify fatal exception event
         fatal_event = next(
             e for e in events if e["event_type"] == worker._EVENT_TYPE_FATAL_EXCEPTION
         )
-        assert fatal_event["exception"] == "fatal error"
-        assert "stack_trace" in fatal_event
+        assert fatal_event["exception"] == "RuntimeError: fatal error"
 
         # Verify spot termination event
         spot_event = next(
@@ -1544,22 +1755,27 @@ async def test_event_logging_to_queue(mock_worker_function):
             )
 
             # Test task timeout logging
-            await worker._log_task_timed_out("task2", runtime=2.5)
+            await worker._log_task_timed_out("task2", retry=False, runtime=2.5)
 
             # Test task exit logging
-            await worker._log_task_exited("task3", elapsed_time=2.5, exit_code=1)
+            await worker._log_task_exited("task3", retry=False, elapsed_time=2.5, exit_code=1)
+
+            # Test task exception logging
+            await worker._log_task_exception(
+                "task4", retry=False, elapsed_time=2.5, exception="test error"
+            )
 
             # Test non-fatal exception logging
-            await worker._log_non_fatal_exception(ValueError("test error"))
+            await worker._log_non_fatal_exception("ValueError: test error")
 
             # Test fatal exception logging
-            await worker._log_fatal_exception(RuntimeError("fatal error"))
+            await worker._log_fatal_exception("RuntimeError: fatal error")
 
             # Test spot termination logging
             await worker._log_spot_termination()
 
             # Verify queue messages
-            assert mock_queue.send_message.call_count == 6
+            assert mock_queue.send_message.call_count == 7
 
             # Get all sent messages
             messages = [json.loads(call.args[0]) for call in mock_queue.send_message.call_args_list]
@@ -1578,6 +1794,7 @@ async def test_event_logging_to_queue(mock_worker_function):
                 e for e in messages if e["event_type"] == worker._EVENT_TYPE_TASK_TIMED_OUT
             )
             assert timeout_event["task_id"] == "task2"
+            assert timeout_event["retry"] is False
             assert timeout_event["elapsed_time"] == 2.5
 
             # Verify task exit event
@@ -1585,21 +1802,30 @@ async def test_event_logging_to_queue(mock_worker_function):
                 e for e in messages if e["event_type"] == worker._EVENT_TYPE_TASK_EXITED
             )
             assert exit_event["task_id"] == "task3"
+            assert exit_event["retry"] is False
             assert exit_event["elapsed_time"] == 2.5
             assert exit_event["exit_code"] == 1
+
+            # Verify task exception event
+            exception_event = next(
+                e for e in messages if e["event_type"] == worker._EVENT_TYPE_TASK_EXCEPTION
+            )
+            assert exception_event["task_id"] == "task4"
+            assert exception_event["retry"] is False
+            assert exception_event["elapsed_time"] == 2.5
+            assert exception_event["exception"] == "test error"
 
             # Verify non-fatal exception event
             non_fatal_event = next(
                 e for e in messages if e["event_type"] == worker._EVENT_TYPE_NON_FATAL_EXCEPTION
             )
-            assert non_fatal_event["exception"] == "test error"
+            assert non_fatal_event["exception"] == "ValueError: test error"
 
             # Verify fatal exception event
             fatal_event = next(
                 e for e in messages if e["event_type"] == worker._EVENT_TYPE_FATAL_EXCEPTION
             )
-            assert fatal_event["exception"] == "fatal error"
-            assert "stack_trace" in fatal_event
+            assert fatal_event["exception"] == "RuntimeError: fatal error"
 
             # Verify spot termination event
             spot_event = next(

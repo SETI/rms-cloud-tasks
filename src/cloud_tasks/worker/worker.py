@@ -165,18 +165,46 @@ def _parse_args(args: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help="Maximum number of tasks to process [overrides $RMS_CLOUD_TASKS_MAX_NUM_TASKS]",
     )
     parser.add_argument(
-        "--retry-on-crash",
+        "--retry-on-exit",
         action="store_true",
         default=None,
-        help="If specified, tasks will be retried if the worker process (or user function) crashes "
-        "[overrides $RMS_CLOUD_TASKS_RETRY_ON_CRASH]",
+        help="If specified, tasks will be retried if the user function exits "
+        "prematurely [overrides $RMS_CLOUD_TASKS_RETRY_ON_EXIT]",
     )
     parser.add_argument(
-        "--no-retry-on-crash",
+        "--no-retry-on-exit",
         action="store_false",
-        dest="retry_on_crash",
-        help="If specified, tasks will not be retried if the worker process (or user function) "
-        "crashes (default) [overrides $RMS_CLOUD_TASKS_RETRY_ON_CRASH]",
+        dest="retry_on_exit",
+        help="If specified, tasks will not be retried if the user function exits "
+        "prematurely (default) [overrides $RMS_CLOUD_TASKS_RETRY_ON_EXIT]",
+    )
+    parser.add_argument(
+        "--retry-on-exception",
+        action="store_true",
+        default=None,
+        help="If specified, tasks will be retried if the user function raises an unhandled "
+        "exception [overrides $RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION]",
+    )
+    parser.add_argument(
+        "--no-retry-on-exception",
+        action="store_false",
+        dest="retry_on_exception",
+        help="If specified, tasks will not be retried if the user function raises an unhandled "
+        "exception (default) [overrides $RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION]",
+    )
+    parser.add_argument(
+        "--retry-on-timeout",
+        action="store_true",
+        default=None,
+        help="If specified, tasks will be retried if they exceed the maximum runtime specified"
+        "by --max-runtime [overrides $RMS_CLOUD_TASKS_RETRY_ON_TIMEOUT]",
+    )
+    parser.add_argument(
+        "--no-retry-on-timeout",
+        action="store_false",
+        dest="retry_on_timeout",
+        help="If specified, tasks will not be retried if they exceed the maximum runtime specified "
+        "by --max-runtime (default) [overrides $RMS_CLOUD_TASKS_RETRY_ON_TIMEOUT]",
     )
     parser.add_argument(
         "--simulate-spot-termination-after",
@@ -463,13 +491,29 @@ class Worker:
         )
         logger.info(f"  Shutdown grace period: {self._shutdown_grace_period} seconds")
 
-        # Get retry on crash from args or environment variable
-        self._retry_on_crash = parsed_args.retry_on_crash
-        if self._retry_on_crash is None:
-            self._retry_on_crash = os.getenv("RMS_CLOUD_TASKS_RETRY_ON_CRASH")
-            if self._retry_on_crash is not None:
-                self._retry_on_crash = self._retry_on_crash.lower() in ("true", "1")
-        logger.info(f"  Retry on crash: {self._retry_on_crash}")
+        # Get retry on exit from args or environment variable
+        self._retry_on_exit = parsed_args.retry_on_exit
+        if self._retry_on_exit is None:
+            self._retry_on_exit = os.getenv("RMS_CLOUD_TASKS_RETRY_ON_EXIT")
+            if self._retry_on_exit is not None:
+                self._retry_on_exit = self._retry_on_exit.lower() in ("true", "1")
+        logger.info(f"  Retry on exit: {self._retry_on_exit}")
+
+        # Get retry on exception from args or environment variable
+        self._retry_on_exception = parsed_args.retry_on_exception
+        if self._retry_on_exception is None:
+            self._retry_on_exception = os.getenv("RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION")
+            if self._retry_on_exception is not None:
+                self._retry_on_exception = self._retry_on_exception.lower() in ("true", "1")
+        logger.info(f"  Retry on exception: {self._retry_on_exception}")
+
+        # Get retry on timeout from args or environment variable
+        self._retry_on_timeout = parsed_args.retry_on_timeout
+        if self._retry_on_timeout is None:
+            self._retry_on_timeout = os.getenv("RMS_CLOUD_TASKS_RETRY_ON_TIMEOUT")
+            if self._retry_on_timeout is not None:
+                self._retry_on_timeout = self._retry_on_timeout.lower() in ("true", "1")
+        logger.info(f"  Retry on timeout: {self._retry_on_timeout}")
 
         # Get simulate spot termination after from args or environment variable
         self._simulate_spot_termination_after = parsed_args.simulate_spot_termination_after
@@ -533,10 +577,13 @@ class Worker:
         self._termination_event: MP_Event = Event()  # type: ignore
 
         # Track processes
+        self._next_worker_id: int = 0
         self._processes: Dict[int, Dict[str, Any]] = {}  # Maps worker # to process and task
         self._num_tasks_not_retried: int = 0
         self._num_tasks_retried: int = 0
         self._num_tasks_timed_out: int = 0
+        self._num_tasks_exited: int = 0
+        self._num_tasks_exception: int = 0
 
         # Task queue for inter-process communication
         self._result_queue: MP_Queue = Queue()  # type: ignore
@@ -572,6 +619,21 @@ class Worker:
     def queue_name(self) -> str | None:
         """The task queue name"""
         return self._queue_name
+
+    @property
+    def event_log_to_queue(self) -> bool:
+        """Whether to write events to a queue"""
+        return self._event_log_to_queue
+
+    @property
+    def event_log_queue_name(self) -> str | None:
+        """The queue to write events to"""
+        return self._event_log_queue_name
+
+    @property
+    def event_log_file(self) -> str | None:
+        """The file to write events to"""
+        return self._event_log_file
 
     @property
     def instance_type(self) -> str | None:
@@ -642,6 +704,7 @@ class Worker:
         signal.signal(signal.SIGTERM, signal.SIG_DFL)
 
     _EVENT_TYPE_TASK_COMPLETED = "task_completed"
+    _EVENT_TYPE_TASK_EXCEPTION = "task_exception"
     _EVENT_TYPE_TASK_TIMED_OUT = "task_timed_out"
     _EVENT_TYPE_TASK_EXITED = "task_exited"
     _EVENT_TYPE_NON_FATAL_EXCEPTION = "non_fatal_exception"
@@ -664,57 +727,73 @@ class Worker:
             await self._event_logger_queue.send_message(json.dumps(new_event))
 
     async def _log_task_completed(
-        self, task_id: str, *, elapsed_time: float, retry: bool, result: Any
+        self, task_id: str, *, retry: bool, elapsed_time: float, result: Any
     ) -> None:
         """Log a task completed event."""
         await self._log_event(
             {
                 "event_type": self._EVENT_TYPE_TASK_COMPLETED,
                 "task_id": task_id,
-                "elapsed_time": elapsed_time,
                 "retry": retry,
+                "elapsed_time": elapsed_time,
                 "result": result,
             }
         )
 
-    async def _log_task_timed_out(self, task_id: str, *, runtime: float) -> None:
+    async def _log_task_exception(
+        self, task_id: str, *, retry: bool, elapsed_time: float, exception: str
+    ) -> None:
+        """Log a task exception event."""
+        await self._log_event(
+            {
+                "event_type": self._EVENT_TYPE_TASK_EXCEPTION,
+                "task_id": task_id,
+                "retry": retry,
+                "elapsed_time": elapsed_time,
+                "exception": exception,
+            }
+        )
+
+    async def _log_task_timed_out(self, task_id: str, *, retry: bool, runtime: float) -> None:
         """Log a task timed out event."""
         await self._log_event(
             {
                 "event_type": self._EVENT_TYPE_TASK_TIMED_OUT,
                 "task_id": task_id,
+                "retry": retry,
                 "elapsed_time": runtime,
             }
         )
 
-    async def _log_task_exited(self, task_id: str, *, elapsed_time: float, exit_code: int) -> None:
+    async def _log_task_exited(
+        self, task_id: str, *, retry: bool, elapsed_time: float, exit_code: int
+    ) -> None:
         """Log a task exited event."""
         await self._log_event(
             {
                 "event_type": self._EVENT_TYPE_TASK_EXITED,
                 "task_id": task_id,
+                "retry": retry,
                 "elapsed_time": elapsed_time,
                 "exit_code": exit_code,
             }
         )
 
-    async def _log_non_fatal_exception(self, exception: Exception) -> None:
+    async def _log_non_fatal_exception(self, exception: str) -> None:
         """Log a non-fatal exception event."""
         await self._log_event(
             {
                 "event_type": self._EVENT_TYPE_NON_FATAL_EXCEPTION,
-                "exception": str(exception),
-                "stack_trace": traceback.format_exc(),
+                "exception": exception,
             }
         )
 
-    async def _log_fatal_exception(self, exception: Exception) -> None:
+    async def _log_fatal_exception(self, exception: str) -> None:
         """Log a fatal exception event."""
         await self._log_event(
             {
                 "event_type": self._EVENT_TYPE_FATAL_EXCEPTION,
-                "exception": str(exception),
-                "stack_trace": traceback.format_exc(),
+                "exception": exception,
             }
         )
 
@@ -751,7 +830,7 @@ class Worker:
                 self._task_queue = LocalTaskQueue(self._tasks_file)
             except Exception as e:
                 logger.error(f"Error initializing local task queue: {e}", exc_info=True)
-                await self._log_fatal_exception(e)
+                await self._log_fatal_exception(traceback.format_exc())
                 sys.exit(1)
         else:
             logger.debug(
@@ -766,7 +845,7 @@ class Worker:
                 )
             except Exception as e:
                 logger.error(f"Error initializing task queue: {e}", exc_info=True)
-                await self._log_fatal_exception(e)
+                await self._log_fatal_exception(traceback.format_exc())
                 sys.exit(1)
 
         self._start_time = time.time()
@@ -788,11 +867,11 @@ class Worker:
         # Process tasks until shutdown
         await self._wait_for_shutdown()
 
-        total = self._num_tasks_not_retried + self._num_tasks_retried + self._num_tasks_timed_out
+        total = self._num_tasks_not_retried + self._num_tasks_retried
         logger.info(
             f"Task scheduler shutdown complete. Not retried: {self._num_tasks_not_retried}, "
             f"Retried: {self._num_tasks_retried}, Timed out: {self._num_tasks_timed_out}, "
-            f"Total: {total}"
+            f"Exited: {self._num_tasks_exited}, Total: {total}"
         )
         # We don't log an event here because this only happens when the user hits Ctrl-C
 
@@ -816,11 +895,12 @@ class Worker:
                     # Now go through the result queue
                     while not self._result_queue.empty():
                         worker_id, retry, result = self._result_queue.get_nowait()
+                        print(worker_id, retry, result)
 
                         if worker_id not in self._processes:
                             # Race condition with max_runtime most likely
                             logger.debug(
-                                f"Worker #{worker_id} report results but process had previously "
+                                f"Worker #{worker_id} reported results but process had previously "
                                 "exited; this is probably due to a race condition with "
                                 "max_runtime and should be ignored"
                             )
@@ -837,16 +917,39 @@ class Worker:
                             p.kill()
 
                         elapsed_time = time.time() - process_data["start_time"]
-                        if retry:
+                        if retry == "exception":
+                            self._num_tasks_exception += 1
+                            logger.warning(
+                                f"Worker #{worker_id} reported task {task['task_id']} raised "
+                                f"an unhandled exception in {elapsed_time:.1f} seconds, "
+                                f"{'retrying' if self._retry_on_exception else 'not retrying'}: "
+                                f"{result}"
+                            )
+                            await self._log_task_exception(
+                                task["task_id"],
+                                retry=self._retry_on_exception,
+                                elapsed_time=elapsed_time,
+                                exception=result,
+                            )
+                            if self._retry_on_exception:
+                                self._num_tasks_retried += 1
+                                async with self._task_queue_semaphore:
+                                    await self._task_queue.fail_task(task["ack_id"])
+                            else:
+                                self._num_tasks_not_retried += 1
+                                async with self._task_queue_semaphore:
+                                    await self._task_queue.complete_task(task["ack_id"])
+                        elif retry:
                             self._num_tasks_retried += 1
                             logger.info(
                                 f"Worker #{worker_id} reported task {task['task_id']} completed "
-                                f"in {elapsed_time:.1f} seconds but will be retried; result: {result}"
+                                f"in {elapsed_time:.1f} seconds but will be retried; result: "
+                                f"{result}"
                             )
                             await self._log_task_completed(
                                 task["task_id"],
-                                elapsed_time=elapsed_time,
                                 retry=True,
+                                elapsed_time=elapsed_time,
                                 result=result,
                             )
                             async with self._task_queue_semaphore:
@@ -859,8 +962,8 @@ class Worker:
                             )
                             await self._log_task_completed(
                                 task["task_id"],
-                                elapsed_time=elapsed_time,
                                 retry=False,
+                                elapsed_time=elapsed_time,
                                 result=result,
                             )
                             async with self._task_queue_semaphore:
@@ -873,6 +976,7 @@ class Worker:
                     # Check for processes that exited prematurely; we didn't get result messages
                     # from these
                     for worker_id, process_data in exited_processes.items():
+                        self._num_tasks_exited += 1
                         try:
                             exit_code = process_data["process"].exitcode
                         except Exception:
@@ -883,18 +987,23 @@ class Worker:
                             f"Worker #{worker_id} (PID {p.pid}) processing task "
                             f'"{task["task_id"]}" exited prematurely in {elapsed_time:.1f} seconds '
                             f"with exit code {exit_code}; "
-                            f"{'retrying' if self._retry_on_crash else 'not retrying'}"
+                            f"{'retrying' if self._retry_on_exit else 'not retrying'}"
                         )
                         await self._log_task_exited(
-                            task["task_id"], elapsed_time=elapsed_time, exit_code=exit_code
+                            task["task_id"],
+                            retry=self._retry_on_exit,
+                            elapsed_time=elapsed_time,
+                            exit_code=exit_code,
                         )
 
                         async with self._task_queue_semaphore:
-                            if self._retry_on_crash:
-                                # If we're retrying on crash, mark it as failed
+                            if self._retry_on_exit:
+                                self._num_tasks_retried += 1
+                                # If we're retrying on exit, mark it as failed
                                 await self._task_queue.fail_task(task["ack_id"])
                             else:
-                                # If we're not retrying on crash, mark it as complete
+                                self._num_tasks_not_retried += 1
+                                # If we're not retrying on exit, mark it as complete
                                 await self._task_queue.complete_task(task["ack_id"])
 
                         del self._processes[worker_id]
@@ -904,7 +1013,7 @@ class Worker:
 
             except Exception as e:
                 logger.error(f"Error handling results: {e}", exc_info=True)
-                await self._log_non_fatal_exception(e)
+                await self._log_non_fatal_exception(traceback.format_exc())
                 await asyncio.sleep(1)  # Wait a bit longer on error
 
     async def _wait_for_shutdown(self, interval: float = 0.5) -> None:
@@ -970,7 +1079,7 @@ class Worker:
 
             except Exception as e:
                 logger.error(f"Error checking for termination: {e}", exc_info=True)
-                await self._log_non_fatal_exception(e)
+                await self._log_non_fatal_exception(traceback.format_exc())
             # Check every 5 seconds for real instance, .1 second for simulated
             if self._simulate_spot_termination_after is not None:
                 await asyncio.sleep(0.1)
@@ -1090,12 +1199,8 @@ class Worker:
 
                         async with self._process_ops_semaphore:
                             # Start a new process for this task
-                            worker_id = (
-                                self._num_tasks_not_retried
-                                + self._num_tasks_retried
-                                + self._num_tasks_timed_out
-                                + len(self._processes)
-                            )
+                            worker_id = self._next_worker_id
+                            self._next_worker_id += 1
                             p = Process(
                                 target=self._worker_process_main,
                                 args=(
@@ -1127,7 +1232,7 @@ class Worker:
 
             except Exception as e:
                 logger.error(f"Error fetching tasks: {e}", exc_info=True)
-                await self._log_non_fatal_exception(e)
+                await self._log_non_fatal_exception(traceback.format_exc())
                 await asyncio.sleep(1)  # Wait a bit longer on error
 
     async def _monitor_process_runtimes(self) -> None:
@@ -1146,13 +1251,14 @@ class Worker:
                     if runtime <= self._max_runtime:
                         continue
 
+                    self._num_tasks_timed_out += 1
                     logger.warning(
                         f"Worker #{worker_id} (PID {p.pid}), task "
                         f"{process_data['task']['task_id']} exceeded max runtime of "
                         f"{self._max_runtime} seconds (actual runtime {runtime:.1f} seconds); "
                         "terminating"
                     )
-                    await self._log_task_timed_out(task["task_id"], runtime=runtime)
+                    await self._log_task_timed_out(task["task_id"], retry=False, runtime=runtime)
 
                     # Kill the process that exceeded runtime
                     try:
@@ -1168,23 +1274,30 @@ class Worker:
                         logger.error(
                             f"Error terminating process worker #{worker_id} (PID " f"{p.pid}): {e}"
                         )
-                        await self._log_non_fatal_exception(e)
+                        await self._log_non_fatal_exception(traceback.format_exc())
 
                     # Mark task as failed in the queue
                     try:
-                        async with self._task_queue_semaphore:
-                            logger.info(
-                                f"Marking task {task['task_id']} as completed due to excessive "
-                                "runtime to avoid re-processing"
-                            )
-                            await self._task_queue.complete_task(task["ack_id"])
+                        if self._retry_on_timeout:
+                            self._num_tasks_retried += 1
+                            async with self._task_queue_semaphore:
+                                logger.info(
+                                    f"Worker #{worker_id}: Task {task['task_id']} will be retried"
+                                )
+                                await self._task_queue.fail_task(task["ack_id"])
+                        else:
+                            self._num_tasks_not_retried += 1
+                            async with self._task_queue_semaphore:
+                                logger.info(
+                                    f"Worker #{worker_id}: Task {task['task_id']} will not be retried"
+                                )
+                                await self._task_queue.complete_task(task["ack_id"])
                     except Exception as e:
                         logger.error(f"Error marking task {task['task_id']} as completed: {e}")
-                        await self._log_non_fatal_exception(e)
+                        await self._log_non_fatal_exception(traceback.format_exc())
 
                     # Remove from tracking
                     processes_to_delete.append(worker_id)
-                    self._num_tasks_timed_out += 1
 
                 for worker_id in processes_to_delete:
                     del self._processes[worker_id]
@@ -1242,13 +1355,14 @@ class Worker:
 
             except Exception as e:
                 logger.error(
-                    f"Worker #{worker_id}: Error executing task {task_id}: {e}", exc_info=True
+                    f"Worker #{worker_id}: Unhandled exception executing task {task_id}: {e}",
+                    exc_info=True,
                 )
                 # Send failure back to main process
-                result_queue.put((worker_id, worker._retry_on_crash, str(e)))
+                result_queue.put((worker_id, "exception", str(traceback.format_exc())))
 
         except Exception as e:
-            logger.error(f"Worker #{worker_id}: Unhandled error - {e}", exc_info=True)
+            logger.error(f"Worker #{worker_id}: Unhandled exception - {e}", exc_info=True)
 
         logger.info(f"Worker #{worker_id}: Exiting")
         sys.exit(0)
@@ -1271,10 +1385,6 @@ class Worker:
             task_data: Task data to process
 
         Returns:
-            success flag
+            Tuple of (retry, result)
         """
-        try:
-            return user_worker_function(task_id, task_data, worker)
-
-        except Exception as e:
-            return False, str(e)
+        return user_worker_function(task_id, task_data, worker)
