@@ -9,7 +9,9 @@ from .queue_manager import QueueManager
 from cloud_tasks.common.config import Config, AWSConfig, GCPConfig, AzureConfig
 
 
-async def create_queue(config: Optional[Config] = None, **kwargs: Any) -> QueueManager:
+async def create_queue(
+    config: Optional[Config] = None, visibility_timeout: Optional[int] = 30, **kwargs: Any
+) -> QueueManager:
     """
     Create a TaskQueue implementation for the specified cloud provider.
 
@@ -31,16 +33,28 @@ async def create_queue(config: Optional[Config] = None, **kwargs: Any) -> QueueM
                 # We import these here to avoid requiring the dependencies for unused providers
                 from .aws import AWSSQSQueue
 
-                queue: QueueManager = AWSSQSQueue(cast(AWSConfig, provider_config), **kwargs)
+                queue: QueueManager = AWSSQSQueue(
+                    cast(AWSConfig, provider_config),
+                    visibility_timeout=visibility_timeout,
+                    **kwargs,
+                )
             case "GCP":
                 from .gcp import GCPPubSubQueue
 
-                queue = GCPPubSubQueue(cast(GCPConfig, provider_config), **kwargs)
+                queue = GCPPubSubQueue(
+                    cast(GCPConfig, provider_config),
+                    visibility_timeout=visibility_timeout,
+                    **kwargs,
+                )
             case "AZURE":  # pragma: no cover
                 # TODO Implement Azure Service Bus queue
                 from .azure import AzureServiceBusQueue
 
-                queue = AzureServiceBusQueue(cast(AzureConfig, provider_config), **kwargs)
+                queue = AzureServiceBusQueue(
+                    cast(AzureConfig, provider_config),
+                    visibility_timeout=visibility_timeout,
+                    **kwargs,
+                )
             case _:  # pragma: no cover
                 # Can't get here because get_provider_config() raises an error
                 raise ValueError(f"Unsupported queue provider: {provider}")
@@ -54,16 +68,16 @@ async def create_queue(config: Optional[Config] = None, **kwargs: Any) -> QueueM
             case "AWS":
                 from .aws import AWSSQSQueue
 
-                queue: QueueManager = AWSSQSQueue(**kwargs)
+                queue: QueueManager = AWSSQSQueue(visibility_timeout=visibility_timeout, **kwargs)
             case "GCP":
                 from .gcp import GCPPubSubQueue
 
-                queue = GCPPubSubQueue(**kwargs)
+                queue = GCPPubSubQueue(visibility_timeout=visibility_timeout, **kwargs)
             case "AZURE":  # pragma: no cover
                 # TODO Implement Azure Service Bus queue
                 from .azure import AzureServiceBusQueue
 
-                queue = AzureServiceBusQueue(**kwargs)
+                queue = AzureServiceBusQueue(visibility_timeout=visibility_timeout, **kwargs)
             case _:
                 raise ValueError(f"Unsupported queue provider: {provider}")
 

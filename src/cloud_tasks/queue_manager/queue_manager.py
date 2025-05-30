@@ -7,7 +7,12 @@ from cloud_tasks.common.config import ProviderConfig
 class QueueManager(ABC):
     """Base interface for task queue operations."""
 
-    def __init__(self, config: Optional[ProviderConfig] = None, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        config: Optional[ProviderConfig] = None,
+        visibility_timeout: Optional[int] = 30,
+        **kwargs: Any,
+    ) -> None:
         """Initialize the task queue with configuration."""
         pass  # pragma: no cover
 

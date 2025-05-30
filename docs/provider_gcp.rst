@@ -35,6 +35,9 @@ GCP-Specific Documentation
   - SSD
   - Extreme
 - Pricing will not include any negotiated discounts
+- Be sure to enable the Pub/Sub API for the project you are using by visiting the "Pub/Sub"
+  page in the Google Cloud console. To verify that the API is enabled, visit
+  https://console.cloud.google.com/apis/library/pubsub.googleapis.com
 
 .. _gcp_service_account:
 

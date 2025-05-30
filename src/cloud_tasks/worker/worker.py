@@ -21,11 +21,15 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple, Callable, Sequenc
 import uuid
 import yaml
 from multiprocessing import Process, Queue, Manager, Event
+import multiprocessing
 
 from filecache import FCPath
 
 from cloud_tasks.common.logging_config import configure_logging
 from cloud_tasks.queue_manager import create_queue
+
+
+MP_CTX = multiprocessing.get_context("spawn")
 
 
 # Type aliases for multiprocessing objects
@@ -318,6 +322,47 @@ class LocalTaskQueue:
         pass
 
 
+class WorkerInherited:
+    """Class containing properties that can be safely inherited by child processes."""
+
+    def __init__(self):
+        # Initialize all attributes to None
+        self.provider = None
+        self.project_id = None
+        self.job_id = None
+        self.queue_name = None
+        self.event_log_to_queue = False
+        self.event_log_queue_name = None
+        self.event_log_file = None
+        self.instance_type = None
+        self.num_cpus = None
+        self.memory_gb = None
+        self.local_ssd_gb = None
+        self.boot_disk_gb = None
+        self.is_spot = False
+        self.price_per_hour = None
+        self.num_simultaneous_tasks = 1
+        self.max_runtime = 600
+        self.shutdown_grace_period = 30
+        self.retry_on_exit = False
+        self.retry_on_exception = False
+        self.retry_on_timeout = False
+        self.simulate_spot_termination_after = None
+        self.simulate_spot_termination_delay = None
+        self.shutdown_event = None  # Will be set to MP_Event
+        self.termination_event = None  # Will be set to MP_Event
+
+    @property
+    def received_termination_notice(self) -> bool:
+        """Whether the worker has received a termination notice"""
+        return self.termination_event.is_set()
+
+    @property
+    def received_shutdown_request(self) -> bool:
+        """Whether the worker has received a shutdown request"""
+        return self.shutdown_event.is_set()
+
+
 class Worker:
     """Worker class for processing tasks from queues using multiprocessing."""
 
@@ -344,9 +389,17 @@ class Worker:
 
         logger.info("Configuration:")
 
+        # Create the inherited properties object first
+        self._inherited = WorkerInherited()
+
+        # Set up multiprocessing events
+        self._manager = MP_CTX.Manager()
+        self._inherited.shutdown_event = MP_CTX.Event()  # type: ignore
+        self._inherited.termination_event = MP_CTX.Event()  # type: ignore
+
         # Get provider from args or environment variable
-        self._provider = parsed_args.provider or os.getenv("RMS_CLOUD_TASKS_PROVIDER")
-        if self._provider is None:
+        self._inherited.provider = parsed_args.provider or os.getenv("RMS_CLOUD_TASKS_PROVIDER")
+        if self._inherited.provider is None:
             if not parsed_args.task_file:
                 logger.error(
                     "Provider not specified via --provider or RMS_CLOUD_TASKS_PROVIDER "
@@ -358,25 +411,29 @@ class Worker:
                     "--event-log-to-queue requires either --provider or RMS_CLOUD_TASKS_PROVIDER"
                 )
                 sys.exit(1)
-        if self._provider is not None:
-            self._provider = self._provider.upper()
-        logger.info(f"  Provider: {self._provider}")
+        if self._inherited.provider is not None:
+            self._inherited.provider = self._inherited.provider.upper()
+        logger.info(f"  Provider: {self._inherited.provider}")
 
         # Get project ID from args or environment variable (optional - only for GCP)
-        self._project_id = parsed_args.project_id or os.getenv("RMS_CLOUD_TASKS_PROJECT_ID")
-        logger.info(f"  Project ID: {self._project_id}")
+        self._inherited.project_id = parsed_args.project_id or os.getenv(
+            "RMS_CLOUD_TASKS_PROJECT_ID"
+        )
+        logger.info(f"  Project ID: {self._inherited.project_id}")
 
         # Get job ID from args or environment variable
-        self._job_id = parsed_args.job_id or os.getenv("RMS_CLOUD_TASKS_JOB_ID")
-        logger.info(f"  Job ID: {self._job_id}")
+        self._inherited.job_id = parsed_args.job_id or os.getenv("RMS_CLOUD_TASKS_JOB_ID")
+        logger.info(f"  Job ID: {self._inherited.job_id}")
 
         # Get queue name from args or environment variable
-        self._queue_name = parsed_args.queue_name or os.getenv("RMS_CLOUD_TASKS_QUEUE_NAME")
-        if self._queue_name is None:
-            self._queue_name = self._job_id
-        logger.info(f"  Queue name: {self._queue_name}")
+        self._inherited.queue_name = parsed_args.queue_name or os.getenv(
+            "RMS_CLOUD_TASKS_QUEUE_NAME"
+        )
+        if self._inherited.queue_name is None:
+            self._inherited.queue_name = self._inherited.job_id
+        logger.info(f"  Queue name: {self._inherited.queue_name}")
 
-        if self._queue_name is None and not parsed_args.task_file:
+        if self._inherited.queue_name is None and not parsed_args.task_file:
             logger.error(
                 "Queue name not specified via --queue-name or RMS_CLOUD_TASKS_QUEUE_NAME "
                 "or --job-id or RMS_CLOUD_TASKS_JOB_ID and no tasks file specified via --task-file"
@@ -384,159 +441,169 @@ class Worker:
             sys.exit(1)
 
         # Get event log file from args or environment variable
-        self._event_log_file = parsed_args.event_log_file or os.getenv(
+        self._inherited.event_log_file = parsed_args.event_log_file or os.getenv(
             "RMS_CLOUD_TASKS_EVENT_LOG_FILE"
         )
-        logger.info(f"  Event log file: {self._event_log_file}")
+        logger.info(f"  Event log file: {self._inherited.event_log_file}")
 
-        self._event_log_to_queue = parsed_args.event_log_to_queue
-        if self._event_log_to_queue is None:
-            self._event_log_to_queue = os.getenv("RMS_CLOUD_TASKS_EVENT_LOG_TO_QUEUE")
-            if self._event_log_to_queue is not None:
-                self._event_log_to_queue = self._event_log_to_queue.lower() in ("true", "1")
-        logger.info(f"  Event log to queue: {self._event_log_to_queue}")
+        self._inherited.event_log_to_queue = parsed_args.event_log_to_queue
+        if self._inherited.event_log_to_queue is None:
+            self._inherited.event_log_to_queue = os.getenv("RMS_CLOUD_TASKS_EVENT_LOG_TO_QUEUE")
+            if self._inherited.event_log_to_queue is not None:
+                self._inherited.event_log_to_queue = self._inherited.event_log_to_queue.lower() in (
+                    "true",
+                    "1",
+                )
+        logger.info(f"  Event log to queue: {self._inherited.event_log_to_queue}")
 
-        self._event_log_queue_name = None
-        if self._event_log_to_queue:
-            if self._queue_name:
-                self._event_log_queue_name = f"{self._queue_name}-events"
-                logger.info(f"  Event log queue name: {self._event_log_queue_name}")
+        self._inherited.event_log_queue_name = None
+        if self._inherited.event_log_to_queue:
+            if self._inherited.queue_name:
+                self._inherited.event_log_queue_name = f"{self._inherited.queue_name}-events"
+                logger.info(f"  Event log queue name: {self._inherited.event_log_queue_name}")
             else:
                 logger.error("--event-log-to-queue requires either --job-id or --queue-name")
                 sys.exit(1)
 
         # Get instance type from args or environment variable
-        self._instance_type = parsed_args.instance_type or os.getenv(
+        self._inherited.instance_type = parsed_args.instance_type or os.getenv(
             "RMS_CLOUD_TASKS_INSTANCE_TYPE"
         )
-        logger.info(f"  Instance type: {self._instance_type}")
+        logger.info(f"  Instance type: {self._inherited.instance_type}")
 
         # Get number of vCPUs from args or environment variable
-        self._num_cpus = parsed_args.num_cpus
-        if self._num_cpus is None:
-            self._num_cpus = os.getenv("RMS_CLOUD_TASKS_INSTANCE_NUM_VCPUS")
-        if self._num_cpus is not None:
-            self._num_cpus = int(self._num_cpus)
-        logger.info(f"  Num CPUs: {self._num_cpus}")
+        self._inherited.num_cpus = parsed_args.num_cpus
+        if self._inherited.num_cpus is None:
+            self._inherited.num_cpus = os.getenv("RMS_CLOUD_TASKS_INSTANCE_NUM_VCPUS")
+        if self._inherited.num_cpus is not None:
+            self._inherited.num_cpus = int(self._inherited.num_cpus)
+        logger.info(f"  Num CPUs: {self._inherited.num_cpus}")
 
         # Get memory from args or environment variable
-        self._memory_gb = parsed_args.memory
-        if self._memory_gb is None:
-            self._memory_gb = os.getenv("RMS_CLOUD_TASKS_INSTANCE_MEM_GB")
-        if self._memory_gb is not None:
-            self._memory_gb = float(self._memory_gb)
-        logger.info(f"  Memory: {self._memory_gb} GB")
+        self._inherited.memory_gb = parsed_args.memory
+        if self._inherited.memory_gb is None:
+            self._inherited.memory_gb = os.getenv("RMS_CLOUD_TASKS_INSTANCE_MEM_GB")
+        if self._inherited.memory_gb is not None:
+            self._inherited.memory_gb = float(self._inherited.memory_gb)
+        logger.info(f"  Memory: {self._inherited.memory_gb} GB")
 
         # Get local SSD from args or environment variable
-        self._local_ssd_gb = parsed_args.local_ssd
-        if self._local_ssd_gb is None:
-            self._local_ssd_gb = os.getenv("RMS_CLOUD_TASKS_INSTANCE_SSD_GB")
-        if self._local_ssd_gb is not None:
-            self._local_ssd_gb = float(self._local_ssd_gb)
-        logger.info(f"  Local SSD: {self._local_ssd_gb} GB")
+        self._inherited.local_ssd_gb = parsed_args.local_ssd
+        if self._inherited.local_ssd_gb is None:
+            self._inherited.local_ssd_gb = os.getenv("RMS_CLOUD_TASKS_INSTANCE_SSD_GB")
+        if self._inherited.local_ssd_gb is not None:
+            self._inherited.local_ssd_gb = float(self._inherited.local_ssd_gb)
+        logger.info(f"  Local SSD: {self._inherited.local_ssd_gb} GB")
 
         # Get boot disk size from args or environment variable
-        self._boot_disk_gb = parsed_args.boot_disk
-        if self._boot_disk_gb is None:
-            self._boot_disk_gb = os.getenv("RMS_CLOUD_TASKS_INSTANCE_BOOT_DISK_GB")
-        if self._boot_disk_gb is not None:
-            self._boot_disk_gb = float(self._boot_disk_gb)
-        logger.info(f"  Boot disk size: {self._boot_disk_gb} GB")
+        self._inherited.boot_disk_gb = parsed_args.boot_disk
+        if self._inherited.boot_disk_gb is None:
+            self._inherited.boot_disk_gb = os.getenv("RMS_CLOUD_TASKS_INSTANCE_BOOT_DISK_GB")
+        if self._inherited.boot_disk_gb is not None:
+            self._inherited.boot_disk_gb = float(self._inherited.boot_disk_gb)
+        logger.info(f"  Boot disk size: {self._inherited.boot_disk_gb} GB")
 
         # Get spot instance flag from args or environment variable
-        self._is_spot = parsed_args.is_spot
-        if self._is_spot is None:
-            self._is_spot = os.getenv("RMS_CLOUD_TASKS_INSTANCE_IS_SPOT")
-            if self._is_spot is not None:
-                self._is_spot = self._is_spot.lower() in ("true", "1")
-        logger.info(f"  Spot instance: {self._is_spot}")
+        self._inherited.is_spot = parsed_args.is_spot
+        if self._inherited.is_spot is None:
+            self._inherited.is_spot = os.getenv("RMS_CLOUD_TASKS_INSTANCE_IS_SPOT")
+            if self._inherited.is_spot is not None:
+                self._inherited.is_spot = self._inherited.is_spot.lower() in ("true", "1")
+        logger.info(f"  Spot instance: {self._inherited.is_spot}")
 
         # Get price per hour from args or environment variable
-        self._price_per_hour = parsed_args.price
-        if self._price_per_hour is None:
-            self._price_per_hour = os.getenv("RMS_CLOUD_TASKS_INSTANCE_PRICE")
-        if self._price_per_hour is not None:
-            self._price_per_hour = float(self._price_per_hour)
-        logger.info(f"  Price per hour: {self._price_per_hour}")
+        self._inherited.price_per_hour = parsed_args.price
+        if self._inherited.price_per_hour is None:
+            self._inherited.price_per_hour = os.getenv("RMS_CLOUD_TASKS_INSTANCE_PRICE")
+        if self._inherited.price_per_hour is not None:
+            self._inherited.price_per_hour = float(self._inherited.price_per_hour)
+        logger.info(f"  Price per hour: {self._inherited.price_per_hour}")
 
         # Determine number of tasks per worker
-        self._num_simultaneous_tasks = parsed_args.num_simultaneous_tasks
-        if self._num_simultaneous_tasks is None:
-            self._num_simultaneous_tasks = os.getenv("RMS_CLOUD_TASKS_NUM_TASKS_PER_INSTANCE")
-        if self._num_simultaneous_tasks is not None:
-            self._num_simultaneous_tasks = int(self._num_simultaneous_tasks)
-            logger.info(f"  Num simultaneous tasks: {self._num_simultaneous_tasks}")
+        self._inherited.num_simultaneous_tasks = parsed_args.num_simultaneous_tasks
+        if self._inherited.num_simultaneous_tasks is None:
+            self._inherited.num_simultaneous_tasks = os.getenv(
+                "RMS_CLOUD_TASKS_NUM_TASKS_PER_INSTANCE"
+            )
+        if self._inherited.num_simultaneous_tasks is not None:
+            self._inherited.num_simultaneous_tasks = int(self._inherited.num_simultaneous_tasks)
+            logger.info(f"  Num simultaneous tasks: {self._inherited.num_simultaneous_tasks}")
         else:
-            if self._num_cpus is not None:
-                self._num_simultaneous_tasks = self._num_cpus
+            if self._inherited.num_cpus is not None:
+                self._inherited.num_simultaneous_tasks = self._inherited.num_cpus
             else:
-                self._num_simultaneous_tasks = 1
-            logger.info(f"  Num simultaneous tasks (default): {self._num_simultaneous_tasks}")
+                self._inherited.num_simultaneous_tasks = 1
+            logger.info(
+                f"  Num simultaneous tasks (default): {self._inherited.num_simultaneous_tasks}"
+            )
 
         # Get maximum runtime from args or environment variable
-        self._max_runtime = parsed_args.max_runtime
-        if self._max_runtime is None:
-            self._max_runtime = os.getenv("RMS_CLOUD_TASKS_MAX_RUNTIME")
-        if self._max_runtime is None:
-            self._max_runtime = 600  # Default to 10 minutes
+        self._inherited.max_runtime = parsed_args.max_runtime
+        if self._inherited.max_runtime is None:
+            self._inherited.max_runtime = os.getenv("RMS_CLOUD_TASKS_MAX_RUNTIME")
+        if self._inherited.max_runtime is None:
+            self._inherited.max_runtime = 600  # Default to 10 minutes
         else:
-            self._max_runtime = int(self._max_runtime)
-        logger.info(f"  Maximum runtime: {self._max_runtime} seconds")
+            self._inherited.max_runtime = int(self._inherited.max_runtime)
+        logger.info(f"  Maximum runtime: {self._inherited.max_runtime} seconds")
 
         # Get shutdown grace period from args or environment variable
-        self._shutdown_grace_period = (
+        self._inherited.shutdown_grace_period = (
             parsed_args.shutdown_grace_period
             if parsed_args.shutdown_grace_period is not None
             else int(os.getenv("RMS_CLOUD_TASKS_SHUTDOWN_GRACE_PERIOD", 30))
         )
-        logger.info(f"  Shutdown grace period: {self._shutdown_grace_period} seconds")
+        logger.info(f"  Shutdown grace period: {self._inherited.shutdown_grace_period} seconds")
 
         # Get retry on exit from args or environment variable
-        self._retry_on_exit = parsed_args.retry_on_exit
-        if self._retry_on_exit is None:
-            self._retry_on_exit = os.getenv("RMS_CLOUD_TASKS_RETRY_ON_EXIT")
-            if self._retry_on_exit is not None:
-                self._retry_on_exit = self._retry_on_exit.lower() in ("true", "1")
-        logger.info(f"  Retry on exit: {self._retry_on_exit}")
+        self._inherited.retry_on_exit = parsed_args.retry_on_exit
+        if self._inherited.retry_on_exit is None:
+            retry_str = os.getenv("RMS_CLOUD_TASKS_RETRY_ON_EXIT")
+            if retry_str is not None:
+                self._inherited.retry_on_exit = retry_str.lower() in ("true", "1")
+        logger.info(f"  Retry on exit: {self._inherited.retry_on_exit}")
 
         # Get retry on exception from args or environment variable
-        self._retry_on_exception = parsed_args.retry_on_exception
-        if self._retry_on_exception is None:
-            self._retry_on_exception = os.getenv("RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION")
-            if self._retry_on_exception is not None:
-                self._retry_on_exception = self._retry_on_exception.lower() in ("true", "1")
-        logger.info(f"  Retry on exception: {self._retry_on_exception}")
+        self._inherited.retry_on_exception = parsed_args.retry_on_exception
+        if self._inherited.retry_on_exception is None:
+            retry_str = os.getenv("RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION")
+            if retry_str is not None:
+                self._inherited.retry_on_exception = retry_str.lower() in ("true", "1")
+        logger.info(f"  Retry on exception: {self._inherited.retry_on_exception}")
 
         # Get retry on timeout from args or environment variable
-        self._retry_on_timeout = parsed_args.retry_on_timeout
-        if self._retry_on_timeout is None:
-            self._retry_on_timeout = os.getenv("RMS_CLOUD_TASKS_RETRY_ON_TIMEOUT")
-            if self._retry_on_timeout is not None:
-                self._retry_on_timeout = self._retry_on_timeout.lower() in ("true", "1")
-        logger.info(f"  Retry on timeout: {self._retry_on_timeout}")
+        self._inherited.retry_on_timeout = parsed_args.retry_on_timeout
+        if self._inherited.retry_on_timeout is None:
+            retry_str = os.getenv("RMS_CLOUD_TASKS_RETRY_ON_TIMEOUT")
+            if retry_str is not None:
+                self._inherited.retry_on_timeout = retry_str.lower() in ("true", "1")
+        logger.info(f"  Retry on timeout: {self._inherited.retry_on_timeout}")
 
         # Get simulate spot termination after from args or environment variable
-        self._simulate_spot_termination_after = parsed_args.simulate_spot_termination_after
-        self._simulate_spot_termination_delay = None
-        if self._simulate_spot_termination_after is None:
-            delay_str = os.getenv("RMS_CLOUD_TASKS_SIMULATE_SPOT_TERMINATION_AFTER")
-            if delay_str is not None:
-                self._simulate_spot_termination_after = float(delay_str)
-        if self._simulate_spot_termination_after is not None:
+        self._inherited.simulate_spot_termination_after = (
+            parsed_args.simulate_spot_termination_after
+        )
+        if self._inherited.simulate_spot_termination_after is None:
+            after_str = os.getenv("RMS_CLOUD_TASKS_SIMULATE_SPOT_TERMINATION_AFTER")
+            if after_str is not None:
+                self._inherited.simulate_spot_termination_after = float(after_str)
+        if self._inherited.simulate_spot_termination_after is not None:
             logger.info(
-                f"  Simulating spot termination after {self._simulate_spot_termination_after} seconds"
+                f"  Simulating spot termination after {self._inherited.simulate_spot_termination_after} seconds"
             )
 
             # Get simulate spot termination delay from args or environment variable
-            self._simulate_spot_termination_delay = parsed_args.simulate_spot_termination_delay
-            if self._simulate_spot_termination_delay is None:
+            self._inherited.simulate_spot_termination_delay = (
+                parsed_args.simulate_spot_termination_delay
+            )
+            if self._inherited.simulate_spot_termination_delay is None:
                 delay_str = os.getenv("RMS_CLOUD_TASKS_SIMULATE_SPOT_TERMINATION_DELAY")
                 if delay_str is not None:
-                    self._simulate_spot_termination_delay = float(delay_str)
-            if self._simulate_spot_termination_delay is not None:
+                    self._inherited.simulate_spot_termination_delay = float(delay_str)
+            if self._inherited.simulate_spot_termination_delay is not None:
                 logger.info(
                     "    Simulating spot termination delay of "
-                    f"{self._simulate_spot_termination_delay} seconds"
+                    f"{self._inherited.simulate_spot_termination_delay} seconds"
                 )
             else:
                 logger.warning(
@@ -571,11 +638,6 @@ class Worker:
         self._running = False
         self._task_queue: Any = None
 
-        # Multiprocessing coordination
-        self._manager = Manager()
-        self._shutdown_event: MP_Event = Event()  # type: ignore
-        self._termination_event: MP_Event = Event()  # type: ignore
-
         # Track processes
         self._next_worker_id: int = 0
         self._processes: Dict[int, Dict[str, Any]] = {}  # Maps worker # to process and task
@@ -586,7 +648,7 @@ class Worker:
         self._num_tasks_exception: int = 0
 
         # Task queue for inter-process communication
-        self._result_queue: MP_Queue = Queue()  # type: ignore
+        self._result_queue: MP_Queue = MP_CTX.Queue()  # type: ignore
 
         # Semaphores for synchronizing process operations
         self._process_ops_semaphore = asyncio.Semaphore(1)  # For process creation/monitoring
@@ -603,105 +665,125 @@ class Worker:
     @property
     def provider(self) -> str | None:
         """The provider (AWS, GCP, or AZURE) to communicate with for queues"""
-        return self._provider
+        return self._inherited.provider
 
     @property
     def project_id(self) -> str | None:
         """The project ID (GCP only))"""
-        return self._project_id
+        return self._inherited.project_id
 
     @property
     def job_id(self) -> str | None:
         """The job ID"""
-        return self._job_id
+        return self._inherited.job_id
 
     @property
     def queue_name(self) -> str | None:
         """The task queue name"""
-        return self._queue_name
+        return self._inherited.queue_name
 
     @property
     def event_log_to_queue(self) -> bool:
         """Whether to write events to a queue"""
-        return self._event_log_to_queue
+        return self._inherited.event_log_to_queue
 
     @property
     def event_log_queue_name(self) -> str | None:
         """The queue to write events to"""
-        return self._event_log_queue_name
+        return self._inherited.event_log_queue_name
 
     @property
     def event_log_file(self) -> str | None:
         """The file to write events to"""
-        return self._event_log_file
+        return self._inherited.event_log_file
 
     @property
     def instance_type(self) -> str | None:
         """The instance type this task is running on"""
-        return self._instance_type
+        return self._inherited.instance_type
 
     @property
     def num_cpus(self) -> int | None:
         """The number of vCPUs on this computer"""
-        return self._num_cpus
+        return self._inherited.num_cpus
 
     @property
     def memory_gb(self) -> float | None:
         """The amount of memory on this computer"""
-        return self._memory_gb
+        return self._inherited.memory_gb
 
     @property
     def local_ssd_gb(self) -> float | None:
         """The size of the extra local SSD, if any, in GB"""
-        return self._local_ssd_gb
+        return self._inherited.local_ssd_gb
 
     @property
     def boot_disk_gb(self) -> float | None:
         """The size of the boot disk in GB"""
-        return self._boot_disk_gb
+        return self._inherited.boot_disk_gb
 
     @property
     def is_spot(self) -> bool:
         """Whether this is a spot instance and might be preempted"""
-        return self._is_spot or self._simulate_spot_termination_after is not None
+        return (
+            self._inherited.is_spot or self._inherited.simulate_spot_termination_after is not None
+        )
 
     @property
     def price_per_hour(self) -> float | None:
         """The price per hour for this instance"""
-        return self._price_per_hour
+        return self._inherited.price_per_hour
 
     @property
     def num_simultaneous_tasks(self) -> int:
         """The number of tasks to run simultaneously"""
-        return self._num_simultaneous_tasks
+        return self._inherited.num_simultaneous_tasks
 
     @property
     def max_runtime(self) -> int:
         """The maximum runtime for a task in seconds"""
-        return self._max_runtime
+        return self._inherited.max_runtime
 
     @property
     def shutdown_grace_period(self) -> int:
         """The grace period for shutting down the worker in seconds"""
-        return self._shutdown_grace_period
+        return self._inherited.shutdown_grace_period
 
     @property
     def received_termination_notice(self) -> bool:
         """Whether the worker has received a termination notice"""
-        return self._termination_event.is_set()
+        return self._inherited.received_termination_notice
 
     @property
     def received_shutdown_request(self) -> bool:
         """Whether the worker has received a shutdown request"""
-        return self._shutdown_event.is_set()
+        return self._inherited.received_shutdown_request
 
     def _signal_handler(self, signum, frame):
         """Handle termination signals."""
         signal_name = signal.Signals(signum).name
         logger.warning(f"Received signal {signal_name}, initiating graceful shutdown")
-        self._shutdown_event.set()
+        self._inherited.shutdown_event.set()
         signal.signal(signal.SIGINT, signal.SIG_DFL)  # So a second time will kill the process
         signal.signal(signal.SIGTERM, signal.SIG_DFL)
+
+    async def _queue_complete_task_with_logging(self, task: Dict[str, Any]) -> None:
+        """Complete a task with logging of errors."""
+        try:
+            async with self._task_queue_semaphore:
+                await self._task_queue.complete_task(task["ack_id"])
+        except Exception as e:
+            logger.error(f"Error completing task {task['task_id']}: {e}", exc_info=True)
+            self._log_non_fatal_exception(traceback.format_exc())
+
+    async def _queue_fail_task_with_logging(self, task: Dict[str, Any]) -> None:
+        """Fail a task with logging of errors."""
+        try:
+            async with self._task_queue_semaphore:
+                await self._task_queue.fail_task(task["ack_id"])
+        except Exception as e:
+            logger.error(f"Error failing task {task['task_id']}: {e}", exc_info=True)
+            self._log_non_fatal_exception(traceback.format_exc())
 
     _EVENT_TYPE_TASK_COMPLETED = "task_completed"
     _EVENT_TYPE_TASK_EXCEPTION = "task_exception"
@@ -804,21 +886,23 @@ class Worker:
     async def start(self) -> None:
         """Start the worker and begin processing tasks."""
 
-        if self._event_log_file:
-            logger.debug(f'Starting event logger for file "{self._event_log_file}"')
+        if self._inherited.event_log_file:
+            logger.debug(f'Starting event logger for file "{self._inherited.event_log_file}"')
             try:
-                self._event_logger_fp = open(self._event_log_file, "a")
+                self._event_logger_fp = open(self._inherited.event_log_file, "a")
             except Exception as e:
                 logger.error(f"Error opening event log file: {e}", exc_info=True)
                 sys.exit(1)
 
-        if self._event_log_to_queue:
-            logger.debug(f'Starting event logger for queue "{self._event_log_queue_name}"')
+        if self._inherited.event_log_to_queue:
+            logger.debug(
+                f'Starting event logger for queue "{self._inherited.event_log_queue_name}"'
+            )
             try:
                 self._event_logger_queue = await create_queue(
-                    provider=self._provider,
-                    queue_name=self._event_log_queue_name,
-                    project_id=self._project_id,
+                    provider=self._inherited.provider,
+                    queue_name=self._inherited.event_log_queue_name,
+                    project_id=self._inherited.project_id,
                 )
             except Exception as e:
                 logger.error(f"Error initializing event log queue: {e}", exc_info=True)
@@ -834,14 +918,19 @@ class Worker:
                 sys.exit(1)
         else:
             logger.debug(
-                f"Starting task scheduler for {self._provider.upper()} queue "
-                f'"{self._queue_name}"'
+                f"Starting task scheduler for {self._inherited.provider.upper()} queue "
+                f'"{self._inherited.queue_name}"'
             )
             try:
                 self._task_queue = await create_queue(
-                    provider=self._provider,
-                    queue_name=self._queue_name,
-                    project_id=self._project_id,
+                    provider=self._inherited.provider,
+                    queue_name=self._inherited.queue_name,
+                    project_id=self._inherited.project_id,
+                    visibility_timeout=self._inherited.max_runtime
+                    + 5,  # Add 5 seconds to account for the
+                    # time it takes to notice an event is over time, kill it, and fail the task.
+                    # We only want the message to timeout if something goes really wrong with the
+                    # task manager.
                 )
             except Exception as e:
                 logger.error(f"Error initializing task queue: {e}", exc_info=True)
@@ -895,7 +984,6 @@ class Worker:
                     # Now go through the result queue
                     while not self._result_queue.empty():
                         worker_id, retry, result = self._result_queue.get_nowait()
-                        print(worker_id, retry, result)
 
                         if worker_id not in self._processes:
                             # Race condition with max_runtime most likely
@@ -922,23 +1010,21 @@ class Worker:
                             logger.warning(
                                 f"Worker #{worker_id} reported task {task['task_id']} raised "
                                 f"an unhandled exception in {elapsed_time:.1f} seconds, "
-                                f"{'retrying' if self._retry_on_exception else 'not retrying'}: "
+                                f"{'retrying' if self._inherited.retry_on_exception else 'not retrying'}: "
                                 f"{result}"
                             )
                             await self._log_task_exception(
                                 task["task_id"],
-                                retry=self._retry_on_exception,
+                                retry=self._inherited.retry_on_exception,
                                 elapsed_time=elapsed_time,
                                 exception=result,
                             )
-                            if self._retry_on_exception:
+                            if self._inherited.retry_on_exception:
                                 self._num_tasks_retried += 1
-                                async with self._task_queue_semaphore:
-                                    await self._task_queue.fail_task(task["ack_id"])
+                                await self._queue_fail_task_with_logging(task)
                             else:
                                 self._num_tasks_not_retried += 1
-                                async with self._task_queue_semaphore:
-                                    await self._task_queue.complete_task(task["ack_id"])
+                                await self._queue_complete_task_with_logging(task)
                         elif retry:
                             self._num_tasks_retried += 1
                             logger.info(
@@ -952,8 +1038,7 @@ class Worker:
                                 elapsed_time=elapsed_time,
                                 result=result,
                             )
-                            async with self._task_queue_semaphore:
-                                await self._task_queue.fail_task(task["ack_id"])
+                            await self._queue_fail_task_with_logging(task)
                         else:
                             self._num_tasks_not_retried += 1
                             logger.info(
@@ -966,9 +1051,7 @@ class Worker:
                                 elapsed_time=elapsed_time,
                                 result=result,
                             )
-                            async with self._task_queue_semaphore:
-                                await self._task_queue.complete_task(task["ack_id"])
-
+                            await self._queue_complete_task_with_logging(task)
                         del self._processes[worker_id]
                         if worker_id in exited_processes:
                             del exited_processes[worker_id]
@@ -987,24 +1070,22 @@ class Worker:
                             f"Worker #{worker_id} (PID {p.pid}) processing task "
                             f'"{task["task_id"]}" exited prematurely in {elapsed_time:.1f} seconds '
                             f"with exit code {exit_code}; "
-                            f"{'retrying' if self._retry_on_exit else 'not retrying'}"
+                            f"{'retrying' if self._inherited.retry_on_exit else 'not retrying'}"
                         )
                         await self._log_task_exited(
                             task["task_id"],
-                            retry=self._retry_on_exit,
+                            retry=self._inherited.retry_on_exit,
                             elapsed_time=elapsed_time,
                             exit_code=exit_code,
                         )
 
-                        async with self._task_queue_semaphore:
-                            if self._retry_on_exit:
-                                self._num_tasks_retried += 1
-                                # If we're retrying on exit, mark it as failed
-                                await self._task_queue.fail_task(task["ack_id"])
-                            else:
-                                self._num_tasks_not_retried += 1
-                                # If we're not retrying on exit, mark it as complete
-                                await self._task_queue.complete_task(task["ack_id"])
+                        if self._inherited.retry_on_exit:
+                            self._num_tasks_retried += 1
+                            await self._queue_fail_task_with_logging(task)
+                        else:
+                            self._num_tasks_not_retried += 1
+                            # If we're not retrying on exit, mark it as complete
+                            await self._queue_complete_task_with_logging(task)
 
                         del self._processes[worker_id]
 
@@ -1026,14 +1107,15 @@ class Worker:
             await asyncio.sleep(interval)
 
         logger.info("Shutdown requested, stopping worker processes")
-        self._shutdown_event.set()
+        self._inherited.shutdown_event.set()
 
         # Allow processes some time to finish current tasks
         shutdown_start = time.time()
         while (
-            len(self._processes) > 0 and time.time() - shutdown_start < self._shutdown_grace_period
+            len(self._processes) > 0
+            and time.time() - shutdown_start < self._inherited.shutdown_grace_period
         ):
-            remaining_time = self._shutdown_grace_period - (time.time() - shutdown_start)
+            remaining_time = self._inherited.shutdown_grace_period - (time.time() - shutdown_start)
             logger.info(
                 f"Waiting for {len(self._processes)} active tasks to complete; "
                 f"{remaining_time:.0f} seconds remaining"
@@ -1068,7 +1150,7 @@ class Worker:
                 termination_notice = await self._check_termination_notice()
                 if termination_notice and not self.received_termination_notice:
                     logger.warning("Instance termination notice received")
-                    self._termination_event.set()
+                    self._inherited.termination_event.set()
                     await self._log_spot_termination()
                     # When the termination actually occurs, we don't need to do anything;
                     # this instance will simply stop running. If the workers were in the
@@ -1081,15 +1163,15 @@ class Worker:
                 logger.error(f"Error checking for termination: {e}", exc_info=True)
                 await self._log_non_fatal_exception(traceback.format_exc())
             # Check every 5 seconds for real instance, .1 second for simulated
-            if self._simulate_spot_termination_after is not None:
+            if self._inherited.simulate_spot_termination_after is not None:
                 await asyncio.sleep(0.1)
             else:
                 await asyncio.sleep(5)
 
-        if self._running and self._simulate_spot_termination_delay is not None:
+        if self._running and self._inherited.simulate_spot_termination_delay is not None:
             # If we're simulating a spot termination, wait for the delay and then kill all
             # running processes
-            await asyncio.sleep(self._simulate_spot_termination_delay)
+            await asyncio.sleep(self._inherited.simulate_spot_termination_delay)
             if self._running:
                 logger.info("Simulated spot termination delay complete, killing all processes")
                 async with self._process_ops_semaphore:
@@ -1125,9 +1207,9 @@ class Worker:
             True if the instance is scheduled for termination, False otherwise
         """
         # Check for simulated termination first
-        if self._simulate_spot_termination_after is not None:
+        if self._inherited.simulate_spot_termination_after is not None:
             elapsed_time = time.time() - self._start_time
-            if elapsed_time >= self._simulate_spot_termination_after:
+            if elapsed_time >= self._inherited.simulate_spot_termination_after:
                 logger.info(
                     f"Simulating spot termination notice received after {elapsed_time:.1f} seconds"
                 )
@@ -1137,14 +1219,14 @@ class Worker:
         try:
             import requests  # type: ignore
 
-            if self._provider == "AWS":
+            if self._inherited.provider == "AWS":
                 # AWS spot termination check
                 response = requests.get(
                     "http://169.254.169.254/latest/meta-data/spot/instance-action", timeout=2
                 )
                 return response.status_code == 200
 
-            elif self._provider == "GCP":
+            elif self._inherited.provider == "GCP":
                 # GCP preemption check
                 response = requests.get(
                     "http://metadata.google.internal/computeMetadata/v1/instance/preempted",
@@ -1153,7 +1235,7 @@ class Worker:
                 )
                 return response.text.strip().lower() == "true"
 
-            elif self._provider == "AZURE":
+            elif self._inherited.provider == "AZURE":
                 # TODO Azure doesn't have a direct API yet
                 return False
 
@@ -1172,7 +1254,7 @@ class Worker:
                     continue
 
                 # Only fetch new tasks if we have capacity
-                max_concurrent = self._num_simultaneous_tasks
+                max_concurrent = self._inherited.num_simultaneous_tasks
                 if len(self._processes) >= max_concurrent:
                     # Wait for workers to process tasks
                     await asyncio.sleep(0.1)
@@ -1181,8 +1263,7 @@ class Worker:
                 # Receive tasks
                 async with self._task_queue_semaphore:
                     tasks = await self._task_queue.receive_tasks(
-                        max_count=min(5, max_concurrent - len(self._processes)),
-                        visibility_timeout=self._max_runtime,
+                        max_count=max(0, min(5, max_concurrent - len(self._processes)))
                     )
 
                 if tasks:
@@ -1201,16 +1282,15 @@ class Worker:
                             # Start a new process for this task
                             worker_id = self._next_worker_id
                             self._next_worker_id += 1
-                            p = Process(
+                            p = MP_CTX.Process(
                                 target=self._worker_process_main,
                                 args=(
                                     worker_id,
                                     self._user_worker_function,
-                                    self,
-                                    task,
+                                    self._inherited,
+                                    task["task_id"],  # Can't pass in task because it may have
+                                    task["data"],  # non-serializable fields
                                     self._result_queue,
-                                    self._shutdown_event,
-                                    self._termination_event,
                                 ),
                             )
                             p.daemon = True  # Guarantees exit when main process dies
@@ -1231,7 +1311,7 @@ class Worker:
                     await asyncio.sleep(1)
 
             except Exception as e:
-                logger.error(f"Error fetching tasks: {e}", exc_info=True)
+                logger.error(f"Error feeding tasks to workers: {e}", exc_info=True)
                 await self._log_non_fatal_exception(traceback.format_exc())
                 await asyncio.sleep(1)  # Wait a bit longer on error
 
@@ -1248,14 +1328,14 @@ class Worker:
                     p = process_data["process"]
                     task = process_data["task"]
                     runtime = current_time - start_time
-                    if runtime <= self._max_runtime:
+                    if runtime <= self._inherited.max_runtime:
                         continue
 
                     self._num_tasks_timed_out += 1
                     logger.warning(
                         f"Worker #{worker_id} (PID {p.pid}), task "
                         f"{process_data['task']['task_id']} exceeded max runtime of "
-                        f"{self._max_runtime} seconds (actual runtime {runtime:.1f} seconds); "
+                        f"{self._inherited.max_runtime} seconds (actual runtime {runtime:.1f} seconds); "
                         "terminating"
                     )
                     await self._log_task_timed_out(task["task_id"], retry=False, runtime=runtime)
@@ -1278,20 +1358,36 @@ class Worker:
 
                     # Mark task as failed in the queue
                     try:
-                        if self._retry_on_timeout:
+                        if self._inherited.retry_on_timeout:
                             self._num_tasks_retried += 1
                             async with self._task_queue_semaphore:
                                 logger.info(
                                     f"Worker #{worker_id}: Task {task['task_id']} will be retried"
                                 )
-                                await self._task_queue.fail_task(task["ack_id"])
+                                try:
+                                    await self._queue_fail_task_with_logging(task)
+                                except Exception as e:
+                                    logger.error(
+                                        f"Error failing task {task['task_id']} after "
+                                        f"exception: {e}",
+                                        exc_info=True,
+                                    )
+                                    self._log_non_fatal_exception(traceback.format_exc())
                         else:
                             self._num_tasks_not_retried += 1
                             async with self._task_queue_semaphore:
                                 logger.info(
                                     f"Worker #{worker_id}: Task {task['task_id']} will not be retried"
                                 )
-                                await self._task_queue.complete_task(task["ack_id"])
+                                try:
+                                    await self._queue_complete_task_with_logging(task)
+                                except Exception as e:
+                                    logger.error(
+                                        f"Error completing task {task['task_id']} after "
+                                        f"exception: {e}",
+                                        exc_info=True,
+                                    )
+                                    self._log_non_fatal_exception(traceback.format_exc())
                     except Exception as e:
                         logger.error(f"Error marking task {task['task_id']} as completed: {e}")
                         await self._log_non_fatal_exception(traceback.format_exc())
@@ -1308,11 +1404,10 @@ class Worker:
     def _worker_process_main(
         worker_id: int,
         user_worker_function: Callable[[str, Dict[str, Any]], bool],
-        worker: "Worker",
-        task: Dict[str, Any],
+        inherited: WorkerInherited,
+        task_id: str,
+        task_data: Dict[str, Any],
         result_queue: MP_Queue,
-        shutdown_event: MP_Event,
-        termination_event: MP_Event,
     ) -> None:
         """Main function for worker processes."""
         # We inherited signal catching from the parent process, but we don't want that
@@ -1328,20 +1423,17 @@ class Worker:
 
         # Initialize task execution environment
         try:
-            logger.info(f"Worker #{worker_id}: Started")
-
-            # Extract task info
-            task_id = task["task_id"]
-            task_data = task["data"]
-
-            logger.info(f"Worker #{worker_id}: Processing task {task_id}")
+            logger.info(f"Worker #{worker_id}: Started, processing task {task_id}")
             start_time = time.time()
 
             # Process the task
             try:
                 # Execute task in isolated environment
                 retry, result = Worker._execute_task_isolated(
-                    task_id, task_data, worker, user_worker_function
+                    task_id,
+                    task_data,
+                    inherited,
+                    user_worker_function,
                 )
                 processing_time = time.time() - start_time
 
@@ -1371,7 +1463,7 @@ class Worker:
     def _execute_task_isolated(
         task_id: str,
         task_data: Dict[str, Any],
-        worker: "Worker",
+        inherited: WorkerInherited,
         user_worker_function: Callable[[str, Dict[str, Any]], bool],
     ) -> Tuple[bool, str]:
         """
@@ -1383,8 +1475,10 @@ class Worker:
         Args:
             task_id: Unique ID for the task
             task_data: Task data to process
+            inherited: WorkerInherited object containing properties that can be safely inherited
+            user_worker_function: The function to execute for each task
 
         Returns:
             Tuple of (retry, result)
         """
-        return user_worker_function(task_id, task_data, worker)
+        return user_worker_function(task_id, task_data, inherited)

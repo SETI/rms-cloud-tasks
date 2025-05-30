@@ -4,9 +4,12 @@ Command-line interface for the multi-cloud task processing system.
 
 import argparse
 import asyncio
+from collections import defaultdict
+from datetime import datetime
 import json
 import json_stream
 import logging
+import numpy as np
 import sys
 from tqdm import tqdm  # type: ignore
 from typing import Any, Dict, Iterable, Optional
@@ -62,6 +65,10 @@ def yield_tasks_from_file(
                 if start_task is not None and start_task > 0:
                     start_task -= 1
                     continue
+                if limit is not None:
+                    if limit == 0:
+                        return
+                    limit -= 1
                 yield ret
         else:
             # See https://stackoverflow.com/questions/429162/how-to-process-a-yaml-stream-in-python
@@ -79,11 +86,11 @@ def yield_tasks_from_file(
                     if start_task is not None and start_task > 0:
                         start_task -= 1
                         continue
+                    if limit is not None:
+                        if limit == 0:
+                            return
+                        limit -= 1
                     yield ret
-        if limit is not None:
-            limit -= 1
-            if limit == 0:
-                return
 
 
 async def load_queue_cmd(args: argparse.Namespace, config: Config) -> None:
@@ -99,14 +106,19 @@ async def load_queue_cmd(args: argparse.Namespace, config: Config) -> None:
         provider_config = config.get_provider_config(provider)
         queue_name = provider_config.queue_name
 
-        if args.dry_run:
+        try:
+            dry_run = args.dry_run
+        except AttributeError:
+            dry_run = False
+
+        if dry_run:
             print("Dry run mode enabled. No task queue will be created.")
             task_queue = None
         else:
             print(f"Creating task queue '{queue_name}' on {provider} if necessary...")
             task_queue = await create_queue(config)
 
-        if args.dry_run:
+        if dry_run:
             print("Dry run mode enabled. No tasks will be loaded.")
         else:
             print(f"Populating task queue from {args.task_file}...")
@@ -142,7 +154,7 @@ async def load_queue_cmd(args: argparse.Namespace, config: Config) -> None:
                     )
                     return
                 try:
-                    if not args.dry_run:
+                    if not dry_run:
                         await task_queue.send_task(task["task_id"], task["data"])
                 except Exception as e:
                     load_failed_exception = e
@@ -154,7 +166,7 @@ async def load_queue_cmd(args: argparse.Namespace, config: Config) -> None:
                 if load_failed_exception:
                     raise load_failed_exception
 
-                if args.dry_run:
+                if dry_run:
                     logger.debug(f"Dry run mode - would load task: {task}")
                 else:
                     logger.debug(f"Loading task: {task}")
@@ -183,7 +195,7 @@ async def load_queue_cmd(args: argparse.Namespace, config: Config) -> None:
 
         print(f"Loaded {num_tasks} task(s)")
 
-        if args.dry_run:
+        if dry_run:
             print("Dry run mode enabled. No queue depth will be shown.")
         else:
             queue_depth = await task_queue.get_queue_depth()
@@ -233,7 +245,7 @@ async def show_queue_cmd(args: argparse.Namespace, config: Config) -> None:
         if args.detail:
             print("\nAttempting to peek at first message...")
             try:
-                messages = await task_queue.receive_tasks(max_count=1, visibility_timeout=10)
+                messages = await task_queue.receive_tasks(max_count=1)
 
                 if messages:
                     message = messages[0]
@@ -638,17 +650,27 @@ async def monitor_event_queue_cmd(args: argparse.Namespace, config: Config) -> N
         for task in yield_tasks_from_file(args.task_file, args.start_task, args.limit):
             task_ids.add(task["task_id"])
 
-    event_type_counts = {}
-    task_ids_completed_no_retry = set()
-    task_ids_completed_retry = set()
-    task_ids_timed_out = set()
-    task_ids_exited = set()
-    task_ids_duplicated_no_retry = set()
+    event_type_data = {}
+    task_exceptions = {}
     non_fatal_exceptions = {}
     fatal_exceptions = {}
     spot_termination_hosts = set()
+    duplicate_completed_task_ids = set()
+    earliest_event_time = None
+    latest_event_time = None
+    elapsed_times = []
 
     def _process_log_entry(log_entry: Dict[str, Any]) -> None:
+        nonlocal earliest_event_time, latest_event_time
+        event_time = log_entry.get("timestamp")
+        if event_time:
+            event_time = datetime.fromisoformat(event_time)
+
+        if event_time and (earliest_event_time is None or event_time < earliest_event_time):
+            earliest_event_time = event_time
+        if event_time and (latest_event_time is None or event_time > latest_event_time):
+            latest_event_time = event_time
+
         event_type = log_entry["event_type"]
         retry = log_entry.get("retry")
         task_id = log_entry.get("task_id")
@@ -661,29 +683,39 @@ async def monitor_event_queue_cmd(args: argparse.Namespace, config: Config) -> N
         else:
             exception_str = ""
         hostname = log_entry.get("hostname")
+        elapsed_time = log_entry.get("elapsed_time")
+        if elapsed_time is not None:
+            elapsed_times.append(elapsed_time)
+
         match event_type:
-            case "task_completed":
-                if task_id in task_ids_completed_no_retry and not retry:
-                    task_ids_duplicated_no_retry.add(task_id)
-                if retry:
-                    task_ids_completed_retry.add(task_id)
+            case "task_completed" | "task_timed_out" | "task_exited" | "task_exception":
+                if event_type == "task_exception":
+                    task_exceptions[exception_str] = task_exceptions.get(exception_str, 0) + 1
+                key = (event_type, retry)
+                if (
+                    key == ("task_completed", False)
+                    and key in event_type_data
+                    and task_id in event_type_data[key]
+                ):
+                    # This was already completed once before with no retry, and now we see it
+                    # again with no retry. This is a duplicate.
+                    duplicate_completed_task_ids.add(task_id)
                 else:
-                    task_ids_completed_no_retry.add(task_id)
-            case "task_timed_out":
-                task_ids_timed_out.add(task_id)
-            case "task_exited":
-                task_ids_exited.add(task_id)
+                    if key not in event_type_data:
+                        event_type_data[key] = set()
+                    event_type_data[key].add(task_id)
+            # These are not task-specific
             case "non_fatal_exception":
                 non_fatal_exceptions[exception_str] = non_fatal_exceptions.get(exception_str, 0) + 1
             case "fatal_exception":
                 fatal_exceptions[exception_str] = fatal_exceptions.get(exception_str, 0) + 1
             case "spot_termination":
-                spot_termination_hosts.add(hostname)
+                key = (event_type, retry)
+                if key not in event_type_data:
+                    event_type_data[key] = set()
+                event_type_data[key].add(hostname)
             case _:
                 pass
-
-        key = (event_type, retry)
-        event_type_counts[key] = event_type_counts.get(key, 0) + 1
 
     output_file = None
     if args.output_file:
@@ -722,30 +754,66 @@ async def monitor_event_queue_cmd(args: argparse.Namespace, config: Config) -> N
             if something_changed:
                 print()
                 if args.task_file:
-                    tasks_remaining = str(len(task_ids) - len(task_ids_completed_no_retry))
+                    if ("task_completed", False) in event_type_data:
+                        tasks_remaining = task_ids - event_type_data[("task_completed", False)]
+                    else:
+                        tasks_remaining = task_ids
                 else:
-                    tasks_remaining = "Unknown"
+                    tasks_remaining = None
                 print("Summary:")
-                for (event_type, retry), count in sorted(event_type_counts.items()):
-                    print(f"  {event_type:<19s} (retry={str(retry):>5s}): {count:6d}")
-
-                print(
-                    f"  {len(task_ids_duplicated_no_retry)} tasks executed more than once "
-                    "but shouldn't have"
-                )
-                print(f"  {tasks_remaining} tasks remaining including pending retries")
-                if fatal_exceptions:
-                    print("Fatal exceptions:")
-                    for exception, count in sorted(fatal_exceptions.items()):
-                        print(f"  {count:6d}: {exception:s}")
-                if non_fatal_exceptions:
-                    print("Non-fatal exceptions:")
-                    for exception, count in sorted(non_fatal_exceptions.items()):
-                        print(f"  {count:6d}: {exception:s}")
-                if spot_termination_hosts:
-                    print("Spot terminations:")
-                    for host in sorted(spot_termination_hosts):
-                        print(f"  {host:s}")
+                if tasks_remaining is not None:
+                    print(f"  {len(tasks_remaining)} tasks have not been completed without retry")
+                if len(duplicate_completed_task_ids) > 0:
+                    print(
+                        f"  {len(duplicate_completed_task_ids)} tasks completed without retry "
+                        "more than once but shouldn't have"
+                    )
+                if event_type_data:
+                    print("  Task event status:")
+                    for (event_type, retry), info in sorted(event_type_data.items()):
+                        count = len(info)
+                        print(f"    {event_type:<19s} (retry={str(retry):>5s}): {count:6d}")
+                    if task_exceptions:
+                        print("  Task exceptions:")
+                        for exception, count in sorted(task_exceptions.items()):
+                            print(f"    {count:6d}: {exception}")
+                    if fatal_exceptions:
+                        print("  Non-task fatal exceptions:")
+                        for exception, count in sorted(fatal_exceptions.items()):
+                            print(f"    {count:6d}: {exception}")
+                    if non_fatal_exceptions:
+                        print("  Non-task non-fatal exceptions:")
+                        for exception, count in sorted(non_fatal_exceptions.items()):
+                            print(f"    {count:6d}: {exception}")
+                    if spot_termination_hosts:
+                        print("  Spot terminations:")
+                        for host in sorted(spot_termination_hosts):
+                            print(f"    {host}")
+                if ("task_completed", False) in event_type_data:
+                    tasks_completed = len(event_type_data[("task_completed", False)])
+                    if earliest_event_time and latest_event_time:
+                        elapsed_time = (latest_event_time - earliest_event_time).total_seconds()
+                        if elapsed_time > 0:
+                            print(
+                                f"  Tasks completed: {tasks_completed} in {elapsed_time:.2f} seconds "
+                                f"({elapsed_time / tasks_completed:.2f} seconds/task)"
+                            )
+                if elapsed_times:
+                    elapsed_times_arr = np.array(elapsed_times)
+                    print("  Elapsed time statistics:")
+                    print(
+                        f"    Range:  {np.min(elapsed_times_arr):.2f} to "
+                        f"{np.max(elapsed_times_arr):.2f} seconds"
+                    )
+                    print(
+                        f"    Mean:   {np.mean(elapsed_times_arr):.2f} +/- "
+                        f"{np.std(elapsed_times_arr):.2f} seconds"
+                    )
+                    print(f"    Median: {np.median(elapsed_times_arr):.2f} seconds")
+                    print(f"    90th %: {np.percentile(elapsed_times_arr, 90):.2f} seconds")
+                    print(f"    95th %: {np.percentile(elapsed_times_arr, 95):.2f} seconds")
+                if tasks_remaining is not None and len(tasks_remaining) < 50:
+                    print(f"  Remaining tasks: {', '.join(tasks_remaining)}")
                 print()
                 something_changed = False
 
@@ -754,6 +822,7 @@ async def monitor_event_queue_cmd(args: argparse.Namespace, config: Config) -> N
                 messages = await events_queue.receive_messages(max_count=100)
 
                 if messages:
+                    something_changed = True
                     for message in messages:
                         try:
                             # Extract and parse the JSON data

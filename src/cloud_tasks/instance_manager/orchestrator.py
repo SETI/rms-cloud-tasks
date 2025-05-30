@@ -71,7 +71,6 @@ class InstanceOrchestrator:
 
         # Will be initialized in start()
         self._instance_manager: Optional[InstanceManager] = None
-        self._task_queue: Optional[QueueManager] = None
         self._optimal_instance_info = None
         self._optimal_instance_boot_disk_size = None
         self._optimal_instance_num_tasks = None
@@ -190,10 +189,6 @@ class InstanceOrchestrator:
                 self._logger.info(f"    {line}")
 
     @property
-    def task_queue(self) -> QueueManager:
-        return self._task_queue
-
-    @property
     def is_running(self) -> bool:
         return self._running
 
@@ -265,14 +260,6 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
         # Initialize the instance manager
         if self._instance_manager is None:
             self._instance_manager = await create_instance_manager(self._config)
-
-        # Initialize the task queue if not set
-        if self._task_queue is None:
-            try:
-                self._task_queue = await create_queue(self._config)
-            except Exception as e:
-                self._logger.error(f"Failed to initialize task queue: {e}", exc_info=True)
-                raise
 
     async def _initialize_pricing_info(self) -> None:
         """Initialize the pricing information."""
