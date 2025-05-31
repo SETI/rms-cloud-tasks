@@ -235,6 +235,7 @@ class ProviderConfig(RunConfig, validate_assignment=True):
     )
     region: Optional[constr(min_length=1)] = None
     zone: Optional[constr(min_length=1)] = None
+    exactly_once_queue: Optional[bool] = None
 
 
 class AWSConfig(ProviderConfig, validate_assignment=True):

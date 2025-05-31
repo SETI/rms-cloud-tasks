@@ -1573,6 +1573,20 @@ def add_common_args(
         )
     if include_zone:
         parser.add_argument("--zone", help="Specific zone to use")
+    parser.add_argument(
+        "--exactly-once-queue",
+        action="store_true",
+        default=None,
+        help="If specified, task and event queue messages are guaranteed to be delivered exactly "
+        "once to any recipient",
+    )
+    parser.add_argument(
+        "--no-exactly-once-queue",
+        action="store_false",
+        dest="exactly_once_queue",
+        help="If specified, task and event queue messages are delivered at least once, but could "
+        "be delivered multiple times",
+    )
 
     # AWS-specific arguments - from AWSConfig class
     parser.add_argument("--access-key", help="AWS only: access key")

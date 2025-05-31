@@ -38,6 +38,7 @@ All commands support these common options:
 --provider PROVIDER    Cloud provider (aws, gcp, or azure), overrides configuration file
 --verbose, -v          Enable verbose output (-v for warning, -vv for info, -vvv for debug)
 
+
 .. _cli_job_specific_options:
 
 Job-Specific Options
@@ -49,6 +50,12 @@ specify job-related information. They override any options in the configuration 
 
 --job-id JOB_ID            A unique identifier for the job
 --queue-name QUEUE_NAME    The name of the task queue to use (derived from job ID if not provided)
+--region REGION            The region to use (derived from zone if not provided)
+--zone ZONE                The zone to use
+--exactly-once-queue       If specified, task and event queue messages are guaranteed to be delivered
+                            exactly once to any recipient
+--no-exactly-once-queue    If specified, task and event queue messages are delivered at least once,
+                            but could be delivered multiple times
 
 .. _cli_provider_specific_options:
 

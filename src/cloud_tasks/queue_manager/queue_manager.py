@@ -10,14 +10,15 @@ class QueueManager(ABC):
     def __init__(
         self,
         config: Optional[ProviderConfig] = None,
-        visibility_timeout: Optional[int] = 30,
+        visibility_timeout: Optional[int] = None,
+        exactly_once: bool = False,
         **kwargs: Any,
     ) -> None:
         """Initialize the task queue with configuration."""
         pass  # pragma: no cover
 
     @abstractmethod
-    async def send_message(self, message: Dict[str, Any]) -> None:
+    async def send_message(self, message: Dict[str, Any], quiet: bool = False) -> None:
         """Send a message to the queue."""
         pass  # pragma: no cover
 
@@ -32,15 +33,13 @@ class QueueManager(ABC):
         pass  # pragma: no cover
 
     @abstractmethod
-    async def receive_tasks(
-        self, max_count: int = 1, visibility_timeout: int = 30
-    ) -> List[Dict[str, Any]]:
+    async def receive_tasks(self, max_count: int = 1) -> List[Dict[str, Any]]:
         """Receive tasks from the queue with a visibility timeout."""
         pass  # pragma: no cover
 
     @abstractmethod
     async def complete_task(self, task_handle: Any) -> None:
-        """Mark a task as completed and remove from the queue."""
+        """Mark a task as completed and remove it from the queue."""
         pass  # pragma: no cover
 
     @abstractmethod

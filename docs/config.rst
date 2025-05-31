@@ -288,6 +288,10 @@ The available provider-specific options are:
   * ``job_id``: The ID of the job to run; required for all queue and job-related operations
   * ``region``: The region to use; required for most operations
   * ``zone``: The zone to use; will be automatically selected based on the region if not specified
+  * ``exactly_once_queue``: If True, queue task messages and events are guaranteed to be delivered
+    exactly once to any recipient. If False (the default), messages will be delivered at least
+    once, but could be delivered multiple times. The example implications of this flag are
+    provider-specific.
 
 * AWS
 
