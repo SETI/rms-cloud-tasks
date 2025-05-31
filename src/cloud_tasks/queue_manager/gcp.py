@@ -545,9 +545,14 @@ class GCPPubSubQueue(QueueManager):
         Args:
             task_handle: Message object from receive_messages or "ack_id" from receive_tasks
         """
-        self._logger.debug(
-            f'Completing task with ack_id "{task_handle.message_id}" on queue "{self._queue_name}"'
-        )
+        if self._exactly_once:
+            self._logger.debug(
+                f'Completing task with ack_id "{task_handle.message_id}" on queue "{self._queue_name}"'
+            )
+        else:
+            self._logger.debug(
+                f'Completing task with ack_id "{task_handle}" on queue "{self._queue_name}"'
+            )
 
         self._create_topic_and_subscription()
 
@@ -602,9 +607,14 @@ class GCPPubSubQueue(QueueManager):
         Args:
             task_handle: Message object from receive_messages or "ack_id" from receive_tasks
         """
-        self._logger.debug(
-            f"Failing task with ack_id: '{task_handle.message_id}' on queue '{self._queue_name}'"
-        )
+        if self._exactly_once:
+            self._logger.debug(
+                f"Failing task with ack_id: '{task_handle.message_id}' on queue '{self._queue_name}'"
+            )
+        else:
+            self._logger.debug(
+                f"Failing task with ack_id: '{task_handle}' on queue '{self._queue_name}'"
+            )
 
         self._create_topic_and_subscription()
 

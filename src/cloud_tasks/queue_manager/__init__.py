@@ -34,6 +34,7 @@ async def create_queue(
     Raises:
         ValueError: If the provider is not supported
     """
+    provider_config = None
     if config is None:
         provider = kwargs.get("provider")
         if provider is None:

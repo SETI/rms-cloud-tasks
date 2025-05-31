@@ -23,7 +23,7 @@ Here's a simple example of how to implement a worker:
    import sys
    from cloud_tasks.worker import Worker
 
-   def process_task(task_id: str, task_data: dict, worker: Worker) -> tuple[bool, str | dict]:
+   def process_task(task_id: str, task_data: dict, worker_data: WorkerData) -> tuple[bool, str | dict]:
        """Process a single task.
 
        Args:
@@ -31,7 +31,7 @@ Here's a simple example of how to implement a worker:
            task_data: Dictionary containing task data; will have the fields:
                - "task_id": Unique identifier for the task
                - "data": Dictionary containing task data
-           worker: Worker object (useful for retrieving information about the
+           worker_data: WorkerData object (useful for retrieving information about the
                local environment and polling for shutdown notifications)
 
        Returns:
@@ -147,6 +147,8 @@ Optional Parameters
 
 --project-id PROJECT_ID                    Project ID (required for GCP) [or ``RMS_CLOUD_TASKS_PROJECT_ID``]
 --queue-name QUEUE_NAME                    Name of the task queue to process (derived from job ID if not specified) [or ``RMS_CLOUD_TASKS_QUEUE_NAME``]
+--exactly-once-queue                       If specified, task and event queue messages are guaranteed to be delivered exactly once to any recipient [or ``RMS_CLOUD_TASKS_EXACTLY_ONCE_QUEUE`` is "1" or "true"]
+--no-exactly-once-queue                    If specified, task and event queue messages are delivered at least once, but could be delivered multiple times [or ``RMS_CLOUD_TASKS_EXACTLY_ONCE_QUEUE`` is "0" or "false"]
 --event-log-file EVENT_LOG_FILE            File to write events to; if not specified will not write events to a file [or ``RMS_CLOUD_TASKS_EVENT_LOG_FILE``]
 --event-log-to-queue                       If specified, events will be written to a cloud-based queue [or ``RMS_CLOUD_TASKS_EVENT_LOG_QUEUE`` is "1" or "true"]
 --no-event-log-to-queue                    If specified, events will not be written to a cloud-based queue [or ``RMS_CLOUD_TASKS_EVENT_LOG_QUEUE`` is "0" or "false"]

@@ -403,7 +403,7 @@ class Worker:
 
         logger.info("Configuration:")
 
-        # Create the inherited properties object first
+        # Create the inheritable properties object first
         self._data = WorkerData()
 
         # Set up multiprocessing events
@@ -454,10 +454,13 @@ class Worker:
         self._data.exactly_once_queue = parsed_args.exactly_once_queue
         if self._data.exactly_once_queue is None:
             self._data.exactly_once_queue = os.getenv("RMS_CLOUD_TASKS_EXACTLY_ONCE_QUEUE")
-            self._data.exactly_once_queue = self._data.exactly_once_queue.lower() in (
-                "true",
-                "1",
-            )
+            if self._data.exactly_once_queue is None:
+                self._data.exactly_once_queue = False
+            else:
+                self._data.exactly_once_queue = self._data.exactly_once_queue.lower() in (
+                    "true",
+                    "1",
+                )
         logger.info(f"  Exactly-once queue: {self._data.exactly_once_queue}")
 
         # Get event log file from args or environment variable
@@ -1414,7 +1417,7 @@ class Worker:
     def _worker_process_main(
         worker_id: int,
         user_worker_function: Callable[[str, Dict[str, Any]], bool],
-        inherited: WorkerData,
+        worker_data: WorkerData,
         task_id: str,
         task_data: Dict[str, Any],
         result_queue: MP_Queue,
@@ -1442,7 +1445,7 @@ class Worker:
                 retry, result = Worker._execute_task_isolated(
                     task_id,
                     task_data,
-                    inherited,
+                    worker_data,
                     user_worker_function,
                 )
                 processing_time = time.time() - start_time
@@ -1473,7 +1476,7 @@ class Worker:
     def _execute_task_isolated(
         task_id: str,
         task_data: Dict[str, Any],
-        inherited: WorkerData,
+        worker_data: WorkerData,
         user_worker_function: Callable[[str, Dict[str, Any]], bool],
     ) -> Tuple[bool, str]:
         """
@@ -1485,10 +1488,10 @@ class Worker:
         Args:
             task_id: Unique ID for the task
             task_data: Task data to process
-            inherited: WorkerData object containing properties that can be safely inherited
+            worker_data: WorkerData object containing properties that can be safely inherited
             user_worker_function: The function to execute for each task
 
         Returns:
             Tuple of (retry, result)
         """
-        return user_worker_function(task_id, task_data, inherited)
+        return user_worker_function(task_id, task_data, worker_data)

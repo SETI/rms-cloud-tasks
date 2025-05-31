@@ -15,12 +15,14 @@ import time
 from typing import Any, Dict, Tuple
 
 # Import the cloud task adapter
-from cloud_tasks.worker import Worker
+from cloud_tasks.worker import Worker, WorkerData
 
 from filecache import FCPath
 
 
-def process_task(task_id: str, task_data: Dict[str, Any], worker: Worker) -> Tuple[bool, Any]:
+def process_task(
+    task_id: str, task_data: Dict[str, Any], worker_data: WorkerData
+) -> Tuple[bool, Any]:
     """
     Process a task by adding two numbers together.
 
@@ -30,7 +32,7 @@ def process_task(task_id: str, task_data: Dict[str, Any], worker: Worker) -> Tup
     Args:
         task_id: Unique identifier for the task
         task_data: Task data containing the numbers to add
-        worker: Worker object (useful for retrieving information about the
+        worker_data: WorkerData object (useful for retrieving information about the
             local environment and polling for shutdown notifications)
 
     Returns:
@@ -62,7 +64,7 @@ def process_task(task_id: str, task_data: Dict[str, Any], worker: Worker) -> Tup
         f.write(f"Process {process_id} on {hostname} ({worker_id})\n")
         f.write(f"Task {task_id}: {num1} + {num2} = {result}\n")
 
-        if worker.received_termination_notice:
+        if worker_data.received_termination_notice:
             f.write("*** Received spot termination signal ***\n")
 
     return False, str(output_file)
