@@ -11,7 +11,6 @@ import yaml
 import signal
 import time
 from multiprocessing import Process
-import logging
 
 from cloud_tasks.worker.worker import Worker, LocalTaskQueue
 

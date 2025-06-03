@@ -3,7 +3,6 @@ Google Cloud Pub/Sub implementation of the TaskQueue interface.
 """
 
 import asyncio
-import concurrent.futures
 import datetime
 import json
 import logging
@@ -221,7 +220,7 @@ class GCPPubSubQueue(QueueManager):
                 self._logger.info(f'Subscription "{self._subscription_name}" created successfully')
                 self._subscription_exists = True
             except gcp_exceptions.AlreadyExists:
-                ### Modify an existing subscription to change the ack deadline to visibility_timeout
+                # Modify an existing subscription to change the ack deadline to visibility_timeout
                 self._logger.info(f'Subscription "{self._subscription_name}" already exists...')
                 if self._visibility_timeout is not None:
                     self._logger.info(
@@ -615,9 +614,6 @@ class GCPPubSubQueue(QueueManager):
     async def _fail_task_exactly_once(self, task_handle: Any) -> None:
         """Mark a task as failed, allowing it to be retried, using exactly-once delivery."""
         try:
-            # Get the event loop
-            loop = asyncio.get_event_loop()
-
             # Set ack deadline to 0 to make message immediately available again
             task_handle.modify_ack_deadline(0)
 
@@ -720,7 +716,7 @@ class GCPPubSubQueue(QueueManager):
                         break
                 if undelivered_messages is not None:
                     break
-                self._logger.debug(f"Pub/Sub monitor didn't return a value, retrying...")
+                self._logger.debug("Pub/Sub monitor didn't return a value, retrying...")
                 time.sleep(1)
 
             if undelivered_messages is None:

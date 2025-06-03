@@ -10,7 +10,6 @@ from unittest.mock import patch, MagicMock
 from google.api_core import exceptions as gcp_exceptions
 import logging
 import json
-import datetime
 from unittest.mock import ANY
 
 # Add the src directory to the path so we can import cloud_tasks modules

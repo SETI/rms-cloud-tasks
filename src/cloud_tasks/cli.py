@@ -4,7 +4,6 @@ Command-line interface for the multi-cloud task processing system.
 
 import argparse
 import asyncio
-from collections import defaultdict
 from datetime import datetime
 import json
 import json_stream

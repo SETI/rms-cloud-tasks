@@ -9,8 +9,6 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional, Tuple
 
 from cloud_tasks.instance_manager.instance_manager import InstanceManager
-from cloud_tasks.queue_manager import create_queue
-from cloud_tasks.queue_manager.queue_manager import QueueManager
 from cloud_tasks.instance_manager import create_instance_manager
 from cloud_tasks.common.config import Config
 
