@@ -9,8 +9,6 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional, Tuple
 
 from cloud_tasks.instance_manager.instance_manager import InstanceManager
-from cloud_tasks.queue_manager import create_queue
-from cloud_tasks.queue_manager.queue_manager import QueueManager
 from cloud_tasks.instance_manager import create_instance_manager
 from cloud_tasks.common.config import Config
 
@@ -71,7 +69,6 @@ class InstanceOrchestrator:
 
         # Will be initialized in start()
         self._instance_manager: Optional[InstanceManager] = None
-        self._task_queue: Optional[QueueManager] = None
         self._optimal_instance_info = None
         self._optimal_instance_boot_disk_size = None
         self._optimal_instance_num_tasks = None
@@ -190,10 +187,6 @@ class InstanceOrchestrator:
                 self._logger.info(f"    {line}")
 
     @property
-    def task_queue(self) -> QueueManager:
-        return self._task_queue
-
-    @property
     def is_running(self) -> bool:
         return self._running
 
@@ -232,7 +225,8 @@ export RMS_CLOUD_TASKS_INSTANCE_IS_SPOT={self._run_config.use_spot}
 export RMS_CLOUD_TASKS_INSTANCE_PRICE={self._optimal_instance_info["total_price"]}
 export RMS_CLOUD_TASKS_NUM_TASKS_PER_INSTANCE={self._optimal_instance_num_tasks}
 export RMS_CLOUD_TASKS_MAX_RUNTIME={self._run_config.max_runtime}
-export RMS_CLOUD_TASKS_RETRY_ON_CRASH={self._run_config.retry_on_crash}
+export RMS_CLOUD_TASKS_RETRY_ON_EXIT={self._run_config.retry_on_exit}
+export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
 """
         if not self._run_config.startup_script:
             raise RuntimeError("No startup script provided")
@@ -264,14 +258,6 @@ export RMS_CLOUD_TASKS_RETRY_ON_CRASH={self._run_config.retry_on_crash}
         # Initialize the instance manager
         if self._instance_manager is None:
             self._instance_manager = await create_instance_manager(self._config)
-
-        # Initialize the task queue if not set
-        if self._task_queue is None:
-            try:
-                self._task_queue = await create_queue(self._config)
-            except Exception as e:
-                self._logger.error(f"Failed to initialize task queue: {e}", exc_info=True)
-                raise
 
     async def _initialize_pricing_info(self) -> None:
         """Initialize the pricing information."""

@@ -267,11 +267,14 @@ Options to specify the worker and manage_pool processes
   once the task queue is empty (defaults to 60)
 * ``max_runtime``: The maximum runtime for a task in seconds (defaults to 60); this is used
   to set the retry timeout in the task queue such that any task that takes longer than this
-  is assumed to have crashed and will be retried and should be set to a value significantly
-  greater than the longest runtime expected for a task
-* ``worker_use_new_process``: Use a new process for each task instead of reusing the
-  same process (defaults to ``False``)
-
+  is assumed to have had an internal error and should be set to a value
+  significantly greater than the longest runtime expected for a task
+* ``retry_on_exit``: If True, tasks will be retried if the worker exits prematurely, e.g. due
+  to a crash
+* ``retry_on_exception``: If True, tasks will be retried if the user function raises an
+  unhandled exception
+* ``retry_on_timeout``: If True, tasks will be retried if they exceed the maximum runtime
+  specified by ``max_runtime``
 
 .. _config_provider_specific_options:
 
@@ -285,6 +288,10 @@ The available provider-specific options are:
   * ``job_id``: The ID of the job to run; required for all queue and job-related operations
   * ``region``: The region to use; required for most operations
   * ``zone``: The zone to use; will be automatically selected based on the region if not specified
+  * ``exactly_once_queue``: If True, queue task messages and events are guaranteed to be delivered
+    exactly once to any recipient. If False (the default), messages will be delivered at least
+    once, but could be delivered multiple times. The example implications of this flag are
+    provider-specific.
 
 * AWS
 

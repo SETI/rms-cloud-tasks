@@ -38,6 +38,7 @@ All commands support these common options:
 --provider PROVIDER    Cloud provider (aws, gcp, or azure), overrides configuration file
 --verbose, -v          Enable verbose output (-v for warning, -vv for info, -vvv for debug)
 
+
 .. _cli_job_specific_options:
 
 Job-Specific Options
@@ -49,6 +50,12 @@ specify job-related information. They override any options in the configuration 
 
 --job-id JOB_ID            A unique identifier for the job
 --queue-name QUEUE_NAME    The name of the task queue to use (derived from job ID if not provided)
+--region REGION            The region to use (derived from zone if not provided)
+--zone ZONE                The zone to use
+--exactly-once-queue       If specified, task and event queue messages are guaranteed to be delivered
+                            exactly once to any recipient
+--no-exactly-once-queue    If specified, task and event queue messages are delivered at least once,
+                            but could be delivered multiple times
 
 .. _cli_provider_specific_options:
 
@@ -186,9 +193,18 @@ options in the configuration file (see :ref:`config_worker_and_manage_pool_optio
 --instance-termination-delay SECONDS   The delay to wait before terminating an instance
                                        (defaults to 60)
 --max-runtime SECONDS                  The maximum runtime for a task (defaults to 60)
---worker-use-new-process               Use a new process for each task instead of reusing the
-                                       same process (defaults to ``False``)
-
+--retry-on-exit                        If specified, tasks will be retried if the worker exits
+                                       prematurely, e.g. due to a crash
+--no-retry-on-exit                     If specified, tasks will not be retried if the worker exits
+                                       prematurely, e.g. due to a crash (default)
+--retry-on-exception                   If specified, tasks will be retried if the user function
+                                       raises an unhandled exception
+--no-retry-on-exception                If specified, tasks will not be retried if the user function
+                                       raises an unhandled exception (default)
+--retry-on-timeout                     If specified, tasks will be retried if they exceed the
+                                       maximum runtime specified by --max-runtime
+--no-retry-on-timeout                  If specified, tasks will not be retried if they exceed the
+                                       maximum runtime specified by --max-runtime (default)
 
 .. _cli_information_commands:
 

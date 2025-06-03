@@ -53,8 +53,8 @@ LSSD_PRICE = 0.000017  # /GB/hour
 LSSD_PREEMPTIBLE_PRICE = 0.000008  # /GB/hour
 
 
-@pytest.fixture(scope="package")
-def event_loop():
+@pytest_asyncio.fixture(scope="package")
+async def event_loop():
     """Create an instance of the default event loop for module-scope async tests."""
     loop = asyncio.new_event_loop()
     yield loop
@@ -526,7 +526,7 @@ def gcp_config() -> GCPConfig:
     )
 
 
-@pytest_asyncio.fixture(scope="package")
+@pytest_asyncio.fixture
 async def gcp_instance_manager_n1_n2(
     gcp_config: GCPConfig,
     mock_machine_types_client_n1_n2: MagicMock,
@@ -555,7 +555,7 @@ async def gcp_instance_manager_n1_n2(
         return manager
 
 
-@pytest_asyncio.fixture(scope="package")
+@pytest_asyncio.fixture
 async def gcp_instance_manager_n1_2_4(
     gcp_config: GCPConfig,
     mock_machine_types_client_n1_2_4: MagicMock,

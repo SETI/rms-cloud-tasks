@@ -24,7 +24,7 @@ Step 2: Modify Your Code to be a Worker
    - ``task_data: Dict[str, Any]``: The data for the task as provided in the tasks file (described
      below). This should be the only data your function needs to process the task; it should not
      use command line arguments.
-   - ``worker: cloud_tasks.worker.Worker``: The Worker object. This provides access to
+   - ``worker_data: cloud_tasks.worker.WorkerData``: The WorkerData object. This provides access to
      configuration options that were set by
      :ref:`environment variables or command line arguments <worker_environment_variables>` as well
      as real-time information about the worker's and computer's status, such as whether the
@@ -62,14 +62,15 @@ Step 2: Modify Your Code to be a Worker
         import sys
         from cloud_tasks.worker import Worker
 
-        def process_task(task_id: str, task_data: Dict[str, Any], worker: Worker) -> Tuple[bool, Any]:
+        def process_task(task_id: str, task_data: Dict[str, Any], worker_data: WorkerData) -> Tuple[bool, Any]:
             """
             Process a task.
 
             Args:
                 task_id: The unique ID of the task.
                 task_data: The data required to process the task.
-                worker: The worker object representing the top-level worker process manager.
+                worker_data: WorkerData object (useful for retrieving information about the
+                    local environment and polling for shutdown notifications)
 
             Returns:
                 Tuple of (success, result)

@@ -3,6 +3,7 @@ aiohttp
 asyncio
 click
 json-stream
+numpy
 prettytable
 pydantic
 pyyaml
@@ -26,6 +27,7 @@ boto3
 # GCP Support
 google-cloud-billing
 google-cloud-compute
+google-cloud-monitoring
 google-cloud-pubsub
 google-cloud-storage
 
