@@ -199,7 +199,10 @@ async def load_queue_cmd(args: argparse.Namespace, config: Config) -> None:
             print("Dry run mode enabled. No queue depth will be shown.")
         else:
             queue_depth = await task_queue.get_queue_depth()
-            print(f"Tasks loaded successfully. Queue depth (may be approximate): {queue_depth}")
+            if queue_depth is None:
+                print("Tasks loaded successfully. Failed to get queue depth.")
+            else:
+                print(f"Tasks loaded successfully. Queue depth (may be approximate): {queue_depth}")
 
     except Exception as e:
         logger.fatal(f"Error loading tasks: {e}", exc_info=True)
@@ -235,70 +238,71 @@ async def show_queue_cmd(args: argparse.Namespace, config: Config) -> None:
         print("\nThe queue may exist but you might not have permission to access it.")
         sys.exit(1)
 
-    # Display queue depth with some formatting
-    print(f"Current depth: {queue_depth} message(s)")
+    if queue_depth is None:
+        print("Failed to get queue depth.")
+        sys.exit(1)
 
     if queue_depth == 0:
         print("\nQueue is empty. No messages available.")
-    else:
+    elif args.detail:
         # If verbose, try to get a sample message without removing it
-        if args.detail:
-            print("\nAttempting to peek at first message...")
-            try:
-                messages = await task_queue.receive_tasks(max_count=1)
+        # We try this even if the queue depth failed
+        print("\nAttempting to peek at first message...")
+        try:
+            messages = await task_queue.receive_tasks(max_count=1)
 
-                if messages:
-                    message = messages[0]
-                    task_id = message.get("task_id", "unknown")
+            if messages:
+                message = messages[0]
+                task_id = message.get("task_id", "unknown")
 
-                    print("\n" + "-" * 50)
-                    print("SAMPLE MESSAGE")
-                    print("-" * 50)
-                    print(f"Task ID: {task_id}")
+                print("\n" + "-" * 50)
+                print("SAMPLE MESSAGE")
+                print("-" * 50)
+                print(f"Task ID: {task_id}")
 
-                    # Get receipt handle info based on provider
-                    receipt_info = ""
-                    if "receipt_handle" in message:  # AWS
-                        receipt_info = (
-                            f"Receipt Handle: {message['receipt_handle'][:50]}..."
-                            if len(message.get("receipt_handle", "")) > 50
-                            else f"Receipt Handle: {message.get('receipt_handle', '')}"
-                        )
-                    elif "ack_id" in message:  # GCP
-                        receipt_info = (
-                            f"Ack ID: {message['ack_id'][:50]}..."
-                            if len(message.get("ack_id", "")) > 50
-                            else f"Ack ID: {message.get('ack_id', '')}"
-                        )
-                    elif "lock_token" in message:  # Azure
-                        receipt_info = (
-                            f"Lock Token: {message['lock_token'][:50]}..."
-                            if len(message.get("lock_token", "")) > 50
-                            else f"Lock Token: {message.get('lock_token', '')}"
-                        )
+                # Get receipt handle info based on provider
+                receipt_info = ""
+                if "receipt_handle" in message:  # AWS
+                    receipt_info = (
+                        f"Receipt Handle: {message['receipt_handle'][:50]}..."
+                        if len(message.get("receipt_handle", "")) > 50
+                        else f"Receipt Handle: {message.get('receipt_handle', '')}"
+                    )
+                elif "ack_id" in message:  # GCP
+                    receipt_info = (
+                        f"Ack ID: {message['ack_id'][:50]}..."
+                        if len(message.get("ack_id", "")) > 50
+                        else f"Ack ID: {message.get('ack_id', '')}"
+                    )
+                elif "lock_token" in message:  # Azure
+                    receipt_info = (
+                        f"Lock Token: {message['lock_token'][:50]}..."
+                        if len(message.get("lock_token", "")) > 50
+                        else f"Lock Token: {message.get('lock_token', '')}"
+                    )
 
-                    if receipt_info:
-                        print(f"{receipt_info}")
+                if receipt_info:
+                    print(f"{receipt_info}")
 
-                    try:
-                        data = message.get("data", {})
-                        print("\nData:")
-                        if isinstance(data, dict):
-                            print(json.dumps(data, indent=2))
-                        else:
-                            print(data)
-                    except Exception as e:
-                        print(f"Error displaying data: {e}")
-                        print(f"Raw data: {message.get('data', {})}")
+                try:
+                    data = message.get("data", {})
+                    print("\nData:")
+                    if isinstance(data, dict):
+                        print(json.dumps(data, indent=2))
+                    else:
+                        print(data)
+                except Exception as e:
+                    print(f"Error displaying data: {e}")
+                    print(f"Raw data: {message.get('data', {})}")
 
-                    print("\nNote: Message was not removed from the queue.")
-                else:
-                    print("\nCould not retrieve a sample message. This might happen if:")
-                    print("  - Another consumer received the message")
-                    print("  - The message is not available for immediate delivery")
-                    print("  - There's an issue with queue visibility settings")
-            except Exception as e:
-                logger.fatal(f"Error peeking at message: {e}", exc_info=True)
+                print("\nNote: Message was not removed from the queue.")
+            else:
+                print("\nCould not retrieve a sample message. This might happen if:")
+                print("  - Another consumer received the message")
+                print("  - The message is not available for immediate delivery")
+                print("  - There's an issue with queue visibility settings")
+        except Exception as e:
+            logger.fatal(f"Error peeking at message: {e}", exc_info=True)
 
 
 async def purge_queue_cmd(args: argparse.Namespace, config: Config) -> None:
@@ -321,62 +325,46 @@ async def purge_queue_cmd(args: argparse.Namespace, config: Config) -> None:
     if not args.event_queue_only:
         queue_depth = await task_queue.get_queue_depth()
 
-        if queue_depth == 0:
-            print(f"Queue '{task_queue_name}' on '{provider}' is already empty (0 messages).")
+        if queue_depth is None:
+            print(f"Failed to get queue depth for task queue '{task_queue_name}'.")
         else:
-            # Confirm with the user if not using --force
-            if not args.force:
-                confirm = input(
-                    f"\nWARNING: This will permanently delete all {queue_depth}+ messages from queue "
-                    f"'{task_queue_name}' on '{provider}'."
-                    f"\nType 'EMPTY {task_queue_name}' to confirm: "
-                )
-                if confirm != f"EMPTY {task_queue_name}":
-                    print("Operation cancelled.")
-                    return
+            print(f"Task queue '{task_queue_name}' has {queue_depth} messages.")
 
-            print(f"Emptying queue '{task_queue_name}'...")
-            await task_queue.purge_queue()
-            new_depth = await task_queue.get_queue_depth()
-            if new_depth == 0:
-                print(
-                    f"Queue '{task_queue_name}' has been emptied. Removed {queue_depth}+ message(s)."
-                )
-            else:
-                print(
-                    f"WARNING: Queue purge operation completed but {new_depth} messages still remain."
-                )
-                print("Some messages may be in flight or locked by consumers.")
+        # Confirm with the user if not using --force
+        if not args.force:
+            confirm = input(
+                f"\nWARNING: This will permanently delete all {queue_depth}+ messages from queue "
+                f"'{task_queue_name}' on '{provider}'."
+                f"\nType 'EMPTY {task_queue_name}' to confirm: "
+            )
+            if confirm != f"EMPTY {task_queue_name}":
+                print("Operation cancelled.")
+                return
+
+        print(f"Emptying queue '{task_queue_name}'...")
+        await task_queue.purge_queue()
 
     if not args.task_queue_only:
         queue_depth = await event_queue.get_queue_depth()
 
-        if queue_depth == 0:
-            print(f"Queue '{event_queue_name}' on '{provider}' is already empty (0 messages).")
+        if queue_depth is None:
+            print(f"Failed to get queue depth for event queue '{event_queue_name}'.")
         else:
-            # Confirm with the user if not using --force
-            if not args.force:
-                confirm = input(
-                    f"\nWARNING: This will permanently delete all {queue_depth}+ messages from queue "
-                    f"'{event_queue_name}' on '{provider}'."
-                    f"\nType 'EMPTY {event_queue_name}' to confirm: "
-                )
-                if confirm != f"EMPTY {event_queue_name}":
-                    print("Operation cancelled.")
-                    return
+            print(f"Event queue '{event_queue_name}' has {queue_depth} messages.")
 
-            print(f"Emptying queue '{event_queue_name}'...")
-            await event_queue.purge_queue()
-            new_depth = await event_queue.get_queue_depth()
-            if new_depth == 0:
-                print(
-                    f"Queue '{event_queue_name}' has been emptied. Removed {queue_depth}+ message(s)."
-                )
-            else:
-                print(
-                    f"WARNING: Queue purge operation completed but {new_depth} messages still remain."
-                )
-                print("Some messages may be in flight or locked by consumers.")
+        # Confirm with the user if not using --force
+        if not args.force:
+            confirm = input(
+                f"\nWARNING: This will permanently delete all {queue_depth}+ messages from queue "
+                f"'{event_queue_name}' on '{provider}'."
+                f"\nType 'EMPTY {event_queue_name}' to confirm: "
+            )
+            if confirm != f"EMPTY {event_queue_name}":
+                print("Operation cancelled.")
+                return
+
+        print(f"Emptying queue '{event_queue_name}'...")
+        await event_queue.purge_queue()
 
 
 async def delete_queue_cmd(args: argparse.Namespace, config: Config) -> None:
@@ -899,7 +887,10 @@ async def status_job_cmd(args: argparse.Namespace, config: Config) -> None:
         print(job_status)
 
         queue_depth = await orchestrator.task_queue.get_queue_depth()
-        print(f"Current queue depth: {queue_depth}+")
+        if queue_depth is None:
+            print("Failed to get queue depth for task queue.")
+        else:
+            print(f"Current queue depth: {queue_depth}")
 
     except Exception as e:
         logger.error(f"Error checking job status: {e}", exc_info=True)

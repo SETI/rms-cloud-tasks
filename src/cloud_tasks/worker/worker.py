@@ -12,6 +12,7 @@ import json
 import json_stream
 import logging
 import os
+import requests
 import signal
 import socket
 import sys
@@ -407,7 +408,6 @@ class Worker:
         self._data = WorkerData()
 
         # Set up multiprocessing events
-        self._manager = MP_CTX.Manager()
         self._data.shutdown_event = MP_CTX.Event()  # type: ignore
         self._data.termination_event = MP_CTX.Event()  # type: ignore
 
@@ -772,6 +772,31 @@ class Worker:
         """Whether the worker has received a shutdown request"""
         return self._data.received_shutdown_request
 
+    @property
+    def retry_on_timeout(self) -> bool:
+        """Whether to retry a task that times out"""
+        return self._data.retry_on_timeout
+
+    @property
+    def retry_on_exception(self) -> bool:
+        """Whether to retry a task that raises an exception"""
+        return self._data.retry_on_exception
+
+    @property
+    def retry_on_exit(self) -> bool:
+        """Whether to retry a task that exits prematurely"""
+        return self._data.retry_on_exit
+
+    @property
+    def simulate_spot_termination_after(self) -> int | None:
+        """The number of seconds after which to simulate a spot termination"""
+        return self._data.simulate_spot_termination_after
+
+    @property
+    def simulate_spot_termination_delay(self) -> int | None:
+        """The number of seconds to wait before simulating a spot termination"""
+        return self._data.simulate_spot_termination_delay
+
     def _signal_handler(self, signum, frame):
         """Handle termination signals."""
         signal_name = signal.Signals(signum).name
@@ -1083,16 +1108,16 @@ class Worker:
                             f"Worker #{worker_id} (PID {p.pid}) processing task "
                             f'"{task["task_id"]}" exited prematurely in {elapsed_time:.1f} seconds '
                             f"with exit code {exit_code}; "
-                            f"{'retrying' if self._data.retry_on_exit else 'not retrying'}"
+                            f"{'retrying' if self.retry_on_exit else 'not retrying'}"
                         )
                         await self._log_task_exited(
                             task["task_id"],
-                            retry=self._data.retry_on_exit,
+                            retry=self.retry_on_exit,
                             elapsed_time=elapsed_time,
                             exit_code=exit_code,
                         )
 
-                        if self._data.retry_on_exit:
+                        if self.retry_on_exit:
                             self._num_tasks_retried += 1
                             await self._queue_fail_task_with_logging(task)
                         else:
@@ -1116,6 +1141,7 @@ class Worker:
         while self._running and not self.received_shutdown_request:
             if self.received_termination_notice and len(self._processes) == 0:
                 logger.info("Termination event set and all processes complete; exiting")
+                self._running = False
                 return
             await asyncio.sleep(interval)
 
@@ -1176,15 +1202,15 @@ class Worker:
                 logger.error(f"Error checking for termination: {e}", exc_info=True)
                 await self._log_non_fatal_exception(traceback.format_exc())
             # Check every 5 seconds for real instance, .1 second for simulated
-            if self._data.simulate_spot_termination_after is not None:
+            if self.simulate_spot_termination_after is not None:
                 await asyncio.sleep(0.1)
             else:
                 await asyncio.sleep(5)
 
-        if self._running and self._data.simulate_spot_termination_delay is not None:
+        if self._running and self.simulate_spot_termination_delay is not None:
             # If we're simulating a spot termination, wait for the delay and then kill all
             # running processes
-            await asyncio.sleep(self._data.simulate_spot_termination_delay)
+            await asyncio.sleep(self.simulate_spot_termination_delay)
             if self._running:
                 logger.info("Simulated spot termination delay complete, killing all processes")
                 async with self._process_ops_semaphore:
@@ -1220,9 +1246,9 @@ class Worker:
             True if the instance is scheduled for termination, False otherwise
         """
         # Check for simulated termination first
-        if self._data.simulate_spot_termination_after is not None:
+        if self.simulate_spot_termination_after is not None:
             elapsed_time = time.time() - self._start_time
-            if elapsed_time >= self._data.simulate_spot_termination_after:
+            if elapsed_time >= self.simulate_spot_termination_after:
                 logger.info(
                     f"Simulating spot termination notice received after {elapsed_time:.1f} seconds"
                 )
@@ -1230,8 +1256,6 @@ class Worker:
             return False
 
         try:
-            import requests  # type: ignore
-
             if self._data.provider == "AWS":
                 # AWS spot termination check
                 response = requests.get(
@@ -1283,7 +1307,7 @@ class Worker:
                     for task in tasks:
                         if self._task_skip_count is not None and self._task_skip_count > 0:
                             self._task_skip_count -= 1
-                            logger.info("Skipping")
+                            logger.debug(f"Skipping task {task['task_id']}")
                             continue
                         if self._tasks_remaining is not None:
                             if self._tasks_remaining <= 0:
@@ -1371,36 +1395,34 @@ class Worker:
 
                     # Mark task as failed in the queue
                     try:
-                        if self._data.retry_on_timeout:
+                        if self.retry_on_timeout:
                             self._num_tasks_retried += 1
-                            async with self._task_queue_semaphore:
-                                logger.info(
-                                    f"Worker #{worker_id}: Task {task['task_id']} will be retried"
+                            logger.info(
+                                f"Worker #{worker_id}: Task {task['task_id']} will be retried"
+                            )
+                            try:
+                                await self._queue_fail_task_with_logging(task)
+                            except Exception as e:
+                                logger.error(
+                                    f"Error failing task {task['task_id']} after "
+                                    f"exception: {e}",
+                                    exc_info=True,
                                 )
-                                try:
-                                    await self._queue_fail_task_with_logging(task)
-                                except Exception as e:
-                                    logger.error(
-                                        f"Error failing task {task['task_id']} after "
-                                        f"exception: {e}",
-                                        exc_info=True,
-                                    )
-                                    self._log_non_fatal_exception(traceback.format_exc())
+                                self._log_non_fatal_exception(traceback.format_exc())
                         else:
                             self._num_tasks_not_retried += 1
-                            async with self._task_queue_semaphore:
-                                logger.info(
-                                    f"Worker #{worker_id}: Task {task['task_id']} will not be retried"
+                            logger.info(
+                                f"Worker #{worker_id}: Task {task['task_id']} will not be retried"
+                            )
+                            try:
+                                await self._queue_complete_task_with_logging(task)
+                            except Exception as e:
+                                logger.error(
+                                    f"Error completing task {task['task_id']} after "
+                                    f"exception: {e}",
+                                    exc_info=True,
                                 )
-                                try:
-                                    await self._queue_complete_task_with_logging(task)
-                                except Exception as e:
-                                    logger.error(
-                                        f"Error completing task {task['task_id']} after "
-                                        f"exception: {e}",
-                                        exc_info=True,
-                                    )
-                                    self._log_non_fatal_exception(traceback.format_exc())
+                                self._log_non_fatal_exception(traceback.format_exc())
                     except Exception as e:
                         logger.error(f"Error marking task {task['task_id']} as completed: {e}")
                         await self._log_non_fatal_exception(traceback.format_exc())

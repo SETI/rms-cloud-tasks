@@ -3,10 +3,11 @@ Google Cloud Pub/Sub implementation of the TaskQueue interface.
 """
 
 import asyncio
+import concurrent.futures
+import datetime
 import json
 import logging
 import time
-import datetime
 from typing import Any, Dict, List, Optional
 
 from google.api_core import exceptions as gcp_exceptions
@@ -150,14 +151,14 @@ class GCPPubSubQueue(QueueManager):
         """Create the Pub/Sub topic if it doesn't exist."""
         if not self._topic_exists:
             try:
-                self._logger.debug(f"Creating topic '{self._topic_name}'")
+                self._logger.debug(f'Creating topic "{self._topic_name}"')
                 self._publisher.create_topic(request={"name": self._topic_path})
-                self._logger.info(f"Topic '{self._topic_name}' created successfully")
+                self._logger.info(f'Topic "{self._topic_name}" created successfully')
                 time.sleep(2)
                 self._topic_exists = True
             except gcp_exceptions.AlreadyExists:
                 self._logger.info(
-                    f"Topic '{self._topic_name}' already exists (created by another process)"
+                    f'Topic "{self._topic_name}" already exists (created by another process)'
                 )
                 self._topic_exists = True
             except Exception:
@@ -181,16 +182,17 @@ class GCPPubSubQueue(QueueManager):
             await loop.run_in_executor(
                 None, lambda: self._publisher.delete_topic(request={"topic": self._topic_path})
             )
-            self._logger.info(f"Successfully deleted topic {self._topic_name}")
-            self._topic_exists = False
+            self._logger.info(f'Successfully deleted topic "{self._topic_name}"')
         except gcp_exceptions.NotFound:
-            self._logger.info(f"Topic {self._topic_name} does not exist")
+            self._logger.info(f'Topic "{self._topic_name}" does not exist')
         except Exception:
             # self._logger.error(
             #     f"Error deleting topic '{self._topic_name}' for Pub/Sub queue "
             #     f"'{self._queue_name}': {str(e)}"
             # )
             raise
+
+        self._topic_exists = False
 
     def _create_topic_and_subscription(self) -> None:
         """Create the Pub/Sub subscription if it doesn't exist."""
@@ -210,17 +212,17 @@ class GCPPubSubQueue(QueueManager):
                     "topic": self._topic_path,
                     # Set message retention to maximum (7 days)
                     "message_retention_duration": {"seconds": 7 * 24 * 60 * 60},
-                    "enable_exactly_once_delivery": True,
+                    "enable_exactly_once_delivery": self._exactly_once,
                     "ack_deadline_seconds": visibility_timeout,
                 }
                 self._subscriber.create_subscription(request=request)
                 # TODO https://cloud.google.com/pubsub/docs/exactly-once-delivery#python
                 time.sleep(2)
-                self._logger.info(f"Subscription '{self._subscription_name}' created successfully")
+                self._logger.info(f'Subscription "{self._subscription_name}" created successfully')
                 self._subscription_exists = True
             except gcp_exceptions.AlreadyExists:
                 ### Modify an existing subscription to change the ack deadline to visibility_timeout
-                self._logger.info(f"Subscription '{self._subscription_name}' already exists...")
+                self._logger.info(f'Subscription "{self._subscription_name}" already exists...')
                 if self._visibility_timeout is not None:
                     self._logger.info(
                         f"Updating visibility timeout to {visibility_timeout} seconds"
@@ -257,13 +259,17 @@ class GCPPubSubQueue(QueueManager):
                     request={"subscription": self._subscription_path}
                 ),
             )
-            self._logger.info(f"Deleted subscription {self._subscription_name}")
+            self._logger.info(f'Deleted subscription "{self._subscription_name}"')
+        except gcp_exceptions.NotFound:
+            self._logger.info(f'Subscription "{self._subscription_name}" does not exist')
         except Exception:
             # self._logger.error(
             #     f"Failed to delete subscription '{self._subscription_name}' for Pub/Sub "
             #     f"queue '{self._queue_name}': {str(e)}"
             # )
             raise
+
+        self._subscription_exists = False
 
         # Wait a moment for deletion to complete
         # Don't use asyncio.sleep because we don't want other threads to start running
@@ -288,7 +294,7 @@ class GCPPubSubQueue(QueueManager):
                 self._message_queue.put_nowait(message_dict)
 
             except Exception as e:
-                self._logger.error(f"Error processing task {message.message_id}: {str(e)}")
+                self._logger.error(f'Error processing task "{message.message_id}": {str(e)}')
 
         # Start streaming pull
         self._streaming_pull_future = self._subscriber.subscribe(
@@ -317,7 +323,7 @@ class GCPPubSubQueue(QueueManager):
             finally:
                 self._streaming_pull_future = None
 
-    async def send_message(self, message: Dict[str, Any], quiet: bool = False) -> None:
+    async def send_message(self, message: Dict[str, Any], quiet: bool = False) -> str:
         """
         Send a message to the Pub/Sub topic.
 
@@ -340,6 +346,7 @@ class GCPPubSubQueue(QueueManager):
             message_id = await loop.run_in_executor(None, future.result, 30)
 
             self._logger.debug(f'Published message "{message_id}" on queue "{self._queue_name}"')
+            return message_id
         except Exception:
             # self._logger.error(
             #     f"Failed to publish task '{task_id}' to Pub/Sub on queue "
@@ -361,7 +368,9 @@ class GCPPubSubQueue(QueueManager):
         message = {"task_id": task_id, "data": task_data}
         await self.send_message(message, quiet=True)
 
-    async def _receive_messages_exactly_once(self, max_count: int) -> List[Dict[str, Any]]:
+    async def _receive_messages_exactly_once(
+        self, max_count: int, acknowledge: bool
+    ) -> List[Dict[str, Any]]:
         """Receive messages from the Pub/Sub subscription using exactly-once delivery."""
         try:
             # Ensure streaming pull is running
@@ -378,7 +387,12 @@ class GCPPubSubQueue(QueueManager):
                     # No more messages available, return what we have
                     break
 
-            self._logger.debug(f"Received {len(messages)} messages from subscription")
+            if acknowledge:
+                self._logger.debug(
+                    f"Received and acknowledged {len(messages)} messages from subscription"
+                )
+            else:
+                self._logger.debug(f"Received {len(messages)} messages from subscription")
             return messages
 
         except Exception:
@@ -388,32 +402,10 @@ class GCPPubSubQueue(QueueManager):
             # )
             raise
 
-    async def receive_messages(
-        self,
-        max_count: int = 1,
+    async def _receive_messages_pull(
+        self, max_count: int, acknowledge: bool
     ) -> List[Dict[str, Any]]:
-        """
-        Receive messages from the Pub/Sub subscription using exactly-once delivery.
-
-        Args:
-            max_count: Maximum number of messages to receive
-
-        Returns:
-            List of message dictionaries, each containing:
-                - 'message_id' (str): Pub/Sub message ID
-                - 'data' (Dict[str, Any]): Message payload
-                - 'ack_id' (str): Pub/Sub acknowledgment ID used for completing or
-                    failing the message
-        """
-        max_count = min(max_count, 1000)  # GCP limit
-        self._logger.debug(f"Receiving up to {max_count} messages from queue '{self._queue_name}'")
-
-        self._create_topic()
-        self._create_topic_and_subscription()
-
-        if self._exactly_once:
-            return await self._receive_messages_exactly_once(max_count)
-
+        """Receive messages from the Pub/Sub subscription using pull delivery."""
         # Use pull to receive messages
         try:
             # Get the event loop
@@ -443,20 +435,25 @@ class GCPPubSubQueue(QueueManager):
                     }
                 )
 
-                # Acknowledge the message immediately
-                await loop.run_in_executor(
-                    None,
-                    lambda: self._subscriber.acknowledge(
-                        request={
-                            "subscription": self._subscription_path,
-                            "ack_ids": [received_message.ack_id],
-                        }
-                    ),
-                )
+                if acknowledge:
+                    # Acknowledge the message immediately
 
-            self._logger.debug(
-                f"Received and acknowledged {len(messages)} messages from subscription"
-            )
+                    await loop.run_in_executor(
+                        None,
+                        lambda: self._subscriber.acknowledge(
+                            request={
+                                "subscription": self._subscription_path,
+                                "ack_ids": [received_message.ack_id],
+                            }
+                        ),
+                    )
+
+            if acknowledge:
+                self._logger.debug(
+                    f"Received and acknowledged {len(messages)} messages from subscription"
+                )
+            else:
+                self._logger.debug(f"Received {len(messages)} messages from subscription")
             return messages
 
         except Exception:
@@ -466,20 +463,53 @@ class GCPPubSubQueue(QueueManager):
             # )
             raise
 
-    async def receive_tasks(self, max_count: int = 1) -> List[Dict[str, Any]]:
+    async def receive_messages(
+        self,
+        max_count: int = 1,
+        acknowledge: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """
+        Receive messages from the Pub/Sub subscription using exactly-once delivery.
+
+        Args:
+            max_count: Maximum number of messages to receive
+            acknowledge: Whether to acknowledge the messages immediately or allow them to time-out
+                and possibly be retried
+        Returns:
+            List of message dictionaries, each containing:
+                - 'message_id' (str): Pub/Sub message ID
+                - 'data' (Dict[str, Any]): Message payload
+                - 'ack_id' (str): Pub/Sub acknowledgment ID used for completing or
+                    failing the message
+        """
+        max_count = min(max_count, 1000)  # GCP limit
+        self._logger.debug(f"Receiving up to {max_count} messages from queue '{self._queue_name}'")
+
+        self._create_topic()
+        self._create_topic_and_subscription()
+
+        if self._exactly_once:
+            return await self._receive_messages_exactly_once(max_count, acknowledge)
+
+        return await self._receive_messages_pull(max_count, acknowledge)
+
+    async def receive_tasks(
+        self, max_count: int = 1, acknowledge: bool = False
+    ) -> List[Dict[str, Any]]:
         """
         Receive tasks from the Pub/Sub subscription using exactly-once delivery.
 
         Args:
             max_count: Maximum number of messages to receive
-
+            acknowledge: Whether to acknowledge the messages immediately or allow them to time-out
+                and possibly be retried
         Returns:
             List of task dictionaries, each containing:
                 - 'task_id' (str): Unique identifier for the task
                 - 'data' (Dict[str, Any]): Task payload/parameters
                 - 'ack_id' (str): Pub/Sub acknowledgment ID used for completing or failing the task
         """
-        messages = await self.receive_messages(max_count=max_count)
+        messages = await self.receive_messages(max_count=max_count, acknowledge=acknowledge)
         return [
             {
                 "task_id": message["data"]["task_id"],
@@ -600,27 +630,8 @@ class GCPPubSubQueue(QueueManager):
             # )
             raise
 
-    async def fail_task(self, task_handle: Any) -> None:
-        """
-        Mark a task as failed, allowing it to be retried, using exactly-once delivery.
-
-        Args:
-            task_handle: Message object from receive_messages or "ack_id" from receive_tasks
-        """
-        if self._exactly_once:
-            self._logger.debug(
-                f"Failing task with ack_id: '{task_handle.message_id}' on queue '{self._queue_name}'"
-            )
-        else:
-            self._logger.debug(
-                f"Failing task with ack_id: '{task_handle}' on queue '{self._queue_name}'"
-            )
-
-        self._create_topic_and_subscription()
-
-        if self._exactly_once:
-            return await self._fail_task_exactly_once(task_handle)
-
+    async def _fail_task_pull(self, task_handle: Any) -> None:
+        """Mark a task as failed, allowing it to be retried, using pull delivery."""
         try:
             # Get the event loop
             loop = asyncio.get_event_loop()
@@ -645,12 +656,36 @@ class GCPPubSubQueue(QueueManager):
             # )
             raise
 
-    async def get_queue_depth(self) -> int:
+    async def fail_task(self, task_handle: Any) -> None:
+        """
+        Mark a task as failed, allowing it to be retried, using exactly-once delivery.
+
+        Args:
+            task_handle: Message object from receive_messages or "ack_id" from receive_tasks
+        """
+        if self._exactly_once:
+            self._logger.debug(
+                f"Failing task with ack_id: '{task_handle.message_id}' on queue '{self._queue_name}'"
+            )
+        else:
+            self._logger.debug(
+                f"Failing task with ack_id: '{task_handle}' on queue '{self._queue_name}'"
+            )
+
+        self._create_topic_and_subscription()
+
+        if self._exactly_once:
+            return await self._fail_task_exactly_once(task_handle)
+
+        return await self._fail_task_pull(task_handle)
+
+    async def get_queue_depth(self) -> int | None:
         """
         Get the current depth (number of messages) in the queue.
 
         Returns:
-            Approximate number of messages in the queue
+            Approximate number of messages in the queue, or None if the queue depth cannot be
+            determined
         """
         self._logger.debug(f"Getting queue depth for queue '{self._queue_name}'")
 
@@ -690,7 +725,7 @@ class GCPPubSubQueue(QueueManager):
 
             if undelivered_messages is None:
                 self._logger.error(f"Failed to get queue depth for queue '{self._queue_name}'")
-                return 0
+                return None
 
             # Total messages = messages in our queue + undelivered messages
             total_messages = queue_size + undelivered_messages
@@ -710,6 +745,7 @@ class GCPPubSubQueue(QueueManager):
         """Remove all messages from the queue by deleting the subscription."""
         self._logger.debug(f"Purging queue '{self._queue_name}'")
         await self._delete_subscription()
+        self._create_topic_and_subscription()
 
     async def delete_queue(self) -> None:
         """Delete both the Pub/Sub subscription and topic entirely."""

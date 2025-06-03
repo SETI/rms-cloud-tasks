@@ -10,6 +10,8 @@ from unittest.mock import patch, MagicMock
 from google.api_core import exceptions as gcp_exceptions
 import logging
 import json
+import datetime
+from unittest.mock import ANY
 
 # Add the src directory to the path so we can import cloud_tasks modules
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -25,6 +27,7 @@ def mock_pubsub_client():
     with (
         patch("google.cloud.pubsub_v1.PublisherClient") as mock_publisher_cls,
         patch("google.cloud.pubsub_v1.SubscriberClient") as mock_subscriber_cls,
+        patch("time.sleep") as mock_sleep,  # Mock time.sleep to be a no-op
     ):
         # Create the mock instances
         publisher = MagicMock()
@@ -56,6 +59,9 @@ def mock_pubsub_client():
         mock_pull_response = MagicMock()
         mock_pull_response.received_messages = []
         subscriber.pull.return_value = mock_pull_response
+
+        # Configure time.sleep to be a no-op
+        mock_sleep.return_value = None
 
         yield (publisher, subscriber)
 
@@ -99,7 +105,7 @@ async def test_initialize(gcp_queue, mock_pubsub_client):
 
     # Now verify that topic and subscription were created
     assert mock_publisher.create_topic.called
-    assert mock_subscriber.create_subscription.called
+    assert not mock_subscriber.create_subscription.called
 
 
 @pytest.mark.asyncio
@@ -121,8 +127,8 @@ async def test_send_task(gcp_queue, mock_pubsub_client):
     mock_publisher.publish.assert_called_once()
     args, kwargs = mock_publisher.publish.call_args
     assert args[0] == gcp_queue._topic_path
-    assert "task_id" in kwargs
-    assert kwargs["task_id"] == task_id
+    assert "data" in kwargs
+    assert json.loads(kwargs["data"].decode("utf-8"))["task_id"] == task_id
 
 
 @pytest.mark.asyncio
@@ -144,22 +150,13 @@ async def test_receive_tasks(gcp_queue, mock_pubsub_client):
     mock_subscriber.pull.return_value = mock_response
 
     # Receive tasks
-    tasks = await gcp_queue.receive_tasks(max_count=2, visibility_timeout=60)
+    tasks = await gcp_queue.receive_tasks(max_count=2)
 
     # Verify pull was called
     mock_subscriber.pull.assert_called_with(
         request={
             "subscription": gcp_queue._subscription_path,
             "max_messages": 2,
-        }
-    )
-
-    # Verify modify_ack_deadline was called
-    mock_subscriber.modify_ack_deadline.assert_called_with(
-        request={
-            "subscription": gcp_queue._subscription_path,
-            "ack_ids": ["test-ack-id"],
-            "ack_deadline_seconds": 60,
         }
     )
 
@@ -210,33 +207,48 @@ async def test_get_queue_depth(gcp_queue, mock_pubsub_client):
     """Test getting the queue depth."""
     mock_publisher, mock_subscriber = mock_pubsub_client
 
-    # Setup mock for pull to return messages
-    message1 = MagicMock()
-    message1.ack_id = "ack-id-1"
-    message2 = MagicMock()
-    message2.ack_id = "ack-id-2"
+    # Mock the monitoring client and query
+    with (
+        patch("cloud_tasks.queue_manager.gcp.monitoring_v3.MetricServiceClient") as mock_client,
+        patch("cloud_tasks.queue_manager.gcp.query.Query") as mock_query_class,
+    ):
+        # Create mock point with value
+        mock_point = MagicMock()
+        mock_point.value.int64_value = 5
 
-    # Get queue depth
-    depth = await gcp_queue.get_queue_depth()
+        # Create mock time series with point
+        mock_time_series = MagicMock()
+        mock_time_series.points = [mock_point]
 
-    # Verify depth is correct
-    assert depth == 0
+        # Setup the mock query
+        mock_query = MagicMock()
+        # Make it iterable
+        mock_query.__iter__.return_value = [mock_time_series]
+        # Add select_resources method that returns self
+        mock_query.select_resources = MagicMock(return_value=mock_query)
+        mock_query_class.return_value = mock_query
 
-    mock_pull_response = MagicMock()
-    mock_pull_response.received_messages = [message1, message2]
-    mock_subscriber.pull.return_value = mock_pull_response
+        # Setup the mock client
+        mock_client.return_value = MagicMock()
 
-    # Get queue depth
-    depth = await gcp_queue.get_queue_depth()
+        # Get queue depth
+        depth = await gcp_queue.get_queue_depth()
 
-    # Verify depth is correct
-    assert depth == 2
+        # Verify depth is correct (5 undelivered messages + 0 in queue)
+        assert depth == 5
 
-    # Verify modify_ack_deadline was called to return messages to the queue
-    mock_subscriber.modify_ack_deadline.assert_called_once()
-    args, kwargs = mock_subscriber.modify_ack_deadline.call_args
-    assert kwargs["request"]["ack_ids"] == ["ack-id-1", "ack-id-2"]
-    assert kwargs["request"]["ack_deadline_seconds"] == 0
+        # Verify monitoring client was called correctly
+        mock_client.assert_called_once()
+        mock_query_class.assert_called_once_with(
+            mock_client.return_value,
+            gcp_queue._project_id,
+            "pubsub.googleapis.com/subscription/num_undelivered_messages",
+            end_time=ANY,  # Use ANY to ignore the exact time
+            minutes=1,
+        )
+        mock_query.select_resources.assert_called_once_with(
+            subscription_id=gcp_queue._subscription_name
+        )
 
 
 @pytest.mark.asyncio
@@ -258,7 +270,13 @@ async def test_purge_queue(gcp_queue, mock_pubsub_client):
     )
 
     # Verify create_subscription was called to recreate the queue
-    mock_subscriber.create_subscription.assert_called()
+    mock_subscriber.create_subscription.assert_called_once()
+    args = mock_subscriber.create_subscription.call_args.kwargs["request"]
+    assert args["name"] == gcp_queue._subscription_path
+    assert args["topic"] == gcp_queue._topic_path
+    assert args["message_retention_duration"]["seconds"] == 7 * 24 * 60 * 60
+    assert args["ack_deadline_seconds"] == 30
+    assert args["enable_exactly_once_delivery"] == gcp_queue._exactly_once
 
 
 @pytest.mark.asyncio
@@ -297,17 +315,7 @@ async def test_initialization(mock_pubsub_client, gcp_config):
     mock_subscriber.get_subscription.assert_called_with(
         request={"subscription": "projects/test-project/subscriptions/test-queue-subscription"}
     )
-    mock_subscriber.create_subscription.assert_called()
-
-    # Verify subscription creation parameters
-    subscription_request = mock_subscriber.create_subscription.call_args[1]["request"]
-    assert (
-        subscription_request["name"]
-        == "projects/test-project/subscriptions/test-queue-subscription"
-    )
-    assert subscription_request["topic"] == "projects/test-project/topics/test-queue-topic"
-    assert subscription_request["message_retention_duration"]["seconds"] == 7 * 24 * 60 * 60
-    assert subscription_request["ack_deadline_seconds"] == 30
+    mock_subscriber.create_subscription.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -387,56 +395,6 @@ async def test_delete_queue_partial_failure(gcp_queue, mock_pubsub_client):
 
     # Verify subscription state was updated
     assert not gcp_queue._subscription_exists
-
-
-@pytest.mark.asyncio
-async def test_get_queue_depth_with_messages(gcp_queue, mock_pubsub_client):
-    """Test getting queue depth when messages are present."""
-    mock_publisher, mock_subscriber = mock_pubsub_client
-
-    # Create mock messages
-    messages = []
-    for i in range(5):
-        message = MagicMock()
-        message.ack_id = f"ack-id-{i}"
-        messages.append(message)
-
-    # Setup mock response
-    mock_response = MagicMock()
-    mock_response.received_messages = messages
-    mock_subscriber.pull.return_value = mock_response
-
-    # Get queue depth
-    depth = await gcp_queue.get_queue_depth()
-
-    # Verify depth matches number of messages
-    assert depth == 5
-
-    # Verify messages were returned to queue
-    mock_subscriber.modify_ack_deadline.assert_called_once()
-    args = mock_subscriber.modify_ack_deadline.call_args.kwargs["request"]
-    assert args["ack_ids"] == ["ack-id-0", "ack-id-1", "ack-id-2", "ack-id-3", "ack-id-4"]
-    assert args["ack_deadline_seconds"] == 0
-
-
-@pytest.mark.asyncio
-async def test_get_queue_depth_pull_error(gcp_queue, mock_pubsub_client):
-    """Test handling of pull errors during queue depth estimation."""
-    mock_publisher, mock_subscriber = mock_pubsub_client
-
-    # Setup pull to raise an error
-    mock_subscriber.pull.side_effect = gcp_exceptions.ServiceUnavailable("Service unavailable")
-
-    # Attempt to get queue depth
-    with pytest.raises(gcp_exceptions.ServiceUnavailable):
-        await gcp_queue.get_queue_depth()
-
-    # Verify pull was attempted
-    mock_subscriber.pull.assert_called_once()
-    assert (
-        mock_subscriber.pull.call_args.kwargs["request"]["subscription"]
-        == gcp_queue._subscription_path
-    )
 
 
 @pytest.mark.asyncio
@@ -541,42 +499,6 @@ async def test_purge_queue_with_delay(gcp_queue, mock_pubsub_client):
     assert delete_time is not None
     assert create_time is not None
     # No need to check delay since we patched sleep
-
-
-@pytest.mark.asyncio
-async def test_get_queue_depth_modify_ack_error(gcp_queue, mock_pubsub_client):
-    """Test handling of errors when modifying ack deadline during queue depth check."""
-    mock_publisher, mock_subscriber = mock_pubsub_client
-
-    # Create mock messages
-    messages = []
-    for i in range(3):
-        message = MagicMock()
-        message.ack_id = f"ack-id-{i}"
-        messages.append(message)
-
-    # Setup mock response
-    mock_response = MagicMock()
-    mock_response.received_messages = messages
-    mock_subscriber.pull.return_value = mock_response
-
-    # Setup modify_ack_deadline to raise an error
-    mock_subscriber.modify_ack_deadline.side_effect = gcp_exceptions.ServiceUnavailable(
-        "Service unavailable"
-    )
-
-    # Attempt to get queue depth
-    with pytest.raises(gcp_exceptions.ServiceUnavailable):
-        await gcp_queue.get_queue_depth()
-
-    # Verify pull was successful
-    mock_subscriber.pull.assert_called_once()
-
-    # Verify modify_ack_deadline was attempted with correct parameters
-    mock_subscriber.modify_ack_deadline.assert_called_once()
-    args = mock_subscriber.modify_ack_deadline.call_args.kwargs["request"]
-    assert args["ack_ids"] == ["ack-id-0", "ack-id-1", "ack-id-2"]
-    assert args["ack_deadline_seconds"] == 0
 
 
 @pytest.mark.asyncio
@@ -743,7 +665,7 @@ async def test_subscription_creation_error(gcp_queue, mock_pubsub_client):
     gcp_queue._subscription_exists = False
 
     with pytest.raises(gcp_exceptions.PermissionDenied):
-        await gcp_queue.send_task("test-task", {"data": "test"})
+        await gcp_queue.receive_tasks()
 
 
 @pytest.mark.asyncio
@@ -794,10 +716,37 @@ async def test_fail_task_error(gcp_queue, mock_pubsub_client):
 async def test_get_queue_depth_pull_error_handling(gcp_queue, mock_pubsub_client):
     """Test error handling during queue depth check."""
     mock_publisher, mock_subscriber = mock_pubsub_client
-    mock_subscriber.pull.side_effect = gcp_exceptions.ServiceUnavailable("Service unavailable")
 
-    with pytest.raises(gcp_exceptions.ServiceUnavailable):
-        await gcp_queue.get_queue_depth()
+    # Mock the monitoring client and query
+    with (
+        patch("cloud_tasks.queue_manager.gcp.monitoring_v3.MetricServiceClient") as mock_client,
+        patch("cloud_tasks.queue_manager.gcp.query.Query") as mock_query_class,
+    ):
+        # Setup the mock query to raise ServiceUnavailable
+        mock_query = MagicMock()
+        mock_query.__iter__.side_effect = gcp_exceptions.ServiceUnavailable("Service unavailable")
+        mock_query.select_resources = MagicMock(return_value=mock_query)
+        mock_query_class.return_value = mock_query
+
+        # Setup the mock client
+        mock_client.return_value = MagicMock()
+
+        # Test that the error is propagated
+        with pytest.raises(gcp_exceptions.ServiceUnavailable):
+            await gcp_queue.get_queue_depth()
+
+        # Verify monitoring client was called correctly
+        mock_client.assert_called_once()
+        mock_query_class.assert_called_once_with(
+            mock_client.return_value,
+            gcp_queue._project_id,
+            "pubsub.googleapis.com/subscription/num_undelivered_messages",
+            end_time=ANY,  # Use ANY to ignore the exact time
+            minutes=1,
+        )
+        mock_query.select_resources.assert_called_once_with(
+            subscription_id=gcp_queue._subscription_name
+        )
 
 
 @pytest.mark.asyncio
@@ -858,7 +807,7 @@ async def test_send_task_error_handling(gcp_queue, mock_pubsub_client):
 async def test_receive_tasks_error_handling(gcp_queue, mock_pubsub_client):
     """Test error handling during task receiving."""
     mock_publisher, mock_subscriber = mock_pubsub_client
-    mock_subscriber.modify_ack_deadline.side_effect = gcp_exceptions.ServerError("Internal error")
+    mock_subscriber.acknowledge.side_effect = gcp_exceptions.ServerError("Internal error")
 
     # Create a mock message
     mock_message = MagicMock()
@@ -873,8 +822,10 @@ async def test_receive_tasks_error_handling(gcp_queue, mock_pubsub_client):
     mock_response.received_messages = [mock_message]
     mock_subscriber.pull.return_value = mock_response
 
+    # Set logger to debug
+    gcp_queue._logger.setLevel(logging.DEBUG)
     with pytest.raises(gcp_exceptions.ServerError):
-        await gcp_queue.receive_tasks()
+        await gcp_queue.receive_tasks(acknowledge=True)
 
 
 @pytest.mark.asyncio
@@ -965,18 +916,13 @@ async def test_create_topic_subscription_already_exists(gcp_queue, mock_pubsub_c
 
         # Verify the appropriate log messages
         assert any(
-            "Topic 'test-queue-topic' already exists (created by another process)" in record.message
-            for record in caplog.records
-        )
-        assert any(
-            "Subscription 'test-queue-subscription' already exists (created by another process)"
-            in record.message
+            'Topic "test-queue-topic" already exists (created by another process)' in record.message
             for record in caplog.records
         )
 
     # Verify both flags were set to True
     assert gcp_queue._topic_exists is True
-    assert gcp_queue._subscription_exists is True
+    assert gcp_queue._subscription_exists is False
 
 
 @pytest.mark.asyncio
