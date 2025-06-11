@@ -43,9 +43,14 @@ configure_logging(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-def _parse_args(args: Optional[Sequence[str]] = None) -> argparse.Namespace:
+def _parse_args(
+    parser: argparse.ArgumentParser | None,
+    args: Sequence[str] | None,
+) -> argparse.Namespace:
     """Parse command line arguments."""
-    parser = argparse.ArgumentParser(description="Worker for processing tasks from a queue")
+
+    if parser is None:
+        parser = argparse.ArgumentParser(description="Worker for processing tasks from a queue")
 
     parser.add_argument(
         "--provider",
@@ -75,26 +80,41 @@ def _parse_args(args: Optional[Sequence[str]] = None) -> argparse.Namespace:
         action="store_true",
         default=None,
         help="If specified, task and event queue messages are guaranteed to be delivered exactly "
-        "once to any recipient",
+        "once to any recipient [overrides $RMS_CLOUD_TASKS_EXACTLY_ONCE_QUEUE]",
     )
     parser.add_argument(
         "--no-exactly-once-queue",
         action="store_false",
         dest="exactly_once_queue",
         help="If specified, task and event queue messages are delivered at least once, but could "
-        "be delivered multiple times",
+        "be delivered multiple times [overrides $RMS_CLOUD_TASKS_EXACTLY_ONCE_QUEUE]",
     )
     parser.add_argument(
         "--event-log-file",
-        help="File to write events to; if not specified will not write events to a file "
+        help='File to write events to if --event-log-to-file is specified (defaults to "events.log")'
         "[overrides $RMS_CLOUD_TASKS_EVENT_LOG_FILE]",
+    )
+    parser.add_argument(
+        "--event-log-to-file",
+        action="store_true",
+        default=None,
+        help="If specified, events will be written to the file specified by --event-log-file "
+        "or $RMS_CLOUD_TASKS_EVENT_LOG_FILE (default if --task-file is specified) "
+        "[overrides $RMS_CLOUD_TASKS_EVENT_LOG_TO_FILE]",
+    )
+    parser.add_argument(
+        "--no-event-log-to-file",
+        action="store_false",
+        dest="event_log_to_file",
+        help="If specified, events will not be written to a file "
+        "[overrides $RMS_CLOUD_TASKS_EVENT_LOG_TO_FILE]",
     )
     parser.add_argument(
         "--event-log-to-queue",
         action="store_true",
         default=None,
-        help="If specified, events will be written to a cloud-based queue "
-        "[overrides $RMS_CLOUD_TASKS_EVENT_LOG_TO_QUEUE]",
+        help="If specified, events will be written to a cloud-based queue (default if "
+        "--task-file is not specified) [overrides $RMS_CLOUD_TASKS_EVENT_LOG_TO_QUEUE]",
     )
     parser.add_argument(
         "--no-event-log-to-queue",
@@ -250,16 +270,16 @@ def _parse_args(args: Optional[Sequence[str]] = None) -> argparse.Namespace:
 class LocalTaskQueue:
     """A local task queue that reads tasks from a JSON file."""
 
-    def __init__(self, tasks_file: str):
+    def __init__(self, task_file: str):
         """Initialize the local task queue.
 
         Args:
-            tasks_file: Path to JSON file containing tasks.
+            task_file: Path to JSON file containing tasks.
         """
-        self._tasks_file = tasks_file
-        self._tasks_iter = self._yield_tasks_from_file(tasks_file)
+        self._task_file = task_file
+        self._tasks_iter = self._yield_tasks_from_file(task_file)
 
-    def _yield_tasks_from_file(self, tasks_file: str) -> Iterable[Dict[str, Any]]:
+    def _yield_tasks_from_file(self, task_file: str) -> Iterable[Dict[str, Any]]:
         """
         Yield tasks from a JSON or YAML file as an iterator.
 
@@ -267,7 +287,7 @@ class LocalTaskQueue:
         processed without using a lot of memory or running slowly.
 
         Parameters:
-            tasks_file: Path to the tasks file
+            task_file: Path to the tasks file
 
         Yields:
             Task dictionaries (expected to have "task_id" and "data" keys)
@@ -275,12 +295,12 @@ class LocalTaskQueue:
         Raises:
             ValueError: If the file cannot be read
         """
-        if not tasks_file.endswith((".json", ".yaml", ".yml")):
+        if not task_file.endswith((".json", ".yaml", ".yml")):
             raise ValueError(
-                f"Unsupported file format for tasks: {tasks_file}; must be .json, .yml, or .yaml"
+                f"Unsupported file format for tasks: {task_file}; must be .json, .yml, or .yaml"
             )
-        with FCPath(tasks_file).open(mode="r") as fp:
-            if tasks_file.endswith(".json"):
+        with FCPath(task_file).open(mode="r") as fp:
+            if task_file.endswith(".json"):
                 for task in json_stream.load(fp):
                     yield json_stream.to_standard_types(task)  # Convert to a dict
             else:
@@ -317,7 +337,7 @@ class LocalTaskQueue:
             tasks.append(task)
         return tasks
 
-    async def complete_task(self, ack_id: str) -> None:
+    async def acknowledge_task(self, ack_id: str) -> None:
         """Mark a task as completed.
 
         Args:
@@ -326,7 +346,7 @@ class LocalTaskQueue:
         # For local queue, we don't need to do anything
         pass
 
-    async def fail_task(self, ack_id: str) -> None:
+    async def retry_task(self, ack_id: str) -> None:
         """Mark a task as failed.
 
         Args:
@@ -341,39 +361,50 @@ class WorkerData:
 
     def __init__(self):
         # Initialize all attributes to None
-        self.provider = None
-        self.project_id = None
-        self.job_id = None
-        self.queue_name = None
-        self.event_log_to_queue = False
-        self.event_log_queue_name = None
-        self.event_log_file = None
-        self.instance_type = None
-        self.num_cpus = None
-        self.memory_gb = None
-        self.local_ssd_gb = None
-        self.boot_disk_gb = None
-        self.is_spot = False
-        self.price_per_hour = None
-        self.num_simultaneous_tasks = 1
-        self.max_runtime = 600
-        self.shutdown_grace_period = 30
-        self.retry_on_exit = False
-        self.retry_on_exception = False
-        self.retry_on_timeout = False
-        self.simulate_spot_termination_after = None
-        self.simulate_spot_termination_delay = None
-        self.shutdown_event = None  # Will be set to MP_Event
-        self.termination_event = None  # Will be set to MP_Event
+
+        #: argparse.Namespace containing the command line arguments, including any additional
+        #: arguments specified by the user
+        self.args: argparse.Namespace | None = None
+        self.provider: str | None = None  #: The cloud provider to use (AWS or GCP)
+        self.project_id: str | None = None  #: The project ID to use (only for GCP)
+        self.job_id: str | None = None  #: The job ID to use
+        self.queue_name: str | None = None  #: The queue name to use
+        self.event_log_to_queue: bool = False  #: Whether to log events to a cloud-based queue
+        #: The name of the cloud-based queue to log events to
+        self.event_log_queue_name: str | None = None
+        self.event_log_to_file: bool = False  #: Whether to log events to a file
+        self.event_log_file: str | None = None  #: The name of the file to log events to
+        self.instance_type: str | None = None  #: The instance type this task is running on
+        self.num_cpus: int | None = None  #: The number of vCPUs on this computer
+        self.memory_gb: int | None = None  #: The amount of memory on this computer
+        self.local_ssd_gb: int | None = None  #: The amount of local SSD on this computer
+        self.boot_disk_gb: int | None = None  #: The amount of boot disk on this computer
+        self.is_spot: bool = False  #: Whether the instance is a spot instance
+        self.price_per_hour: float | None = None  #: The price per hour for the instance
+        self.num_simultaneous_tasks: int = 1  #: The number of simultaneous tasks to process
+        self.max_runtime: int = 600  #: The maximum runtime for a task in seconds
+        #: The time in seconds to wait for tasks to complete during shutdown
+        self.shutdown_grace_period: int = 30
+        self.retry_on_exit: bool = False  #: Whether to retry tasks on premature exit
+        self.retry_on_exception: bool = False  #: Whether to retry tasks on unhandled exception
+        self.retry_on_timeout: bool = False  #: Whether to retry tasks on timeout
+        #: The number of seconds after worker start to simulate a spot termination notice
+        self.simulate_spot_termination_after: float | None = None
+        #: The number of seconds after a simulated spot termination notice to forcibly kill all running tasks
+        self.simulate_spot_termination_delay: float | None = None
+        self.shutdown_event: MP_Event | None = None  # Will be set to MP_Event
+        self.termination_event: MP_Event | None = None  # Will be set to MP_Event
 
     @property
     def received_termination_notice(self) -> bool:
-        """Whether the worker has received a termination notice"""
+        """Whether the worker has received a termination notice. This is for a spot instance or
+        system maintenance."""
         return self.termination_event.is_set()
 
     @property
     def received_shutdown_request(self) -> bool:
-        """Whether the worker has received a shutdown request"""
+        """Whether the worker has received a shutdown request. This is for the user hitting
+        Ctrl-C at the terminal."""
         return self.shutdown_event.is_set()
 
 
@@ -384,6 +415,7 @@ class Worker:
         self,
         user_worker_function: Callable[[str, Dict[str, Any]], bool],
         args: Optional[Sequence[str]] = None,
+        argparser: Optional[argparse.ArgumentParser] = None,
     ):
         """
         Initialize the worker.
@@ -392,11 +424,15 @@ class Worker:
             user_worker_function: The function to execute for each task. It will be called
                 with the task_id, task_data dictionary, and Worker object as arguments.
             args: Optional list of command line arguments (sys.argv[1:]).
+            argparser: Optional argument parser to use. If provided, the command line
+                arguments used by Worker will be added before arguments are parsed.
+                The resulting argparse.Namespace can be retrieved from the WorkerData
+                structure.
         """
         self._user_worker_function = user_worker_function
 
         # Parse command line arguments if provided
-        parsed_args = _parse_args(args)
+        parsed_args = _parse_args(argparser, args)
 
         if parsed_args.verbose:
             logging.getLogger().setLevel(logging.DEBUG)
@@ -410,10 +446,35 @@ class Worker:
         self._data.shutdown_event = MP_CTX.Event()  # type: ignore
         self._data.termination_event = MP_CTX.Event()  # type: ignore
 
+        # Check if we're using a local tasks file
+        self._task_file = parsed_args.task_file
+        if self._task_file is None:
+            self._task_file = os.getenv("RMS_CLOUD_TASKS_TASK_FILE")
+        if self._task_file:
+            logger.info(f'  Using local tasks file: "{self._task_file}"')
+
+        # Get number of tasks to skip from args or environment variable
+        self._tasks_to_skip = parsed_args.tasks_to_skip
+        if self._tasks_to_skip is None:
+            self._tasks_to_skip = os.getenv("RMS_CLOUD_TASKS_TO_SKIP")
+        if self._tasks_to_skip is not None:
+            self._tasks_to_skip = int(self._tasks_to_skip)
+        logger.info(f"  Tasks to skip: {self._tasks_to_skip}")
+
+        # Get maximum number of tasks to process from args or environment variable
+        self._max_num_tasks = parsed_args.max_num_tasks
+        if self._max_num_tasks is None:
+            self._max_num_tasks = os.getenv("RMS_CLOUD_TASKS_MAX_NUM_TASKS")
+        if self._max_num_tasks is not None:
+            self._max_num_tasks = int(self._max_num_tasks)
+        logger.info(f"  Maximum number of tasks: {self._max_num_tasks}")
+        self._task_skip_count = self._tasks_to_skip
+        self._tasks_remaining = self._max_num_tasks
+
         # Get provider from args or environment variable
         self._data.provider = parsed_args.provider or os.getenv("RMS_CLOUD_TASKS_PROVIDER")
         if self._data.provider is None:
-            if not parsed_args.task_file:
+            if not self._task_file:
                 logger.error(
                     "Provider not specified via --provider or RMS_CLOUD_TASKS_PROVIDER "
                     "and no tasks file specified via --task-file"
@@ -442,7 +503,7 @@ class Worker:
             self._data.queue_name = self._data.job_id
         logger.info(f"  Queue name: {self._data.queue_name}")
 
-        if self._data.queue_name is None and not parsed_args.task_file:
+        if self._data.queue_name is None and not self._task_file:
             logger.error(
                 "Queue name not specified via --queue-name or RMS_CLOUD_TASKS_QUEUE_NAME "
                 "or --job-id or RMS_CLOUD_TASKS_JOB_ID and no tasks file specified via --task-file"
@@ -462,10 +523,25 @@ class Worker:
                 )
         logger.info(f"  Exactly-once queue: {self._data.exactly_once_queue}")
 
+        # Get event log to file from args or environment variable
+        self._data.event_log_to_file = parsed_args.event_log_to_file
+        if self._data.event_log_to_file is None:
+            self._data.event_log_to_file = os.getenv("RMS_CLOUD_TASKS_EVENT_LOG_TO_FILE")
+            if self._data.event_log_to_file is not None:
+                self._data.event_log_to_file = self._data.event_log_to_file.lower() in (
+                    "true",
+                    "1",
+                )
+            else:
+                self._data.event_log_to_file = self._task_file is not None
+        logger.info(f"  Event log to file: {self._data.event_log_to_file}")
+
         # Get event log file from args or environment variable
         self._data.event_log_file = parsed_args.event_log_file or os.getenv(
             "RMS_CLOUD_TASKS_EVENT_LOG_FILE"
         )
+        if not self._data.event_log_file:
+            self._data.event_log_file = "events.log"
         logger.info(f"  Event log file: {self._data.event_log_file}")
 
         self._data.event_log_to_queue = parsed_args.event_log_to_queue
@@ -476,6 +552,8 @@ class Worker:
                     "true",
                     "1",
                 )
+            else:
+                self._data.event_log_to_queue = self._task_file is None
         logger.info(f"  Event log to queue: {self._data.event_log_to_queue}")
 
         self._data.event_log_queue_name = None
@@ -625,29 +703,6 @@ class Worker:
                     "tasks will never be killed"
                 )
 
-        # Check if we're using a local tasks file
-        self._tasks_file = parsed_args.task_file
-        if self._tasks_file:
-            logger.info(f'  Using local tasks file: "{self._tasks_file}"')
-
-        # Get number of tasks to skip from args or environment variable
-        self._tasks_to_skip = parsed_args.tasks_to_skip
-        if self._tasks_to_skip is None:
-            self._tasks_to_skip = os.getenv("RMS_CLOUD_TASKS_TO_SKIP")
-        if self._tasks_to_skip is not None:
-            self._tasks_to_skip = int(self._tasks_to_skip)
-        logger.info(f"  Tasks to skip: {self._tasks_to_skip}")
-
-        # Get maximum number of tasks to process from args or environment variable
-        self._max_num_tasks = parsed_args.max_num_tasks
-        if self._max_num_tasks is None:
-            self._max_num_tasks = os.getenv("RMS_CLOUD_TASKS_MAX_NUM_TASKS")
-        if self._max_num_tasks is not None:
-            self._max_num_tasks = int(self._max_num_tasks)
-        logger.info(f"  Maximum number of tasks: {self._max_num_tasks}")
-        self._task_skip_count = self._tasks_to_skip
-        self._tasks_remaining = self._max_num_tasks
-
         # State tracking
         self._running = False
         self._task_queue: Any = None
@@ -676,126 +731,6 @@ class Worker:
         self._event_logger_fp = None
         self._event_logger_queue = None
 
-    @property
-    def provider(self) -> str | None:
-        """The provider (AWS, GCP, or AZURE) to communicate with for queues"""
-        return self._data.provider
-
-    @property
-    def project_id(self) -> str | None:
-        """The project ID (GCP only))"""
-        return self._data.project_id
-
-    @property
-    def job_id(self) -> str | None:
-        """The job ID"""
-        return self._data.job_id
-
-    @property
-    def queue_name(self) -> str | None:
-        """The task queue name"""
-        return self._data.queue_name
-
-    @property
-    def event_log_to_queue(self) -> bool:
-        """Whether to write events to a queue"""
-        return self._data.event_log_to_queue
-
-    @property
-    def event_log_queue_name(self) -> str | None:
-        """The queue to write events to"""
-        return self._data.event_log_queue_name
-
-    @property
-    def event_log_file(self) -> str | None:
-        """The file to write events to"""
-        return self._data.event_log_file
-
-    @property
-    def instance_type(self) -> str | None:
-        """The instance type this task is running on"""
-        return self._data.instance_type
-
-    @property
-    def num_cpus(self) -> int | None:
-        """The number of vCPUs on this computer"""
-        return self._data.num_cpus
-
-    @property
-    def memory_gb(self) -> float | None:
-        """The amount of memory on this computer"""
-        return self._data.memory_gb
-
-    @property
-    def local_ssd_gb(self) -> float | None:
-        """The size of the extra local SSD, if any, in GB"""
-        return self._data.local_ssd_gb
-
-    @property
-    def boot_disk_gb(self) -> float | None:
-        """The size of the boot disk in GB"""
-        return self._data.boot_disk_gb
-
-    @property
-    def is_spot(self) -> bool:
-        """Whether this is a spot instance and might be preempted"""
-        return self._data.is_spot or self._data.simulate_spot_termination_after is not None
-
-    @property
-    def price_per_hour(self) -> float | None:
-        """The price per hour for this instance"""
-        return self._data.price_per_hour
-
-    @property
-    def num_simultaneous_tasks(self) -> int:
-        """The number of tasks to run simultaneously"""
-        return self._data.num_simultaneous_tasks
-
-    @property
-    def max_runtime(self) -> int:
-        """The maximum runtime for a task in seconds"""
-        return self._data.max_runtime
-
-    @property
-    def shutdown_grace_period(self) -> int:
-        """The grace period for shutting down the worker in seconds"""
-        return self._data.shutdown_grace_period
-
-    @property
-    def received_termination_notice(self) -> bool:
-        """Whether the worker has received a termination notice"""
-        return self._data.received_termination_notice
-
-    @property
-    def received_shutdown_request(self) -> bool:
-        """Whether the worker has received a shutdown request"""
-        return self._data.received_shutdown_request
-
-    @property
-    def retry_on_timeout(self) -> bool:
-        """Whether to retry a task that times out"""
-        return self._data.retry_on_timeout
-
-    @property
-    def retry_on_exception(self) -> bool:
-        """Whether to retry a task that raises an exception"""
-        return self._data.retry_on_exception
-
-    @property
-    def retry_on_exit(self) -> bool:
-        """Whether to retry a task that exits prematurely"""
-        return self._data.retry_on_exit
-
-    @property
-    def simulate_spot_termination_after(self) -> int | None:
-        """The number of seconds after which to simulate a spot termination"""
-        return self._data.simulate_spot_termination_after
-
-    @property
-    def simulate_spot_termination_delay(self) -> int | None:
-        """The number of seconds to wait before simulating a spot termination"""
-        return self._data.simulate_spot_termination_delay
-
     def _signal_handler(self, signum, frame):
         """Handle termination signals."""
         signal_name = signal.Signals(signum).name
@@ -804,20 +739,20 @@ class Worker:
         signal.signal(signal.SIGINT, signal.SIG_DFL)  # So a second time will kill the process
         signal.signal(signal.SIGTERM, signal.SIG_DFL)
 
-    async def _queue_complete_task_with_logging(self, task: Dict[str, Any]) -> None:
+    async def _queue_acknowledge_task_with_logging(self, task: Dict[str, Any]) -> None:
         """Complete a task with logging of errors."""
         try:
             async with self._task_queue_semaphore:
-                await self._task_queue.complete_task(task["ack_id"])
+                await self._task_queue.acknowledge_task(task["ack_id"])
         except Exception as e:
             logger.error(f"Error completing task {task['task_id']}: {e}", exc_info=True)
             self._log_non_fatal_exception(traceback.format_exc())
 
-    async def _queue_fail_task_with_logging(self, task: Dict[str, Any]) -> None:
+    async def _queue_retry_task_with_logging(self, task: Dict[str, Any]) -> None:
         """Fail a task with logging of errors."""
         try:
             async with self._task_queue_semaphore:
-                await self._task_queue.fail_task(task["ack_id"])
+                await self._task_queue.retry_task(task["ack_id"])
         except Exception as e:
             logger.error(f"Error failing task {task['task_id']}: {e}", exc_info=True)
             self._log_non_fatal_exception(traceback.format_exc())
@@ -923,7 +858,7 @@ class Worker:
     async def start(self) -> None:
         """Start the worker and begin processing tasks."""
 
-        if self._data.event_log_file:
+        if self._data.event_log_to_file:
             logger.debug(f'Starting event logger for file "{self._data.event_log_file}"')
             try:
                 self._event_logger_fp = open(self._data.event_log_file, "a")
@@ -944,10 +879,10 @@ class Worker:
                 logger.error(f"Error initializing event log queue: {e}", exc_info=True)
                 sys.exit(1)
 
-        if self._tasks_file:
-            logger.debug(f'Starting task scheduler for local tasks file "{self._tasks_file}"')
+        if self._task_file:
+            logger.debug(f'Starting task scheduler for local tasks file "{self._task_file}"')
             try:
-                self._task_queue = LocalTaskQueue(self._tasks_file)
+                self._task_queue = LocalTaskQueue(self._task_file)
             except Exception as e:
                 logger.error(f"Error initializing local task queue: {e}", exc_info=True)
                 await self._log_fatal_exception(traceback.format_exc())
@@ -1058,10 +993,10 @@ class Worker:
                             )
                             if self._data.retry_on_exception:
                                 self._num_tasks_retried += 1
-                                await self._queue_fail_task_with_logging(task)
+                                await self._queue_retry_task_with_logging(task)
                             else:
                                 self._num_tasks_not_retried += 1
-                                await self._queue_complete_task_with_logging(task)
+                                await self._queue_acknowledge_task_with_logging(task)
                         elif retry:
                             self._num_tasks_retried += 1
                             logger.info(
@@ -1075,7 +1010,7 @@ class Worker:
                                 elapsed_time=elapsed_time,
                                 result=result,
                             )
-                            await self._queue_fail_task_with_logging(task)
+                            await self._queue_retry_task_with_logging(task)
                         else:
                             self._num_tasks_not_retried += 1
                             logger.info(
@@ -1088,7 +1023,7 @@ class Worker:
                                 elapsed_time=elapsed_time,
                                 result=result,
                             )
-                            await self._queue_complete_task_with_logging(task)
+                            await self._queue_acknowledge_task_with_logging(task)
                         del self._processes[worker_id]
                         if worker_id in exited_processes:
                             del exited_processes[worker_id]
@@ -1107,22 +1042,22 @@ class Worker:
                             f"Worker #{worker_id} (PID {p.pid}) processing task "
                             f'"{task["task_id"]}" exited prematurely in {elapsed_time:.1f} seconds '
                             f"with exit code {exit_code}; "
-                            f"{'retrying' if self.retry_on_exit else 'not retrying'}"
+                            f"{'retrying' if self._data.retry_on_exit else 'not retrying'}"
                         )
                         await self._log_task_exited(
                             task["task_id"],
-                            retry=self.retry_on_exit,
+                            retry=self._data.retry_on_exit,
                             elapsed_time=elapsed_time,
                             exit_code=exit_code,
                         )
 
-                        if self.retry_on_exit:
+                        if self._data.retry_on_exit:
                             self._num_tasks_retried += 1
-                            await self._queue_fail_task_with_logging(task)
+                            await self._queue_retry_task_with_logging(task)
                         else:
                             self._num_tasks_not_retried += 1
                             # If we're not retrying on exit, mark it as complete
-                            await self._queue_complete_task_with_logging(task)
+                            await self._queue_acknowledge_task_with_logging(task)
 
                         del self._processes[worker_id]
 
@@ -1137,8 +1072,8 @@ class Worker:
     async def _wait_for_shutdown(self, interval: float = 0.5) -> None:
         """Wait for the shutdown event and then clean up."""
         # Wait until shutdown is requested
-        while self._running and not self.received_shutdown_request:
-            if self.received_termination_notice and len(self._processes) == 0:
+        while self._running and not self._data.received_shutdown_request:
+            if self._data.received_termination_notice and len(self._processes) == 0:
                 logger.info("Termination event set and all processes complete; exiting")
                 self._running = False
                 return
@@ -1183,10 +1118,10 @@ class Worker:
 
     async def _check_termination_loop(self) -> None:
         """Periodically check if the instance is scheduled for termination."""
-        while self._running and not self.received_shutdown_request:
+        while self._running and not self._data.received_shutdown_request:
             try:
                 termination_notice = await self._check_termination_notice()
-                if termination_notice and not self.received_termination_notice:
+                if termination_notice and not self._data.received_termination_notice:
                     logger.warning("Instance termination notice received")
                     self._data.termination_event.set()
                     await self._log_spot_termination()
@@ -1284,7 +1219,7 @@ class Worker:
         """Fetch tasks from the cloud queue and feed them to worker processes."""
         while self._running:
             try:
-                if self.received_shutdown_request or self.received_termination_notice:
+                if self._data.received_shutdown_request or self._data.received_termination_notice:
                     # If we're shutting down for any reason, don't start any new tasks
                     await asyncio.sleep(1)
                     continue
@@ -1394,13 +1329,13 @@ class Worker:
 
                     # Mark task as failed in the queue
                     try:
-                        if self.retry_on_timeout:
+                        if self._data.retry_on_timeout:
                             self._num_tasks_retried += 1
                             logger.info(
                                 f"Worker #{worker_id}: Task {task['task_id']} will be retried"
                             )
                             try:
-                                await self._queue_fail_task_with_logging(task)
+                                await self._queue_retry_task_with_logging(task)
                             except Exception as e:
                                 logger.error(
                                     f"Error failing task {task['task_id']} after "
@@ -1414,7 +1349,7 @@ class Worker:
                                 f"Worker #{worker_id}: Task {task['task_id']} will not be retried"
                             )
                             try:
-                                await self._queue_complete_task_with_logging(task)
+                                await self._queue_acknowledge_task_with_logging(task)
                             except Exception as e:
                                 logger.error(
                                     f"Error completing task {task['task_id']} after "

@@ -27,6 +27,7 @@ shared options and then reference them as needed.
 Command Line Options
 --------------------
 
+
 .. _cli_common_options:
 
 Common Options
@@ -35,8 +36,8 @@ Common Options
 All commands support these common options:
 
 --config CONFIG        Path to configuration file (optional if no configuration file is needed)
---provider PROVIDER    Cloud provider (aws, gcp, or azure), overrides configuration file
---verbose, -v          Enable verbose output (-v for warning, -vv for info, -vvv for debug)
+--provider PROVIDER    Cloud provider (aws or gcp), overrides configuration file
+--verbose, -v          Enable verbose output (-v for INFO, -vv for DEBUG, default is WARNING)
 
 
 .. _cli_job_specific_options:
@@ -49,13 +50,15 @@ specify job-related information. They override any options in the configuration 
 :ref:`config_provider_specific_options`).
 
 --job-id JOB_ID            A unique identifier for the job
---queue-name QUEUE_NAME    The name of the task queue to use (derived from job ID if not provided)
+--queue-name QUEUE_NAME    The name of the task queue to use (derived from job ID if not provided;
+                           only use this in special circumstances)
 --region REGION            The region to use (derived from zone if not provided)
---zone ZONE                The zone to use
+--zone ZONE                The zone to use (if not specified, all zones in a region will be used)
 --exactly-once-queue       If specified, task and event queue messages are guaranteed to be delivered
                             exactly once to any recipient
 --no-exactly-once-queue    If specified, task and event queue messages are delivered at least once,
                             but could be delivered multiple times
+
 
 .. _cli_provider_specific_options:
 
@@ -82,14 +85,6 @@ GCP
                                        on cloud-based instances to have access to system resources [Required when creating
                                        instances]
 
-..
-   Azure
-   ~~~~~
-
-   --subscription-id SUBSCRIPTION_ID    The ID of the subscription to use
-   --tenant-id TENANT_ID                The ID of the tenant to use
-   --client-id CLIENT_ID                The ID of the client to use
-   --client-secret CLIENT_SECRET        The secret to use
 
 .. _cli_instance_type_selection_options:
 
@@ -157,7 +152,8 @@ in the configuration file (see :ref:`config_number_of_instances_options`).
 --min-simultaneous-tasks N    The minimum number of tasks to run simultaneously
 --max-simultaneous-tasks N    The maximum number of tasks to run simultaneously
 --min-total-price-per-hour N  The minimum total price per hour to use
---max-total-price-per-hour N  The maximum total price per hour to use
+--max-total-price-per-hour N  The maximum total price per hour to use (defaults to 10)
+
 
 .. _cli_vm_options:
 
@@ -169,6 +165,7 @@ in the configuration file (see :ref:`config_vm_options`).
 
 --use-spot                    Use spot instances instead of on-demand instances
 
+
 .. _cli_boot_options:
 
 Boot Options
@@ -179,6 +176,7 @@ in the configuration file (see :ref:`config_boot_options`).
 
 --startup-script-file FILE    The path to a file containing the startup script
 --image IMAGE                 The image to use for the VM
+
 
 .. _cli_worker_and_manage_pool_options:
 
@@ -206,10 +204,12 @@ options in the configuration file (see :ref:`config_worker_and_manage_pool_optio
 --no-retry-on-timeout                  If specified, tasks will not be retried if they exceed the
                                        maximum runtime specified by --max-runtime (default)
 
+
 .. _cli_information_commands:
 
 Information Commands
 --------------------
+
 
 .. _cli_list_regions:
 
@@ -240,6 +240,7 @@ Examples:
 
       .. code-block:: none
 
+         XXX Update
          $ cloud_tasks list_regions --provider aws --detail --zones --prefix us-west
          Found 2 regions (filtered by prefix: us-west)
 
@@ -260,27 +261,30 @@ Examples:
          $ cloud_tasks list_regions --provider gcp --detail --zones --prefix us-west
          Found 4 regions (filtered by prefix: us-west)
 
-         Region                    Description
-         ----------------------------------------------------------------------------------------------------
-         us-west1                  us-west1
-         Availability Zones: us-west1-a, us-west1-b, us-west1-c
+         Region: us-west1
+         Description: us-west1
+         Zones: us-west1-a, us-west1-b, us-west1-c
          Endpoint: https://us-west1-compute.googleapis.com
          Status: UP
 
-         us-west2                  us-west2
-         Availability Zones: us-west2-a, us-west2-b, us-west2-c
+         Region: us-west2
+         Description: us-west2
+         Zones: us-west2-a, us-west2-b, us-west2-c
          Endpoint: https://us-west2-compute.googleapis.com
          Status: UP
 
-         us-west3                  us-west3
-         Availability Zones: us-west3-a, us-west3-b, us-west3-c
+         Region: us-west3
+         Description: us-west3
+         Zones: us-west3-a, us-west3-b, us-west3-c
          Endpoint: https://us-west3-compute.googleapis.com
          Status: UP
 
-         us-west4                  us-west4
-         Availability Zones: us-west4-a, us-west4-b, us-west4-c
+         Region: us-west4
+         Description: us-west4
+         Zones: us-west4-a, us-west4-b, us-west4-c
          Endpoint: https://us-west4-compute.googleapis.com
          Status: UP
+
 
 .. _cli_list_images:
 
@@ -316,6 +320,7 @@ Examples:
 
       .. code-block:: none
 
+         XXX Update
          $ cloud_tasks list_images --provider aws --filter sapcal --detail --sort-by=-name --limit 2
          Retrieving images...
          Found 2 filtered images for aws:
@@ -344,25 +349,27 @@ Examples:
 
          $ cloud_tasks list_images --provider gcp --filter centos --detail --sort-by=-name --limit 2
          Retrieving images...
-         Found 2 filtered images for gcp:
+         Found 2 filtered images for GCP:
 
-         Family                              Name                                               Project               Source
-         ------------------------------------------------------------------------------------------------------------------
-         centos-stream-9                     centos-stream-9-v20250415                          centos-cloud          GCP
-         CentOS, CentOS, Stream 9, x86_64 built on 20250415
-         ID: 150443207020477652        CREATION DATE: 2025-04-15T13:31:56.385-07:00       STATUS: READY
-         URL: https://www.googleapis.com/compute/v1/projects/centos-cloud/global/images/centos-stream-9-v20250415
+         Family:  centos-stream-9
+         Name:    centos-stream-9-v20250513
+         Project: centos-cloud
+         Source:  GCP
+         CentOS, CentOS, Stream 9, x86_64 built on 20250513
+         ID: 1983115583357351998       CREATION DATE: 2025-05-13T15:25:22.322-07:00       STATUS: READY
+         URL: https://www.googleapis.com/compute/v1/projects/centos-cloud/global/images/centos-stream-9-v20250513
 
-         centos-stream-9-arm64               centos-stream-9-arm64-v20250415                    centos-cloud          GCP
-         CentOS, CentOS, Stream 9, aarch64 built on 20250415
-         ID: 8695213632332725460       CREATION DATE: 2025-04-15T13:31:56.337-07:00       STATUS: READY
-         URL: https://www.googleapis.com/compute/v1/projects/centos-cloud/global/images/centos-stream-9-arm64-v20250415
+         Family:  centos-stream-9-arm64
+         Name:    centos-stream-9-arm64-v20250513
+         Project: centos-cloud
+         Source:  GCP
+         CentOS, CentOS, Stream 9, aarch64 built on 20250513
+         ID: 4641848378514110526       CREATION DATE: 2025-05-13T15:25:22.160-07:00       STATUS: READY
+         URL: https://www.googleapis.com/compute/v1/projects/centos-cloud/global/images/centos-stream-9-arm64-v20250513
 
 
          To use a custom image with the 'run' or 'manage_pool' commands, use the --image parameter.
          For GCP, specify the image family or full URI: --image ubuntu-2404-lts or --image https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-2404-lts-amd64-v20240416
-
-
 
 .. _cli_list_instance_types:
 
@@ -385,10 +392,12 @@ Additional options:
 --filter TEXT     Include only images containing ``TEXT`` in any field
 --sort-by FIELDS  Sort the result by one or more comma-separated fields; available fields
                   are ``name``, ``vcpu``, ``mem``, ``local_ssd``, ``storage``,
-                  ``vcpu_price``, ``mem_price``, ``local_ssd_price``, ``storage_price``,
+                  ``vcpu_price``, ``mem_price``, ``local_ssd_price``, ``boot_disk_price``,
+                  ``boot_disk_iops_price``, ``boot_disk_throughput_price``,
                   ``price_per_cpu``, ``mem_per_gb_price``, ``local_ssd_per_gb_price``,
-                  ``storage_per_gb_price``, ``total_price``, ``total_price_per_cpu``,
-                  ``zone``, ``description``. Prefix with ``-`` for descending order.
+                  ``boot_disk_per_gb_price``, ``total_price``, ``total_price_per_cpu``,
+                  ``zone``, ``processor_type``, ``performance_rank``, ``description``.
+                  Prefix with ``-`` for descending order.
                   Partial field names like ``ram`` or ``mem`` for ``mem_gb`` or ``v`` for
                   ``vcpu`` are supported.
 --limit N         Limit the number of results to the first ``N`` after sorting
@@ -402,6 +411,7 @@ Examples:
 
       .. code-block:: none
 
+         XXX Update
          $ cloud_tasks list_instance_types --provider aws --region us-west-1 --instance-types "m4.*" --sort-by=-cpu,-mem --limit 5
          Retrieving instance types...
          Retrieving pricing information...
@@ -422,19 +432,23 @@ Examples:
          Retrieving instance types...
          Retrieving pricing information...
 
-         Instance Type                  Arch vCPU   Mem (GB)  LSSD (GB)  Disk (GB)  Total $/Hr         Zone
-         -----------------------------------------------------------------------------------------------------------
-         n1-ultramem-160              X86_64  160     3844.0          0          0    $21.3448  us-central1-*
-         n2-highmem-128               X86_64  128      864.0          0          0     $7.7070  us-central1-*
-         n2-standard-128              X86_64  128      512.0          0          0     $6.2156  us-central1-*
-         n1-megamem-96                X86_64   96     1433.6          0          0     $9.1088  us-central1-*
-         n2-highmem-96                X86_64   96      768.0          0          0     $6.2887  us-central1-*
+         ┌─────────────────┬────────┬──────┬─────────┬───────┬─────────────┬──────────┬───────────────┐
+         │ Instance Type   │ Arch   │ vCPU │     Mem │  Disk │ Boot        │  Total $ │ Zone          │
+         │                 │        │      │    (GB) │  (GB) │ Disk Type   │    (/Hr) │               │
+         ├─────────────────┼────────┼──────┼─────────┼───────┼─────────────┼──────────┼───────────────┤
+         │ n1-ultramem-160 │ X86_64 │  160 │ 3844.00 │ 10.00 │ pd-standard │ $21.3453 │ us-central1-* │
+         │ n1-ultramem-160 │ X86_64 │  160 │ 3844.00 │ 10.00 │ pd-balanced │ $21.3462 │ us-central1-* │
+         │ n1-ultramem-160 │ X86_64 │  160 │ 3844.00 │ 10.00 │ pd-extreme  │ $21.6241 │ us-central1-* │
+         │ n1-ultramem-160 │ X86_64 │  160 │ 3844.00 │ 10.00 │ pd-ssd      │ $21.3471 │ us-central1-* │
+         │ n2-highmem-128  │ X86_64 │  128 │  864.00 │ 10.00 │ pd-standard │  $7.7075 │ us-central1-* │
+         └─────────────────┴────────┴──────┴─────────┴───────┴─────────────┴──────────┴───────────────┘
 
 
 .. _cli_job_management_commands:
 
 Job Management Commands
 -----------------------
+
 
 .. _cli_manage_pool_cmd:
 
@@ -454,10 +468,12 @@ of the pool.
 If no zone is specified, the instances will be started in a random zones within the
 region; if a zone is specified, the instances will be started only in that zone.
 
-The the task queue for the job is empty, the instance pool will not be created in the
-first place.
-
-TBD Stuff about what happens once the queue is empty.
+The ``manage_pool`` command will monitor all instances associated with the specified
+``job_id`` whether or not they were created by the same ``manage_pool`` command. In other words,
+it is possible to create some instances with ``manage_pool``, abort the program with Ctrl-C,
+run ``manage_pool`` again with different options, and have multiple types of instances
+running at the same time. ``manage_pool`` will handle this case correctly, keeping track of
+all instances running.
 
 .. note::
 
@@ -490,8 +506,74 @@ Examples:
 
    .. tab:: GCP
 
-      $ cloud_tasks manage_pool --provider gcp --project my-project --job-id my-job --max-cpu 2 --max-instances 5 --startup-script-file startup_script_file.sh --region us-central1 --image https://www.googleapis.com/compute/v1/projects/centos-cloud/global/images/centos-stream-9-v20250415 -v
-      [TODO Put new stuff here]
+      .. code-block:: none
+
+         $ cloud_tasks manage_pool --provider gcp --project my-project --job-id my-job --max-cpu 2 --max-instances 5 --startup-script-file startup_script_file.sh --region us-central1 -v
+         2025-06-10 16:47:33.521 INFO - Loading configuration from None
+         2025-06-10 16:47:33.522 INFO - Starting pool management for job: my-job
+         2025-06-10 16:47:33.522 INFO - Provider configuration:
+         2025-06-10 16:47:33.522 INFO -   Provider: GCP
+         2025-06-10 16:47:33.522 INFO -   Region: us-central1
+         2025-06-10 16:47:33.522 INFO -   Zone: None
+         2025-06-10 16:47:33.522 INFO -   Job ID: my-job
+         2025-06-10 16:47:33.522 INFO -   Queue: my-job
+         2025-06-10 16:47:33.522 INFO - Instance type selection constraints:
+         2025-06-10 16:47:33.522 INFO -   Instance types: None
+         2025-06-10 16:47:33.522 INFO -   CPUs: None to 2
+         2025-06-10 16:47:33.522 INFO -   Memory: None to None GB
+         2025-06-10 16:47:33.522 INFO -   Memory per CPU: None to None GB
+         2025-06-10 16:47:33.522 INFO -   Boot disk types: None
+         2025-06-10 16:47:33.522 INFO -   Boot disk total size: 10.0 GB
+         2025-06-10 16:47:33.522 INFO -   Boot disk base size: 0.0 GB
+         2025-06-10 16:47:33.522 INFO -   Boot disk per CPU: None GB
+         2025-06-10 16:47:33.522 INFO -   Boot disk per task: None GB
+         2025-06-10 16:47:33.522 INFO -   Local SSD: None to None GB
+         2025-06-10 16:47:33.522 INFO -   Local SSD per CPU: None to None GB
+         2025-06-10 16:47:33.522 INFO -   Local SSD per task: None to None GB
+         2025-06-10 16:47:33.522 INFO - Number of instances constraints:
+         2025-06-10 16:47:33.522 INFO -   # Instances: 1 to 5
+         2025-06-10 16:47:33.522 INFO -   Total CPUs: None to None
+         2025-06-10 16:47:33.522 INFO -   CPUs per task: 1.0
+         2025-06-10 16:47:33.522 INFO -     Tasks per instance: None to None
+         2025-06-10 16:47:33.522 INFO -     Simultaneous tasks: None to None
+         2025-06-10 16:47:33.522 INFO -   Total price per hour: None to $10.00
+         2025-06-10 16:47:33.522 INFO -   Pricing: On-demand instances
+         2025-06-10 16:47:33.522 INFO - Miscellaneous:
+         2025-06-10 16:47:33.522 INFO -   Scaling check interval: 60 seconds
+         2025-06-10 16:47:33.522 INFO -   Instance termination delay: 60 seconds
+         2025-06-10 16:47:33.522 INFO -   Max runtime: 60 seconds
+         2025-06-10 16:47:33.522 INFO -   Max parallel instance creations: 10
+         2025-06-10 16:47:33.522 INFO -   Image: None
+         2025-06-10 16:47:33.522 INFO -   Startup script:
+         2025-06-10 16:47:33.522 INFO -     #!/bin/bash
+         2025-06-10 16:47:33.522 INFO -     echo "Hello, world"
+         2025-06-10 16:47:33.522 INFO - Starting orchestrator
+         2025-06-10 16:47:34.635 INFO - Using current default image: https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-2404-noble-amd64-v20250606
+         [...]
+         2025-06-10 16:47:45.421 INFO - || Selected instance type: e2-micro (pd-standard) in us-central1-* at $0.047098/hour
+         2025-06-10 16:47:45.421 INFO - ||   2 vCPUs, 1.0 GB RAM, no local SSD
+         2025-06-10 16:47:45.421 INFO - || Derived boot disk size: 10.0 GB
+         2025-06-10 16:47:45.421 INFO - || Derived number of tasks per instance: 2
+         2025-06-10 16:47:45.421 INFO - Checking if scaling is needed...
+         [...]
+         2025-06-10 16:47:48.700 INFO - No running instances found
+         2025-06-10 16:47:48.701 INFO - Starting 5 new instances for an incremental price of $0.24/hour
+         2025-06-10 16:48:16.376 INFO - Started on-demand instance 'rmscr-my-job-34j6cf59spi4w0ulb7xddbf6b' in zone 'us-central1-b'
+         2025-06-10 16:48:16.554 INFO - Started on-demand instance 'rmscr-my-job-7ino428u4uwl0x0fkbh9urpdn' in zone 'us-central1-b'
+         2025-06-10 16:48:16.729 INFO - Started on-demand instance 'rmscr-my-job-2qcrua9meajz72w9m7j7txykd' in zone 'us-central1-a'
+         2025-06-10 16:48:17.120 INFO - Started on-demand instance 'rmscr-my-job-aap2skl1iucx0h9x464amast8' in zone 'us-central1-c'
+         2025-06-10 16:48:17.487 INFO - Started on-demand instance 'rmscr-my-job-8o7zo0vbc87qjna05frcegq74' in zone 'us-central1-f'
+         2025-06-10 16:48:17.487 INFO - Successfully provisioned 5 of 5 requested instances
+         2025-06-10 16:49:17.543 INFO - Checking if scaling is needed...
+         2025-06-10 16:49:19.765 INFO - Running instance summary:
+         2025-06-10 16:49:19.765 INFO -   State       Instance Type             Boot Disk    vCPUs  Zone             Count  Total Price
+         2025-06-10 16:49:19.765 INFO -   ---------------------------------------------------------------------------------------------
+         2025-06-10 16:49:19.765 INFO -   running     e2-micro                  pd-standard      2  us-central1-c        1        $0.05
+         2025-06-10 16:49:19.765 INFO -   running     e2-micro                  pd-standard      2  us-central1-a        1        $0.05
+         2025-06-10 16:49:19.765 INFO -   running     e2-micro                  pd-standard      2  us-central1-f        1        $0.05
+         2025-06-10 16:49:19.765 INFO -   running     e2-micro                  pd-standard      2  us-central1-b        2        $0.09
+         2025-06-10 16:49:19.765 INFO -   ---------------------------------------------------------------------------------------------
+         2025-06-10 16:49:19.765 INFO -   Total running/starting:                               10 (weighted)            5        $0.24
 
 
 .. _cli_run_cmd:
@@ -518,7 +600,7 @@ command.
 
 Additional options:
 
---task-file TASK_FILE                 Path to tasks file (JSON or YAML)
+--task-file TASK_FILE                 Path to task file (JSON or YAML)
 --start-task N                        Skip tasks until this task number (1-based)
 --limit N                             Maximum number of tasks to enqueue
 --max-concurrent-queue-operations N   Maximum concurrent tasks to enqueue (default: 100)
@@ -576,7 +658,7 @@ Examples:
          --------------------------------------------------------------------------------
          Total running/starting:                  10 (weighted)            5        $0.23
 
-         Current queue depth: 10+
+         Current queue depth: 10
 
 
 .. _cli_stop_cmd:
@@ -657,27 +739,30 @@ Examples:
          $ cloud_tasks list_running_instances --provider gcp --project my-project --region us-central1 --all-instances --include-terminated
          Listing all instances including ones not created by cloud tasks
 
-         Job ID           ID                                                               Type            State       Zone            Created
-         -----------------------------------------------------------------------------------------------------------------------------------------------------------
-         N/A              personal-instance-1                                              e2-micro        running     us-central1-c   2025-04-28T14:33:46.974-07:00
-         my-job           rmscr-my-job-b2siduvm6a88og25yu5z76kkd                           e2-micro        terminated  us-central1-b   2025-04-28T14:22:01.786-07:00
-         my-job           rmscr-my-job-cjh38y7dttesfqkdbx4ew6kxb                           e2-micro        running     us-central1-a   2025-04-28T14:22:01.585-07:00
+         ┌────────┬────────────────────────────────────────┬───────────────┬────────────┬───────────────┬───────────────────────────────┐
+         │ Job ID │ ID                                     │ Type          │ State      │ Zone          │ Created                       │
+         ├────────┼────────────────────────────────────────┼───────────────┼────────────┼───────────────┼───────────────────────────────┤
+         │ N/A    │ instance-20250611-000830               │ n2-standard-2 │ running    │ us-central1-c │ 2025-06-10T17:08:56.319-07:00 │
+         │ my-job │ rmscr-my-job-1kbha0cmxqz9snn27nznudpog │ e2-micro      │ running    │ us-central1-a │ 2025-06-10T17:05:30.915-07:00 │
+         │ my-job │ rmscr-my-job-1zedunr983dvxnboyzc1d9va5 │ e2-micro      │ running    │ us-central1-a │ 2025-06-10T17:05:32.243-07:00 │
+         │ my-job │ rmscr-my-job-2lkp755rhnael6vpo1glft2up │ e2-micro      │ terminated │ us-central1-a │ 2025-06-10T17:05:32.013-07:00 │
+         │ my-job │ rmscr-my-job-5wleia6eb1yujw94ha1zkbk7y │ e2-micro      │ running    │ us-central1-f │ 2025-06-10T17:05:31.414-07:00 │
+         │ my-job │ rmscr-my-job-eh98we6vp96atd7lytol78fp3 │ e2-micro      │ running    │ us-central1-f │ 2025-06-10T17:05:31.241-07:00 │
+         └────────┴────────────────────────────────────────┴───────────────┴────────────┴───────────────┴───────────────────────────────┘
 
-         Summary: 3 total instances
-         2 running
+         Summary: 6 total instances
+         5 running
          1 terminated
-
-
-
 
 
 Queue Management Commands
 -------------------------
 
+
 .. _cli_monitor_event_queue:
 
 monitor_event_queue
-~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~
 
 Monitor the event queue and display and save events as they arrive. For safety, saving to a
 file is not optional and the `--output-file` option is required. New events will be appended
@@ -713,13 +798,34 @@ Examples:
 
       .. code-block:: none
 
-         $ cloud_tasks monitor_event_queue --provider gcp --job-id my-job --project my-project --output-file events.json
-         Monitoring event queue 'my-job-events' on GCP...
-         {"event_type": "task_started", "task_id": "task-001", "timestamp": "2025-04-28T14:33:46.974Z"}
-         {"event_type": "task_completed", "task_id": "task-001", "timestamp": "2025-04-28T14:33:47.123Z"}
+         $ cloud_tasks monitor_event_queue --provider gcp --job-id my-job --project my-project --task-file examples/parallel_addition/addition_tasks.json --output-file events.json
+         Reading tasks from "examples/parallel_addition/addition_tasks.json"
+         No previous events found...starting statistics from scratch
+         Monitoring event queue 'parallel-addition-job-events' on GCP...
+
+         Summary:
+         10000 tasks have not been completed without retry
+         [...]
+         {"timestamp": "2025-06-11T00:24:48.938470", "hostname": "rmscr-parallel-addition-job-ewxpucju5wxvzm3uscz829r2r", "event_type": "task_completed", "task_id": "addition-task-000004", "retry": false, "elapsed_time": 9.439203023910522, "result": "gs://rms-nav-test-addition/addition-results/addition-task-000004.txt"}
+
+         Summary:
+         9996 tasks have not been completed without retry
+         Task event status:
+            task_completed      (retry=False):      4
+            task_exception      (retry= True):      1
+            task_timed_out      (retry=False):      1
+         Task exceptions:
+                  1: File "/root/rms-cloud-tasks/src/cloud_tasks/worker/worker.py", line 1466, in _worker_process_main; retry, result = Worker._execute_task_isolated(; ...; ~~^~~; ZeroDivisionError: division by zero
+         Tasks completed: 4 in 18.41 seconds (4.60 seconds/task)
+         Elapsed time statistics:
+            Range:  3.97 to 10.31 seconds
+            Mean:   7.12 +/- 2.49 seconds
+            Median: 7.42 seconds
+            90th %: 9.88 seconds
+            95th %: 10.09 seconds
 
 
-.. _load_queue_cmd:
+.. _cli_load_queue_cmd:
 
 load_queue
 ~~~~~~~~~~
@@ -737,7 +843,7 @@ of the queue.
 
 Additional options:
 
---task-file TASK_FILE                 Path to tasks file (JSON or YAML)
+--task-file TASK_FILE                 Path to task file (JSON or YAML)
 --start-task N                        Skip tasks until this task number (1-based)
 --limit N                             Maximum number of tasks to enqueue
 --max-concurrent-queue-operations N   Maximum concurrent queue operations (default: 100)
@@ -823,7 +929,7 @@ Examples:
 
          $ cloud_tasks show_queue --provider gcp --job-id my-job --project my-project --detail
          Checking queue depth for 'my-job'...
-         Current depth: 10 message(s)
+         Current depth: 10
 
          Attempting to peek at first message...
 
@@ -840,6 +946,7 @@ Examples:
          }
 
          Note: Message was not removed from the queue.
+
 
 .. _cli_purge_queue_cmd:
 

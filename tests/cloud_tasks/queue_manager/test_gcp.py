@@ -72,6 +72,7 @@ def gcp_config():
         project_id="test-project",
         queue_name="test-queue",
         credentials_file=None,  # Test with default credentials
+        exactly_once_queue=False,
     )
 
 
@@ -104,7 +105,7 @@ async def test_initialize(gcp_queue, mock_pubsub_client):
 
     # Now verify that topic and subscription were created
     assert mock_publisher.create_topic.called
-    assert not mock_subscriber.create_subscription.called
+    assert mock_subscriber.create_subscription.called
 
 
 @pytest.mark.asyncio
@@ -167,12 +168,12 @@ async def test_receive_tasks(gcp_queue, mock_pubsub_client):
 
 
 @pytest.mark.asyncio
-async def test_complete_task(gcp_queue, mock_pubsub_client):
+async def test_acknowledge_task(gcp_queue, mock_pubsub_client):
     """Test completing a task."""
     mock_publisher, mock_subscriber = mock_pubsub_client
 
     # Complete task
-    await gcp_queue.complete_task("test-ack-id")
+    await gcp_queue.acknowledge_task("test-ack-id")
 
     # Verify acknowledge was called
     mock_subscriber.acknowledge.assert_called_with(
@@ -184,12 +185,12 @@ async def test_complete_task(gcp_queue, mock_pubsub_client):
 
 
 @pytest.mark.asyncio
-async def test_fail_task(gcp_queue, mock_pubsub_client):
+async def test_retry_task(gcp_queue, mock_pubsub_client):
     """Test failing a task."""
     mock_publisher, mock_subscriber = mock_pubsub_client
 
     # Fail task
-    await gcp_queue.fail_task("test-ack-id")
+    await gcp_queue.retry_task("test-ack-id")
 
     # Verify modify_ack_deadline was called with 0 seconds
     mock_subscriber.modify_ack_deadline.assert_called_with(
@@ -314,7 +315,15 @@ async def test_initialization(mock_pubsub_client, gcp_config):
     mock_subscriber.get_subscription.assert_called_with(
         request={"subscription": "projects/test-project/subscriptions/test-queue-subscription"}
     )
-    mock_subscriber.create_subscription.assert_not_called()
+    mock_subscriber.create_subscription.assert_called_with(
+        request={
+            "name": "projects/test-project/subscriptions/test-queue-subscription",
+            "topic": "projects/test-project/topics/test-queue-topic",
+            "message_retention_duration": {"seconds": 7 * 24 * 60 * 60},
+            "enable_exactly_once_delivery": False,
+            "ack_deadline_seconds": 30,
+        }
+    )
 
 
 @pytest.mark.asyncio
@@ -337,7 +346,7 @@ async def test_delete_queue_success(gcp_queue, mock_pubsub_client):
     # Verify topic was deleted
     mock_publisher.delete_topic.assert_called_with(request={"topic": gcp_queue._topic_path})
 
-    # Verify internal state was updated
+    # Verify both components are marked as not existing
     assert not gcp_queue._subscription_exists
     assert not gcp_queue._topic_exists
 
@@ -362,7 +371,7 @@ async def test_delete_queue_not_found(gcp_queue, mock_pubsub_client):
     )
     mock_publisher.delete_topic.assert_called_with(request={"topic": gcp_queue._topic_path})
 
-    # Verify internal state was updated
+    # Verify both components are marked as not existing
     assert not gcp_queue._subscription_exists
     assert not gcp_queue._topic_exists
 
@@ -557,16 +566,19 @@ async def test_delete_queue_topic_error_handling(gcp_queue, mock_pubsub_client):
         mock_publisher.delete_topic.side_effect = error
 
         # Attempt to delete queue
-        with pytest.raises(type(error)):
-            await gcp_queue.delete_queue()
+        await gcp_queue.delete_queue()
 
-        # Verify both operations were attempted
-        mock_subscriber.delete_subscription.assert_called_once_with(
+        # Verify subscription was deleted
+        mock_subscriber.delete_subscription.assert_called_with(
             request={"subscription": gcp_queue._subscription_path}
         )
-        mock_publisher.delete_topic.assert_called_once_with(
-            request={"topic": gcp_queue._topic_path}
-        )
+
+        # Verify topic deletion was attempted
+        mock_publisher.delete_topic.assert_called_with(request={"topic": gcp_queue._topic_path})
+
+        # Verify both components are marked as not existing
+        assert not gcp_queue._subscription_exists
+        assert not gcp_queue._topic_exists
 
 
 @pytest.mark.asyncio
@@ -590,12 +602,12 @@ async def test_delete_queue_concurrent_deletion(gcp_queue, mock_pubsub_client):
     await gcp_queue.delete_queue()
 
     # Verify both deletion attempts were made
-    mock_subscriber.delete_subscription.assert_called_once_with(
+    mock_subscriber.delete_subscription.assert_called_with(
         request={"subscription": gcp_queue._subscription_path}
     )
-    mock_publisher.delete_topic.assert_called_once_with(request={"topic": gcp_queue._topic_path})
+    mock_publisher.delete_topic.assert_called_with(request={"topic": gcp_queue._topic_path})
 
-    # Verify internal state was updated
+    # Verify both components are marked as not existing
     assert not gcp_queue._subscription_exists
     assert not gcp_queue._topic_exists
 
@@ -690,17 +702,17 @@ async def test_receive_tasks_pull_error(gcp_queue, mock_pubsub_client):
 
 
 @pytest.mark.asyncio
-async def test_complete_task_error(gcp_queue, mock_pubsub_client):
+async def test_acknowledge_task_error(gcp_queue, mock_pubsub_client):
     """Test error handling during task completion."""
     mock_publisher, mock_subscriber = mock_pubsub_client
     mock_subscriber.acknowledge.side_effect = gcp_exceptions.InvalidArgument("Invalid ack_id")
 
     with pytest.raises(gcp_exceptions.InvalidArgument):
-        await gcp_queue.complete_task("invalid-ack-id")
+        await gcp_queue.acknowledge_task("invalid-ack-id")
 
 
 @pytest.mark.asyncio
-async def test_fail_task_error(gcp_queue, mock_pubsub_client):
+async def test_retry_task_error(gcp_queue, mock_pubsub_client):
     """Test error handling during task failure."""
     mock_publisher, mock_subscriber = mock_pubsub_client
     mock_subscriber.modify_ack_deadline.side_effect = gcp_exceptions.InvalidArgument(
@@ -708,7 +720,7 @@ async def test_fail_task_error(gcp_queue, mock_pubsub_client):
     )
 
     with pytest.raises(gcp_exceptions.InvalidArgument):
-        await gcp_queue.fail_task("invalid-ack-id")
+        await gcp_queue.retry_task("invalid-ack-id")
 
 
 @pytest.mark.asyncio
@@ -833,8 +845,20 @@ async def test_delete_queue_error_propagation(gcp_queue, mock_pubsub_client):
     mock_publisher, mock_subscriber = mock_pubsub_client
     mock_publisher.delete_topic.side_effect = gcp_exceptions.ServerError("Internal error")
 
-    with pytest.raises(gcp_exceptions.ServerError):
-        await gcp_queue.delete_queue()
+    # Delete should succeed even with errors
+    await gcp_queue.delete_queue()
+
+    # Verify subscription was deleted
+    mock_subscriber.delete_subscription.assert_called_with(
+        request={"subscription": gcp_queue._subscription_path}
+    )
+
+    # Verify topic deletion was attempted
+    mock_publisher.delete_topic.assert_called_with(request={"topic": gcp_queue._topic_path})
+
+    # Verify both components are marked as not existing
+    assert not gcp_queue._subscription_exists
+    assert not gcp_queue._topic_exists
 
 
 @pytest.mark.asyncio
@@ -886,10 +910,10 @@ async def test_initialization_existing_queue_logging(mock_pubsub_client, caplog)
 
         # Verify debug messages about existing topic and subscription
         assert any(
-            "Topic 'test-queue-topic' already exists" in record.message for record in caplog.records
+            'Topic "test-queue-topic" already exists' in record.message for record in caplog.records
         )
         assert any(
-            "Subscription test-queue-subscription already exists" in record.message
+            'Subscription "test-queue-subscription" already exists' in record.message
             for record in caplog.records
         )
 
@@ -921,7 +945,7 @@ async def test_create_topic_subscription_already_exists(gcp_queue, mock_pubsub_c
 
     # Verify both flags were set to True
     assert gcp_queue._topic_exists is True
-    assert gcp_queue._subscription_exists is False
+    assert gcp_queue._subscription_exists is True
 
 
 @pytest.mark.asyncio

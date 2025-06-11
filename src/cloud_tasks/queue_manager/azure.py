@@ -173,7 +173,7 @@ class AzureServiceBusQueue(QueueManager):
             self._logger.error(f"Error receiving tasks: {str(e)}")
             return []
 
-    async def complete_task(self, task_handle: Any) -> None:
+    async def acknowledge_task(self, task_handle: Any) -> None:
         """
         Mark a task as completed and remove from the queue.
 
@@ -190,12 +190,12 @@ class AzureServiceBusQueue(QueueManager):
             async with self._service_bus_client:
                 receiver = self._service_bus_client.get_queue_receiver(queue_name=self._queue_name)
                 # Complete the message using its lock token in a thread pool
-                await loop.run_in_executor(None, receiver.complete_message, task_handle)
+                await loop.run_in_executor(None, receiver.acknowledge_message, task_handle)
         except Exception as e:
             self._logger.error(f"Error completing task: {str(e)}")
             raise
 
-    async def fail_task(self, task_handle: Any) -> None:
+    async def retry_task(self, task_handle: Any) -> None:
         """
         Mark a task as failed, allowing it to be retried.
 

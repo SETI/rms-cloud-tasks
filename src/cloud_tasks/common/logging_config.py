@@ -59,7 +59,9 @@ def configure_logging(level=logging.INFO, libraries_level=logging.CRITICAL):
     logging.getLogger("azure.servicebus").setLevel(libraries_level)
 
     formatter = MicrosecondFormatter(
-        fmt="%(asctime)s - %(name)s - %(levelname)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S.%f"
+        # fmt="%(asctime)s - %(name)s - %(levelname)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S.%f"
+        fmt="%(asctime)s %(levelname)s - %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S.%f",
     )
 
     # Configure the root logger

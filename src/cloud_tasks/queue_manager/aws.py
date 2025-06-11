@@ -296,7 +296,7 @@ class AWSSQSQueue(QueueManager):
             self._logger.error(f"Error receiving tasks: {str(e)}")
             raise
 
-    async def complete_task(self, task_handle: Any) -> None:
+    async def acknowledge_task(self, task_handle: Any) -> None:
         """
         Mark a task as completed and remove from the queue.
 
@@ -325,7 +325,7 @@ class AWSSQSQueue(QueueManager):
             self._logger.error(f"Error completing task: {str(e)}")
             raise
 
-    async def fail_task(self, task_handle: Any) -> None:
+    async def retry_task(self, task_handle: Any) -> None:
         """
         Mark a task as failed, allowing it to be retried.
 

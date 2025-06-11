@@ -49,9 +49,6 @@ class GCPComputeInstanceManager(InstanceManager):
 
     _HOURS_PER_MONTH = 730.5
 
-    _DEFAULT_REGION = "us-central1"
-    _DEFAULT_ZONE = "us-central1-a"
-
     _JOB_ID_TAG_PREFIX = "rmscr-"
 
     _DEFAULT_OPERATION_TIMEOUT = 240  # seconds
@@ -1890,10 +1887,18 @@ class GCPComputeInstanceManager(InstanceManager):
         self._logger.debug(f"Retrieving latest image from family {family_name}")
 
         images = await self.list_available_images()
+        ret_image = None
         for image in images:
             if image["family"] == family_name:
-                return image["self_link"]
-        return None
+                if ret_image is not None:
+                    raise ValueError(
+                        f"Multiple images found for family {family_name}: "
+                        f"{ret_image['name']} and {image['name']}"
+                    )
+                ret_image = image
+        if ret_image is None:
+            raise ValueError(f"No image found for family {family_name}")
+        return ret_image
 
     async def get_default_image(self) -> str | None:
         """

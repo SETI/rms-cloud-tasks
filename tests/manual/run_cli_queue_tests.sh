@@ -19,7 +19,7 @@ echo
 echo "****** Loading first queue (80 items) ******"
 echo
 set -x
-python -m src.cloud_tasks.cli load_queue --config tests/manual/run_cli_config.yml --provider ${P} --tasks tests/manual/run_cli_tasks.json ${ARGS}
+python -m src.cloud_tasks.cli load_queue --config tests/manual/run_cli_config.yml --provider ${P} --task-file tests/manual/run_cli_tasks.json ${ARGS}
 python -m src.cloud_tasks.cli show_queue --config tests/manual/run_cli_config.yml --provider ${P} ${ARGS}
 python -m src.cloud_tasks.cli show_queue --config tests/manual/run_cli_config.yml --provider ${P} --detail ${ARGS}
 set +x
@@ -29,8 +29,8 @@ echo
 echo "****** Loading second queue (80 + 80 items) ******"
 echo
 set -x
-python -m src.cloud_tasks.cli load_queue --config tests/manual/run_cli_config.yml --provider ${P} --queue-name my-test-queue --tasks tests/manual/run_cli_tasks.json ${ARGS}
-python -m src.cloud_tasks.cli load_queue --config tests/manual/run_cli_config.yml --provider ${P} --queue-name my-test-queue --tasks tests/manual/run_cli_tasks.json ${ARGS}
+python -m src.cloud_tasks.cli load_queue --config tests/manual/run_cli_config.yml --provider ${P} --queue-name my-test-queue --task-file tests/manual/run_cli_tasks.json ${ARGS}
+python -m src.cloud_tasks.cli load_queue --config tests/manual/run_cli_config.yml --provider ${P} --queue-name my-test-queue --task-file tests/manual/run_cli_tasks.json ${ARGS}
 python -m src.cloud_tasks.cli show_queue --config tests/manual/run_cli_config.yml --provider ${P} --queue-name my-test-queue ${ARGS}
 python -m src.cloud_tasks.cli show_queue --config tests/manual/run_cli_config.yml --provider ${P} ${ARGS}
 set +x

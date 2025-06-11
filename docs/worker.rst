@@ -105,39 +105,40 @@ compute instance, the following subset of environment variables are set automati
 based on information in the Cloud Tasks configuration file (or command line arguments
 given to ``manage_pool`` or ``run``), or from information derived from the instance type*:
 
-```
-RMS_CLOUD_TASKS_PROVIDER
-RMS_CLOUD_TASKS_PROJECT_ID
-RMS_CLOUD_TASKS_JOB_ID
-RMS_CLOUD_TASKS_QUEUE_NAME
-RMS_CLOUD_TASKS_INSTANCE_TYPE
-RMS_CLOUD_TASKS_INSTANCE_NUM_VCPUS
-RMS_CLOUD_TASKS_INSTANCE_MEM_GB
-RMS_CLOUD_TASKS_INSTANCE_SSD_GB
-RMS_CLOUD_TASKS_INSTANCE_BOOT_DISK_GB
-RMS_CLOUD_TASKS_INSTANCE_IS_SPOT
-RMS_CLOUD_TASKS_INSTANCE_PRICE
-RMS_CLOUD_TASKS_NUM_TASKS_PER_INSTANCE
-RMS_CLOUD_TASKS_MAX_RUNTIME
-RMS_CLOUD_TASKS_RETRY_ON_EXIT
-RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION
-RMS_CLOUD_TASKS_RETRY_ON_TIMEOUT
-```
+.. code-block:: none
 
-Tasks File
-~~~~~~~~~~
+  RMS_CLOUD_TASKS_PROVIDER
+  RMS_CLOUD_TASKS_PROJECT_ID
+  RMS_CLOUD_TASKS_JOB_ID
+  RMS_CLOUD_TASKS_QUEUE_NAME
+  RMS_CLOUD_TASKS_INSTANCE_TYPE
+  RMS_CLOUD_TASKS_INSTANCE_NUM_VCPUS
+  RMS_CLOUD_TASKS_INSTANCE_MEM_GB
+  RMS_CLOUD_TASKS_INSTANCE_SSD_GB
+  RMS_CLOUD_TASKS_INSTANCE_BOOT_DISK_GB
+  RMS_CLOUD_TASKS_INSTANCE_IS_SPOT
+  RMS_CLOUD_TASKS_INSTANCE_PRICE
+  RMS_CLOUD_TASKS_NUM_TASKS_PER_INSTANCE
+  RMS_CLOUD_TASKS_MAX_RUNTIME
+  RMS_CLOUD_TASKS_RETRY_ON_EXIT
+  RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION
+  RMS_CLOUD_TASKS_RETRY_ON_TIMEOUT
+
+
+Task File
+~~~~~~~~~
 
 --task-file TASK_FILE   The name of a local file containing tasks to process; if not
                         specified, the worker will pull tasks from the cloud provider
                         queue (see below). The filename can also be a cloud storage
-                        path like gs://bucket/file, s3://bucket/file, or
-                        https://path/to/file.
+                        path like ``gs://bucket/file``, ``s3://bucket/file``, or
+                        ``https://path/to/file``.
 
-If specified, the tasks file should be in the same format as read by the :ref:`load_queue_cmd`
+If specified, the task file should be in the same format as read by the :ref:`cli_load_queue_cmd`
 command.
 
-Parameters Required if Tasks File is Not Specified, Optional Otherwise
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Parameters Required if Task File is Not Specified, Optional Otherwise
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 --provider PROVIDER     The cloud provider to use (AWS, GCP, or AZURE) [or ``RMS_CLOUD_TASKS_PROVIDER``]
 --job-id JOB_ID         Unique identifier for the job [or ``RMS_CLOUD_TASKS_JOB_ID``]
@@ -175,6 +176,29 @@ Optional Parameters
 --simulate-spot-termination-delay SECONDS  Number of seconds after a simulated spot termination notice to forcibly kill all running tasks [or ``RMS_CLOUD_TASKS_SIMULATE_SPOT_TERMINATION_DELAY``]
 --verbose                                  Set the console log level to DEBUG instead of INFO
 
+Specifying Additional Arguments
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The worker can be configured to accept additional arguments. This is done by creating an ``argparse.ArgumentParser``,
+populating it with the arguments you want to accept, and passing it to the ``Worker`` constructor. For example:
+
+.. code-block:: python
+
+   parser = argparse.ArgumentParser()
+   parser.add_argument("--my-arg", type=str, required=True)
+   worker = Worker(process_task, args=sys.argv[1:], argparser=parser)
+
+It is important that these user-specified arguments not conflict with the arguments already
+supported by ``Worker``.
+
+The resulting parsed arguments can be accessed from the ``WorkerData`` object using the
+``args`` attribute. For example:
+
+.. code-block:: python
+
+   val = worker_data.args.my_arg
+
+
 .. _worker_logging_events:
 
 Logging Events
@@ -184,16 +208,16 @@ Various events can be logged to a local file or a cloud-based queue. The events 
 in a structured format that can be parsed by the pool manager or other software to update
 the status and results of the tasks. An example entry is:
 
-```json
-{"timestamp": "2025-05-26T01:56:26.321172",
- "hostname": "rmscr-parallel-addition-job-0g23gxetnyyavtxjrul6gberr",
- "event_type": "task_completed",
- "task_id": "addition-task-009684",
- "elapsed_time": 0.13359451293945312,
- "retry": false,
- "result": "Success!"
-}
-```
+.. code-block:: json
+
+  {"timestamp": "2025-05-26T01:56:26.321172",
+  "hostname": "rmscr-parallel-addition-job-0g23gxetnyyavtxjrul6gberr",
+  "event_type": "task_completed",
+  "task_id": "addition-task-009684",
+  "elapsed_time": 0.13359451293945312,
+  "retry": false,
+  "result": "Success!"
+  }
 
 The ``timestamp`` and ``hostname`` fields are always present.
 
@@ -249,6 +273,6 @@ notice, which is unpredictable.
 It is recommended that a task check for impending termination before starting to commit
 results to storage, as the writing and copying process may be interrupted by the
 destruction of the instance, resulting in a partial write. This can be done by checking
-the ``worker.received_termination_notice`` property. However, note that providers do not
+the ``worker_data.received_termination_notice`` property. However, note that providers do not
 guarantee a particular instance lifetime after the termination notice is sent, so a worker
 must still be able to tolerate an unexpected shutdown at any point in its execution.

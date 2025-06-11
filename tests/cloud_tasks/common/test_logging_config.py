@@ -72,7 +72,7 @@ def test_configure_logging():
     # Test that the formatter is correctly set
     formatter = handler.formatter
     assert isinstance(formatter, MicrosecondFormatter), "Handler not using MicrosecondFormatter"
-    assert formatter._fmt == "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    assert formatter._fmt == "%(asctime)s %(levelname)s - %(message)s"
     assert formatter.datefmt == "%Y-%m-%d %H:%M:%S.%f"
 
     # Test logging a message
@@ -82,7 +82,7 @@ def test_configure_logging():
 
     # Verify the log format
     timestamp_pattern = r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}"
-    message_pattern = f"{timestamp_pattern} - test_logger - INFO - Test message\n"
+    message_pattern = f"{timestamp_pattern} INFO - Test message\n"
     assert re.match(message_pattern, log_output), f"Log output format incorrect: {log_output}"
 
     # Test that library messages at INFO level are not logged

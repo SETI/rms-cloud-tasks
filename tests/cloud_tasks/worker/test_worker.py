@@ -19,8 +19,8 @@ from cloud_tasks.worker.worker import Worker, LocalTaskQueue
 def mock_queue():
     queue = AsyncMock()
     queue.receive_tasks = AsyncMock()
-    queue.complete_task = AsyncMock()
-    queue.fail_task = AsyncMock()
+    queue.acknowledge_task = AsyncMock()
+    queue.retry_task = AsyncMock()
     return queue
 
 
@@ -42,7 +42,7 @@ def mock_worker_function():
 
 
 @pytest.fixture
-def local_tasks_file_json():
+def local_task_file_json():
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
         json.dump(
             [
@@ -56,7 +56,7 @@ def local_tasks_file_json():
 
 
 @pytest.fixture
-def local_tasks_file_yaml():
+def local_task_file_yaml():
     with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
         yaml.dump(
             [
@@ -69,14 +69,14 @@ def local_tasks_file_yaml():
     os.unlink(f.name)
 
 
-def test_local_queue_init_with_json(local_tasks_file_json):
-    queue = LocalTaskQueue(local_tasks_file_json)
-    assert queue._tasks_file == local_tasks_file_json
+def test_local_queue_init_with_json(local_task_file_json):
+    queue = LocalTaskQueue(local_task_file_json)
+    assert queue._task_file == local_task_file_json
 
 
-def test_local_queue_init_with_yaml(local_tasks_file_yaml):
-    queue = LocalTaskQueue(local_tasks_file_yaml)
-    assert queue._tasks_file == local_tasks_file_yaml
+def test_local_queue_init_with_yaml(local_task_file_yaml):
+    queue = LocalTaskQueue(local_task_file_yaml)
+    assert queue._task_file == local_task_file_yaml
 
 
 def test_local_queue_init_with_invalid_format():
@@ -90,8 +90,8 @@ def test_local_queue_init_with_invalid_format():
 
 
 @pytest.mark.asyncio
-async def test_local_queue_receive_tasks_json(local_tasks_file_json):
-    queue = LocalTaskQueue(local_tasks_file_json)
+async def test_local_queue_receive_tasks_json(local_task_file_json):
+    queue = LocalTaskQueue(local_task_file_json)
     tasks = await queue.receive_tasks(max_count=2, visibility_timeout=30)
     assert len(tasks) == 2
     assert tasks[0]["task_id"] == "task1"
@@ -101,8 +101,8 @@ async def test_local_queue_receive_tasks_json(local_tasks_file_json):
 
 
 @pytest.mark.asyncio
-async def test_local_queue_receive_tasks_yaml(local_tasks_file_yaml):
-    queue = LocalTaskQueue(local_tasks_file_yaml)
+async def test_local_queue_receive_tasks_yaml(local_task_file_yaml):
+    queue = LocalTaskQueue(local_task_file_yaml)
     tasks = await queue.receive_tasks(max_count=2, visibility_timeout=30)
     assert len(tasks) == 2
     assert tasks[0]["task_id"] == "task3"
@@ -112,21 +112,21 @@ async def test_local_queue_receive_tasks_yaml(local_tasks_file_yaml):
 
 
 @pytest.mark.asyncio
-async def test_local_queue_complete_task(local_tasks_file_json):
-    queue = LocalTaskQueue(local_tasks_file_json)
-    await queue.complete_task("test-ack-1")  # This does nothing
+async def test_local_queue_acknowledge_task(local_task_file_json):
+    queue = LocalTaskQueue(local_task_file_json)
+    await queue.acknowledge_task("test-ack-1")  # This does nothing
 
 
 @pytest.mark.asyncio
-async def test_local_queue_fail_task(local_tasks_file_json):
-    queue = LocalTaskQueue(local_tasks_file_json)
-    await queue.fail_task("test-ack-1")  # This does nothing
+async def test_local_queue_retry_task(local_task_file_json):
+    queue = LocalTaskQueue(local_task_file_json)
+    await queue.retry_task("test-ack-1")  # This does nothing
 
 
 @pytest.mark.asyncio
-async def test_local_queue_receive_all_tasks(local_tasks_file_json):
+async def test_local_queue_receive_all_tasks(local_task_file_json):
     """Test that LocalTaskQueue.receive_tasks returns all tasks when max_count is larger than available tasks."""
-    queue = LocalTaskQueue(local_tasks_file_json)
+    queue = LocalTaskQueue(local_task_file_json)
     tasks = await queue.receive_tasks(max_count=5, visibility_timeout=30)
     # The test file has two tasks
     assert len(tasks) == 2
@@ -434,8 +434,9 @@ def test_num_simultaneous_tasks_default(mock_worker_function):
                 max_num_tasks=None,
                 simulate_spot_termination_after=None,
                 simulate_spot_termination_delay=None,
+                event_log_to_file=None,
                 event_log_file=None,
-                event_log_to_queue=False,
+                event_log_to_queue=None,
                 verbose=False,
                 retry_on_timeout=None,
                 retry_on_exception=None,
@@ -468,6 +469,7 @@ def test_num_simultaneous_tasks_default(mock_worker_function):
                 max_num_tasks=None,
                 simulate_spot_termination_after=None,
                 simulate_spot_termination_delay=None,
+                event_log_to_file=None,
                 event_log_file=None,
                 event_log_to_queue=False,
                 verbose=False,
@@ -506,6 +508,7 @@ def test_provider_required_without_tasks(mock_worker_function, caplog):
                     max_num_tasks=None,
                     simulate_spot_termination_after=None,
                     simulate_spot_termination_delay=None,
+                    event_log_to_file=None,
                     event_log_file=None,
                     event_log_to_queue=False,
                     verbose=False,
@@ -548,6 +551,7 @@ def test_provider_not_required_with_tasks(mock_worker_function):
                     max_num_tasks=None,
                     simulate_spot_termination_after=None,
                     simulate_spot_termination_delay=None,
+                    event_log_to_file=None,
                     event_log_file=None,
                     event_log_to_queue=False,
                     verbose=False,
@@ -562,8 +566,8 @@ def test_provider_not_required_with_tasks(mock_worker_function):
 
 
 @pytest.mark.asyncio
-async def test_start_with_local_tasks(mock_worker_function, local_tasks_file_json):
-    with patch("sys.argv", ["worker.py", "--task-file", local_tasks_file_json]):
+async def test_start_with_local_tasks(mock_worker_function, local_task_file_json):
+    with patch("sys.argv", ["worker.py", "--task-file", local_task_file_json]):
         worker = Worker(mock_worker_function)
         with patch.object(worker, "_wait_for_shutdown") as mock_wait:
             mock_wait.side_effect = asyncio.CancelledError()
@@ -573,7 +577,10 @@ async def test_start_with_local_tasks(mock_worker_function, local_tasks_file_jso
 
 @pytest.mark.asyncio
 async def test_start_with_cloud_queue(mock_worker_function, mock_queue):
-    with patch("sys.argv", ["worker.py", "--provider", "AWS", "--job-id", "test-job"]):
+    with patch(
+        "sys.argv",
+        ["worker.py", "--provider", "AWS", "--job-id", "test-job", "--no-event-log-to-queue"],
+    ):
         worker = Worker(mock_worker_function)
         with patch(
             "cloud_tasks.worker.worker.create_queue", return_value=mock_queue
@@ -600,10 +607,10 @@ async def test_handle_results(worker, mock_queue):
         worker._data.shutdown_grace_period = 0.01
 
         # Set up the mock queue to return immediately
-        mock_queue.complete_task.return_value = asyncio.Future()
-        mock_queue.complete_task.return_value.set_result(None)
-        mock_queue.fail_task.return_value = asyncio.Future()
-        mock_queue.fail_task.return_value.set_result(None)
+        mock_queue.acknowledge_task.return_value = asyncio.Future()
+        mock_queue.acknowledge_task.return_value.set_result(None)
+        mock_queue.retry_task.return_value = asyncio.Future()
+        mock_queue.retry_task.return_value.set_result(None)
 
         worker._processes = {
             1: {
@@ -653,8 +660,8 @@ async def test_handle_results(worker, mock_queue):
         # Verify the results
         assert worker._num_tasks_not_retried == 1
         assert worker._num_tasks_retried == 1
-        mock_queue.complete_task.assert_called_once_with("ack1")
-        mock_queue.fail_task.assert_called_once_with("ack2")
+        mock_queue.acknowledge_task.assert_called_once_with("ack1")
+        mock_queue.retry_task.assert_called_once_with("ack2")
     finally:
         worker._running = False
         await handler_task
@@ -692,10 +699,10 @@ async def test_handle_results_process_normal(worker, mock_queue):
         worker._data.shutdown_grace_period = 0.01
 
         # Set up the mock queue to return immediately
-        mock_queue.complete_task.return_value = asyncio.Future()
-        mock_queue.complete_task.return_value.set_result(None)
-        mock_queue.fail_task.return_value = asyncio.Future()
-        mock_queue.fail_task.return_value.set_result(None)
+        mock_queue.acknowledge_task.return_value = asyncio.Future()
+        mock_queue.acknowledge_task.return_value.set_result(None)
+        mock_queue.retry_task.return_value = asyncio.Future()
+        mock_queue.retry_task.return_value.set_result(None)
 
         worker._processes = {
             1: {
@@ -745,8 +752,8 @@ async def test_handle_results_process_normal(worker, mock_queue):
         # Verify the results
         assert worker._num_tasks_not_retried == 1
         assert worker._num_tasks_retried == 1
-        mock_queue.complete_task.assert_called_once_with("ack1")
-        mock_queue.fail_task.assert_called_once_with("ack2")
+        mock_queue.acknowledge_task.assert_called_once_with("ack1")
+        mock_queue.retry_task.assert_called_once_with("ack2")
     finally:
         worker._running = False
 
@@ -766,10 +773,10 @@ async def test_handle_results_process_exception(worker, mock_queue, retry_on_exc
         worker._data.retry_on_exception = retry_on_exception
 
         # Set up the mock queue to return immediately
-        mock_queue.complete_task.return_value = asyncio.Future()
-        mock_queue.complete_task.return_value.set_result(None)
-        mock_queue.fail_task.return_value = asyncio.Future()
-        mock_queue.fail_task.return_value.set_result(None)
+        mock_queue.acknowledge_task.return_value = asyncio.Future()
+        mock_queue.acknowledge_task.return_value.set_result(None)
+        mock_queue.retry_task.return_value = asyncio.Future()
+        mock_queue.retry_task.return_value.set_result(None)
 
         # Create a process that will run the worker function
         process = Process(
@@ -825,11 +832,11 @@ async def test_handle_results_process_exception(worker, mock_queue, retry_on_exc
         if retry_on_exception:
             assert worker._num_tasks_retried == 1
             assert worker._num_tasks_not_retried == 0
-            mock_queue.fail_task.assert_called_once_with("ack1")
+            mock_queue.retry_task.assert_called_once_with("ack1")
         else:
             assert worker._num_tasks_retried == 0
             assert worker._num_tasks_not_retried == 1
-            mock_queue.complete_task.assert_called_once_with("ack1")
+            mock_queue.acknowledge_task.assert_called_once_with("ack1")
     finally:
         worker._running = False
         if process.is_alive():
@@ -905,6 +912,7 @@ def test_exit_if_no_job_id_and_no_tasks(mock_worker_function, caplog):
                     max_num_tasks=None,
                     simulate_spot_termination_after=None,
                     simulate_spot_termination_delay=None,
+                    event_log_to_file=None,
                     event_log_file=None,
                     event_log_to_queue=False,
                     verbose=False,
@@ -947,6 +955,7 @@ def test_worker_properties(mock_worker_function):
                 max_num_tasks=10,
                 simulate_spot_termination_after=32,
                 simulate_spot_termination_delay=33,
+                event_log_to_file=True,
                 event_log_file="temp_log.json",
                 event_log_to_queue=True,
                 verbose=False,
@@ -971,6 +980,7 @@ def test_worker_properties(mock_worker_function):
             assert worker.num_simultaneous_tasks == 2
             assert worker.max_runtime == 100
             assert worker.shutdown_grace_period == 200
+            assert worker.event_log_to_file is True
             assert worker.event_log_to_queue is True
             assert worker.event_log_queue_name == "qname-events"
             assert worker.event_log_file == "temp_log.json"
@@ -999,6 +1009,7 @@ def test_signal_handler(mock_worker_function, caplog):
                 max_num_tasks=None,
                 simulate_spot_termination_after=None,
                 simulate_spot_termination_delay=None,
+                event_log_to_file=None,
                 event_log_file=None,
                 event_log_to_queue=False,
                 verbose=False,
@@ -1266,7 +1277,7 @@ async def test_monitor_process_runtimes(mock_worker_function, caplog, retry_on_t
                 }
             }  # 0.2 seconds runtime
 
-            # Mock task queue for fail_task call
+            # Mock task queue for retry_task call
             mock_queue = AsyncMock()
             worker._task_queue = mock_queue
 
@@ -1286,12 +1297,12 @@ async def test_monitor_process_runtimes(mock_worker_function, caplog, retry_on_t
 
             # Verify task was marked as failed
             if retry_on_timeout:
-                mock_queue.fail_task.assert_called_once_with("ack1")
-                mock_queue.complete_task.assert_not_called()
+                mock_queue.retry_task.assert_called_once_with("ack1")
+                mock_queue.acknowledge_task.assert_not_called()
                 assert "Worker #123: Task task-1 will be retried" in caplog.text
             else:
-                mock_queue.complete_task.assert_called_once_with("ack1")
-                mock_queue.fail_task.assert_not_called()
+                mock_queue.acknowledge_task.assert_called_once_with("ack1")
+                mock_queue.retry_task.assert_not_called()
                 assert "Worker #123: Task task-1 will not be retried" in caplog.text
 
             # Verify no new process was created to replace it
@@ -1331,7 +1342,7 @@ async def test_monitor_process_runtimes_no_termination(mock_worker_function, cap
                 }
             }  # 0.2 seconds runtime
 
-            # Mock task queue for fail_task call
+            # Mock task queue for retry_task call
             mock_queue = AsyncMock()
             worker._task_queue = mock_queue
 
@@ -1352,7 +1363,7 @@ async def test_monitor_process_runtimes_no_termination(mock_worker_function, cap
             mock_process.kill.assert_called_once()  # Verify kill was called after second join
 
             # Verify task was marked as failed
-            mock_queue.complete_task.assert_called_once_with("ack1")
+            mock_queue.acknowledge_task.assert_called_once_with("ack1")
 
             # Verify no new process was created to replace it
             assert len(worker._processes) == 0
@@ -1592,8 +1603,8 @@ async def test_handle_results_process_exit_retry_on_exit(mock_worker_function):
                 # Test with retry_on_exit=False
                 worker._data.retry_on_exit = False
                 await worker._handle_results()
-                mock_queue.complete_task.assert_called_once_with("test-ack")
-                mock_queue.fail_task.assert_not_called()
+                mock_queue.acknowledge_task.assert_called_once_with("test-ack")
+                mock_queue.retry_task.assert_not_called()
                 assert len(worker._processes) == 0
                 mock_logger.warning.assert_called_with(
                     'Worker #1 (PID 123) processing task "test-task" exited prematurely in '
@@ -1616,8 +1627,8 @@ async def test_handle_results_process_exit_retry_on_exit(mock_worker_function):
                 # Test with retry_on_exit=True
                 worker._data.retry_on_exit = True
                 await worker._handle_results()
-                mock_queue.fail_task.assert_called_once_with("test-ack")
-                mock_queue.complete_task.assert_not_called()
+                mock_queue.retry_task.assert_called_once_with("test-ack")
+                mock_queue.acknowledge_task.assert_not_called()
                 assert len(worker._processes) == 0
                 mock_logger.warning.assert_called_with(
                     'Worker #1 (PID 123) processing task "test-task" exited prematurely in '
@@ -1626,7 +1637,7 @@ async def test_handle_results_process_exit_retry_on_exit(mock_worker_function):
 
 
 @pytest.mark.asyncio
-async def test_event_logging_to_file(mock_worker_function, tmp_path, local_tasks_file_json):
+async def test_event_logging_to_file(mock_worker_function, tmp_path, local_task_file_json):
     """Test event logging to file for various event types."""
     event_log_file = tmp_path / "events.log"
 
@@ -1641,7 +1652,7 @@ async def test_event_logging_to_file(mock_worker_function, tmp_path, local_tasks
             "--event-log-file",
             str(event_log_file),
             "--task-file",
-            str(local_tasks_file_json),
+            str(local_task_file_json),
         ],
     ):
         worker = Worker(mock_worker_function)
@@ -1859,6 +1870,7 @@ async def test_event_logging_both_file_and_queue(mock_worker_function, tmp_path)
             "AWS",
             "--job-id",
             "test-job",
+            "--event-log-to-file",
             "--event-log-file",
             str(event_log_file),
             "--event-log-to-queue",
@@ -1935,6 +1947,7 @@ async def test_event_logging_file_error(mock_worker_function, tmp_path, caplog):
             "AWS",
             "--job-id",
             "test-job",
+            "--event-log-to-file",
             "--event-log-file",
             str(event_log_file),
         ],
@@ -2068,4 +2081,4 @@ async def test_tasks_to_skip_and_limit(mock_worker_function, caplog):
 
             # Verify queue interactions
             assert mock_queue.receive_tasks.call_count >= 7  # 6 batches + empty batch
-            assert mock_queue.complete_task.call_count == 3  # Should have completed 3 tasks
+            assert mock_queue.acknowledge_task.call_count == 3  # Should have completed 3 tasks

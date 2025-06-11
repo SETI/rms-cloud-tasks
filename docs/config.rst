@@ -10,7 +10,7 @@ The configuration file supports global options for system configuration, options
 selecting compute instances and running jobs, and provider-specific options including
 authentication and job options that can override the other options.
 
-A configuration file has the following structure:
+A configuration file has the following structure (all sections are optional):
 
 .. code-block:: yaml
 
@@ -26,10 +26,6 @@ A configuration file has the following structure:
     gcp:
       [GCP-specific options]
       [GCP-specific run options]
-
-    azure:
-      [Azure-specific options]
-      [Azure-specific run options]
 
 
 Global Options
@@ -66,21 +62,24 @@ do maximal work; this may or may not be an appropriate choice for your workload 
 example, having a large number of vCPUs, and thus simultaneosly running tasks, may result
 in the tasks being throttled by the network or disk bandwidth). With no constraints, the
 system will tend to choose the cheapest (and probably worst-performing) instance type with
-the least memory and the least disk space. Thus, while no constraints are required, it is
-recommended to specify at least some minimal constraints to avoid selecting the worst
-possible instance type.
+the least memory, the least disk space, and the slowest disk type. *Thus, while no
+constraints are required, it is recommended to specify at least some minimal constraints
+to avoid selecting the worst possible instance type.*
 
 If you need specific performance, specify the instance types you are willing to accept as
 a regular expression. For example, to allow all GCP "N2" instances, specify
 ``instance_types: "^n2-.*"``. This will still give the system freedom to choose the best
-instance type within that family given the other constraints. Alternatively, you can specify
-``cpu_family``, ``min_cpu_rank``, or ``max_cpu_rank`` if you don't want to look up the
-specific instance types that are relevant to your needs. For example, ``min_cpu_rank: 21``
-will specify a fast processor (Intel Sapphire Rapids or better). Note that it is quite
-possible to over-constrain the system such that no instance types meet the requirements.
+instance type within that family given the other constraints. Alternatively, you can
+specify ``cpu_family``, ``min_cpu_rank``, or ``max_cpu_rank`` if you don't want to look up
+the specific instance types that are relevant to your needs. For example, ``min_cpu_rank:
+21`` will specify a fast processor (Intel Sapphire Rapids or better). Note that it is
+quite possible to over-constrain the system such that no instance types meet the
+requirements.
 
-When multiple minimum constraints are specified, the maximum value wins. When multiple
-maximum constraints are specified, the minimum value wins.
+Many attributes can be specified in multiple ways. For example, the minimum amount of
+memory can be specified using ``min_total_memory``, ``min_memory_per_cpu``, or
+``min_memory_per_task``. Multiple constraints can be specified for the same attribute and
+the system will use the most-constraining value.
 
 To get a list of the available instance types and their attributes, including number of
 vCPUs, amount of memory, CPU family and performance rank, price, etc. you can use the
@@ -144,8 +143,8 @@ size you are also constraining the instance type to those that have an extra SSD
 * ``max_local_ssd``: The maximum amount of local extra SSD storage in GB per instance
 
 * Per-CPU constraints - the total amount of storage will be the sum of the base size and
-  the product of the number of vCPUs and the per-CPU amount; the per-CPU amount is
-  optional, and defaults to 0
+  the product of the number of vCPUs and the per-CPU amount; the base size is optional,
+  and defaults to 0
 
   * ``local_ssd_base_size``: The amount of local extra SSD storage in GB present before
     allocating additional space per vCPU
@@ -176,17 +175,18 @@ The boot disk size can either be a single absolute value:
 or a per-CPU value:
 
 * ``boot_disk_base_size``: The amount of boot disk in GB present before allocating additional
-  space per vCPU
-* ``boot_disk_per_cpu``: The minimum amount of boot disk in GB per vCPU
+  space per vCPU (defaults to 0)
+* ``boot_disk_per_cpu``: The amount of boot disk in GB per vCPU (defaults to 0)
 
 or a per-task value:
 
 * ``cpus_per_task``: The number of vCPUs per task (defaults to 1)
 * ``boot_disk_base_size``: The amount of boot disk in GB present before allocating additional
-  space per task
-* ``boot_disk_per_task``: The minimum amount of boot disk in GB per task
+  space per task (defaults to 0)
+* ``boot_disk_per_task``: The amount of boot disk in GB per task (defaults to 0)
 
-If more than one size is specified, the maximum of the values will be used.
+If more than one size is specified, the maximum of the values will be used. If no values are
+specified, a default appropriate to the provider will be used.
 
 The boot disk type is provider-specific and can be a single type or a list of types:
 
@@ -214,7 +214,12 @@ system such that no number of instances meet the requirements. As with the insta
 constraints, no constraints are required, but it is recommended to specify at least some
 minimal constraints so that you can maintain control over the size of your instance pool
 and the resulting costs. By default, the maximum number of instances is set to 10 to avoid
-excessive instance pool sizes, but this can be overridden by specifying a different value.
+excessive instance pool sizes, and the maximum price is set to $10 per hour to avoid
+runaway costs, but these can be overridden by specifying different values.
+
+Note that depending on the provider and your account setup, you may have quotas for the
+creation of specific instance types, and Cloud Tasks may attempt to violate these quotas
+if you do not give it sufficient constraints.
 
 * ``min_instances``: The minimum number of instances to use (defaults to 1)
 * ``max_instances``: The maximum number of instances to use (defaults to 10)
@@ -264,7 +269,8 @@ Options to specify the worker and manage_pool processes
 * ``scaling_check_interval``: The interval in seconds to check for scaling opportunities
   (defaults to 60)
 * ``instance_termination_delay``: The delay in seconds to wait before terminating instances
-  once the task queue is empty (defaults to 60)
+  once the task queue is empty (defaults to 60); this should be set to a value much greater
+  than ``max_runtime`` to avoid terminating instances that are still working on tasks.
 * ``max_runtime``: The maximum runtime for a task in seconds (defaults to 60); this is used
   to set the retry timeout in the task queue such that any task that takes longer than this
   is assumed to have had an internal error and should be set to a value
@@ -286,11 +292,14 @@ The available provider-specific options are:
 * All providers
 
   * ``job_id``: The ID of the job to run; required for all queue and job-related operations
-  * ``region``: The region to use; required for most operations
-  * ``zone``: The zone to use; will be automatically selected based on the region if not specified
-  * ``exactly_once_queue``: If True, queue task messages and events are guaranteed to be delivered
+  * ``queue_name``: The name of the task queue to use, derived from job ID if not specified;
+    only use this in special circumstances
+  * ``region``: The region to use, required for most operations; will be derived from the
+    zone if not specified
+  * ``zone``: The zone to use; if not specified, all zones in the region will be used
+  * ``exactly_once_queue``: If True, task messages and events are guaranteed to be delivered
     exactly once to any recipient. If False (the default), messages will be delivered at least
-    once, but could be delivered multiple times. The example implications of this flag are
+    once, but could be delivered multiple times. The specific implications of this flag are
     provider-specific.
 
 * AWS
@@ -306,13 +315,6 @@ The available provider-specific options are:
   * ``service_account``: The service account to use; required for worker processes
     on cloud-based instances to have access to system resources
 
-* Azure
-
-  * ``subscription_id``: The subscription ID to use
-  * ``tenant_id``: The tenant ID to use
-  * ``client_id``: The client ID to use
-  * ``client_secret``: The client secret to use
-
 In addition, all run options can be specified in a provider-specific section, in which
 case they will override the global run options, if any.
 
@@ -326,7 +328,7 @@ Simple replace any ``_`` character with ``-``:
 
     python -m cloud_tasks run \
       --config config.yaml \
-      --tasks tasks.json \
+      --task-file tasks.json \
       --provider aws \                 # Specify/override provider setting
       --min-cpu 8 \                    # Specify/override min_cpu setting
       --min-memory-per-cpu 16 \        # Specify/override min_memory_per_cpu setting
@@ -338,6 +340,26 @@ Simple replace any ``_`` character with ``-``:
 
 .. note::
    The priority of settings is: Command Line > Provider-Specific Config > Global Run Config > System Defaults
+
+You will be notified when overrides occur. For example:
+
+.. code-block:: text
+
+    run:
+      min_cpu: 2
+    gcp:
+      min_cpu: 8
+
+    2025-06-03 14:04:55.668 - cloud_tasks.common.config - WARNING - Overriding run.min_cpu=2 with gcp.min_cpu=8
+
+or:
+
+.. code-block:: text
+
+    $ cloud_tasks manage_pool --config config.yml --min-cpu 16
+
+    2025-06-03 14:04:33.848 - cloud_tasks.common.config - WARNING - Overloading run.min_cpu=2 with CLI=16
+
 
 Examples
 --------
@@ -374,7 +396,7 @@ the lack of
 :ref:`configuration options to constain the number of instances <config_number_of_instances_options>`
 means the system will create the default maximum number of instances, 10,
 which will result in the creation of 320 vCPUs and a burn rate of $7.92/hour, which may be
-more than actually required depending on the actual workload. Note that in addition to the
+more than required depending on the actual workload. Note that in addition to the
 default maximum number of instances being 10, the default maximum total price per hour is
 $10.00, which is designed to limit the user's exposure to a high burn rate without explicitly
 asking for it.

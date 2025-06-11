@@ -241,6 +241,8 @@ async def show_queue_cmd(args: argparse.Namespace, config: Config) -> None:
         print("Failed to get queue depth.")
         sys.exit(1)
 
+    print(f"Queue depth: {queue_depth}")
+
     if queue_depth == 0:
         print("\nQueue is empty. No messages available.")
     elif args.detail:
@@ -252,6 +254,7 @@ async def show_queue_cmd(args: argparse.Namespace, config: Config) -> None:
 
             if messages:
                 message = messages[0]
+                await task_queue.retry_task(message["ack_id"])  # Return to queue
                 task_id = message.get("task_id", "unknown")
 
                 print("\n" + "-" * 50)
@@ -461,6 +464,8 @@ async def manage_pool_cmd(args: argparse.Namespace, config: Config) -> None:
         print("Any instances are still running!")
         await orchestrator.stop(terminate_instances=False)
         sys.exit(1)
+
+    logger.info("Job management complete")
 
 
 async def list_running_instances_cmd(args: argparse.Namespace, config: Config) -> None:
@@ -749,10 +754,12 @@ async def monitor_event_queue_cmd(args: argparse.Namespace, config: Config) -> N
                     tasks_remaining = None
                 print("Summary:")
                 if tasks_remaining is not None:
-                    print(f"  {len(tasks_remaining)} tasks have not been completed without retry")
+                    print(
+                        f"  {len(tasks_remaining)} tasks have not been completed with retry=False"
+                    )
                 if len(duplicate_completed_task_ids) > 0:
                     print(
-                        f"  {len(duplicate_completed_task_ids)} tasks completed without retry "
+                        f"  {len(duplicate_completed_task_ids)} tasks completed with retry=False "
                         "more than once but shouldn't have"
                     )
                 if event_type_data:
@@ -852,7 +859,7 @@ async def monitor_event_queue_cmd(args: argparse.Namespace, config: Config) -> N
             output_file.close()
 
 
-async def run_job_cmd(args: argparse.Namespace, config: Config) -> None:
+async def run_cmd(args: argparse.Namespace, config: Config) -> None:
     """
     Run a job with the specified configuration.
     This is a combination of loading tasks into the queue and managing an instance pool.
@@ -864,7 +871,7 @@ async def run_job_cmd(args: argparse.Namespace, config: Config) -> None:
     await manage_pool_cmd(args, config)
 
 
-async def status_job_cmd(args: argparse.Namespace, config: Config) -> None:
+async def status_cmd(args: argparse.Namespace, config: Config) -> None:
     """
     Check the status of a running job.
 
@@ -879,13 +886,12 @@ async def status_job_cmd(args: argparse.Namespace, config: Config) -> None:
         orchestrator = InstanceOrchestrator(config=config)
         await orchestrator.initialize()
 
-        # Get job status
         num_running, running_cpus, running_price, job_status = (
             await orchestrator.get_job_instances()
         )
         print(job_status)
 
-        queue_depth = await orchestrator.task_queue.get_queue_depth()
+        queue_depth = await orchestrator._task_queue.get_queue_depth()
         if queue_depth is None:
             print("Failed to get queue depth for task queue.")
         else:
@@ -1946,13 +1952,13 @@ def main():
         action="store_true",
         help="Do not actually load any tasks or create or delete any instances",
     )
-    run_parser.set_defaults(func=run_job_cmd)
+    run_parser.set_defaults(func=run_cmd)
 
     # --- Status command ---
 
     status_parser = subparsers.add_parser("status", help="Check job status")
     add_common_args(status_parser)
-    status_parser.set_defaults(func=status_job_cmd)
+    status_parser.set_defaults(func=status_cmd)
 
     # --- Manage pool command ---
 
@@ -2128,11 +2134,11 @@ def main():
 
     # Set up logging level based on verbosity
     if hasattr(args, "verbose"):
-        if args.verbose == 1:
+        if args.verbose == 0:
             logging.getLogger().setLevel(logging.WARNING)
-        elif args.verbose == 2:
+        elif args.verbose == 1:
             logging.getLogger().setLevel(logging.INFO)
-        elif args.verbose > 2:
+        elif args.verbose > 1:
             logging.getLogger().setLevel(logging.DEBUG)
 
     # Load configuration
@@ -2149,6 +2155,8 @@ def main():
 
     # Run the appropriate command
     asyncio.run(args.func(args, config))
+
+    sys.exit(0)
 
 
 if __name__ == "__main__":

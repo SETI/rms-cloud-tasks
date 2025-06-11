@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from cloud_tasks.instance_manager.instance_manager import InstanceManager
 from cloud_tasks.instance_manager import create_instance_manager
 from cloud_tasks.common.config import Config
+from cloud_tasks.queue_manager import create_queue
 
 # Notes:
 # - Instance selection constraints
@@ -58,6 +59,8 @@ class InstanceOrchestrator:
         self._run_config = self._config.run
         if not self._run_config:
             raise ValueError("Run configuration section is missing - this should not happen")
+
+        self._task_queue = None
 
         # TODO: Add scale_up/down_thresholds to RunConfig?
         # self._scale_up_threshold = 10  # Default or fetch from config if added
@@ -255,9 +258,10 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
         This initializes the instance manager and task queue and loads the instance
         and pricing information.
         """
-        # Initialize the instance manager
         if self._instance_manager is None:
             self._instance_manager = await create_instance_manager(self._config)
+        if self._task_queue is None:
+            self._task_queue = await create_queue(self._config)
 
     async def _initialize_pricing_info(self) -> None:
         """Initialize the pricing information."""
@@ -498,17 +502,21 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
         and then the minimum value is used to verify that other constraints did
         not limit the number of instances excessively.
         """
+        if not self._running:
+            return
+
         self._logger.info("Checking if scaling is needed...")
 
         if self._dry_run:
             queue_depth = 1
         else:
-            # Get current queue depth
-            try:
-                queue_depth = await self.task_queue.get_queue_depth()
-                self._logger.debug(f"Current queue depth: {queue_depth}")
-            except Exception as e:
-                self._logger.error(f"Failed to get queue depth: {e}", exc_info=True)
+            queue_depth = await self._task_queue.get_queue_depth()
+            if queue_depth is None:
+                self._logger.error("Failed to get queue depth, assuming depth of 1")
+                queue_depth = 1
+            else:
+                self._logger.info(f"Current queue depth: {queue_depth}")
+
             # Check if queue is empty
             if queue_depth == 0:
                 if self._empty_queue_since is None:
@@ -517,6 +525,9 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
                 else:
                     empty_duration = float(time.time()) - self._empty_queue_since
                     self._logger.info(f"Queue has been empty for {empty_duration:.1f} seconds")
+                    if empty_duration > self._instance_termination_delay:
+                        self._logger.info("TERMINATION TIMER EXPIRED - TERMINATING ALL INSTANCES")
+                        await self.stop(terminate_instances=True)
                 return
 
         # Queue is not empty, reset timer
@@ -525,12 +536,12 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
         self._empty_queue_since = None
 
         # Calculate desired number of instances based on queue depth and tasks per instance
-        # cpus_per_task = self._run_config.cpus_per_task or 1
-        # desired_instances = int((queue_depth + cpus_per_task - 1) // cpus_per_task)
-        # if self._min_instances is not None:
-        #     desired_instances = max(desired_instances, self._min_instances)
-        # if self._max_instances is not None:
-        #     desired_instances = min(desired_instances, self._max_instances)
+        cpus_per_task = self._run_config.cpus_per_task or 1
+        desired_instances = int((queue_depth + cpus_per_task - 1) // cpus_per_task)
+        if self._min_instances is not None:
+            desired_instances = max(desired_instances, self._min_instances)
+        if self._max_instances is not None:
+            desired_instances = min(desired_instances, self._max_instances)
 
         num_running, running_cpus, running_price, summary = await self.get_job_instances()
         for summary_line in summary.split("\n"):
@@ -822,12 +833,3 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
             # Count successful terminations
             terminate_count = sum(1 for result in results if result)
             self._logger.info(f"Successfully terminated {terminate_count} instances")
-
-    async def report_job_status(self) -> None:
-        """
-        Report the current status of the job.
-        """
-        await self.get_job_instances()
-
-        queue_depth = await self.task_queue.get_queue_depth()
-        self._logger.info(f"Queue depth: {queue_depth}")
