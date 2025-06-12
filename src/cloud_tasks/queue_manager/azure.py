@@ -12,7 +12,7 @@ from azure.servicebus import ServiceBusClient, ServiceBusMessage  # type: ignore
 from azure.servicebus.management import ServiceBusAdministrationClient  # type: ignore
 
 from .queue_manager import QueueManager
-from cloud_tasks.common.config import AzureConfig
+from ..common.config import AzureConfig
 
 
 class AzureServiceBusQueue(QueueManager):

@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional, Tuple
 
-from cloud_tasks.common.config import ProviderConfig
+from ..common.config import ProviderConfig
 
 
 class InstanceManager(ABC):

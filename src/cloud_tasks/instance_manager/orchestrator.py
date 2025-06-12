@@ -8,10 +8,10 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional, Tuple
 
-from cloud_tasks.instance_manager.instance_manager import InstanceManager
-from cloud_tasks.instance_manager import create_instance_manager
-from cloud_tasks.common.config import Config
-from cloud_tasks.queue_manager import create_queue
+from .instance_manager import InstanceManager
+from . import create_instance_manager
+from ..common.config import Config
+from ..queue_manager import create_queue
 
 # Notes:
 # - Instance selection constraints

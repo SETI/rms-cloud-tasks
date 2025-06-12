@@ -14,8 +14,8 @@ from google.cloud import pubsub_v1  # type: ignore
 from google.cloud.pubsub_v1.subscriber import exceptions as sub_exceptions
 from google.cloud import monitoring_v3
 from google.cloud.monitoring_v3 import query
-from cloud_tasks.common.config import GCPConfig
 
+from ..common.config import GCPConfig
 from .queue_manager import QueueManager
 
 

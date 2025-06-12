@@ -16,7 +16,7 @@ from google.auth import default as get_default_credentials
 from google.cloud import billing, compute_v1  # type: ignore
 from google.oauth2 import service_account
 
-from cloud_tasks.common.config import GCPConfig
+from ..common.config import GCPConfig
 
 from .instance_manager import InstanceManager
 
