@@ -2,6 +2,14 @@ GCP-Specific Documentation
 ==========================
 
 
+Known Issues
+------------
+
+- The maximum queue visibility timeout allowed by GCP Pub/Sub is 10 minutes. This means that
+  if your task takes longer than 10 minutes to complete, it will be retried, even if it's.
+  still in process. The only current workaround is to break your task into smaller chunks.
+
+
 Setup
 -----
 

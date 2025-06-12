@@ -1421,6 +1421,11 @@ class GCPComputeInstanceManager(InstanceManager):
                     "scopes": ["https://www.googleapis.com/auth/cloud-platform"],
                 }
             )
+        else:
+            self._logger.warning(
+                "While starting instance: No service account specified; "
+                "the instance will not have access to any GCP services"
+            )
 
         # Add network tags so we can find these instances later
         tags = {
@@ -1454,9 +1459,9 @@ class GCPComputeInstanceManager(InstanceManager):
             )
 
             # Wait for the create operation to complete
-            await self._wait_for_operation(operation, zone, f"Creation of instance {instance_id}")
+            await self._wait_for_operation(operation, f"Creation of instance {instance_id}")
             self._logger.debug(
-                f"Instance {instance_id} created successfully " f"({instance_type} in zone {zone})"
+                f"Instance {instance_id} created successfully ({instance_type} in zone {zone})"
             )
             return instance_id, zone
         except Exception as e:
@@ -1491,9 +1496,7 @@ class GCPComputeInstanceManager(InstanceManager):
             )
 
             # Wait for the operation to complete asynchronously
-            await self._wait_for_operation(
-                operation, zone, f"Termination of instance {instance_id}"
-            )
+            await self._wait_for_operation(operation, f"Termination of instance {instance_id}")
             self._logger.debug(f"Instance {instance_id} terminated successfully")
         except NotFound:
             self._logger.warning(
@@ -1917,7 +1920,7 @@ class GCPComputeInstanceManager(InstanceManager):
         self._logger.debug(f"Found image: {image.name}, created on {image.creation_timestamp}")
         return image.self_link
 
-    async def _wait_for_operation(self, operation, zone: str, verbose_name: str) -> Any:
+    async def _wait_for_operation(self, operation, verbose_name: str) -> Any:
         """
         Wait for a Compute Engine operation to complete.
 

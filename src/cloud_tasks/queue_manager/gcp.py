@@ -466,7 +466,7 @@ class GCPPubSubQueue(QueueManager):
         """
         max_count = min(max_count, self._MAXIMUM_MESSAGE_RECEIVE_COUNT)
         self._logger.debug(
-            f"Receiving up to {max_count} messages from queue {self._subscription_name}"
+            f"Receiving up to {max_count} messages from subscription {self._subscription_name}"
         )
 
         await self._create_topic_and_subscription()

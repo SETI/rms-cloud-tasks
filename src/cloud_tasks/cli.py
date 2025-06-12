@@ -465,6 +465,9 @@ async def manage_pool_cmd(args: argparse.Namespace, config: Config) -> None:
         await orchestrator.stop(terminate_instances=False)
         sys.exit(1)
 
+    # We could call orchestrator.stop(terminate_instances=True) here, but it's not necessary
+    # because it would just terminate the threads but we're about exit the program anyway
+    # so we don't care.
     logger.info("Job management complete")
 
 
@@ -902,7 +905,7 @@ async def status_cmd(args: argparse.Namespace, config: Config) -> None:
         sys.exit(1)
 
 
-async def stop_job_cmd(args: argparse.Namespace, config: Config) -> None:
+async def stop_cmd(args: argparse.Namespace, config: Config) -> None:
     """
     Stop a running job and terminate its instances.
 
@@ -1982,7 +1985,7 @@ def main():
     stop_parser.add_argument(
         "--purge-queue", action="store_true", help="Purge the queue after stopping"
     )
-    stop_parser.set_defaults(func=stop_job_cmd)
+    stop_parser.set_defaults(func=stop_cmd)
 
     # --- List running instances command ---
 

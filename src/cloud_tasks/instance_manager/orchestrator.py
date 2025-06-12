@@ -527,7 +527,8 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
                     self._logger.info(f"Queue has been empty for {empty_duration:.1f} seconds")
                     if empty_duration > self._instance_termination_delay:
                         self._logger.info("TERMINATION TIMER EXPIRED - TERMINATING ALL INSTANCES")
-                        await self.stop(terminate_instances=True)
+                        await self.terminate_all_instances()
+                        self._running = False
                 return
 
         # Queue is not empty, reset timer

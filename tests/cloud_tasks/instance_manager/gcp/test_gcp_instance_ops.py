@@ -481,7 +481,6 @@ async def test_terminate_instance_basic(
         # Verify _wait_for_operation was called with the correct arguments
         mock_wait.assert_called_once_with(
             mock_operation,  # Pass the operation object, not just its name
-            gcp_instance_manager_n1_n2._zone,
             f"Termination of instance {instance_id}",
         )
 
@@ -916,9 +915,7 @@ async def test_wait_for_operation_success(
     mock_operation.result.return_value = mock_result
 
     # Act
-    result = await gcp_instance_manager_n1_n2._wait_for_operation(
-        mock_operation, "us-central1-a", "Test operation"
-    )
+    result = await gcp_instance_manager_n1_n2._wait_for_operation(mock_operation, "Test operation")
 
     # Assert
     assert result == mock_result
@@ -943,9 +940,7 @@ async def test_wait_for_operation_with_error(
 
     # Act & Assert
     with pytest.raises(RuntimeError, match="Resource not found"):
-        await gcp_instance_manager_n1_n2._wait_for_operation(
-            mock_operation, "us-central1-a", "Test operation"
-        )
+        await gcp_instance_manager_n1_n2._wait_for_operation(mock_operation, "Test operation")
 
     mock_operation.result.assert_called_once_with(
         timeout=gcp_instance_manager_n1_n2._DEFAULT_OPERATION_TIMEOUT
@@ -979,9 +974,7 @@ async def test_wait_for_operation_with_warnings(
     mock_operation.result.return_value = mock_result
 
     # Act
-    result = await gcp_instance_manager_n1_n2._wait_for_operation(
-        mock_operation, "us-central1-a", "Test operation"
-    )
+    result = await gcp_instance_manager_n1_n2._wait_for_operation(mock_operation, "Test operation")
 
     # Assert
     assert result == mock_result
@@ -1004,9 +997,7 @@ async def test_wait_for_operation_timeout(
 
     # Act & Assert
     with pytest.raises(TimeoutError, match="Operation timed out"):
-        await gcp_instance_manager_n1_n2._wait_for_operation(
-            mock_operation, "us-central1-a", "Test operation"
-        )
+        await gcp_instance_manager_n1_n2._wait_for_operation(mock_operation, "Test operation")
 
     mock_operation.result.assert_called_once_with(
         timeout=gcp_instance_manager_n1_n2._DEFAULT_OPERATION_TIMEOUT
@@ -1027,9 +1018,7 @@ async def test_wait_for_operation_cancellation(
 
     # Act & Assert
     with pytest.raises(asyncio.CancelledError):
-        await gcp_instance_manager_n1_n2._wait_for_operation(
-            mock_operation, "us-central1-a", "Test operation"
-        )
+        await gcp_instance_manager_n1_n2._wait_for_operation(mock_operation, "Test operation")
 
     mock_operation.result.assert_called_once_with(
         timeout=gcp_instance_manager_n1_n2._DEFAULT_OPERATION_TIMEOUT
