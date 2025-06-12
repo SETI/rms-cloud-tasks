@@ -7,12 +7,20 @@ from cloud_tasks.common.config import ProviderConfig
 class QueueManager(ABC):
     """Base interface for task queue operations."""
 
-    def __init__(self, config: Optional[ProviderConfig] = None, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        config: Optional[ProviderConfig] = None,
+        *,
+        queue_name: Optional[str] = None,
+        visibility_timeout: Optional[int] = None,
+        exactly_once: bool = False,
+        **kwargs: Any,
+    ) -> None:
         """Initialize the task queue with configuration."""
         pass  # pragma: no cover
 
     @abstractmethod
-    async def send_message(self, message: Dict[str, Any]) -> None:
+    async def send_message(self, message: Dict[str, Any], _quiet: bool = False) -> None:
         """Send a message to the queue."""
         pass  # pragma: no cover
 
@@ -22,29 +30,41 @@ class QueueManager(ABC):
         pass  # pragma: no cover
 
     @abstractmethod
-    async def receive_messages(self, max_count: int = 1) -> List[Dict[str, Any]]:
+    async def receive_messages(
+        self, max_count: int = 1, acknowledge: bool = True
+    ) -> List[Dict[str, Any]]:
         """Receive messages from the queue."""
         pass  # pragma: no cover
 
     @abstractmethod
     async def receive_tasks(
-        self, max_count: int = 1, visibility_timeout: int = 30
+        self, max_count: int = 1, acknowledge: bool = True
     ) -> List[Dict[str, Any]]:
-        """Receive tasks from the queue with a visibility timeout."""
+        """Receive tasks from the queue."""
         pass  # pragma: no cover
 
     @abstractmethod
-    async def complete_task(self, task_handle: Any) -> None:
-        """Mark a task as completed and remove from the queue."""
+    async def acknowledge_message(self, message_handle: Any) -> None:
+        """Acknowledge a message and remove it from the queue."""
         pass  # pragma: no cover
 
     @abstractmethod
-    async def fail_task(self, task_handle: Any) -> None:
-        """Mark a task as failed, allowing it to be retried."""
+    async def acknowledge_task(self, task_handle: Any) -> None:
+        """Acknowledge a task and remove it from the queue."""
         pass  # pragma: no cover
 
     @abstractmethod
-    async def get_queue_depth(self) -> int:
+    async def retry_message(self, message_handle: Any) -> None:
+        """Retry a message."""
+        pass  # pragma: no cover
+
+    @abstractmethod
+    async def retry_task(self, task_handle: Any) -> None:
+        """Retry a task."""
+        pass  # pragma: no cover
+
+    @abstractmethod
+    async def get_queue_depth(self) -> int | None:
         """Get the current depth (number of messages) in the queue."""
         pass  # pragma: no cover
 

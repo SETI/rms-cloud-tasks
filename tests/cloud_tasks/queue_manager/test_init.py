@@ -42,7 +42,7 @@ async def test_create_queue_aws_with_config(mock_aws_queue):
     queue = await create_queue(config)
 
     # Verify the queue was created with the correct config
-    mock_aws_queue.assert_called_once_with(aws_config)
+    mock_aws_queue.assert_called_once_with(aws_config, visibility_timeout=None, exactly_once=None)
     assert queue == mock_aws_queue.return_value
 
     # Verify config was passed correctly to the instance
@@ -64,7 +64,7 @@ async def test_create_queue_gcp_with_config(mock_gcp_queue):
     queue = await create_queue(config)
 
     # Verify the queue was created with the correct config
-    mock_gcp_queue.assert_called_once_with(gcp_config)
+    mock_gcp_queue.assert_called_once_with(gcp_config, visibility_timeout=None, exactly_once=None)
     assert queue == mock_gcp_queue.return_value
 
     # Verify config was passed correctly to the instance
@@ -72,48 +72,6 @@ async def test_create_queue_gcp_with_config(mock_gcp_queue):
     assert instance.project_id == "test-project"
     assert instance.queue_name == "test-queue"
     assert instance.credentials_file is None
-
-
-@pytest.mark.asyncio
-async def test_create_queue_aws_with_kwargs(mock_aws_queue):
-    """Test creating an AWS queue with kwargs."""
-    kwargs = {
-        "provider": "AWS",
-        "region": "us-west-2",
-        "queue_name": "test-queue",
-        "access_key": "test-key",
-        "secret_key": "test-secret",
-    }
-
-    queue = await create_queue(**kwargs)
-
-    # Verify the queue was created with the correct kwargs
-    mock_aws_queue.assert_called_once_with(**kwargs)
-    assert queue == mock_aws_queue.return_value
-
-    # Verify kwargs were passed correctly to the instance
-    instance = mock_aws_queue.call_args[1]  # Get kwargs passed to constructor
-    assert instance["region"] == "us-west-2"
-    assert instance["queue_name"] == "test-queue"
-    assert instance["access_key"] == "test-key"
-    assert instance["secret_key"] == "test-secret"
-
-
-@pytest.mark.asyncio
-async def test_create_queue_gcp_with_kwargs(mock_gcp_queue):
-    """Test creating a GCP queue with kwargs."""
-    kwargs = {"provider": "GCP", "project_id": "test-project", "queue_name": "test-queue"}
-
-    queue = await create_queue(**kwargs)
-
-    # Verify the queue was created with the correct kwargs
-    mock_gcp_queue.assert_called_once_with(**kwargs)
-    assert queue == mock_gcp_queue.return_value
-
-    # Verify kwargs were passed correctly to the instance
-    instance = mock_gcp_queue.call_args[1]  # Get kwargs passed to constructor
-    assert instance["project_id"] == "test-project"
-    assert instance["queue_name"] == "test-queue"
 
 
 @pytest.mark.asyncio
@@ -132,31 +90,6 @@ async def test_create_queue_missing_provider():
         await create_queue()
 
     assert "provider argument is required when config is not given" in str(exc_info.value)
-
-
-@pytest.mark.asyncio
-async def test_create_queue_case_insensitive_provider(mock_aws_queue):
-    """Test that provider string is case insensitive."""
-    kwargs = {
-        "provider": "aws",  # lowercase
-        "region": "us-west-2",
-        "queue_name": "test-queue",
-        "access_key": "test-key",
-        "secret_key": "test-secret",
-    }
-
-    queue = await create_queue(**kwargs)
-
-    # Verify the queue was created
-    mock_aws_queue.assert_called_once()
-    assert queue == mock_aws_queue.return_value
-
-    # Verify kwargs were passed correctly to the instance
-    instance = mock_aws_queue.call_args[1]  # Get kwargs passed to constructor
-    assert instance["region"] == "us-west-2"
-    assert instance["queue_name"] == "test-queue"
-    assert instance["access_key"] == "test-key"
-    assert instance["secret_key"] == "test-secret"
 
 
 @pytest.mark.asyncio

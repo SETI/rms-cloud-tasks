@@ -49,9 +49,6 @@ class GCPComputeInstanceManager(InstanceManager):
 
     _HOURS_PER_MONTH = 730.5
 
-    _DEFAULT_REGION = "us-central1"
-    _DEFAULT_ZONE = "us-central1-a"
-
     _JOB_ID_TAG_PREFIX = "rmscr-"
 
     _DEFAULT_OPERATION_TIMEOUT = 240  # seconds
@@ -1424,6 +1421,11 @@ class GCPComputeInstanceManager(InstanceManager):
                     "scopes": ["https://www.googleapis.com/auth/cloud-platform"],
                 }
             )
+        else:
+            self._logger.warning(
+                "While starting instance: No service account specified; "
+                "the instance will not have access to any GCP services"
+            )
 
         # Add network tags so we can find these instances later
         tags = {
@@ -1457,9 +1459,9 @@ class GCPComputeInstanceManager(InstanceManager):
             )
 
             # Wait for the create operation to complete
-            await self._wait_for_operation(operation, zone, f"Creation of instance {instance_id}")
+            await self._wait_for_operation(operation, f"Creation of instance {instance_id}")
             self._logger.debug(
-                f"Instance {instance_id} created successfully " f"({instance_type} in zone {zone})"
+                f"Instance {instance_id} created successfully ({instance_type} in zone {zone})"
             )
             return instance_id, zone
         except Exception as e:
@@ -1494,9 +1496,7 @@ class GCPComputeInstanceManager(InstanceManager):
             )
 
             # Wait for the operation to complete asynchronously
-            await self._wait_for_operation(
-                operation, zone, f"Termination of instance {instance_id}"
-            )
+            await self._wait_for_operation(operation, f"Termination of instance {instance_id}")
             self._logger.debug(f"Instance {instance_id} terminated successfully")
         except NotFound:
             self._logger.warning(
@@ -1890,10 +1890,16 @@ class GCPComputeInstanceManager(InstanceManager):
         self._logger.debug(f"Retrieving latest image from family {family_name}")
 
         images = await self.list_available_images()
+        ret_image = None
         for image in images:
             if image["family"] == family_name:
-                return image["self_link"]
-        return None
+                if ret_image is not None:
+                    raise ValueError(
+                        f"Multiple images found for family {family_name}: "
+                        f"{ret_image['name']} and {image['name']}"
+                    )
+                ret_image = image["self_link"]
+        return ret_image
 
     async def get_default_image(self) -> str | None:
         """
@@ -1914,7 +1920,7 @@ class GCPComputeInstanceManager(InstanceManager):
         self._logger.debug(f"Found image: {image.name}, created on {image.creation_timestamp}")
         return image.self_link
 
-    async def _wait_for_operation(self, operation, zone: str, verbose_name: str) -> Any:
+    async def _wait_for_operation(self, operation, verbose_name: str) -> Any:
         """
         Wait for a Compute Engine operation to complete.
 

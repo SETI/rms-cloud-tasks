@@ -185,6 +185,9 @@ def test_update_run_config_from_provider_config_defaults():
     c.run.scaling_check_interval = None
     c.run.instance_termination_delay = None
     c.run.max_runtime = None
+    c.run.retry_on_exit = None
+    c.run.retry_on_exception = None
+    c.run.retry_on_timeout = None
 
     c.update_run_config_from_provider_config()
 
@@ -195,6 +198,9 @@ def test_update_run_config_from_provider_config_defaults():
     assert c.run.scaling_check_interval == 60
     assert c.run.instance_termination_delay == 60
     assert c.run.max_runtime == 60
+    assert c.run.retry_on_exit is None
+    assert c.run.retry_on_exception is None
+    assert c.run.retry_on_timeout is None
     assert c.run.architecture == "X86_64"
     assert c.run.local_ssd_base_size == 0
     assert c.run.total_boot_disk_size == 10
@@ -243,7 +249,6 @@ def test_update_run_config_from_provider_config_defaults():
     c.run.max_instances = 5
     c.run.scaling_check_interval = 30
     c.run.instance_termination_delay = 45
-    c.run.max_runtime = 90
     c.run.architecture = "arm64"
     c.run.local_ssd_base_size = 20
     c.run.total_boot_disk_size = 50
@@ -254,6 +259,10 @@ def test_update_run_config_from_provider_config_defaults():
     c.run.boot_disk_types = ["SSD", "HDD"]
     c.run.boot_disk_iops = 1000
     c.run.boot_disk_throughput = 100
+    c.run.max_runtime = 120
+    c.run.retry_on_exit = False
+    c.run.retry_on_exception = False
+    c.run.retry_on_timeout = False
 
     c.update_run_config_from_provider_config()
 
@@ -263,7 +272,6 @@ def test_update_run_config_from_provider_config_defaults():
     assert c.run.max_instances == 5
     assert c.run.scaling_check_interval == 30
     assert c.run.instance_termination_delay == 45
-    assert c.run.max_runtime == 90
     assert c.run.architecture == "ARM64"  # Should be uppercased
     assert c.run.local_ssd_base_size == 20
     assert c.run.total_boot_disk_size == 50
@@ -274,6 +282,10 @@ def test_update_run_config_from_provider_config_defaults():
     assert c.run.boot_disk_types == ["ssd", "hdd"]  # Should be lowercased
     assert c.run.boot_disk_iops == 1000
     assert c.run.boot_disk_throughput == 100
+    assert c.run.max_runtime == 120
+    assert c.run.retry_on_exit is False
+    assert c.run.retry_on_exception is False
+    assert c.run.retry_on_timeout is False
 
 
 # --- ProviderConfig, AWSConfig, GCPConfig, AzureConfig ---

@@ -55,6 +55,18 @@ def process_task(
             delay = random.uniform(0, abs(delay))
         time.sleep(delay)
 
+    exception_prob = float(os.getenv("ADDITION_EXCEPTION_PROBABILITY", 0))
+    if random.random() < exception_prob:
+        _ = 1 / 0
+
+    timeout_prob = float(os.getenv("ADDITION_TIMEOUT_PROBABILITY", 0))
+    if random.random() < timeout_prob:
+        time.sleep(100000)
+
+    exit_prob = float(os.getenv("ADDITION_EXIT_PROBABILITY", 0))
+    if random.random() < exit_prob:
+        sys.exit(2)
+
     output_dir = FCPath(os.getenv("ADDITION_OUTPUT_DIR", "results"))
     output_file = output_dir / f"{task_id}.txt"
     with output_file.open(mode="w") as f:

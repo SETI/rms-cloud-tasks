@@ -12,29 +12,21 @@ class MicrosecondFormatter(logging.Formatter):
     The standard logging.Formatter doesn't properly support %f in datefmt.
     """
 
-    def formatTime(self, record, datefmt=None):
+    def formatTime(self, record, datefmt):
         """
         Override the standard formatTime to correctly handle microseconds.
         """
         ct = datetime.datetime.fromtimestamp(record.created)
-        if datefmt:
-            s = ct.strftime(datefmt)
-            # Always truncate to 3 digits (millisecond precision) even when datefmt is provided
-            if ".%f" in datefmt:
-                # Find the position of microseconds in the formatted string
-                parts = datefmt.split(".%f")
-                if len(parts) > 1:
-                    # Get the length of the part before .%f
-                    prefix_len = len(ct.strftime(parts[0]))
-                    # Truncate the string to include only the first 3 digits of microseconds
-                    s = s[: prefix_len + 4]  # +4 accounts for the dot and 3 digits
-                    # If there's content after microseconds, append it
-                    if len(parts) > 1 and parts[1]:
-                        s += ct.strftime(parts[1])
-        else:
-            s = ct.strftime("%Y-%m-%d %H:%M:%S.%f")  # Include microseconds
-            # Truncate to milliseconds (3 digits)
-            s = s[:-3]
+        s = ct.strftime(datefmt)
+        # Always truncate to 3 digits (millisecond precision) even when datefmt is provided
+        if ".%f" in datefmt:
+            # Find the position of microseconds in the formatted string
+            parts = datefmt.split(".%f")
+            if len(parts) > 1:
+                # Get the length of the part before .%f
+                prefix_len = len(ct.strftime(parts[0]))
+                # Truncate the string to include only the first 3 digits of microseconds
+                s = s[: prefix_len + 4]  # +4 accounts for the dot and 3 digits
         return s
 
 
@@ -67,7 +59,9 @@ def configure_logging(level=logging.INFO, libraries_level=logging.CRITICAL):
     logging.getLogger("azure.servicebus").setLevel(libraries_level)
 
     formatter = MicrosecondFormatter(
-        fmt="%(asctime)s - %(name)s - %(levelname)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S.%f"
+        # fmt="%(asctime)s - %(name)s - %(levelname)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S.%f"
+        fmt="%(asctime)s %(levelname)s - %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S.%f",
     )
 
     # Configure the root logger

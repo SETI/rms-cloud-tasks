@@ -13,6 +13,7 @@ dependencies = [
   "asyncio",
   "click",
   "json-stream",
+  "numpy",
   "prettytable",
   "pydantic",
   "pyyaml",
@@ -22,6 +23,7 @@ dependencies = [
   "boto3",
   "google-cloud-billing",
   "google-cloud-compute",
+  "google-cloud-monitoring",
   "google-cloud-pubsub",
   "google-cloud-storage"
 ]

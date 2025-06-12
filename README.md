@@ -25,7 +25,7 @@
 # Introduction
 
 Cloud Tasks (contained in the `rms-cloud-tasks` package) is a framework for running
-independent tasks on cloud providers with automatic compute instance  and task queue
+independent tasks on cloud providers with automatic compute instance and task queue
 management. It is specifically designed for running the same code multiple times in a
 batch environment to process a series of different inputs. For example, the program could
 be an image processing program that takes the image filename as an argument, downloads the
@@ -39,7 +39,7 @@ then the compute instances are destroyed.
 
 # Features
 
-Cloud Task is extremely easy to use with a simple command line interface and
+Cloud Tasks is extremely easy to use with a simple command line interface and
 straightforward configuration file. It supports AWS and GCP compute instances and queues
 along with the ability to run jobs on a local workstation, all using a
 provider-independent API. Although each cloud provider has implemented similar
@@ -49,29 +49,28 @@ not require learning the often-complicated details of the official full-featured
 
 Cloud Tasks consists of four primary components:
 
-- A Python module to make parallel execution simple
-  - An existing Python program can be converted to a worker task with only a few lines
+- **A Python module to make parallel execution simple**
+  - Allows conversion of an existing Python program to a parallel task with only a few lines
     of code
   - Supports both cloud compute instance and local machine environments
-  - Parallel execution is performed in multiple processes for complete isolation;
-    processes can be reused for new tasks or killed and restarted for each task
-  - Can use a cloud-based task queue to keep track of completed and failed tasks, or can read
-    task descriptions directly from a local file
+  - Executes each task in its own process for complete isolation
+  - Reads task information from a cloud-based task queue or directly from a local file
   - Monitors the state of spot instances to notify tasks of upcoming preemption
-- A command line interface to manage the task queue system, that allows
-  - Loading of tasks from a file
+- **A command line interface to manage the task queue system, that allows**
+  - Loading of tasks from a JSON or YAML file
   - Checking the status of a queue
   - Purging a queue of remaining tasks
   - Deleting a queue entirely
-- A command line interface to query the cloud about available resources, given certain constraints
+- **A command line interface to query the cloud about available resources, given certain
+  constraints**
   - Types of compute instances available, including price (both demand and spot instances)
   - VM boot images available
   - Regions and zones
-- A command line interface to manage a pool of compute instances optimized for price, given
-  certain constraints
+- **A command line interface to manage a pool of compute instances optimized for price,
+  given certain constraints**
   - Automatically finds the optimal compute instance type given pricing and other constraints
   - Automatically determines the number of simultaneous instances to use
-  - Creates new instances and runs a specified startup script to execute a worker
+  - Creates new instances and runs a specified startup script to execute the task manager
   - Monitors instances for failure or preemption and creates new instances as needed to keep
     the compute pool full
   - Detects when all jobs are complete and terminates the instances
@@ -149,7 +148,7 @@ To load a JSON file containing task descriptions into the task queue:
 ```bash
 cloud_tasks load_queue \
   --provider gcp --region us-central1 --project-id my-project \
-  --job-id my-job --tasks mytasks.json
+  --job-id my-job --task-file mytasks.json
 ```
 
 To start automatic creation and management of a compute instance pool:
