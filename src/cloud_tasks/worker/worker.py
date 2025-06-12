@@ -369,6 +369,7 @@ class WorkerData:
         self.project_id: str | None = None  #: The project ID to use (only for GCP)
         self.job_id: str | None = None  #: The job ID to use
         self.queue_name: str | None = None  #: The queue name to use
+        self.exactly_once_queue: bool = False  #: Whether to use an exactly-once queue
         self.event_log_to_queue: bool = False  #: Whether to log events to a cloud-based queue
         #: The name of the cloud-based queue to log events to
         self.event_log_queue_name: str | None = None
@@ -731,6 +732,11 @@ class Worker:
         self._event_logger_fp = None
         self._event_logger_queue = None
 
+    @property
+    def _is_spot(self) -> bool:
+        """Whether the worker is running on a spot instance."""
+        return self._data.is_spot or self._data.simulate_spot_termination_after is not None
+
     def _signal_handler(self, signum, frame):
         """Handle termination signals."""
         signal_name = signal.Signals(signum).name
@@ -922,7 +928,7 @@ class Worker:
         asyncio.create_task(self._monitor_process_runtimes())
 
         # Start the termination check loop
-        if self.is_spot:
+        if self._is_spot:
             asyncio.create_task(self._check_termination_loop())
 
         # Process tasks until shutdown
@@ -1136,15 +1142,15 @@ class Worker:
                 logger.error(f"Error checking for termination: {e}", exc_info=True)
                 await self._log_non_fatal_exception(traceback.format_exc())
             # Check every 5 seconds for real instance, .1 second for simulated
-            if self.simulate_spot_termination_after is not None:
+            if self._data.simulate_spot_termination_after is not None:
                 await asyncio.sleep(0.1)
             else:
                 await asyncio.sleep(5)
 
-        if self._running and self.simulate_spot_termination_delay is not None:
+        if self._running and self._data.simulate_spot_termination_delay is not None:
             # If we're simulating a spot termination, wait for the delay and then kill all
             # running processes
-            await asyncio.sleep(self.simulate_spot_termination_delay)
+            await asyncio.sleep(self._data.simulate_spot_termination_delay)
             if self._running:
                 logger.info("Simulated spot termination delay complete, killing all processes")
                 async with self._process_ops_semaphore:
@@ -1180,9 +1186,9 @@ class Worker:
             True if the instance is scheduled for termination, False otherwise
         """
         # Check for simulated termination first
-        if self.simulate_spot_termination_after is not None:
+        if self._data.simulate_spot_termination_after is not None:
             elapsed_time = time.time() - self._start_time
-            if elapsed_time >= self.simulate_spot_termination_after:
+            if elapsed_time >= self._data.simulate_spot_termination_after:
                 logger.info(
                     f"Simulating spot termination notice received after {elapsed_time:.1f} seconds"
                 )

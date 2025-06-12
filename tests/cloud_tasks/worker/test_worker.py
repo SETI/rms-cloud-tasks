@@ -220,28 +220,28 @@ def test_init_with_env_vars(mock_worker_function, env_setup_teardown):
 
     with patch("sys.argv", ["worker.py"]):
         worker = Worker(mock_worker_function)
-        assert worker.provider == "AWS"
-        assert worker.job_id == "test-job"
-        assert worker.queue_name == "test-job"
-        assert worker.event_log_to_queue is True
-        assert worker.instance_type == "t2.micro"
-        assert worker.num_cpus == 2
-        assert worker.memory_gb == 4.0
-        assert worker.local_ssd_gb == 100.0
-        assert worker.boot_disk_gb == 20.0
+        assert worker._data.provider == "AWS"
+        assert worker._data.job_id == "test-job"
+        assert worker._data.queue_name == "test-job"
+        assert worker._data.event_log_to_queue is True
+        assert worker._data.instance_type == "t2.micro"
+        assert worker._data.num_cpus == 2
+        assert worker._data.memory_gb == 4.0
+        assert worker._data.local_ssd_gb == 100.0
+        assert worker._data.boot_disk_gb == 20.0
         assert worker._data.is_spot is True
-        assert worker.is_spot is True
-        assert worker.price_per_hour == 0.1
-        assert worker.num_simultaneous_tasks == 4
-        assert worker.max_runtime == 3600
-        assert worker.retry_on_timeout is True
-        assert worker.retry_on_exception is True
-        assert worker.retry_on_exit is True
-        assert worker.shutdown_grace_period == 300
+        assert worker._is_spot is True
+        assert worker._data.price_per_hour == 0.1
+        assert worker._data.num_simultaneous_tasks == 4
+        assert worker._data.max_runtime == 3600
+        assert worker._data.retry_on_timeout is True
+        assert worker._data.retry_on_exception is True
+        assert worker._data.retry_on_exit is True
+        assert worker._data.shutdown_grace_period == 300
         assert worker._task_skip_count == 5
         assert worker._max_num_tasks == 10
-        assert worker.simulate_spot_termination_after == 32
-        assert worker.simulate_spot_termination_delay == 33
+        assert worker._data.simulate_spot_termination_after == 32
+        assert worker._data.simulate_spot_termination_delay == 33
         assert worker._data.exactly_once_queue is True
 
 
@@ -249,28 +249,28 @@ def test_init_with_env_vars_false(mock_worker_function, env_setup_teardown_false
 
     with patch("sys.argv", ["worker.py"]):
         worker = Worker(mock_worker_function)
-        assert worker.provider == "AWS"
-        assert worker.job_id == "test-job"
-        assert worker.queue_name == "test-job"
-        assert worker.event_log_to_queue is False
-        assert worker.instance_type == "t2.micro"
-        assert worker.num_cpus == 2
-        assert worker.memory_gb == 4.0
-        assert worker.local_ssd_gb == 100.0
-        assert worker.boot_disk_gb == 20.0
+        assert worker._data.provider == "AWS"
+        assert worker._data.job_id == "test-job"
+        assert worker._data.queue_name == "test-job"
+        assert worker._data.event_log_to_queue is False
+        assert worker._data.instance_type == "t2.micro"
+        assert worker._data.num_cpus == 2
+        assert worker._data.memory_gb == 4.0
+        assert worker._data.local_ssd_gb == 100.0
+        assert worker._data.boot_disk_gb == 20.0
         assert worker._data.is_spot is False
-        assert worker.is_spot is True  # Because of simulate_spot_termination_after
-        assert worker.price_per_hour == 0.1
-        assert worker.num_simultaneous_tasks == 4
-        assert worker.max_runtime == 3600
-        assert worker.retry_on_timeout is False
-        assert worker.retry_on_exception is False
-        assert worker.retry_on_exit is False
-        assert worker.shutdown_grace_period == 300
+        assert worker._is_spot is True  # Because of simulate_spot_termination_after
+        assert worker._data.price_per_hour == 0.1
+        assert worker._data.num_simultaneous_tasks == 4
+        assert worker._data.max_runtime == 3600
+        assert worker._data.retry_on_timeout is False
+        assert worker._data.retry_on_exception is False
+        assert worker._data.retry_on_exit is False
+        assert worker._data.shutdown_grace_period == 300
         assert worker._task_skip_count == 5
         assert worker._max_num_tasks == 10
-        assert worker.simulate_spot_termination_after == 32
-        assert worker.simulate_spot_termination_delay == 33
+        assert worker._data.simulate_spot_termination_after == 32
+        assert worker._data.simulate_spot_termination_delay == 33
         assert worker._data.exactly_once_queue is False
 
 
@@ -318,28 +318,28 @@ def test_init_with_args_true(mock_worker_function, env_setup_teardown):
     ]
     with patch("sys.argv", args):
         worker = Worker(mock_worker_function)
-        assert worker.provider == "GCP"
-        assert worker.project_id == "test-project"
-        assert worker.job_id == "gcp-test-job"
-        assert worker.queue_name == "aws-test-queue"
-        assert worker.instance_type == "n1-standard-1"
-        assert worker.num_cpus == 1
-        assert worker.memory_gb == 2.0
-        assert worker.local_ssd_gb == 50.0
-        assert worker.boot_disk_gb == 10.0
+        assert worker._data.provider == "GCP"
+        assert worker._data.project_id == "test-project"
+        assert worker._data.job_id == "gcp-test-job"
+        assert worker._data.queue_name == "aws-test-queue"
+        assert worker._data.instance_type == "n1-standard-1"
+        assert worker._data.num_cpus == 1
+        assert worker._data.memory_gb == 2.0
+        assert worker._data.local_ssd_gb == 50.0
+        assert worker._data.boot_disk_gb == 10.0
         assert worker._data.is_spot is False
-        assert worker.is_spot is True  # because of simulate_spot_termination_after
-        assert worker.price_per_hour == 0.2
-        assert worker.num_simultaneous_tasks == 2
-        assert worker.max_runtime == 1800
-        assert worker.shutdown_grace_period == 150
+        assert worker._is_spot is True  # because of simulate_spot_termination_after
+        assert worker._data.price_per_hour == 0.2
+        assert worker._data.num_simultaneous_tasks == 2
+        assert worker._data.max_runtime == 1800
+        assert worker._data.shutdown_grace_period == 150
         assert worker._task_skip_count == 7
         assert worker._max_num_tasks == 10
-        assert worker.simulate_spot_termination_after == 16
-        assert worker.simulate_spot_termination_delay == 17
-        assert worker.retry_on_exit is False
-        assert worker.retry_on_timeout is False
-        assert worker.retry_on_exception is False
+        assert worker._data.simulate_spot_termination_after == 16
+        assert worker._data.simulate_spot_termination_delay == 17
+        assert worker._data.retry_on_exit is False
+        assert worker._data.retry_on_timeout is False
+        assert worker._data.retry_on_exception is False
 
 
 def test_init_with_args(mock_worker_function, env_setup_teardown_false):
@@ -386,28 +386,28 @@ def test_init_with_args(mock_worker_function, env_setup_teardown_false):
     ]
     with patch("sys.argv", args):
         worker = Worker(mock_worker_function)
-        assert worker.provider == "GCP"
-        assert worker.project_id == "test-project"
-        assert worker.job_id == "gcp-test-job"
-        assert worker.queue_name == "aws-test-queue"
-        assert worker.instance_type == "n1-standard-1"
-        assert worker.num_cpus == 1
-        assert worker.memory_gb == 2.0
-        assert worker.local_ssd_gb == 50.0
-        assert worker.boot_disk_gb == 10.0
+        assert worker._data.provider == "GCP"
+        assert worker._data.project_id == "test-project"
+        assert worker._data.job_id == "gcp-test-job"
+        assert worker._data.queue_name == "aws-test-queue"
+        assert worker._data.instance_type == "n1-standard-1"
+        assert worker._data.num_cpus == 1
+        assert worker._data.memory_gb == 2.0
+        assert worker._data.local_ssd_gb == 50.0
+        assert worker._data.boot_disk_gb == 10.0
         assert worker._data.is_spot is True
-        assert worker.is_spot is True
-        assert worker.price_per_hour == 0.2
-        assert worker.num_simultaneous_tasks == 2
-        assert worker.max_runtime == 1800
-        assert worker.shutdown_grace_period == 150
+        assert worker._is_spot is True
+        assert worker._data.price_per_hour == 0.2
+        assert worker._data.num_simultaneous_tasks == 2
+        assert worker._data.max_runtime == 1800
+        assert worker._data.shutdown_grace_period == 150
         assert worker._task_skip_count == 7
         assert worker._max_num_tasks == 10
-        assert worker.simulate_spot_termination_after == 16
-        assert worker.simulate_spot_termination_delay == 17
-        assert worker.retry_on_exit is True
-        assert worker.retry_on_timeout is True
-        assert worker.retry_on_exception is True
+        assert worker._data.simulate_spot_termination_after == 16
+        assert worker._data.simulate_spot_termination_delay == 17
+        assert worker._data.retry_on_exit is True
+        assert worker._data.retry_on_timeout is True
+        assert worker._data.retry_on_exception is True
 
 
 def test_num_simultaneous_tasks_default(mock_worker_function):
@@ -445,7 +445,7 @@ def test_num_simultaneous_tasks_default(mock_worker_function):
             )
             mock_parse_args.return_value = args
             worker = Worker(mock_worker_function)
-            assert worker.num_simultaneous_tasks == 3
+            assert worker._data.num_simultaneous_tasks == 3
     # num_cpus is None
     with patch("sys.argv", ["worker.py"]):
         with patch("cloud_tasks.worker.worker._parse_args") as mock_parse_args:
@@ -480,7 +480,7 @@ def test_num_simultaneous_tasks_default(mock_worker_function):
             )
             mock_parse_args.return_value = args
             worker = Worker(mock_worker_function)
-            assert worker.num_simultaneous_tasks == 1
+            assert worker._data.num_simultaneous_tasks == 1
 
 
 def test_provider_required_without_tasks(mock_worker_function, caplog):
@@ -562,7 +562,7 @@ def test_provider_not_required_with_tasks(mock_worker_function):
                 )
                 mock_parse_args.return_value = args
                 worker = Worker(mock_worker_function)
-                assert worker.provider is None
+                assert worker._data.provider is None
 
 
 @pytest.mark.asyncio
@@ -966,24 +966,24 @@ def test_worker_properties(mock_worker_function):
             )
             mock_parse_args.return_value = args
             worker = Worker(mock_worker_function)
-            assert worker.provider == "AWS"
-            assert worker.project_id == "pid"
-            assert worker.job_id == "jid"
-            assert worker.queue_name == "qname"
-            assert worker.instance_type == "itype"
-            assert worker.num_cpus == 2
-            assert worker.memory_gb == 3.5
-            assert worker.local_ssd_gb == 4.5
-            assert worker.boot_disk_gb == 5.5
-            assert worker.is_spot is True
-            assert worker.price_per_hour == 0.99
-            assert worker.num_simultaneous_tasks == 2
-            assert worker.max_runtime == 100
-            assert worker.shutdown_grace_period == 200
-            assert worker.event_log_to_file is True
-            assert worker.event_log_to_queue is True
-            assert worker.event_log_queue_name == "qname-events"
-            assert worker.event_log_file == "temp_log.json"
+            assert worker._data.provider == "AWS"
+            assert worker._data.project_id == "pid"
+            assert worker._data.job_id == "jid"
+            assert worker._data.queue_name == "qname"
+            assert worker._data.instance_type == "itype"
+            assert worker._data.num_cpus == 2
+            assert worker._data.memory_gb == 3.5
+            assert worker._data.local_ssd_gb == 4.5
+            assert worker._data.boot_disk_gb == 5.5
+            assert worker._data.is_spot is True
+            assert worker._data.price_per_hour == 0.99
+            assert worker._data.num_simultaneous_tasks == 2
+            assert worker._data.max_runtime == 100
+            assert worker._data.shutdown_grace_period == 200
+            assert worker._data.event_log_to_file is True
+            assert worker._data.event_log_to_queue is True
+            assert worker._data.event_log_queue_name == "qname-events"
+            assert worker._data.event_log_file == "temp_log.json"
 
 
 def test_signal_handler(mock_worker_function, caplog):
@@ -1442,7 +1442,7 @@ async def test_worker_with_simulate_spot_termination_delay():
         )
 
         # Verify the after was set
-        assert worker.simulate_spot_termination_after == 0.1
+        assert worker._data.simulate_spot_termination_after == 0.1
         worker._start_time = time.time()
 
         # Test before delay is exceeded
@@ -1470,7 +1470,7 @@ async def test_worker_with_is_spot():
         )
 
         # Verify is_spot was set
-        assert worker.is_spot
+        assert worker._is_spot
 
         # Mock _check_termination_loop
         mock_loop = AsyncMock()
@@ -1501,7 +1501,7 @@ async def test_worker_without_is_spot():
         )
 
         # Verify is_spot was not set
-        assert not worker.is_spot
+        assert not worker._is_spot
 
         # Mock _check_termination_loop
         mock_loop = AsyncMock()

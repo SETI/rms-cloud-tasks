@@ -1895,9 +1895,7 @@ class GCPComputeInstanceManager(InstanceManager):
                         f"Multiple images found for family {family_name}: "
                         f"{ret_image['name']} and {image['name']}"
                     )
-                ret_image = image
-        if ret_image is None:
-            raise ValueError(f"No image found for family {family_name}")
+                ret_image = image["self_link"]
         return ret_image
 
     async def get_default_image(self) -> str | None:

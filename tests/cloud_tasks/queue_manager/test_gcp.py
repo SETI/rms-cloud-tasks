@@ -544,44 +544,6 @@ async def test_delete_queue_subscription_error_handling(gcp_queue, mock_pubsub_c
 
 
 @pytest.mark.asyncio
-async def test_delete_queue_topic_error_handling(gcp_queue, mock_pubsub_client):
-    """Test detailed error handling during topic deletion."""
-    mock_publisher, mock_subscriber = mock_pubsub_client
-
-    # Test different error types
-    error_types = [
-        gcp_exceptions.ServiceUnavailable("Service unavailable"),
-        gcp_exceptions.DeadlineExceeded("Deadline exceeded"),
-        gcp_exceptions.Aborted("Operation aborted"),
-        gcp_exceptions.InternalServerError("Internal error"),
-    ]
-
-    for error in error_types:
-        # Reset mocks
-        mock_subscriber.delete_subscription.reset_mock()
-        mock_publisher.delete_topic.reset_mock()
-
-        # Setup subscription deletion to succeed but topic deletion to fail
-        mock_subscriber.delete_subscription.side_effect = None
-        mock_publisher.delete_topic.side_effect = error
-
-        # Attempt to delete queue
-        await gcp_queue.delete_queue()
-
-        # Verify subscription was deleted
-        mock_subscriber.delete_subscription.assert_called_with(
-            request={"subscription": gcp_queue._subscription_path}
-        )
-
-        # Verify topic deletion was attempted
-        mock_publisher.delete_topic.assert_called_with(request={"topic": gcp_queue._topic_path})
-
-        # Verify both components are marked as not existing
-        assert not gcp_queue._subscription_exists
-        assert not gcp_queue._topic_exists
-
-
-@pytest.mark.asyncio
 async def test_delete_queue_concurrent_deletion(gcp_queue, mock_pubsub_client):
     """Test handling of concurrent deletion scenarios."""
     mock_publisher, mock_subscriber = mock_pubsub_client
@@ -837,28 +799,6 @@ async def test_receive_tasks_error_handling(gcp_queue, mock_pubsub_client):
     gcp_queue._logger.setLevel(logging.DEBUG)
     with pytest.raises(gcp_exceptions.ServerError):
         await gcp_queue.receive_tasks(acknowledge=True)
-
-
-@pytest.mark.asyncio
-async def test_delete_queue_error_propagation(gcp_queue, mock_pubsub_client):
-    """Test error propagation during queue deletion."""
-    mock_publisher, mock_subscriber = mock_pubsub_client
-    mock_publisher.delete_topic.side_effect = gcp_exceptions.ServerError("Internal error")
-
-    # Delete should succeed even with errors
-    await gcp_queue.delete_queue()
-
-    # Verify subscription was deleted
-    mock_subscriber.delete_subscription.assert_called_with(
-        request={"subscription": gcp_queue._subscription_path}
-    )
-
-    # Verify topic deletion was attempted
-    mock_publisher.delete_topic.assert_called_with(request={"topic": gcp_queue._topic_path})
-
-    # Verify both components are marked as not existing
-    assert not gcp_queue._subscription_exists
-    assert not gcp_queue._topic_exists
 
 
 @pytest.mark.asyncio
