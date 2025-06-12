@@ -11,7 +11,7 @@ import boto3  # type: ignore
 from botocore.exceptions import ClientError  # type: ignore
 
 from .queue_manager import QueueManager
-from cloud_tasks.common.config import AWSConfig
+from ..common.config import AWSConfig
 
 
 class AWSSQSQueue(QueueManager):

@@ -25,8 +25,8 @@ import multiprocessing
 
 from filecache import FCPath
 
-from cloud_tasks.common.logging_config import configure_logging
-from cloud_tasks.queue_manager import create_queue
+from ..common.logging_config import configure_logging
+from ..queue_manager import create_queue
 
 
 MP_CTX = multiprocessing.get_context("spawn")

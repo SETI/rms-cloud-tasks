@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple, cast
 import boto3  # type: ignore
 from botocore.exceptions import ClientError  # type: ignore
 
-from cloud_tasks.common.config import AWSConfig
+from ..common.config import AWSConfig
 
 from .instance_manager import InstanceManager
 

@@ -20,7 +20,7 @@ from azure.core.exceptions import ResourceNotFoundError  # type: ignore
 from azure.mgmt.resource import ResourceManagementClient  # type: ignore
 from azure.mgmt.commerce import UsageManagementClient  # type: ignore
 
-from cloud_tasks.common.base import InstanceManager
+from ..common.base import InstanceManager
 
 # Configure logging with periods for fractions of a second
 logging.basicConfig(

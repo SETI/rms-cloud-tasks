@@ -7,7 +7,7 @@ cloud provider integration, allowing any worker to process tasks from
 cloud-based queues.
 """
 
-from cloud_tasks.worker.worker import Worker, WorkerData
+from .worker import Worker, WorkerData
 
 __all__ = [
     "Worker",

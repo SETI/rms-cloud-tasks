@@ -6,7 +6,7 @@ from typing import Any, cast, Optional
 
 from .queue_manager import QueueManager
 
-from cloud_tasks.common.config import Config, AWSConfig, GCPConfig, AzureConfig
+from ..common.config import Config, AWSConfig, GCPConfig, AzureConfig
 
 
 async def create_queue(

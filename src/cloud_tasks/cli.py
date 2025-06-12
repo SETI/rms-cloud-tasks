@@ -18,11 +18,11 @@ from filecache import FCPath
 from prettytable import PrettyTable, TableStyle
 import pydantic
 
-from cloud_tasks.common.config import Config, load_config
-from cloud_tasks.common.logging_config import configure_logging
-from cloud_tasks.instance_manager import create_instance_manager
-from cloud_tasks.instance_manager.orchestrator import InstanceOrchestrator
-from cloud_tasks.queue_manager import create_queue
+from .common.config import Config, load_config
+from .common.logging_config import configure_logging
+from .instance_manager import create_instance_manager
+from .instance_manager.orchestrator import InstanceOrchestrator
+from .queue_manager import create_queue
 
 
 # Use custom logging configuration
