@@ -125,7 +125,8 @@ will be similar to this:
 
 To abort the task manager before all tasks are complete, type ``Ctrl-C`` **once**. This
 will give the current tasks a chance to complete cleanly, and then the task manager will
-exit.
+exit. You can change how long to wait before the current tasks are complete with the
+``--shutdown-grace-period`` option.
 
 Note that while each task took exactly 1 second, the reported time was somewhat more; this is due
 to the overhead of managing the task queue and spawning new worker processes.

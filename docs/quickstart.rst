@@ -155,7 +155,8 @@ For full details about how the task manager is operating, you can specify the
 
 To abort the task manager before all tasks are complete, type ``Ctrl-C`` **once**. This
 will give the current tasks a chance to complete cleanly, and then the task manager will
-exit.
+exit. You can change how long to wait before the current tasks are complete with the
+``--shutdown-grace-period`` option.
 
 If you are only going to run the worker locally, you can stop reading here, although
 you may be interested in :ref:`quickstart_monitor` below.

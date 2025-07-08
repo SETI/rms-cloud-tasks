@@ -129,7 +129,7 @@ given to ``manage_pool`` or ``run``), or from information derived from the insta
 Task File
 ~~~~~~~~~
 
---task-file TASK_FILE   The name of a local JSON or YAMLfile containing tasks to process; if not
+--task-file TASK_FILE   The name of a local JSON or YAML file containing tasks to process; if not
                         specified, the worker will pull tasks from the cloud provider
                         queue (see below). The filename can also be a cloud storage
                         path like ``gs://bucket/file``, ``s3://bucket/file``, or
@@ -179,7 +179,7 @@ Optional Parameters
 --price PRICE_PER_HOUR                     Price in USD/hour on this computer; optional information for the worker processes [or ``RMS_CLOUD_TASKS_INSTANCE_PRICE``]
 --num-simultaneous-tasks N                 Number of concurrent tasks to process (defaults to number of vCPUs, or 1 if not specified) [or ``RMS_CLOUD_TASKS_NUM_TASKS_PER_INSTANCE``]
 --max-runtime SECONDS                      Maximum allowed runtime in seconds; used to determine queue visibility timeout and to kill tasks that are running too long [or ``RMS_CLOUD_TASKS_MAX_RUNTIME``] (default 600 seconds)
---shutdown-grace-period SECONDS            How long to wait in seconds for processes to gracefully finish after shutdown (SIGINT, SIGTERM, or Ctrl-C) is requested [or ``RMS_CLOUD_TASKS_SHUTDOWN_GRACE_PERIOD``] (default 30 seconds)
+--shutdown-grace-period SECONDS            How long to wait in seconds for processes to gracefully finish after shutdown (SIGINT, SIGTERM, or Ctrl-C) is requested before killing them (default 30) [or ``RMS_CLOUD_TASKS_SHUTDOWN_GRACE_PERIOD``]
 --tasks-to-skip TASKS_TO_SKIP              Number of tasks to skip before processing any from the queue [or ``RMS_CLOUD_TASKS_TO_SKIP``]
 --max-num-tasks MAX_NUM_TASKS              Maximum number of tasks to process [or ``RMS_CLOUD_TASKS_MAX_NUM_TASKS``]
 --retry-on-exit                            If specified, retry tasks on premature exit [or ``RMS_CLOUD_TASKS_RETRY_ON_EXIT`` is "1" or "true"]

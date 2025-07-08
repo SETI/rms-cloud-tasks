@@ -19,7 +19,7 @@ import socket
 import sys
 import time
 import traceback
-from typing import Any, AsyncGenerator, Dict, Iterable, List, Optional, Tuple, Callable, Sequence
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Callable, Sequence
 import uuid
 import yaml
 import multiprocessing
@@ -195,8 +195,8 @@ def _parse_args(
         "--shutdown-grace-period",
         type=int,
         help="How long to wait in seconds for processes to gracefully finish after shutdown (SIGINT, "
-        "SIGTERM, or Ctrl-C) is requested [overrides $RMS_CLOUD_TASKS_SHUTDOWN_GRACE_PERIOD] "
-        "(default 30 seconds)",
+        "SIGTERM, or Ctrl-C) is requested before killing them [overrides "
+        "$RMS_CLOUD_TASKS_SHUTDOWN_GRACE_PERIOD] (default 30 seconds)",
     )
     parser.add_argument(
         "--tasks-to-skip",
@@ -284,7 +284,9 @@ class LocalTaskQueue:
         elif callable(task_source):
             self._tasks_iter = task_source()
         else:
-            raise TypeError(f"task_source must be FCPath or callable, got {type(task_source)}")
+            raise TypeError(
+                f"task_source must be FCPath or callable, got {type(task_source).__name__}"
+            )
 
     def _yield_tasks_from_file(self, task_file: FCPath) -> Iterable[Dict[str, Any]]:
         """
@@ -411,7 +413,7 @@ class WorkerData:
     @property
     def received_shutdown_request(self) -> bool:
         """Whether the worker has received a shutdown request. This is for the user hitting
-        Ctrl-C at the terminal."""
+        Ctrl-C at the terminal or otherwise receiving a SIGINT or SIGTERM signal."""
         return self.shutdown_event.is_set()
 
 
@@ -422,9 +424,7 @@ class Worker:
         self,
         user_worker_function: Callable[[str, Dict[str, Any]], bool],
         *,
-        task_source: Optional[
-            str | Path | FCPath | Callable[[], AsyncGenerator[List[Dict[str, Any]], None]]
-        ] = None,
+        task_source: Optional[str | Path | FCPath | Callable[[], Iterable[Dict[str, Any]]]] = None,
         args: Optional[Sequence[str]] = None,
         argparser: Optional[argparse.ArgumentParser] = None,
     ):
@@ -966,6 +966,7 @@ class Worker:
 
         # Process tasks until shutdown
         await self._wait_for_shutdown()
+        await self._cleanup_tasks()
 
         total = self._num_tasks_not_retried + self._num_tasks_retried
         logger.info(
@@ -975,14 +976,14 @@ class Worker:
         )
         # We don't log an event here because this only happens when the user hits Ctrl-C
 
-    async def _cleanup_tasks_for_testing(self) -> None:
+    async def _cleanup_tasks(self) -> None:
         """Cleanup all tasks."""
         self._running = False
         for task in self._task_list:
             # Needed because of mocks used during testing
             try:
                 await task
-            except Exception:
+            except Exception:  # pragma: no cover
                 pass
         self._task_list = []
 
@@ -1007,7 +1008,7 @@ class Worker:
                     while not self._result_queue.empty():
                         worker_id, retry, result = self._result_queue.get_nowait()
 
-                        if worker_id not in self._processes:
+                        if worker_id not in self._processes:  # pragma: no cover
                             # Race condition with max_runtime most likely
                             logger.debug(
                                 f"Worker #{worker_id} reported results but process had previously "
@@ -1084,7 +1085,7 @@ class Worker:
                         self._num_tasks_exited += 1
                         try:
                             exit_code = process_data["process"].exitcode
-                        except Exception:
+                        except Exception:  # pragma: no cover
                             exit_code = None
                         task = process_data["task"]
                         elapsed_time = time.time() - process_data["start_time"]
@@ -1272,10 +1273,11 @@ class Worker:
                 # TODO Azure doesn't have a direct API yet
                 return False
 
-        except Exception:
+        except Exception:  # pragma: no cover
             pass
 
-        return False
+        # Can't happen
+        return False  # pragma: no cover
 
     async def _feed_tasks_to_workers(self) -> None:
         """Fetch tasks from the cloud queue and feed them to worker processes."""
