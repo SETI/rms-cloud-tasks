@@ -1,10 +1,12 @@
-#!/usr/bin/env python3
 """
 Example worker adapted to use the cloud task adapter with multiprocessing.
 
 This demonstrates how to use the cloud_tasks module to adapt any
 worker code to run in a cloud environment with true parallel processing.
+
+This version allows variable delays.
 """
+
 import asyncio
 import os
 import multiprocessing

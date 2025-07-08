@@ -1,18 +1,24 @@
 Parallel Addition Example
 =========================
 
-A simple example is included in the ``rms-cloud-tasks`` repo. The task accepts two integers, adds them
-together, and stores the result in a cloud bucket. It can then delay a programmable amount of time
-to simulate a task that takes more time and emphasize the need for parallelism. The example includes
-a file describing 10,000 tasks. If the delay is set to 1 second, this means the complete set of
-tasks will require 10,000 CPU-seconds, or about 2.8 hours on a single CPU. Running with 100-fold
-parallelism will reduce the time to around two minutes.
+A simple example is included in the ``rms-cloud-tasks`` repo in the directory
+``examples/parallel_addition``. The task accepts two integers, adds them together, and
+stores the result in a local directory or cloud bucket. It can then delay a programmable
+amount of time to simulate a task that takes more time and emphasize the need for
+parallelism. The example includes a file describing 10,000 tasks. If the delay is set to 1
+second, this means the complete set of tasks will require 10,000 CPU-seconds, or about 2.8
+hours on a single CPU. Running with 100-fold parallelism will reduce the time to around
+two minutes, plus the overhead of launching and terminating the instances and managing the
+task processes.
+
+Version 1: Simple Addition with Time Delays
+-------------------------------------------
 
 Specifying Tasks
-----------------
+~~~~~~~~~~~~~~~~
 
 The task queue is stored in whatever queueing system is native to the cloud provider being used.
-Tasks are specified using a JSON file consisting of a list of dictionaries with the format:
+Tasks are loaded from a JSON file consisting of a list of dictionaries with the format:
 
 .. code-block:: json
 
@@ -47,12 +53,141 @@ For example, the tasks for the addition example look like:
       }
     ]
 
-To load the tasks into the queue, you run the ``cloud_tasks`` command line program with, at
-a minimum, the name of the cloud provider and a job ID. These can also be specified in a
-configuration file. For Google Cloud you also need to specify the project ID. For our sample
-addition task, we will get the job ID from a configuration file and specify the provider
-and project ID on the command line, since these are user-specific. The configuration file
-and tasks list are available in the ``rms-cloud-tasks`` repo:
+Running the Tasks Locally
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+To run the tasks locally, you simply set the environment variables required by the task code
+(``ADDITION_OUTPUT_DIR`` and ``ADDITION_TASK_DELAY``) and run the task code directly, specifying
+the task file:
+
+.. code-block:: bash
+
+    git clone https://github.com/SETI/rms-cloud-tasks
+    cd rms-cloud-tasks
+    python3 -m venv venv
+    source venv/bin/activate
+    pip install -r requirements.txt
+    pip install -e .
+    export ADDITION_OUTPUT_DIR=results
+    export ADDITION_TASK_DELAY=1
+    python examples/parallel_addition/worker_addition.py --task-file examples/parallel_addition/addition_tasks.json
+
+This will run the tasks one at a time, and each task will delay for 1 second before exiting. The result
+will be similar to this:
+
+.. code-block:: none
+
+  2025-07-08 11:19:22.944 INFO - Configuration:
+  2025-07-08 11:19:22.946 INFO -   Using local tasks file: "examples/parallel_addition/addition_tasks.json"
+  2025-07-08 11:19:22.946 INFO -   Tasks to skip: None
+  2025-07-08 11:19:22.946 INFO -   Maximum number of tasks: None
+  2025-07-08 11:19:22.946 INFO -   Provider: None
+  2025-07-08 11:19:22.946 INFO -   Project ID: None
+  2025-07-08 11:19:22.946 INFO -   Job ID: None
+  2025-07-08 11:19:22.946 INFO -   Queue name: None
+  2025-07-08 11:19:22.946 INFO -   Exactly-once queue: False
+  2025-07-08 11:19:22.946 INFO -   Event log to file: True
+  2025-07-08 11:19:22.946 INFO -   Event log file: events.log
+  2025-07-08 11:19:22.946 INFO -   Event log to queue: False
+  2025-07-08 11:19:22.946 INFO -   Instance type: None
+  2025-07-08 11:19:22.946 INFO -   Num CPUs: None
+  2025-07-08 11:19:22.946 INFO -   Memory: None GB
+  2025-07-08 11:19:22.946 INFO -   Local SSD: None GB
+  2025-07-08 11:19:22.946 INFO -   Boot disk size: None GB
+  2025-07-08 11:19:22.946 INFO -   Spot instance: None
+  2025-07-08 11:19:22.946 INFO -   Price per hour: None
+  2025-07-08 11:19:22.946 INFO -   Num simultaneous tasks (default): 1
+  2025-07-08 11:19:22.946 INFO -   Maximum runtime: 600 seconds
+  2025-07-08 11:19:22.946 INFO -   Shutdown grace period: 30 seconds
+  2025-07-08 11:19:22.946 INFO -   Retry on exit: None
+  2025-07-08 11:19:22.946 INFO -   Retry on exception: None
+  2025-07-08 11:19:22.946 INFO -   Retry on timeout: None
+  2025-07-08 11:19:22.947 INFO - Started single-task worker #0 (PID 2113064)
+  2025-07-08 11:19:23.150 INFO - Worker #0: Started, processing task addition-task-000001
+  2025-07-08 11:19:24.150 INFO - Worker #0: Completed task addition-task-000001 in 1.00 seconds, retry False
+  2025-07-08 11:19:24.150 INFO - Worker #0: Exiting
+  2025-07-08 11:19:24.250 INFO - Worker #0 reported task addition-task-000001 completed in 1.3 seconds with no retry; result: results/addition-task-000001.txt
+  2025-07-08 11:19:24.251 INFO - Started single-task worker #1 (PID 2113090)
+  2025-07-08 11:19:24.465 INFO - Worker #1: Started, processing task addition-task-000002
+  2025-07-08 11:19:25.466 INFO - Worker #1: Completed task addition-task-000002 in 1.00 seconds, retry False
+  2025-07-08 11:19:25.467 INFO - Worker #1: Exiting
+  2025-07-08 11:19:25.554 INFO - Worker #1 reported task addition-task-000002 completed in 1.3 seconds with no retry; result: results/addition-task-000002.txt
+  2025-07-08 11:19:25.555 INFO - Started single-task worker #2 (PID 2113165)
+  2025-07-08 11:19:25.756 INFO - Worker #2: Started, processing task addition-task-000003
+  2025-07-08 11:19:26.757 INFO - Worker #2: Completed task addition-task-000003 in 1.00 seconds, retry False
+  2025-07-08 11:19:26.757 INFO - Worker #2: Exiting
+  2025-07-08 11:19:26.758 INFO - Worker #2 reported task addition-task-000003 completed in 1.2 seconds with no retry; result: results/addition-task-000003.txt
+  2025-07-08 11:19:26.759 INFO - Started single-task worker #3 (PID 2113169)
+  2025-07-08 11:19:26.963 INFO - Worker #3: Started, processing task addition-task-000004
+  2025-07-08 11:19:27.964 INFO - Worker #3: Completed task addition-task-000004 in 1.00 seconds, retry False
+  2025-07-08 11:19:27.964 INFO - Worker #3: Exiting
+  2025-07-08 11:19:28.064 INFO - Worker #3 reported task addition-task-000004 completed in 1.3 seconds with no retry; result: results/addition-task-000004.txt
+
+To abort the task manager before all tasks are complete, type ``Ctrl-C`` **once**. This
+will give the current tasks a chance to complete cleanly, and then the task manager will
+exit. You can change how long to wait before the current tasks are complete with the
+``--shutdown-grace-period`` option.
+
+Note that while each task took exactly 1 second, the reported time was somewhat more; this is due
+to the overhead of managing the task queue and spawning new worker processes.
+
+The command ``pip install -e .`` in the above example is required to be able to import the
+``cloud_tasks`` package when it wasn't installed by ``pip``. It allows you to use the
+local copy of ``cloud_tasks`` that you cloned, which is necessary when running this
+example code, because the example code is present in the same repo (you could also just do
+a ``pip install rms-cloud-tasks`` instead and use the cloned repo solely for the example
+source code).
+
+If you want to run the tasks locally with more parallelism, you can use the
+``--num-simultaneous-tasks`` option:
+
+.. code-block:: bash
+
+    python examples/parallel_addition/worker_addition.py --task-file examples/parallel_addition/addition_tasks.json --num-simultaneous-tasks 10
+
+This will change the output to something like this:
+
+.. code-block:: none
+
+  2025-07-08 11:24:15.066 INFO - Started single-task worker #0 (PID 2121068)
+  2025-07-08 11:24:15.066 INFO - Started single-task worker #1 (PID 2121069)
+  2025-07-08 11:24:15.067 INFO - Started single-task worker #2 (PID 2121070)
+  2025-07-08 11:24:15.067 INFO - Started single-task worker #3 (PID 2121071)
+  2025-07-08 11:24:15.067 INFO - Started single-task worker #4 (PID 2121072)
+  2025-07-08 11:24:15.068 INFO - Started single-task worker #5 (PID 2121073)
+  2025-07-08 11:24:15.068 INFO - Started single-task worker #6 (PID 2121074)
+  2025-07-08 11:24:15.068 INFO - Started single-task worker #7 (PID 2121075)
+  2025-07-08 11:24:15.068 INFO - Started single-task worker #8 (PID 2121076)
+  2025-07-08 11:24:15.069 INFO - Started single-task worker #9 (PID 2121077)
+  2025-07-08 11:24:15.284 INFO - Worker #8: Started, processing task addition-task-000009
+  2025-07-08 11:24:15.286 INFO - Worker #9: Started, processing task addition-task-000010
+  2025-07-08 11:24:15.296 INFO - Worker #3: Started, processing task addition-task-000004
+  2025-07-08 11:24:15.297 INFO - Worker #7: Started, processing task addition-task-000008
+  2025-07-08 11:24:15.300 INFO - Worker #4: Started, processing task addition-task-000005
+  2025-07-08 11:24:15.304 INFO - Worker #1: Started, processing task addition-task-000002
+  2025-07-08 11:24:15.309 INFO - Worker #0: Started, processing task addition-task-000001
+  2025-07-08 11:24:15.319 INFO - Worker #6: Started, processing task addition-task-000007
+  2025-07-08 11:24:15.359 INFO - Worker #2: Started, processing task addition-task-000003
+  2025-07-08 11:24:15.360 INFO - Worker #5: Started, processing task addition-task-000006
+  2025-07-08 11:24:16.285 INFO - Worker #8: Completed task addition-task-000009 in 1.00 seconds, retry False
+  2025-07-08 11:24:16.285 INFO - Worker #8: Exiting
+  2025-07-08 11:24:16.287 INFO - Worker #9: Completed task addition-task-000010 in 1.00 seconds, retry False
+  2025-07-08 11:24:16.287 INFO - Worker #9: Exiting
+
+
+Running the Tasks in the Cloud
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Loading the Queue
++++++++++++++++++
+
+To run the tasks in the cloud, you need to load the tasks into a cloud-based queue. This
+is done by running the ``cloud_tasks`` command line program with the name of the cloud
+provider and a job ID. These can also be specified in a configuration file. For Google
+Cloud you also need to specify the project ID. For our sample addition task, we will get
+the job ID from a configuration file and specify the provider and project ID on the
+command line, since these are user-specific. The configuration file and tasks list are
+available in the ``rms-cloud-tasks`` repo:
 
 .. code-block:: bash
 
@@ -72,7 +207,7 @@ JSON file, and place them in the queue. If the queue already exists, the tasks w
 added to those already there.
 
 Running Tasks
--------------
++++++++++++++
 
 Running tasks consists of:
 
@@ -192,11 +327,11 @@ The result will be similar to this:
   2025-06-11 15:03:23.936 INFO -
 
 .. note::
-  ``manage_pool`` uses info logging which is turned off by default. Be sure to specify `-v` to
+  ``manage_pool`` uses INFO logging which is turned off by default. Be sure to specify `-v` to
   see the output.
 
-Monitor the Results
--------------------
+Monitoring the Results
+++++++++++++++++++++++
 
 By default, the task manager running on each instance will send events (task completed, task failed,
 unhandled exception occurred, etc.) to the event queue. The ``monitor_event_queue`` command can be
@@ -262,8 +397,8 @@ fact that the task queue will deliver each task at least once, but may deliver i
 than once, to a worker process. In this case 21 out of 10,000 tasks were repeated and
 didn't need to be.
 
-Terminate the Instances
------------------------
+Terminating the Instances
++++++++++++++++++++++++++
 
 Once the task queue is empty, ``manage_pool`` will start a termination timer that
 allows any remaining tasks to finish, and then will terminate all instances.
@@ -284,3 +419,38 @@ allows any remaining tasks to finish, and then will terminate all instances.
   2025-06-11 16:09:28.452 INFO - Terminating instance: rmscr-parallel-addition-job-aln9ha10xq4zexj59i085l0tx
   2025-06-11 16:09:28.453 INFO - Job management complete
   2025-06-11 16:09:28.453 INFO - Scaling loop cancelled
+
+
+Version 2: Addition with Exceptions and Timeouts
+------------------------------------------------
+
+A second version of the parallel addition example is provided in the same directory. This
+example, ``worker_addition_exceptions.py``, adds the ability to raise exceptions and other
+types of errors during task execution, allowing you to see how event monitoring works in
+these situations and to experiment with the different ``--retry`` options. You should use
+the configuration file ``config_exceptions.yml`` for this version if running in the cloud.
+The following environment variables are added:
+
+- ``ADDITION_EXCEPTION_PROBABILITY``: The probability (0-1) that a DivideByZeroError will be raised.
+- ``ADDITION_TIMEOUT_PROBABILITY``: The probability (0-1) that a timeout will occur (the task will
+  sleep for 100,000 seconds).
+- ``ADDITION_EXIT_PROBABILITY``: The probability (0-1) that the task will exit prematurely with a
+  non-zero exit code.
+
+
+Version 3: Addition with a Task Factory
+---------------------------------------
+
+A third version of the parallel addition example is provided in the same directory. This
+example, ``worker_addition_factory.py``, uses a task factory function to generate tasks
+instead of an external task file or queue. The task factory function is defined in the
+same file. The following environment variables are added:
+
+- ``ADDITION_MAX_TASKS``: The maximum number of tasks to generate.
+
+This version is most useful when run locally, since the lack of a task queue eliminates the
+ability to distribute tasks to multiple instances. It is most simply run with:
+
+.. code-block:: bash
+
+  python3 examples/parallel_addition/worker_addition_factory.py

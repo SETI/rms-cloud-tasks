@@ -12,6 +12,7 @@ import json
 import json_stream
 import logging
 import os
+from pathlib import Path
 import requests
 import signal
 import socket
@@ -54,16 +55,20 @@ def _parse_args(
 
     parser.add_argument(
         "--provider",
-        help="Cloud provider (AWS, GCP, or AZURE); used primarily to test for instance "
-        "termination notices [overrides $RMS_CLOUD_TASKS_PROVIDER]",
+        help="Cloud provider (AWS or GCP); used to test for instance "
+        "termination notices and to know which cloud-based queueing service to use "
+        "[overrides $RMS_CLOUD_TASKS_PROVIDER]",
     )
     parser.add_argument(
         "--project-id", help="Project ID (required for GCP) [overrides $RMS_CLOUD_TASKS_PROJECT_ID]"
     )
     parser.add_argument(
         "--task-file",
-        help="Path to JSON file containing tasks to process; if specified, cloud-based task "
-        "queues are ignored",
+        help="The name of a local JSON or YAML file containing tasks to process; if not "
+        "specified, the worker will pull tasks from the cloud provider queue. "
+        "The filename can also be a cloud storage path like ``gs://bucket/file``, "
+        "``s3://bucket/file``, or ``https://path/to/file``. If not specified, the worker "
+        "will pull tasks from the cloud provider queue.",
     )
     parser.add_argument(
         "--job-id",
@@ -91,7 +96,7 @@ def _parse_args(
     )
     parser.add_argument(
         "--event-log-file",
-        help='File to write events to if --event-log-to-file is specified (defaults to "events.log")'
+        help='File to write events to if --event-log-to-file is specified (defaults to "events.log") '
         "[overrides $RMS_CLOUD_TASKS_EVENT_LOG_FILE]",
     )
     parser.add_argument(
@@ -120,7 +125,7 @@ def _parse_args(
         "--no-event-log-to-queue",
         action="store_false",
         dest="event_log_to_queue",
-        help="If specified, events will not be written to a cloud-based queue (default) "
+        help="If specified, events will not be written to a cloud-based queue "
         "[overrides $RMS_CLOUD_TASKS_EVENT_LOG_TO_QUEUE]",
     )
     parser.add_argument(
@@ -170,14 +175,14 @@ def _parse_args(
     parser.add_argument(
         "--price",
         type=float,
-        help="Price per hour on this computer; optional information for the worker processes "
+        help="Price in USD/hour on this computer; optional information for the worker processes "
         "[overrides $RMS_CLOUD_TASKS_INSTANCE_PRICE]",
     )
     parser.add_argument(
         "--num-simultaneous-tasks",
         type=int,
-        help="Number of tasks that can be run simutaneously; used to create worker processes "
-        "[overrides $RMS_CLOUD_TASKS_NUM_TASKS_PER_INSTANCE]",
+        help="Number of concurrent tasks to process (defaults to number of vCPUs, or 1 if not "
+        "specified) [overrides $RMS_CLOUD_TASKS_NUM_TASKS_PER_INSTANCE]",
     )
     parser.add_argument(
         "--max-runtime",
@@ -189,8 +194,9 @@ def _parse_args(
     parser.add_argument(
         "--shutdown-grace-period",
         type=int,
-        help="How long to wait in seconds for processes to gracefully finish after shutdown is "
-        "requested [overrides $RMS_CLOUD_TASKS_SHUTDOWN_GRACE_PERIOD] (default 30 seconds)",
+        help="How long to wait in seconds for processes to gracefully finish after shutdown (SIGINT, "
+        "SIGTERM, or Ctrl-C) is requested before killing them [overrides "
+        "$RMS_CLOUD_TASKS_SHUTDOWN_GRACE_PERIOD] (default 30 seconds)",
     )
     parser.add_argument(
         "--tasks-to-skip",
@@ -206,35 +212,31 @@ def _parse_args(
         "--retry-on-exit",
         action="store_true",
         default=None,
-        help="If specified, tasks will be retried if the user function exits "
-        "prematurely [overrides $RMS_CLOUD_TASKS_RETRY_ON_EXIT]",
+        help="If specified, retry tasks on premature exit [overrides $RMS_CLOUD_TASKS_RETRY_ON_EXIT]",
     )
     parser.add_argument(
         "--no-retry-on-exit",
         action="store_false",
         dest="retry_on_exit",
-        help="If specified, tasks will not be retried if the user function exits "
-        "prematurely (default) [overrides $RMS_CLOUD_TASKS_RETRY_ON_EXIT]",
+        help="If specified, do not retry tasks on premature exit (default) [overrides $RMS_CLOUD_TASKS_RETRY_ON_EXIT]",
     )
     parser.add_argument(
         "--retry-on-exception",
         action="store_true",
         default=None,
-        help="If specified, tasks will be retried if the user function raises an unhandled "
-        "exception [overrides $RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION]",
+        help="If specified, retry tasks on unhandled exception [overrides $RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION]",
     )
     parser.add_argument(
         "--no-retry-on-exception",
         action="store_false",
         dest="retry_on_exception",
-        help="If specified, tasks will not be retried if the user function raises an unhandled "
-        "exception (default) [overrides $RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION]",
+        help="If specified, do not retry tasks on unhandled exception (default) [overrides $RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION]",
     )
     parser.add_argument(
         "--retry-on-timeout",
         action="store_true",
         default=None,
-        help="If specified, tasks will be retried if they exceed the maximum runtime specified"
+        help="If specified, tasks will be retried if they exceed the maximum runtime specified "
         "by --max-runtime [overrides $RMS_CLOUD_TASKS_RETRY_ON_TIMEOUT]",
     )
     parser.add_argument(
@@ -261,25 +263,32 @@ def _parse_args(
         "-v",
         "--verbose",
         action="store_true",
-        help="If specified, set the log level to DEBUG",
+        help="Set the log level to DEBUG",
     )
 
     return parser.parse_args(args)
 
 
 class LocalTaskQueue:
-    """A local task queue that reads tasks from a JSON file."""
+    """A local task queue that reads tasks from a JSON file or a factory function."""
 
-    def __init__(self, task_file: str):
+    def __init__(self, task_source: FCPath | Callable[[], Iterable[Dict[str, Any]]]):
         """Initialize the local task queue.
 
         Args:
-            task_file: Path to JSON file containing tasks.
+            task_source: FCPath to JSON file containing tasks, or a function that returns an
+                iterator of tasks.
         """
-        self._task_file = task_file
-        self._tasks_iter = self._yield_tasks_from_file(task_file)
+        if isinstance(task_source, FCPath):
+            self._tasks_iter = self._yield_tasks_from_file(task_source)
+        elif callable(task_source):
+            self._tasks_iter = task_source()
+        else:
+            raise TypeError(
+                f"task_source must be FCPath or callable, got {type(task_source).__name__}"
+            )
 
-    def _yield_tasks_from_file(self, task_file: str) -> Iterable[Dict[str, Any]]:
+    def _yield_tasks_from_file(self, task_file: FCPath) -> Iterable[Dict[str, Any]]:
         """
         Yield tasks from a JSON or YAML file as an iterator.
 
@@ -295,12 +304,12 @@ class LocalTaskQueue:
         Raises:
             ValueError: If the file cannot be read
         """
-        if not task_file.endswith((".json", ".yaml", ".yml")):
+        if task_file.suffix not in (".json", ".yaml", ".yml"):
             raise ValueError(
                 f"Unsupported file format for tasks: {task_file}; must be .json, .yml, or .yaml"
             )
-        with FCPath(task_file).open(mode="r") as fp:
-            if task_file.endswith(".json"):
+        with task_file.open(mode="r") as fp:
+            if task_file.suffix == ".json":
                 for task in json_stream.load(fp):
                     yield json_stream.to_standard_types(task)  # Convert to a dict
             else:
@@ -317,17 +326,16 @@ class LocalTaskQueue:
                         yield yaml.load(y, Loader=yaml.Loader)[0]
                         y = ln
 
-    async def receive_tasks(self, max_count: int, visibility_timeout: int) -> List[Dict[str, Any]]:
+    async def receive_tasks(self, max_count: int) -> List[Dict[str, Any]]:
         """Get a batch of tasks from the queue.
 
         Args:
             max_count: Maximum number of tasks to receive.
-            visibility_timeout: Not used for local queue.
 
         Returns:
             List of tasks.
         """
-        tasks = []
+        tasks: List[Dict[str, Any]] = []
         for _ in range(max_count):
             try:
                 task = next(self._tasks_iter)
@@ -405,7 +413,7 @@ class WorkerData:
     @property
     def received_shutdown_request(self) -> bool:
         """Whether the worker has received a shutdown request. This is for the user hitting
-        Ctrl-C at the terminal."""
+        Ctrl-C at the terminal or otherwise receiving a SIGINT or SIGTERM signal."""
         return self.shutdown_event.is_set()
 
 
@@ -415,6 +423,8 @@ class Worker:
     def __init__(
         self,
         user_worker_function: Callable[[str, Dict[str, Any]], bool],
+        *,
+        task_source: Optional[str | Path | FCPath | Callable[[], Iterable[Dict[str, Any]]]] = None,
         args: Optional[Sequence[str]] = None,
         argparser: Optional[argparse.ArgumentParser] = None,
     ):
@@ -424,6 +434,9 @@ class Worker:
         Args:
             user_worker_function: The function to execute for each task. It will be called
                 with the task_id, task_data dictionary, and Worker object as arguments.
+            task_source: Optional task source. Can be a filename, a pathlib.Path, a
+                filecache.FCPath, or a function that returns an iterator of tasks. If specified,
+                this will override the command line and environment variable task sources.
             args: Optional list of command line arguments (sys.argv[1:]).
             argparser: Optional argument parser to use. If provided, the command line
                 arguments used by Worker will be added before arguments are parsed.
@@ -442,17 +455,32 @@ class Worker:
 
         # Create the inheritable properties object first
         self._data = WorkerData()
+        self._data.args = parsed_args
 
         # Set up multiprocessing events
         self._data.shutdown_event = MP_CTX.Event()  # type: ignore
         self._data.termination_event = MP_CTX.Event()  # type: ignore
 
         # Check if we're using a local tasks file
-        self._task_file = parsed_args.task_file
-        if self._task_file is None:
-            self._task_file = os.getenv("RMS_CLOUD_TASKS_TASK_FILE")
-        if self._task_file:
-            logger.info(f'  Using local tasks file: "{self._task_file}"')
+        self._task_source = None
+        if task_source is not None:
+            # Override both the command line and the environment variable
+            if callable(task_source):
+                self._task_source = task_source
+            else:
+                self._task_source = FCPath(task_source)
+        else:
+            self._task_source = parsed_args.task_file
+            if self._task_source is None:
+                self._task_source = os.getenv("RMS_CLOUD_TASKS_TASK_FILE")
+            if self._task_source is not None:
+                self._task_source = FCPath(self._task_source)
+        if self._task_source:
+            if callable(self._task_source):
+                logger.info("  Using task factory function")
+            else:
+                logger.info(f'  Using local tasks file: "{self._task_source}"')
+        self._task_source_is_empty = False
 
         # Get number of tasks to skip from args or environment variable
         self._tasks_to_skip = parsed_args.tasks_to_skip
@@ -475,7 +503,7 @@ class Worker:
         # Get provider from args or environment variable
         self._data.provider = parsed_args.provider or os.getenv("RMS_CLOUD_TASKS_PROVIDER")
         if self._data.provider is None:
-            if not self._task_file:
+            if not self._task_source:
                 logger.error(
                     "Provider not specified via --provider or RMS_CLOUD_TASKS_PROVIDER "
                     "and no tasks file specified via --task-file"
@@ -504,7 +532,7 @@ class Worker:
             self._data.queue_name = self._data.job_id
         logger.info(f"  Queue name: {self._data.queue_name}")
 
-        if self._data.queue_name is None and not self._task_file:
+        if self._data.queue_name is None and not self._task_source:
             logger.error(
                 "Queue name not specified via --queue-name or RMS_CLOUD_TASKS_QUEUE_NAME "
                 "or --job-id or RMS_CLOUD_TASKS_JOB_ID and no tasks file specified via --task-file"
@@ -534,7 +562,7 @@ class Worker:
                     "1",
                 )
             else:
-                self._data.event_log_to_file = self._task_file is not None
+                self._data.event_log_to_file = self._task_source is not None
         logger.info(f"  Event log to file: {self._data.event_log_to_file}")
 
         # Get event log file from args or environment variable
@@ -554,7 +582,7 @@ class Worker:
                     "1",
                 )
             else:
-                self._data.event_log_to_queue = self._task_file is None
+                self._data.event_log_to_queue = self._task_source is None
         logger.info(f"  Event log to queue: {self._data.event_log_to_queue}")
 
         self._data.event_log_queue_name = None
@@ -752,7 +780,7 @@ class Worker:
                 await self._task_queue.acknowledge_task(task["ack_id"])
         except Exception as e:
             logger.error(f"Error completing task {task['task_id']}: {e}", exc_info=True)
-            self._log_non_fatal_exception(traceback.format_exc())
+            await self._log_non_fatal_exception(traceback.format_exc())
 
     async def _queue_retry_task_with_logging(self, task: Dict[str, Any]) -> None:
         """Fail a task with logging of errors."""
@@ -761,7 +789,7 @@ class Worker:
                 await self._task_queue.retry_task(task["ack_id"])
         except Exception as e:
             logger.error(f"Error failing task {task['task_id']}: {e}", exc_info=True)
-            self._log_non_fatal_exception(traceback.format_exc())
+            await self._log_non_fatal_exception(traceback.format_exc())
 
     _EVENT_TYPE_TASK_COMPLETED = "task_completed"
     _EVENT_TYPE_TASK_EXCEPTION = "task_exception"
@@ -863,6 +891,7 @@ class Worker:
 
     async def start(self) -> None:
         """Start the worker and begin processing tasks."""
+        self._task_list = []
 
         if self._data.event_log_to_file:
             logger.debug(f'Starting event logger for file "{self._data.event_log_file}"')
@@ -885,10 +914,14 @@ class Worker:
                 logger.error(f"Error initializing event log queue: {e}", exc_info=True)
                 sys.exit(1)
 
-        if self._task_file:
-            logger.debug(f'Starting task scheduler for local tasks file "{self._task_file}"')
+        if self._task_source:
+            if isinstance(self._task_source, FCPath):
+                logger.debug(f'Starting task scheduler for local tasks file "{self._task_source}"')
+            else:
+                logger.debug("Starting task scheduler for factory task queue")
+
             try:
-                self._task_queue = LocalTaskQueue(self._task_file)
+                self._task_queue = LocalTaskQueue(self._task_source)
             except Exception as e:
                 logger.error(f"Error initializing local task queue: {e}", exc_info=True)
                 await self._log_fatal_exception(traceback.format_exc())
@@ -919,20 +952,21 @@ class Worker:
         self._running = True
 
         # Start the result handler in the main process
-        asyncio.create_task(self._handle_results())
+        self._task_list.append(asyncio.create_task(self._handle_results()))
 
         # Start the task feeder to get tasks from the queue
-        asyncio.create_task(self._feed_tasks_to_workers())
+        self._task_list.append(asyncio.create_task(self._feed_tasks_to_workers()))
 
         # Start the process runtime monitor
-        asyncio.create_task(self._monitor_process_runtimes())
+        self._task_list.append(asyncio.create_task(self._monitor_process_runtimes()))
 
         # Start the termination check loop
         if self._is_spot:
-            asyncio.create_task(self._check_termination_loop())
+            self._task_list.append(asyncio.create_task(self._check_termination_loop()))
 
         # Process tasks until shutdown
         await self._wait_for_shutdown()
+        await self._cleanup_tasks()
 
         total = self._num_tasks_not_retried + self._num_tasks_retried
         logger.info(
@@ -941,6 +975,17 @@ class Worker:
             f"Exited: {self._num_tasks_exited}, Total: {total}"
         )
         # We don't log an event here because this only happens when the user hits Ctrl-C
+
+    async def _cleanup_tasks(self) -> None:
+        """Cleanup all tasks."""
+        self._running = False
+        for task in self._task_list:
+            # Needed because of mocks used during testing
+            try:
+                await task
+            except Exception:  # pragma: no cover
+                pass
+        self._task_list = []
 
     async def _handle_results(self) -> None:
         """Handle results from worker processes."""
@@ -963,7 +1008,7 @@ class Worker:
                     while not self._result_queue.empty():
                         worker_id, retry, result = self._result_queue.get_nowait()
 
-                        if worker_id not in self._processes:
+                        if worker_id not in self._processes:  # pragma: no cover
                             # Race condition with max_runtime most likely
                             logger.debug(
                                 f"Worker #{worker_id} reported results but process had previously "
@@ -1040,7 +1085,7 @@ class Worker:
                         self._num_tasks_exited += 1
                         try:
                             exit_code = process_data["process"].exitcode
-                        except Exception:
+                        except Exception:  # pragma: no cover
                             exit_code = None
                         task = process_data["task"]
                         elapsed_time = time.time() - process_data["start_time"]
@@ -1079,7 +1124,19 @@ class Worker:
         """Wait for the shutdown event and then clean up."""
         # Wait until shutdown is requested
         while self._running and not self._data.received_shutdown_request:
-            if self._data.received_termination_notice and len(self._processes) == 0:
+            if self._task_source_is_empty:
+                if len(self._processes) == 0:
+                    logger.info("Local task source is empty and all processes complete; exiting")
+                    self._running = False
+                    return
+                logger.info(
+                    f"Local task source is empty; waiting for {len(self._processes)} processes to "
+                    "complete"
+                )
+                await asyncio.sleep(interval)
+                continue
+
+            if len(self._processes) == 0 and self._data.received_termination_notice:
                 logger.info("Termination event set and all processes complete; exiting")
                 self._running = False
                 return
@@ -1216,10 +1273,11 @@ class Worker:
                 # TODO Azure doesn't have a direct API yet
                 return False
 
-        except Exception:
+        except Exception:  # pragma: no cover
             pass
 
-        return False
+        # Can't happen
+        return False  # pragma: no cover
 
     async def _feed_tasks_to_workers(self) -> None:
         """Fetch tasks from the cloud queue and feed them to worker processes."""
@@ -1284,6 +1342,9 @@ class Worker:
                                 f"{len(self._processes)}"
                             )
                 else:
+                    # If no tasks and using a local task file or function, we're done
+                    if self._task_source is not None:
+                        self._task_source_is_empty = True
                     # If no tasks, sleep to avoid hammering the queue
                     await asyncio.sleep(1)
 
@@ -1348,7 +1409,7 @@ class Worker:
                                     f"exception: {e}",
                                     exc_info=True,
                                 )
-                                self._log_non_fatal_exception(traceback.format_exc())
+                                await self._log_non_fatal_exception(traceback.format_exc())
                         else:
                             self._num_tasks_not_retried += 1
                             logger.info(
@@ -1362,7 +1423,7 @@ class Worker:
                                     f"exception: {e}",
                                     exc_info=True,
                                 )
-                                self._log_non_fatal_exception(traceback.format_exc())
+                                await self._log_non_fatal_exception(traceback.format_exc())
                     except Exception as e:
                         logger.error(f"Error marking task {task['task_id']} as completed: {e}")
                         await self._log_non_fatal_exception(traceback.format_exc())

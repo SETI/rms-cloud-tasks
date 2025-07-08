@@ -13,6 +13,7 @@ when the queue is empty and the worker is idle. When run on spot/preemptible ins
 it also takes care of monitoring for the instance shutdown warning and notifying each
 running worker process.
 
+
 Basic Usage
 -----------
 
@@ -128,53 +129,69 @@ given to ``manage_pool`` or ``run``), or from information derived from the insta
 Task File
 ~~~~~~~~~
 
---task-file TASK_FILE   The name of a local file containing tasks to process; if not
+--task-file TASK_FILE   The name of a local JSON or YAML file containing tasks to process; if not
                         specified, the worker will pull tasks from the cloud provider
                         queue (see below). The filename can also be a cloud storage
                         path like ``gs://bucket/file``, ``s3://bucket/file``, or
-                        ``https://path/to/file``.
+                        ``https://path/to/file``. If not specified, the task manager will pull
+                        tasks from the cloud provider queue.
 
 If specified, the task file should be in the same format as read by the :ref:`cli_load_queue_cmd`
 command.
 
-Parameters Required if Task File is Not Specified, Optional Otherwise
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
---provider PROVIDER     The cloud provider to use (AWS, GCP, or AZURE) [or ``RMS_CLOUD_TASKS_PROVIDER``]
---job-id JOB_ID         Unique identifier for the job [or ``RMS_CLOUD_TASKS_JOB_ID``]
+Overriding the Task Source
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The task source (either file or queue) can be overridden by passing a ``task_source``
+argument to the ``Worker`` constructor. This can be a string or ``pathlib.Path`` or
+``filecache.FCPath``, or a function that returns an iterator of tasks. If a filename is
+passed, it will be treated as a path to a JSON or YAML file containing tasks. If a
+function is passed, it will be called repeatedly to yield the tasks. If ``task_source``
+is specified, the ``--task-file`` command line argument will be ignored.
+
+
+Parameters Required if Task File or Task Source is Not Specified, Optional Otherwise
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+--provider PROVIDER     The cloud provider (AWS or GCP) to use to check for spot instance termination notices and for cloud-based queueing [or ``RMS_CLOUD_TASKS_PROVIDER``]
+--job-id JOB_ID         Job ID; used to identify the cloud-based task queue name [or ``RMS_CLOUD_TASKS_JOB_ID``]
 
 Optional Parameters
 ~~~~~~~~~~~~~~~~~~~
 
 --project-id PROJECT_ID                    Project ID (required for GCP) [or ``RMS_CLOUD_TASKS_PROJECT_ID``]
---queue-name QUEUE_NAME                    Name of the task queue to process (derived from job ID if not specified) [or ``RMS_CLOUD_TASKS_QUEUE_NAME``]
+--queue-name QUEUE_NAME                    Cloud-based task queue name; if not specified will be derived from the job ID [or ``RMS_CLOUD_TASKS_QUEUE_NAME``]
 --exactly-once-queue                       If specified, task and event queue messages are guaranteed to be delivered exactly once to any recipient [or ``RMS_CLOUD_TASKS_EXACTLY_ONCE_QUEUE`` is "1" or "true"]
 --no-exactly-once-queue                    If specified, task and event queue messages are delivered at least once, but could be delivered multiple times [or ``RMS_CLOUD_TASKS_EXACTLY_ONCE_QUEUE`` is "0" or "false"]
---event-log-file EVENT_LOG_FILE            File to write events to; if not specified will not write events to a file [or ``RMS_CLOUD_TASKS_EVENT_LOG_FILE``]
---event-log-to-queue                       If specified, events will be written to a cloud-based queue [or ``RMS_CLOUD_TASKS_EVENT_LOG_QUEUE`` is "1" or "true"]
---no-event-log-to-queue                    If specified, events will not be written to a cloud-based queue [or ``RMS_CLOUD_TASKS_EVENT_LOG_QUEUE`` is "0" or "false"]
---instance-type INSTANCE_TYPE              Instance type running on this computer [or ``RMS_CLOUD_TASKS_INSTANCE_TYPE``]
---num-cpus N                               Number of vCPUs on this computer [or ``RMS_CLOUD_TASKS_INSTANCE_NUM_VCPUS``]
---memory MEMORY_GB                         Memory in GB on this computer [or ``RMS_CLOUD_TASKS_INSTANCE_MEM_GB``]
---local-ssd LOCAL_SSD_GB                   Local SSD in GB on this computer [or ``RMS_CLOUD_TASKS_INSTANCE_SSD_GB``]
---boot-disk BOOT_DISK_GB                   Boot disk in GB on this computer [or ``RMS_CLOUD_TASKS_INSTANCE_BOOT_DISK_GB``]
---is-spot                                  Whether running on spot/preemptible instance [or ``RMS_CLOUD_TASKS_INSTANCE_IS_SPOT`` is "1" or "true"]
---no-is-spot                               Whether running on spot/preemptible instance [or ``RMS_CLOUD_TASKS_INSTANCE_IS_SPOT`` is "0" or "false"]
---price PRICE_PER_HOUR                     Price per hour for the instance [or ``RMS_CLOUD_TASKS_INSTANCE_PRICE``]
+--event-log-file EVENT_LOG_FILE            File to write events to if --event-log-to-file is specified (defaults to "events.log") [or ``RMS_CLOUD_TASKS_EVENT_LOG_FILE``]
+--event-log-to-file                        If specified, events will be written to the file specified by --event-log-file or $RMS_CLOUD_TASKS_EVENT_LOG_FILE (default if --task-file is specified) [or ``RMS_CLOUD_TASKS_EVENT_LOG_TO_FILE`` is "1" or "true"]
+--no-event-log-to-file                     If specified, events will not be written to a file [or ``RMS_CLOUD_TASKS_EVENT_LOG_TO_FILE`` is "0" or "false"]
+--event-log-to-queue                       If specified, events will be written to a cloud-based queue (default if --task-file is not specified) [or ``RMS_CLOUD_TASKS_EVENT_LOG_TO_QUEUE`` is "1" or "true"]
+--no-event-log-to-queue                    If specified, events will not be written to a cloud-based queue [or ``RMS_CLOUD_TASKS_EVENT_LOG_TO_QUEUE`` is "0" or "false"]
+--instance-type INSTANCE_TYPE              Instance type; optional information for the worker processes [or ``RMS_CLOUD_TASKS_INSTANCE_TYPE``]
+--num-cpus N                               Number of vCPUs on this computer; optional information for the worker processes [or ``RMS_CLOUD_TASKS_INSTANCE_NUM_VCPUS``]
+--memory MEMORY_GB                         Memory in GB on this computer; optional information for the worker processes [or ``RMS_CLOUD_TASKS_INSTANCE_MEM_GB``]
+--local-ssd LOCAL_SSD_GB                   Local SSD in GB on this computer; optional information for the worker processes [or ``RMS_CLOUD_TASKS_INSTANCE_SSD_GB``]
+--boot-disk BOOT_DISK_GB                   Boot disk size in GB on this computer; optional information for the worker processes [or ``RMS_CLOUD_TASKS_INSTANCE_BOOT_DISK_GB``]
+--is-spot                                  If supported by the provider, specify that this is a spot instance and subject to unexpected termination [or ``RMS_CLOUD_TASKS_INSTANCE_IS_SPOT`` is "1" or "true"]
+--no-is-spot                               If supported by the provider, specify that this is not a spot instance and is not subject to unexpected termination (default) [or ``RMS_CLOUD_TASKS_INSTANCE_IS_SPOT`` is "0" or "false"]
+--price PRICE_PER_HOUR                     Price in USD/hour on this computer; optional information for the worker processes [or ``RMS_CLOUD_TASKS_INSTANCE_PRICE``]
 --num-simultaneous-tasks N                 Number of concurrent tasks to process (defaults to number of vCPUs, or 1 if not specified) [or ``RMS_CLOUD_TASKS_NUM_TASKS_PER_INSTANCE``]
---max-runtime SECONDS                      Maximum runtime for a task in seconds [or ``RMS_CLOUD_TASKS_MAX_RUNTIME``] (default 3600 seconds)
---shutdown-grace-period SECONDS            Time in seconds to wait for tasks to complete during shutdown [or ``RMS_CLOUD_TASKS_SHUTDOWN_GRACE_PERIOD``] (default 30 seconds)
+--max-runtime SECONDS                      Maximum allowed runtime in seconds; used to determine queue visibility timeout and to kill tasks that are running too long [or ``RMS_CLOUD_TASKS_MAX_RUNTIME``] (default 600 seconds)
+--shutdown-grace-period SECONDS            How long to wait in seconds for processes to gracefully finish after shutdown (SIGINT, SIGTERM, or Ctrl-C) is requested before killing them (default 30) [or ``RMS_CLOUD_TASKS_SHUTDOWN_GRACE_PERIOD``]
 --tasks-to-skip TASKS_TO_SKIP              Number of tasks to skip before processing any from the queue [or ``RMS_CLOUD_TASKS_TO_SKIP``]
 --max-num-tasks MAX_NUM_TASKS              Maximum number of tasks to process [or ``RMS_CLOUD_TASKS_MAX_NUM_TASKS``]
 --retry-on-exit                            If specified, retry tasks on premature exit [or ``RMS_CLOUD_TASKS_RETRY_ON_EXIT`` is "1" or "true"]
---no-retry-on-exit                         If specified, do not retry tasks on premature exit [or ``RMS_CLOUD_TASKS_RETRY_ON_EXIT`` is "0" or "false"]
+--no-retry-on-exit                         If specified, do not retry tasks on premature exit (default) [or ``RMS_CLOUD_TASKS_RETRY_ON_EXIT`` is "0" or "false"]
 --retry-on-exception                       If specified, retry tasks on unhandled exception [or ``RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION`` is "1" or "true"]
---no-retry-on-exception                    If specified, do not retry tasks on unhandled exception [or ``RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION`` is "0" or "false"]
---retry-on-timeout                         If specified, retry tasks on timeout [or ``RMS_CLOUD_TASKS_RETRY_ON_TIMEOUT`` is "1" or "true"]
---no-retry-on-timeout                      If specified, do not retry tasks on timeout [or ``RMS_CLOUD_TASKS_RETRY_ON_TIMEOUT`` is "0" or "false"]
+--no-retry-on-exception                    If specified, do not retry tasks on unhandled exception (default) [or ``RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION`` is "0" or "false"]
+--retry-on-timeout                         If specified, tasks will be retried if they exceed the maximum runtime specified by --max-runtime [or ``RMS_CLOUD_TASKS_RETRY_ON_TIMEOUT`` is "1" or "true"]
+--no-retry-on-timeout                      If specified, tasks will not be retried if they exceed the maximum runtime specified by --max-runtime (default) [or ``RMS_CLOUD_TASKS_RETRY_ON_TIMEOUT`` is "0" or "false"]
 --simulate-spot-termination-after SECONDS  Number of seconds after worker start to simulate a spot termination notice [or ``RMS_CLOUD_TASKS_SIMULATE_SPOT_TERMINATION_AFTER``]
 --simulate-spot-termination-delay SECONDS  Number of seconds after a simulated spot termination notice to forcibly kill all running tasks [or ``RMS_CLOUD_TASKS_SIMULATE_SPOT_TERMINATION_DELAY``]
 --verbose                                  Set the console log level to DEBUG instead of INFO
+
 
 Specifying Additional Arguments
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -276,3 +293,13 @@ destruction of the instance, resulting in a partial write. This can be done by c
 the ``worker_data.received_termination_notice`` property. However, note that providers do not
 guarantee a particular instance lifetime after the termination notice is sent, so a worker
 must still be able to tolerate an unexpected shutdown at any point in its execution.
+
+
+Running Workers on a Local Workstation
+--------------------------------------
+
+The workers can be run on a local workstation. This is useful for testing and debugging,
+and also as a simple way to parallelize an existing program that does not require the
+performance of cloud-based compute instances. When run locally, the top-level program
+should be supplied the necessary command line arguments to specify the task source (such as
+``--task-file``)
