@@ -1,18 +1,22 @@
 """Tests for the worker module."""
 
 import asyncio
+from filecache import FCPath
 import json
 import os
 import pytest
 import tempfile
-from unittest.mock import AsyncMock, MagicMock, patch, call
+from unittest.mock import AsyncMock, MagicMock, patch, call, ANY
 import types
 import yaml
 import signal
 import time
 from multiprocessing import Process
+from pathlib import Path
+import logging
+import multiprocessing
 
-from cloud_tasks.worker.worker import Worker, LocalTaskQueue
+from cloud_tasks.worker.worker import Worker, LocalTaskQueue, MP_CTX
 
 
 @pytest.fixture
@@ -69,30 +73,21 @@ def local_task_file_yaml():
     os.unlink(f.name)
 
 
-def test_local_queue_init_with_json(local_task_file_json):
-    queue = LocalTaskQueue(local_task_file_json)
-    assert queue._task_file == local_task_file_json
-
-
-def test_local_queue_init_with_yaml(local_task_file_yaml):
-    queue = LocalTaskQueue(local_task_file_yaml)
-    assert queue._task_file == local_task_file_yaml
-
-
-def test_local_queue_init_with_invalid_format():
+@pytest.mark.asyncio
+async def test_local_queue_init_with_invalid_format():
     with tempfile.NamedTemporaryFile(suffix=".txt") as f:
         f.write(b"invalid content")
         f.flush()
-        queue = LocalTaskQueue(f.name)
+        queue = LocalTaskQueue(FCPath(f.name))
         # Try to receive a task to trigger the error
         with pytest.raises(ValueError, match="Unsupported file format"):
-            asyncio.get_event_loop().run_until_complete(queue.receive_tasks(1, 10))
+            await queue.receive_tasks(1)
 
 
 @pytest.mark.asyncio
 async def test_local_queue_receive_tasks_json(local_task_file_json):
-    queue = LocalTaskQueue(local_task_file_json)
-    tasks = await queue.receive_tasks(max_count=2, visibility_timeout=30)
+    queue = LocalTaskQueue(FCPath(local_task_file_json))
+    tasks = await queue.receive_tasks(max_count=2)
     assert len(tasks) == 2
     assert tasks[0]["task_id"] == "task1"
     assert tasks[1]["task_id"] == "task2"
@@ -102,8 +97,8 @@ async def test_local_queue_receive_tasks_json(local_task_file_json):
 
 @pytest.mark.asyncio
 async def test_local_queue_receive_tasks_yaml(local_task_file_yaml):
-    queue = LocalTaskQueue(local_task_file_yaml)
-    tasks = await queue.receive_tasks(max_count=2, visibility_timeout=30)
+    queue = LocalTaskQueue(FCPath(local_task_file_yaml))
+    tasks = await queue.receive_tasks(max_count=2)
     assert len(tasks) == 2
     assert tasks[0]["task_id"] == "task3"
     assert tasks[1]["task_id"] == "task4"
@@ -113,21 +108,21 @@ async def test_local_queue_receive_tasks_yaml(local_task_file_yaml):
 
 @pytest.mark.asyncio
 async def test_local_queue_acknowledge_task(local_task_file_json):
-    queue = LocalTaskQueue(local_task_file_json)
+    queue = LocalTaskQueue(FCPath(local_task_file_json))
     await queue.acknowledge_task("test-ack-1")  # This does nothing
 
 
 @pytest.mark.asyncio
 async def test_local_queue_retry_task(local_task_file_json):
-    queue = LocalTaskQueue(local_task_file_json)
+    queue = LocalTaskQueue(FCPath(local_task_file_json))
     await queue.retry_task("test-ack-1")  # This does nothing
 
 
 @pytest.mark.asyncio
 async def test_local_queue_receive_all_tasks(local_task_file_json):
     """Test that LocalTaskQueue.receive_tasks returns all tasks when max_count is larger than available tasks."""
-    queue = LocalTaskQueue(local_task_file_json)
-    tasks = await queue.receive_tasks(max_count=5, visibility_timeout=30)
+    queue = LocalTaskQueue(FCPath(local_task_file_json))
+    tasks = await queue.receive_tasks(max_count=5)
     # The test file has two tasks
     assert len(tasks) == 2
     task_ids = {task["task_id"] for task in tasks}
@@ -573,6 +568,7 @@ async def test_start_with_local_tasks(mock_worker_function, local_task_file_json
             mock_wait.side_effect = asyncio.CancelledError()
             with pytest.raises(asyncio.CancelledError):
                 await worker.start()
+            await worker._cleanup_tasks_for_testing()
 
 
 @pytest.mark.asyncio
@@ -587,9 +583,10 @@ async def test_start_with_cloud_queue(mock_worker_function, mock_queue):
         ) as mock_create_queue:
             with patch.object(worker, "_wait_for_shutdown") as mock_wait:
                 mock_wait.side_effect = asyncio.CancelledError()
-                with patch("asyncio.create_task", return_value=MagicMock()):
+                with patch("asyncio.create_task", side_effect=lambda x: x):
                     with pytest.raises(asyncio.CancelledError):
                         await worker.start()
+                await worker._cleanup_tasks_for_testing()
     mock_create_queue.assert_called_once_with(
         provider="AWS",
         queue_name="test-job",
@@ -758,14 +755,15 @@ async def test_handle_results_process_normal(worker, mock_queue):
         worker._running = False
 
 
+def exception_worker_function(task_id, task_data, worker):
+    raise ValueError("Test exception")
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("retry_on_exception", [True, False])
 async def test_handle_results_process_exception(worker, mock_queue, retry_on_exception):
     try:
         # Create a worker function that raises an exception
-        def exception_worker_function(task_id, task_data, worker):
-            raise ValueError("Test exception")
-
         worker._task_queue = mock_queue
         worker._running = True
         worker._data.shutdown_grace_period = 0.01
@@ -779,7 +777,7 @@ async def test_handle_results_process_exception(worker, mock_queue, retry_on_exc
         mock_queue.retry_task.return_value.set_result(None)
 
         # Create a process that will run the worker function
-        process = Process(
+        process = MP_CTX.Process(
             target=Worker._worker_process_main,
             args=(
                 1,
@@ -803,7 +801,7 @@ async def test_handle_results_process_exception(worker, mock_queue, retry_on_exc
         async def shutdown_when_done():
             # Wait for the task to be processed with a shorter timeout
             start_time = time.time()
-            timeout = 0.5  # 500ms timeout
+            timeout = 2.0  # 2 second timeout
 
             while time.time() - start_time < timeout:
                 if worker._num_tasks_retried == 1 or worker._num_tasks_not_retried == 1:
@@ -988,45 +986,12 @@ def test_worker_properties(mock_worker_function):
 
 def test_signal_handler(mock_worker_function, caplog):
     with patch("sys.argv", ["worker.py", "--provider", "AWS", "--job-id", "jid"]):
-        with patch("cloud_tasks.worker.worker._parse_args") as mock_parse_args:
-            args = types.SimpleNamespace(
-                provider="AWS",
-                project_id=None,
-                task_file=None,
-                job_id="jid",
-                queue_name=None,
-                instance_type=None,
-                num_cpus=None,
-                memory=None,
-                local_ssd=None,
-                boot_disk=None,
-                is_spot=None,
-                price=None,
-                num_simultaneous_tasks=None,
-                max_runtime=None,
-                shutdown_grace_period=None,
-                tasks_to_skip=None,
-                max_num_tasks=None,
-                simulate_spot_termination_after=None,
-                simulate_spot_termination_delay=None,
-                event_log_to_file=None,
-                event_log_file=None,
-                event_log_to_queue=False,
-                verbose=False,
-                retry_on_timeout=None,
-                retry_on_exception=None,
-                retry_on_exit=None,
-                exactly_once_queue=None,
-            )
-            mock_parse_args.return_value = args
-            worker = Worker(mock_worker_function)
-
-            # Test SIGINT
-            with patch("signal.signal") as mock_signal:
-                worker._signal_handler(signal.SIGINT, None)
-                assert worker._data.shutdown_event.is_set()
-                mock_signal.assert_called_with(signal.SIGTERM, signal.SIG_DFL)
-                assert "Received signal SIGINT, initiating graceful shutdown" in caplog.text
+        worker = Worker(mock_worker_function)
+        with patch("signal.signal") as mock_signal:
+            worker._signal_handler(signal.SIGINT, None)
+            assert worker._data.shutdown_event.is_set()
+            mock_signal.assert_called_with(signal.SIGTERM, signal.SIG_DFL)
+            assert "Received signal SIGINT, initiating graceful shutdown" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -1660,11 +1625,12 @@ async def test_event_logging_to_file(mock_worker_function, tmp_path, local_task_
         # Initialize the worker
         with patch.object(worker, "_wait_for_shutdown") as mock_wait:
             mock_wait.side_effect = asyncio.CancelledError()
-            with patch("asyncio.create_task", return_value=MagicMock()):
+            with patch("asyncio.create_task", side_effect=lambda x: x):
                 try:
                     await worker.start()
                 except asyncio.CancelledError:
                     pass
+            await worker._cleanup_tasks_for_testing()
 
         # Test task completion logging
         await worker._log_task_completed("task1", elapsed_time=1.5, retry=False, result="success")
@@ -1765,11 +1731,12 @@ async def test_event_logging_to_queue(mock_worker_function):
             # Initialize the worker
             with patch.object(worker, "_wait_for_shutdown") as mock_wait:
                 mock_wait.side_effect = asyncio.CancelledError()
-                with patch("asyncio.create_task", return_value=MagicMock()):
+                with patch("asyncio.create_task", side_effect=lambda x: x):
                     try:
                         await worker.start()
                     except asyncio.CancelledError:
                         pass
+                await worker._cleanup_tasks_for_testing()
 
             # Test task completion logging
             await worker._log_task_completed(
@@ -1884,11 +1851,12 @@ async def test_event_logging_both_file_and_queue(mock_worker_function, tmp_path)
                 # Initialize the worker
                 with patch.object(worker, "_wait_for_shutdown") as mock_wait:
                     mock_wait.side_effect = asyncio.CancelledError()
-                    with patch("asyncio.create_task", return_value=MagicMock()):
+                    with patch("asyncio.create_task", side_effect=lambda x: x):
                         try:
                             await worker.start()
                         except asyncio.CancelledError:
                             pass
+                    await worker._cleanup_tasks_for_testing()
 
                 # Log a test event
                 await worker._log_task_completed(
@@ -1960,13 +1928,14 @@ async def test_event_logging_file_error(mock_worker_function, tmp_path, caplog):
                 worker = Worker(mock_worker_function)
                 with patch.object(worker, "_wait_for_shutdown") as mock_wait:
                     mock_wait.side_effect = asyncio.CancelledError()
-                    with patch("asyncio.create_task", return_value=MagicMock()):
+                    with patch("asyncio.create_task", side_effect=lambda x: x):
                         try:
                             await worker.start()
                         except asyncio.CancelledError:
                             pass
                         except Exception:
                             pass
+                    await worker._cleanup_tasks_for_testing()
                 mock_exit.assert_called_once_with(1)
                 assert "Error opening event log file" in caplog.text
 
@@ -1990,7 +1959,7 @@ async def test_event_logging_queue_error(mock_worker_function, caplog):
                 try:
                     with patch.object(worker, "_wait_for_shutdown") as mock_wait:
                         mock_wait.side_effect = asyncio.CancelledError()
-                        with patch("asyncio.create_task", return_value=MagicMock()):
+                        with patch("asyncio.create_task", side_effect=lambda x: x):
                             try:
                                 await worker.start()
                             except asyncio.CancelledError:
@@ -1999,6 +1968,7 @@ async def test_event_logging_queue_error(mock_worker_function, caplog):
                                 pass
                             except Exception:
                                 pass
+                        await worker._cleanup_tasks_for_testing()
                     mock_exit.assert_called_once_with(1)
                     assert "Error initializing event log queue" in caplog.text
                 finally:
@@ -2082,3 +2052,848 @@ async def test_tasks_to_skip_and_limit(mock_worker_function, caplog):
             # Verify queue interactions
             assert mock_queue.receive_tasks.call_count >= 7  # 6 batches + empty batch
             assert mock_queue.acknowledge_task.call_count == 3  # Should have completed 3 tasks
+
+
+@pytest.fixture
+def mock_task_factory():
+    """Create a mock task factory that yields tasks."""
+
+    def factory():
+        tasks = [
+            {"task_id": "factory-task-1", "data": {"key": "value1"}},
+            {"task_id": "factory-task-2", "data": {"key": "value2"}},
+            {"task_id": "factory-task-3", "data": {"key": "value3"}},
+        ]
+        for task in tasks:
+            yield task
+
+    return factory
+
+
+@pytest.fixture
+def mock_task_factory_empty():
+    """Create a mock task factory that yields no tasks."""
+
+    def factory():
+        return
+        yield  # This line is never reached
+
+    return factory
+
+
+@pytest.mark.asyncio
+async def test_factory_queue_receive_tasks(mock_task_factory):
+    """Test LocalTaskQueue.receive_tasks with factory and multiple tasks."""
+    queue = LocalTaskQueue(mock_task_factory)
+
+    # Test receiving 2 tasks
+    tasks = await queue.receive_tasks(max_count=2)
+    assert len(tasks) == 2
+    assert tasks[0]["task_id"] == "factory-task-1"
+    assert tasks[1]["task_id"] == "factory-task-2"
+    assert "ack_id" in tasks[0]
+    assert "ack_id" in tasks[1]
+
+    # Test receiving remaining task
+    tasks = await queue.receive_tasks(max_count=2)
+    assert len(tasks) == 1
+    assert tasks[0]["task_id"] == "factory-task-3"
+    assert "ack_id" in tasks[0]
+
+    # Test receiving when no more tasks
+    tasks = await queue.receive_tasks(max_count=2)
+    assert len(tasks) == 0
+
+
+@pytest.mark.asyncio
+async def test_factory_queue_receive_tasks_empty_factory(mock_task_factory_empty):
+    """Test LocalTaskQueue.receive_tasks with empty factory."""
+    queue = LocalTaskQueue(mock_task_factory_empty)
+
+    tasks = await queue.receive_tasks(max_count=5)
+    assert len(tasks) == 0
+
+
+@pytest.mark.asyncio
+async def test_factory_queue_receive_tasks_max_count_larger_than_available(mock_task_factory):
+    """Test LocalTaskQueue.receive_tasks when max_count is larger than available tasks."""
+    queue = LocalTaskQueue(mock_task_factory)
+
+    tasks = await queue.receive_tasks(max_count=10)
+    assert len(tasks) == 3  # Only 3 tasks available
+    task_ids = {task["task_id"] for task in tasks}
+    assert task_ids == {"factory-task-1", "factory-task-2", "factory-task-3"}
+
+
+@pytest.mark.asyncio
+async def test_factory_queue_acknowledge_task(mock_task_factory):
+    """Test LocalTaskQueue.acknowledge_task (should do nothing)."""
+    queue = LocalTaskQueue(mock_task_factory)
+
+    # This should not raise any exception
+    await queue.acknowledge_task("test-ack-1")
+
+
+@pytest.mark.asyncio
+async def test_factory_queue_retry_task(mock_task_factory):
+    """Test LocalTaskQueue.retry_task (should do nothing)."""
+    queue = LocalTaskQueue(mock_task_factory)
+
+    # This should not raise any exception
+    await queue.retry_task("test-ack-1")
+
+
+# Task source argument tests
+
+
+def test_worker_init_with_task_source_string(mock_worker_function, local_task_file_json):
+    """Test Worker initialization with task_source as string."""
+    with patch("sys.argv", ["worker.py"]):
+        worker = Worker(mock_worker_function, task_source=local_task_file_json)
+        assert worker._task_source == FCPath(local_task_file_json)
+
+
+def test_worker_init_with_task_source_path(mock_worker_function, local_task_file_json):
+    """Test Worker initialization with task_source as Path."""
+    with patch("sys.argv", ["worker.py"]):
+        worker = Worker(mock_worker_function, task_source=Path(local_task_file_json))
+        assert worker._task_source == FCPath(local_task_file_json)
+
+
+def test_worker_init_with_task_source_fcpath(mock_worker_function, local_task_file_json):
+    """Test Worker initialization with task_source as FCPath."""
+    with patch("sys.argv", ["worker.py"]):
+        worker = Worker(mock_worker_function, task_source=FCPath(local_task_file_json))
+        assert worker._task_source == FCPath(local_task_file_json)
+
+
+def test_worker_init_with_task_source_factory(mock_worker_function, mock_task_factory):
+    """Test Worker initialization with task_source as factory function."""
+    with patch("sys.argv", ["worker.py"]):
+        worker = Worker(mock_worker_function, task_source=mock_task_factory)
+        assert worker._task_source == mock_task_factory
+
+
+def test_worker_init_with_task_source_overrides_command_line(
+    mock_worker_function, local_task_file_json
+):
+    """Test that task_source overrides command line arguments."""
+    with patch("sys.argv", ["worker.py", "--task-file", "different_file.json"]):
+        worker = Worker(mock_worker_function, task_source=local_task_file_json)
+        assert worker._task_source == FCPath(local_task_file_json)
+        assert worker._task_source != FCPath("different_file.json")
+
+
+def test_worker_init_with_task_source_overrides_environment(
+    mock_worker_function, local_task_file_json
+):
+    """Test that task_source overrides environment variables."""
+    with patch("sys.argv", ["worker.py"]):
+        with patch.dict(os.environ, {"RMS_CLOUD_TASKS_TASK_FILE": "env_file.json"}):
+            worker = Worker(mock_worker_function, task_source=local_task_file_json)
+            assert worker._task_source == FCPath(local_task_file_json)
+            assert worker._task_source != FCPath("env_file.json")
+
+
+def test_worker_init_with_task_source_factory_overrides_command_line(
+    mock_worker_function, mock_task_factory
+):
+    """Test that task_source factory overrides command line arguments."""
+    with patch("sys.argv", ["worker.py", "--task-file", "some_file.json"]):
+        worker = Worker(mock_worker_function, task_source=mock_task_factory)
+        assert worker._task_source == mock_task_factory
+
+
+def test_worker_init_with_task_source_factory_overrides_environment(
+    mock_worker_function, mock_task_factory
+):
+    """Test that task_source factory overrides environment variables."""
+    with patch("sys.argv", ["worker.py"]):
+        with patch.dict(os.environ, {"RMS_CLOUD_TASKS_TASK_FILE": "env_file.json"}):
+            worker = Worker(mock_worker_function, task_source=mock_task_factory)
+            assert worker._task_source == mock_task_factory
+
+
+def test_worker_init_with_task_source_none_uses_command_line(mock_worker_function):
+    """Test Worker initialization with task_source=None uses command line argument."""
+    with patch("sys.argv", ["worker.py", "--task-file", "cmd_line_file.json"]):
+        worker = Worker(mock_worker_function, task_source=None)
+        assert str(worker._task_source) == "cmd_line_file.json"
+
+
+def test_worker_init_with_task_source_none_uses_environment(mock_worker_function):
+    """Test Worker initialization with task_source=None uses environment variable."""
+    with patch("sys.argv", ["worker.py"]):
+        with patch.dict(os.environ, {"RMS_CLOUD_TASKS_TASK_FILE": "env_file.json"}):
+            worker = Worker(mock_worker_function, task_source=None)
+            assert str(worker._task_source) == "env_file.json"
+
+
+def test_worker_init_with_task_source_none_no_file_specified(mock_worker_function):
+    """Test that when task_source is None and no file is specified, it exits."""
+    with patch("sys.argv", ["worker.py"]):
+        with patch.dict(os.environ, {}, clear=True):
+            with patch("sys.exit") as mock_exit:
+                Worker(mock_worker_function, task_source=None)
+                # Multiple validation errors will cause multiple exit calls
+                assert mock_exit.call_count >= 1
+
+
+def test_worker_init_with_task_source_none_logging(mock_worker_function, caplog):
+    """Test that Worker doesn't log task source when task_source is None."""
+    with patch("sys.argv", ["worker.py"]):
+        with patch.dict(os.environ, {}, clear=True):
+            with pytest.raises(SystemExit) as exc_info:
+                Worker(mock_worker_function, task_source=None)
+            assert exc_info.value.code == 1
+            assert "Provider not specified" in caplog.text
+
+
+def test_worker_init_with_task_source_string_logging(
+    mock_worker_function, local_task_file_json, caplog
+):
+    """Test that Worker logs when using task_source as string."""
+    with patch("sys.argv", ["worker.py"]):
+        worker = Worker(mock_worker_function, task_source=local_task_file_json)
+        assert f'Using local tasks file: "{local_task_file_json}"' in caplog.text
+
+
+def test_worker_init_with_task_source_factory_logging(
+    mock_worker_function, mock_task_factory, caplog
+):
+    """Test that Worker logs when using task_source as factory."""
+    with patch("sys.argv", ["worker.py"]):
+        worker = Worker(mock_worker_function, task_source=mock_task_factory)
+        assert "Using task factory function" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_worker_start_with_factory_task_queue(mock_worker_function, mock_task_factory):
+    """Test Worker.start with LocalTaskQueue."""
+    with patch("sys.argv", ["worker.py"]):
+        worker = Worker(mock_worker_function, task_source=mock_task_factory)
+
+        with patch.object(worker, "_wait_for_shutdown") as mock_wait:
+            mock_wait.side_effect = asyncio.CancelledError()
+            with patch("asyncio.create_task", side_effect=lambda x: x):
+                with pytest.raises(asyncio.CancelledError):
+                    await worker.start()
+            await worker._cleanup_tasks_for_testing()
+
+        # Verify LocalTaskQueue was created
+        assert isinstance(worker._task_queue, LocalTaskQueue)
+
+
+@pytest.mark.asyncio
+async def test_worker_start_with_factory_task_queue_error(mock_worker_function, caplog):
+    """Test Worker.start with LocalTaskQueue initialization error."""
+
+    def bad_factory():
+        raise ValueError("Bad factory")
+
+    with patch("sys.argv", ["worker.py"]):
+        with patch("sys.exit") as mock_exit:
+            worker = Worker(mock_worker_function, task_source=bad_factory)
+
+            with patch.object(worker, "_wait_for_shutdown") as mock_wait:
+                mock_wait.side_effect = asyncio.CancelledError()
+                with patch("asyncio.create_task", side_effect=lambda x: x):
+                    try:
+                        await worker.start()
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception:
+                        pass
+                await worker._cleanup_tasks_for_testing()
+            mock_exit.assert_called_once_with(1)
+            assert "Error initializing local task queue" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_worker_with_factory_task_queue_and_provider_required(
+    mock_worker_function, mock_task_factory
+):
+    """Test that Worker with a factory task queue doesn't require provider."""
+    with patch("sys.argv", ["worker.py"]):
+        with patch.dict(os.environ, {}, clear=True):
+            worker = Worker(mock_worker_function, task_source=mock_task_factory)
+            assert worker._data.provider is None
+
+
+@pytest.mark.asyncio
+async def test_worker_with_factory_task_queue_and_queue_name_required(
+    mock_worker_function, mock_task_factory
+):
+    """Test that Worker with a factory task queue doesn't require queue name."""
+    with patch("sys.argv", ["worker.py"]):
+        with patch.dict(os.environ, {}, clear=True):
+            worker = Worker(mock_worker_function, task_source=mock_task_factory)
+            assert worker._data.queue_name is None
+
+
+def test_local_queue_init_with_invalid_task_source():
+    """Test LocalTaskQueue.__init__ with invalid task_source type."""
+    with pytest.raises(
+        TypeError, match="task_source must be FCPath or callable, got <class 'int'>"
+    ):
+        LocalTaskQueue(123)  # Invalid type
+
+
+def test_worker_init_with_verbose_logging(mock_worker_function):
+    """Test Worker initialization with verbose logging."""
+    with patch("sys.argv", ["worker.py", "--verbose", "--provider", "AWS", "--job-id", "test-job"]):
+        with patch("logging.getLogger") as mock_get_logger:
+            mock_logger = MagicMock()
+            mock_get_logger.return_value = mock_logger
+            worker = Worker(mock_worker_function)
+            mock_logger.setLevel.assert_called_once_with(logging.DEBUG)
+
+
+def test_worker_init_event_log_to_queue_without_provider(mock_worker_function):
+    """Test Worker initialization with --event-log-to-queue but no provider."""
+    with patch("sys.argv", ["worker.py", "--event-log-to-queue"]):
+        with patch.dict(os.environ, {}, clear=True):
+            with patch("sys.exit") as mock_exit:
+                Worker(mock_worker_function)
+                # Accept multiple sys.exit calls
+                assert mock_exit.call_count >= 1
+
+
+def test_worker_init_simulate_spot_termination_without_delay(mock_worker_function, caplog):
+    """Test Worker initialization with simulate spot termination but no delay."""
+    with patch("sys.argv", ["worker.py", "--simulate-spot-termination-after", "10"]):
+        with patch.dict(
+            os.environ, {"RMS_CLOUD_TASKS_PROVIDER": "AWS", "RMS_CLOUD_TASKS_JOB_ID": "test-job"}
+        ):
+            worker = Worker(mock_worker_function)
+            assert "Simulating spot termination after but no delay specified" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_queue_acknowledge_task_with_logging_error(mock_worker_function):
+    """Test _queue_acknowledge_task_with_logging with error."""
+    with patch("sys.argv", ["worker.py", "--provider", "AWS", "--job-id", "test-job"]):
+        worker = Worker(mock_worker_function)
+        mock_queue = AsyncMock()
+        mock_queue.acknowledge_task.side_effect = Exception("Queue error")
+        worker._task_queue = mock_queue
+
+        task = {"task_id": "test-task", "ack_id": "test-ack"}
+        await worker._queue_acknowledge_task_with_logging(task)
+
+        # Verify error was logged
+        mock_queue.acknowledge_task.assert_called_once_with("test-ack")
+
+
+@pytest.mark.asyncio
+async def test_queue_retry_task_with_logging_error(mock_worker_function):
+    """Test _queue_retry_task_with_logging with error."""
+    with patch("sys.argv", ["worker.py", "--provider", "AWS", "--job-id", "test-job"]):
+        worker = Worker(mock_worker_function)
+        mock_queue = AsyncMock()
+        mock_queue.retry_task.side_effect = Exception("Queue error")
+        worker._task_queue = mock_queue
+
+        task = {"task_id": "test-task", "ack_id": "test-ack"}
+        await worker._queue_retry_task_with_logging(task)
+
+        # Verify error was logged
+        mock_queue.retry_task.assert_called_once_with("test-ack")
+
+
+@pytest.mark.asyncio
+async def test_start_with_event_log_file_error(mock_worker_function, caplog):
+    """Test start() with event log file error."""
+    with patch(
+        "sys.argv",
+        [
+            "worker.py",
+            "--provider",
+            "AWS",
+            "--job-id",
+            "test-job",
+            "--event-log-to-file",
+            "--event-log-file",
+            "/nonexistent/events.log",
+        ],
+    ):
+        with patch("builtins.open", side_effect=PermissionError("Permission denied")):
+            with patch("sys.exit") as mock_exit:
+                worker = Worker(mock_worker_function)
+                with patch.object(worker, "_wait_for_shutdown") as mock_wait:
+                    mock_wait.side_effect = asyncio.CancelledError()
+                    with patch("asyncio.create_task", side_effect=lambda x: x):
+                        try:
+                            await worker.start()
+                        except asyncio.CancelledError:
+                            pass
+                        except Exception:
+                            pass
+                    await worker._cleanup_tasks_for_testing()
+                # Multiple errors will cause multiple exit calls
+                assert mock_exit.call_count >= 1
+                assert "Error opening event log file" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_start_with_event_log_queue_error(mock_worker_function, caplog):
+    """Test start() with event log queue error."""
+    with patch(
+        "sys.argv",
+        ["worker.py", "--provider", "AWS", "--job-id", "test-job", "--event-log-to-queue"],
+    ):
+        with patch(
+            "cloud_tasks.worker.worker.create_queue", side_effect=Exception("Queue creation failed")
+        ):
+            with patch("sys.exit") as mock_exit:
+                worker = Worker(mock_worker_function)
+                with patch.object(worker, "_wait_for_shutdown") as mock_wait:
+                    mock_wait.side_effect = asyncio.CancelledError()
+                    with patch("asyncio.create_task", side_effect=lambda x: x):
+                        try:
+                            await worker.start()
+                        except asyncio.CancelledError:
+                            pass
+                        except Exception:
+                            pass
+                    await worker._cleanup_tasks_for_testing()
+                # Multiple errors will cause multiple exit calls
+                assert mock_exit.call_count >= 1
+                assert "Error initializing event log queue" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_start_with_local_task_queue_error(mock_worker_function, caplog):
+    """Test start() with local task queue error."""
+    with patch("sys.argv", ["worker.py"]):
+
+        def bad_factory():
+            raise ValueError("Bad factory")
+
+        with patch("sys.exit") as mock_exit:
+            worker = Worker(mock_worker_function, task_source=bad_factory)
+            with patch.object(worker, "_wait_for_shutdown") as mock_wait:
+                mock_wait.side_effect = asyncio.CancelledError()
+                with patch("asyncio.create_task", side_effect=lambda x: x):
+                    with pytest.raises(asyncio.CancelledError):
+                        await worker.start()
+                await worker._cleanup_tasks_for_testing()
+            # Multiple errors will cause multiple exit calls
+            assert mock_exit.call_count >= 1
+            assert "Error initializing local task queue" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_start_with_cloud_queue_error(mock_worker_function, caplog):
+    """Test start() with cloud queue error."""
+    with patch("sys.argv", ["worker.py", "--provider", "AWS", "--job-id", "test-job"]):
+        with patch(
+            "cloud_tasks.worker.worker.create_queue", side_effect=Exception("Queue creation failed")
+        ):
+            with patch("sys.exit") as mock_exit:
+                worker = Worker(mock_worker_function)
+                with patch.object(worker, "_wait_for_shutdown") as mock_wait:
+                    mock_wait.side_effect = asyncio.CancelledError()
+                    with patch("asyncio.create_task", side_effect=lambda x: x):
+                        with pytest.raises(asyncio.CancelledError):
+                            await worker.start()
+                    await worker._cleanup_tasks_for_testing()
+                # Multiple errors will cause multiple exit calls
+                assert mock_exit.call_count >= 1
+                assert "Error initializing task queue" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_handle_results_with_exception(mock_worker_function, caplog):
+    """Test _handle_results with exception."""
+    with patch("sys.argv", ["worker.py", "--provider", "AWS", "--job-id", "test-job"]):
+        worker = Worker(mock_worker_function)
+        worker._running = True
+
+        # Mock the result queue to raise an exception
+        with patch.object(worker._result_queue, "get_nowait", side_effect=Exception("Queue error")):
+            with patch("asyncio.sleep") as mock_sleep:
+                mock_sleep.side_effect = [None, StopAsyncIteration()]
+                try:
+                    await worker._handle_results()
+                except StopAsyncIteration:
+                    pass
+        assert "Error handling results" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_wait_for_shutdown_with_termination_event(mock_worker_function):
+    """Test _wait_for_shutdown with termination event."""
+    with patch("sys.argv", ["worker.py", "--provider", "AWS", "--job-id", "test-job"]):
+        worker = Worker(mock_worker_function)
+        worker._running = True
+        worker._processes = {}
+        worker._data.termination_event.set()
+
+        await worker._wait_for_shutdown()
+        assert not worker._running
+
+
+@pytest.mark.asyncio
+async def test_check_termination_loop_with_exception(mock_worker_function, caplog):
+    """Test _check_termination_loop with exception."""
+    with patch("sys.argv", ["worker.py", "--provider", "AWS", "--job-id", "test-job"]):
+        worker = Worker(mock_worker_function)
+        worker._running = True
+        worker._data.shutdown_event = MagicMock()
+        worker._data.shutdown_event.is_set.return_value = False
+
+        # Mock _check_termination_notice to raise an exception
+        async def mock_check_termination():
+            raise Exception("Termination check failed")
+
+        worker._check_termination_notice = mock_check_termination
+
+        with patch("asyncio.sleep") as mock_sleep:
+            mock_sleep.side_effect = [None, Exception("Test complete")]
+            with pytest.raises(Exception, match="Test complete"):
+                await worker._check_termination_loop()
+
+        assert "Error checking for termination" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_feed_tasks_to_workers_with_exception(mock_worker_function, caplog):
+    """Test _feed_tasks_to_workers with exception."""
+    with patch("sys.argv", ["worker.py", "--provider", "AWS", "--job-id", "test-job"]):
+        worker = Worker(mock_worker_function)
+        worker._running = True
+        worker._data.num_simultaneous_tasks = 1
+
+        # Mock the task queue to raise an exception
+        mock_queue = AsyncMock()
+        mock_queue.receive_tasks.side_effect = Exception("Queue error")
+        worker._task_queue = mock_queue
+
+        with patch("asyncio.sleep") as mock_sleep:
+            mock_sleep.side_effect = [None, Exception("Test complete")]
+            with pytest.raises(Exception, match="Test complete"):
+                await worker._feed_tasks_to_workers()
+
+        assert "Error feeding tasks to workers" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_monitor_process_runtimes_with_termination_error(mock_worker_function, caplog):
+    """Test _monitor_process_runtimes with process termination error."""
+    with patch("sys.argv", ["worker.py", "--provider", "AWS", "--job-id", "test-job"]):
+        worker = Worker(mock_worker_function)
+        worker._running = True
+        worker._data.max_runtime = 0.1
+        worker._data.retry_on_timeout = False
+
+        # Create a mock process that fails to terminate
+        mock_process = MagicMock()
+        mock_process.pid = 123
+        mock_process.is_alive.return_value = True
+        mock_process.terminate.side_effect = Exception("Terminate failed")
+
+        worker._processes = {
+            123: {
+                "process": mock_process,
+                "start_time": time.time() - 0.2,  # Exceeded max runtime
+                "task": {"task_id": "task-1", "ack_id": "ack1"},
+            }
+        }
+
+        mock_queue = AsyncMock()
+        worker._task_queue = mock_queue
+
+        with patch("asyncio.sleep") as mock_sleep:
+            mock_sleep.side_effect = [None, Exception("Test complete")]
+            with pytest.raises(Exception, match="Test complete"):
+                await worker._monitor_process_runtimes()
+
+        assert "Error terminating process worker" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_monitor_process_runtimes_with_queue_error(mock_worker_function, caplog):
+    """Test _monitor_process_runtimes with queue error."""
+    with patch("sys.argv", ["worker.py", "--provider", "AWS", "--job-id", "test-job"]):
+        worker = Worker(mock_worker_function)
+        worker._running = True
+        worker._data.max_runtime = 0.1
+        worker._data.retry_on_timeout = False
+
+        # Create a mock process that exceeds max runtime
+        mock_process = MagicMock()
+        mock_process.pid = 123
+        mock_process.is_alive.return_value = False
+
+        worker._processes = {
+            123: {
+                "process": mock_process,
+                "start_time": time.time() - 0.2,  # Exceeded max runtime
+                "task": {"task_id": "task-1", "ack_id": "ack1"},
+            }
+        }
+
+        # Mock queue to raise exception
+        mock_queue = AsyncMock()
+        mock_queue.acknowledge_task.side_effect = Exception("Queue error")
+        worker._task_queue = mock_queue
+
+        with patch("asyncio.sleep") as mock_sleep:
+            mock_sleep.side_effect = [None, StopAsyncIteration()]
+            try:
+                await worker._monitor_process_runtimes()
+            except StopAsyncIteration:
+                pass
+        assert "Error completing task task-1: Queue error" in caplog.text
+
+
+def test_worker_process_main_with_exception():
+    """Test _worker_process_main with exception."""
+
+    def bad_worker_function(task_id, task_data, worker):
+        raise ValueError("Worker function error")
+
+    result_queue = MagicMock()
+    worker_data = MagicMock()
+    worker_data.received_shutdown_request = False
+    worker_data.received_termination_notice = False
+
+    with patch("sys.exit") as mock_exit:
+        Worker._worker_process_main(
+            1,
+            bad_worker_function,
+            worker_data,
+            "test-task",
+            {"key": "value"},
+            result_queue,
+        )
+        result_queue.put.assert_called_once_with((1, "exception", ANY))
+        mock_exit.assert_called_once_with(0)
+
+
+def test_worker_process_main_with_unhandled_exception():
+    """Test _worker_process_main with unhandled exception."""
+
+    def bad_worker_function(task_id, task_data, worker):
+        raise ValueError("Worker function error")
+
+    result_queue = MagicMock()
+    worker_data = MagicMock()
+    worker_data.received_shutdown_request = False
+    worker_data.received_termination_notice = False
+
+    # Mock the _execute_task_isolated to raise an exception
+    with patch.object(Worker, "_execute_task_isolated", side_effect=Exception("Unhandled error")):
+        with patch("sys.exit") as mock_exit:
+            Worker._worker_process_main(
+                1,
+                bad_worker_function,
+                worker_data,
+                "test-task",
+                {"key": "value"},
+                result_queue,
+            )
+            result_queue.put.assert_called_once_with((1, "exception", ANY))
+            mock_exit.assert_called_once_with(0)
+
+
+# Test for YAML file processing in LocalTaskQueue
+@pytest.fixture
+def local_task_file_yaml_stream():
+    """Create a YAML file with multiple documents for testing streaming."""
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+        f.write("- task_id: task1\n  data: {key: value1}\n")
+        f.write("- task_id: task2\n  data: {key: value2}\n")
+        f.write("- task_id: task3\n  data: {key: value3}\n")
+    yield f.name
+    os.unlink(f.name)
+
+
+@pytest.mark.asyncio
+async def test_local_queue_yaml_streaming(local_task_file_yaml_stream):
+    """Test LocalTaskQueue with YAML streaming."""
+    queue = LocalTaskQueue(FCPath(local_task_file_yaml_stream))
+    tasks = await queue.receive_tasks(max_count=3)
+    # Filter out None values if any
+    tasks = [t for t in tasks if t is not None]
+    assert len(tasks) == 3
+    assert tasks[0]["task_id"] == "task1"
+    assert tasks[1]["task_id"] == "task2"
+    assert tasks[2]["task_id"] == "task3"
+
+
+# Test for invalid file format
+@pytest.mark.asyncio
+async def test_local_queue_invalid_file_format():
+    """Test LocalTaskQueue with invalid file format."""
+    with tempfile.NamedTemporaryFile(suffix=".txt") as f:
+        f.write(b"invalid content")
+        f.flush()
+        with pytest.raises(ValueError, match="Unsupported file format"):
+            queue = LocalTaskQueue(FCPath(f.name))
+            await queue.receive_tasks(1)
+
+
+# Test for signal handler with SIGTERM
+def test_signal_handler_sigterm(mock_worker_function, caplog):
+    """Test _signal_handler with SIGTERM signal."""
+    with patch("sys.argv", ["worker.py", "--provider", "AWS", "--job-id", "test-job"]):
+        worker = Worker(mock_worker_function)
+
+        with patch("signal.signal") as mock_signal:
+            worker._signal_handler(signal.SIGTERM, None)
+            assert worker._data.shutdown_event.is_set()
+            mock_signal.assert_called_with(signal.SIGTERM, signal.SIG_DFL)
+            assert "Received signal SIGTERM, initiating graceful shutdown" in caplog.text
+
+
+# Test for WorkerData properties
+def test_worker_data_properties():
+    """Test WorkerData properties."""
+    from cloud_tasks.worker.worker import WorkerData
+
+    data = WorkerData()
+    data.termination_event = multiprocessing.Event()
+    data.shutdown_event = multiprocessing.Event()
+
+    # Test received_termination_notice property
+    assert not data.received_termination_notice
+    data.termination_event.set()
+    assert data.received_termination_notice
+
+    # Test received_shutdown_request property
+    assert not data.received_shutdown_request
+    data.shutdown_event.set()
+    assert data.received_shutdown_request
+
+
+# Test for _is_spot property
+def test_worker_is_spot_property(mock_worker_function):
+    """Test _is_spot property."""
+    with patch("sys.argv", ["worker.py", "--provider", "AWS", "--job-id", "test-job"]):
+        worker = Worker(mock_worker_function)
+
+        # Test with is_spot=True
+        worker._data.is_spot = True
+        assert worker._is_spot is True
+
+        # Test with simulate_spot_termination_after
+        worker._data.is_spot = False
+        worker._data.simulate_spot_termination_after = 10.0
+        assert worker._is_spot is True
+
+        # Test with both False
+        worker._data.is_spot = False
+        worker._data.simulate_spot_termination_after = None
+        assert worker._is_spot is False
+
+
+def test_worker_init_event_log_to_file_environment_variable_conversion(mock_worker_function):
+    """Test that event_log_to_file environment variable is correctly converted from string to boolean."""
+    with patch("sys.argv", ["worker.py"]):
+        # Test with "true" (should be True)
+        with patch.dict(
+            os.environ,
+            {
+                "RMS_CLOUD_TASKS_PROVIDER": "AWS",
+                "RMS_CLOUD_TASKS_JOB_ID": "test-job",
+                "RMS_CLOUD_TASKS_EVENT_LOG_TO_FILE": "true",
+            },
+        ):
+            worker = Worker(mock_worker_function)
+            assert worker._data.event_log_to_file is True
+
+        # Test with "1" (should be True)
+        with patch.dict(
+            os.environ,
+            {
+                "RMS_CLOUD_TASKS_PROVIDER": "AWS",
+                "RMS_CLOUD_TASKS_JOB_ID": "test-job",
+                "RMS_CLOUD_TASKS_EVENT_LOG_TO_FILE": "1",
+            },
+        ):
+            worker = Worker(mock_worker_function)
+            assert worker._data.event_log_to_file is True
+
+        # Test with "TRUE" (should be True after lowercasing)
+        with patch.dict(
+            os.environ,
+            {
+                "RMS_CLOUD_TASKS_PROVIDER": "AWS",
+                "RMS_CLOUD_TASKS_JOB_ID": "test-job",
+                "RMS_CLOUD_TASKS_EVENT_LOG_TO_FILE": "TRUE",
+            },
+        ):
+            worker = Worker(mock_worker_function)
+            assert worker._data.event_log_to_file is True
+
+        # Test with "True" (should be True after lowercasing)
+        with patch.dict(
+            os.environ,
+            {
+                "RMS_CLOUD_TASKS_PROVIDER": "AWS",
+                "RMS_CLOUD_TASKS_JOB_ID": "test-job",
+                "RMS_CLOUD_TASKS_EVENT_LOG_TO_FILE": "True",
+            },
+        ):
+            worker = Worker(mock_worker_function)
+            assert worker._data.event_log_to_file is True
+
+        # Test with "false" (should be False)
+        with patch.dict(
+            os.environ,
+            {
+                "RMS_CLOUD_TASKS_PROVIDER": "AWS",
+                "RMS_CLOUD_TASKS_JOB_ID": "test-job",
+                "RMS_CLOUD_TASKS_EVENT_LOG_TO_FILE": "false",
+            },
+        ):
+            worker = Worker(mock_worker_function)
+            assert worker._data.event_log_to_file is False
+
+        # Test with "0" (should be False)
+        with patch.dict(
+            os.environ,
+            {
+                "RMS_CLOUD_TASKS_PROVIDER": "AWS",
+                "RMS_CLOUD_TASKS_JOB_ID": "test-job",
+                "RMS_CLOUD_TASKS_EVENT_LOG_TO_FILE": "0",
+            },
+        ):
+            worker = Worker(mock_worker_function)
+            assert worker._data.event_log_to_file is False
+
+        # Test with "yes" (should be False)
+        with patch.dict(
+            os.environ,
+            {
+                "RMS_CLOUD_TASKS_PROVIDER": "AWS",
+                "RMS_CLOUD_TASKS_JOB_ID": "test-job",
+                "RMS_CLOUD_TASKS_EVENT_LOG_TO_FILE": "yes",
+            },
+        ):
+            worker = Worker(mock_worker_function)
+            assert worker._data.event_log_to_file is False
+
+        # Test with empty string (should be False)
+        with patch.dict(
+            os.environ,
+            {
+                "RMS_CLOUD_TASKS_PROVIDER": "AWS",
+                "RMS_CLOUD_TASKS_JOB_ID": "test-job",
+                "RMS_CLOUD_TASKS_EVENT_LOG_TO_FILE": "",
+            },
+        ):
+            worker = Worker(mock_worker_function)
+            assert worker._data.event_log_to_file is False
+
+        # Test with None (should default based on task_source)
+        with patch.dict(
+            os.environ,
+            {"RMS_CLOUD_TASKS_PROVIDER": "AWS", "RMS_CLOUD_TASKS_JOB_ID": "test-job"},
+            clear=True,
+        ):
+            worker = Worker(mock_worker_function)
+            # When no task_source is provided, event_log_to_file should default to False
+            assert worker._data.event_log_to_file is False

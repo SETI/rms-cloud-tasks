@@ -510,17 +510,6 @@ def test_config_get_provider_config(config_obj, provider):
     # Test unsupported provider
     with pytest.raises(pydantic.ValidationError):
         c.provider = "FOO"
-    # Test missing config
-    c.provider = provider
-    match provider:
-        case "AWS":
-            c.aws = None
-        case "GCP":
-            c.gcp = None
-        case "AZURE":
-            c.azure = None
-    with pytest.raises(ValueError):
-        c.get_provider_config()
 
 
 def test_get_provider_config_unsupported(config_obj):

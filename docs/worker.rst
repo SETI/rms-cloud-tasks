@@ -198,6 +198,14 @@ The resulting parsed arguments can be accessed from the ``WorkerData`` object us
 
    val = worker_data.args.my_arg
 
+Overriding the Task Source
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The task source can be overridden by passing a ``task_source`` argument to the ``Worker``
+constructor. This can be a string or ``pathlib.Path`` or ``filecache.FCPath``, or a
+function that returns an iterator of tasks. If a filename is passed, it will be treated as a
+path to a JSON or YAML file containing tasks. If a function is passed, it will be called
+repeatedly to yield the tasks.
 
 .. _worker_logging_events:
 

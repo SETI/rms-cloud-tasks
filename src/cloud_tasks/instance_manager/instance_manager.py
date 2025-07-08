@@ -321,11 +321,14 @@ class InstanceManager(ABC):
         self,
         *,
         instance_type: str,
-        boot_disk_size: int,  # GB
         startup_script: str,
         job_id: str,
         use_spot: bool,
         image_uri: str,
+        boot_disk_type: str,
+        boot_disk_size: int,  # GB
+        boot_disk_iops: Optional[int] = None,
+        boot_disk_throughput: Optional[int] = None,  # MB/s
         zone: Optional[str] = None,
     ) -> Tuple[str, str]:
         """

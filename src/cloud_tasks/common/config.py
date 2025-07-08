@@ -4,18 +4,18 @@ Configuration handling for the multi-cloud task processing system.
 
 import logging
 import os
-from typing import Any, Dict, Optional, List, Literal
+from typing import Annotated, Any, Dict, Optional, List, Literal, cast
 import yaml
 
 from filecache import FCPath
 from pydantic import (
     BaseModel,
     ConfigDict,
+    Field,
     NonNegativeFloat,
     NonNegativeInt,
     PositiveFloat,
     PositiveInt,
-    constr,
     model_validator,
 )
 
@@ -92,7 +92,7 @@ class RunConfig(BaseModel, validate_assignment=True):
 
     # Memory and disk are in GB
     architecture: Optional[Literal["x86_64", "arm64", "X86_64", "ARM64"]] = None
-    cpu_family: Optional[constr(min_length=1)] = None
+    cpu_family: Optional[Annotated[str, Field(min_length=1)]] = None
 
     min_cpu_rank: Optional[NonNegativeInt] = None
     max_cpu_rank: Optional[NonNegativeInt] = None
@@ -229,12 +229,14 @@ class ProviderConfig(RunConfig, validate_assignment=True):
 
     model_config = ConfigDict(extra="forbid")
 
-    job_id: Optional[constr(min_length=1, max_length=24, pattern=r"^[a-z][-a-z0-9]{0,23}$")] = None
-    queue_name: Optional[constr(min_length=1, max_length=24, pattern=r"^[a-z][-a-z0-9]{0,23}$")] = (
-        None
-    )
-    region: Optional[constr(min_length=1)] = None
-    zone: Optional[constr(min_length=1)] = None
+    job_id: Optional[
+        Annotated[str, Field(min_length=1, max_length=24, pattern=r"^[a-z][-a-z0-9]{0,23}$")]
+    ] = None
+    queue_name: Optional[
+        Annotated[str, Field(min_length=1, max_length=24, pattern=r"^[a-z][-a-z0-9]{0,23}$")]
+    ] = None
+    region: Optional[Annotated[str, Field(min_length=1)]] = None
+    zone: Optional[Annotated[str, Field(min_length=1)]] = None
     exactly_once_queue: Optional[bool] = None
 
 
@@ -243,8 +245,8 @@ class AWSConfig(ProviderConfig, validate_assignment=True):
 
     model_config = ConfigDict(extra="forbid")
 
-    access_key: Optional[constr(min_length=1)] = None
-    secret_key: Optional[constr(min_length=1)] = None
+    access_key: Optional[Annotated[str, Field(min_length=1)]] = None
+    secret_key: Optional[Annotated[str, Field(min_length=1)]] = None
 
 
 class GCPConfig(ProviderConfig, validate_assignment=True):
@@ -252,9 +254,9 @@ class GCPConfig(ProviderConfig, validate_assignment=True):
 
     model_config = ConfigDict(extra="forbid")
 
-    project_id: Optional[constr(min_length=1)] = None
-    credentials_file: Optional[constr(min_length=1)] = None
-    service_account: Optional[constr(min_length=1)] = None
+    project_id: Optional[Annotated[str, Field(min_length=1)]] = None
+    credentials_file: Optional[Annotated[str, Field(min_length=1)]] = None
+    service_account: Optional[Annotated[str, Field(min_length=1)]] = None
 
 
 class AzureConfig(ProviderConfig, validate_assignment=True):
@@ -282,10 +284,10 @@ class Config(BaseModel, validate_assignment=True):
     model_config = ConfigDict(extra="forbid")
 
     provider: Optional[Literal["aws", "gcp", "azure", "AWS", "GCP", "AZURE"]] = None
-    aws: Optional[AWSConfig] = None
-    gcp: Optional[GCPConfig] = None
-    azure: Optional[AzureConfig] = None
-    run: Optional[RunConfig] = None
+    aws: AWSConfig = AWSConfig()
+    gcp: GCPConfig = GCPConfig()
+    azure: AzureConfig = AzureConfig()
+    run: RunConfig = RunConfig()
 
     def overload_from_cli(self, cli_args: Optional[Dict[str, Any]] = None) -> None:
         """Overload Config object with command line arguments.
@@ -294,7 +296,9 @@ class Config(BaseModel, validate_assignment=True):
             cli_args: Command line arguments as a dictionary
         """
         if self.provider is not None:
-            self.provider = self.provider.upper()
+            self.provider = cast(
+                Literal["aws", "gcp", "azure", "AWS", "GCP", "AZURE"], self.provider.upper()
+            )
 
         # Override loaded file and/or defaults with command line arguments
         if cli_args is not None:
@@ -314,7 +318,9 @@ class Config(BaseModel, validate_assignment=True):
                         )
                     setattr(self, attr_name, cli_args[attr_name])
             if self.provider is not None:
-                self.provider = self.provider.upper()
+                self.provider = cast(
+                    Literal["aws", "gcp", "azure", "AWS", "GCP", "AZURE"], self.provider.upper()
+                )
             for attr_name in vars(self.run):
                 if attr_name in cli_args and cli_args[attr_name] is not None:
                     val = getattr(self.run, attr_name)
@@ -446,7 +452,9 @@ class Config(BaseModel, validate_assignment=True):
 
         # Fix case
         if self.run.architecture is not None:
-            self.run.architecture = self.run.architecture.upper()
+            self.run.architecture = cast(
+                Literal["x86_64", "arm64", "X86_64", "ARM64"], self.run.architecture.upper()
+            )
         if self.run.cpu_family is not None:
             self.run.cpu_family = self.run.cpu_family.upper()
         if self.run.boot_disk_types is not None:
@@ -476,6 +484,7 @@ class Config(BaseModel, validate_assignment=True):
         if provider_name is None:
             raise ValueError("Provider name not provided or detected in config")
 
+        provider_config: ProviderConfig | None = None
         match provider_name:
             case "AWS":
                 provider_config = self.aws
@@ -537,7 +546,9 @@ def load_config(config_file: Optional[str] = None) -> Config:
     config = Config(**config_dict)
 
     if config.provider is not None:
-        config.provider = config.provider.upper()
+        config.provider = cast(
+            Literal["aws", "gcp", "azure", "AWS", "GCP", "AZURE"], config.provider.upper()
+        )
 
     # If the startup script filename is provided in the config file, then any relative paths
     # are relative to the config file location.
