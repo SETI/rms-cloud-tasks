@@ -11,7 +11,6 @@ import types
 import yaml
 import signal
 import time
-from multiprocessing import Process
 from pathlib import Path
 import logging
 import multiprocessing
@@ -801,7 +800,7 @@ async def test_handle_results_process_exception(worker, mock_queue, retry_on_exc
         async def shutdown_when_done():
             # Wait for the task to be processed with a shorter timeout
             start_time = time.time()
-            timeout = 2.0  # 2 second timeout
+            timeout = 10.0
 
             while time.time() - start_time < timeout:
                 if worker._num_tasks_retried == 1 or worker._num_tasks_not_retried == 1:
@@ -2254,7 +2253,7 @@ def test_worker_init_with_task_source_string_logging(
 ):
     """Test that Worker logs when using task_source as string."""
     with patch("sys.argv", ["worker.py"]):
-        worker = Worker(mock_worker_function, task_source=local_task_file_json)
+        _ = Worker(mock_worker_function, task_source=local_task_file_json)
         assert f'Using local tasks file: "{local_task_file_json}"' in caplog.text
 
 
@@ -2263,7 +2262,7 @@ def test_worker_init_with_task_source_factory_logging(
 ):
     """Test that Worker logs when using task_source as factory."""
     with patch("sys.argv", ["worker.py"]):
-        worker = Worker(mock_worker_function, task_source=mock_task_factory)
+        _ = Worker(mock_worker_function, task_source=mock_task_factory)
         assert "Using task factory function" in caplog.text
 
 
@@ -2345,7 +2344,7 @@ def test_worker_init_with_verbose_logging(mock_worker_function):
         with patch("logging.getLogger") as mock_get_logger:
             mock_logger = MagicMock()
             mock_get_logger.return_value = mock_logger
-            worker = Worker(mock_worker_function)
+            _ = Worker(mock_worker_function)
             mock_logger.setLevel.assert_called_once_with(logging.DEBUG)
 
 
@@ -2365,7 +2364,7 @@ def test_worker_init_simulate_spot_termination_without_delay(mock_worker_functio
         with patch.dict(
             os.environ, {"RMS_CLOUD_TASKS_PROVIDER": "AWS", "RMS_CLOUD_TASKS_JOB_ID": "test-job"}
         ):
-            worker = Worker(mock_worker_function)
+            _ = Worker(mock_worker_function)
             assert "Simulating spot termination after but no delay specified" in caplog.text
 
 

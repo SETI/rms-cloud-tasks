@@ -4,8 +4,8 @@ Example worker adapted to use the cloud task adapter with multiprocessing.
 This demonstrates how to use the cloud_tasks module to adapt any
 worker code to run in a cloud environment with true parallel processing.
 
-This version allows variable delays and probabilistic exceptions, timeouts, and
-premature exits.
+This version allow variable delays and uses a task factory function to generate
+tasks instead of an external task file or queue.
 """
 
 import asyncio
@@ -15,7 +15,7 @@ import random
 import socket
 import sys
 import time
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Iterable, Tuple
 
 # Import the cloud task adapter
 from cloud_tasks.worker import Worker, WorkerData
@@ -58,18 +58,6 @@ def process_task(
             delay = random.uniform(0, abs(delay))
         time.sleep(delay)
 
-    exception_prob = float(os.getenv("ADDITION_EXCEPTION_PROBABILITY", 0))
-    if random.random() < exception_prob:
-        _ = 1 / 0
-
-    timeout_prob = float(os.getenv("ADDITION_TIMEOUT_PROBABILITY", 0))
-    if random.random() < timeout_prob:
-        time.sleep(100000)
-
-    exit_prob = float(os.getenv("ADDITION_EXIT_PROBABILITY", 0))
-    if random.random() < exit_prob:
-        sys.exit(2)
-
     output_dir = FCPath(os.getenv("ADDITION_OUTPUT_DIR", "results"))
     output_file = output_dir / f"{task_id}.txt"
     with output_file.open(mode="w") as f:
@@ -85,8 +73,18 @@ def process_task(
     return False, str(output_file)
 
 
+def task_factory() -> Iterable[Dict[str, Any]]:
+    """Generate a series of tasks."""
+    max_tasks = int(os.getenv("ADDITION_MAX_TASKS", "10000"))
+    for task_num in range(max_tasks):
+        yield {
+            "task_id": f"factory-task-{task_num:06d}",
+            "data": {"num1": random.randint(0, 1000000), "num2": random.randint(0, 1000000)},
+        }
+
+
 async def main():
-    worker = Worker(process_task, args=sys.argv[1:])
+    worker = Worker(process_task, args=sys.argv[1:], task_source=task_factory)
     await worker.start()
 
 

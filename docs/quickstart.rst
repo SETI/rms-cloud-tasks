@@ -153,6 +153,10 @@ tasks to run:
 For full details about how the task manager is operating, you can specify the
 ``--verbose`` option. Many other :ref:`worker_environment_variables` are available.
 
+To abort the task manager before all tasks are complete, type ``Ctrl-C`` **once**. This
+will give the current tasks a chance to complete cleanly, and then the task manager will
+exit.
+
 If you are only going to run the worker locally, you can stop reading here, although
 you may be interested in :ref:`quickstart_monitor` below.
 
@@ -160,7 +164,7 @@ you may be interested in :ref:`quickstart_monitor` below.
 Step 4: Create a Startup Script
 -------------------------------
 
-The startup script it provided to the ``cloud_tasks`` program and will be run as root on
+The startup script is provided to the ``cloud_tasks`` program and will be run as root on
 each cloud compute instance that is started to process tasks (it will not be run on a
 local workstation, as the ``cloud_tasks`` CLI is not used to manage local processes). At a
 minimum, the startup script should install your project and its dependencies and then run

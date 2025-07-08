@@ -8,7 +8,6 @@ It uses multiprocessing to achieve true parallelism across multiple CPU cores.
 import argparse
 import asyncio
 import datetime
-from filecache import FCPath
 import json
 import json_stream
 import logging
@@ -56,16 +55,20 @@ def _parse_args(
 
     parser.add_argument(
         "--provider",
-        help="Cloud provider (AWS, GCP, or AZURE); used primarily to test for instance "
-        "termination notices [overrides $RMS_CLOUD_TASKS_PROVIDER]",
+        help="Cloud provider (AWS or GCP); used to test for instance "
+        "termination notices and to know which cloud-based queueing service to use "
+        "[overrides $RMS_CLOUD_TASKS_PROVIDER]",
     )
     parser.add_argument(
         "--project-id", help="Project ID (required for GCP) [overrides $RMS_CLOUD_TASKS_PROJECT_ID]"
     )
     parser.add_argument(
         "--task-file",
-        help="Path to JSON file containing tasks to process; if specified, cloud-based task "
-        "queues are ignored",
+        help="The name of a local JSON or YAML file containing tasks to process; if not "
+        "specified, the worker will pull tasks from the cloud provider queue. "
+        "The filename can also be a cloud storage path like ``gs://bucket/file``, "
+        "``s3://bucket/file``, or ``https://path/to/file``. If not specified, the worker "
+        "will pull tasks from the cloud provider queue.",
     )
     parser.add_argument(
         "--job-id",
@@ -93,7 +96,7 @@ def _parse_args(
     )
     parser.add_argument(
         "--event-log-file",
-        help='File to write events to if --event-log-to-file is specified (defaults to "events.log")'
+        help='File to write events to if --event-log-to-file is specified (defaults to "events.log") '
         "[overrides $RMS_CLOUD_TASKS_EVENT_LOG_FILE]",
     )
     parser.add_argument(
@@ -122,7 +125,7 @@ def _parse_args(
         "--no-event-log-to-queue",
         action="store_false",
         dest="event_log_to_queue",
-        help="If specified, events will not be written to a cloud-based queue (default) "
+        help="If specified, events will not be written to a cloud-based queue "
         "[overrides $RMS_CLOUD_TASKS_EVENT_LOG_TO_QUEUE]",
     )
     parser.add_argument(
@@ -172,14 +175,14 @@ def _parse_args(
     parser.add_argument(
         "--price",
         type=float,
-        help="Price per hour on this computer; optional information for the worker processes "
+        help="Price in USD/hour on this computer; optional information for the worker processes "
         "[overrides $RMS_CLOUD_TASKS_INSTANCE_PRICE]",
     )
     parser.add_argument(
         "--num-simultaneous-tasks",
         type=int,
-        help="Number of tasks that can be run simutaneously; used to create worker processes "
-        "[overrides $RMS_CLOUD_TASKS_NUM_TASKS_PER_INSTANCE]",
+        help="Number of concurrent tasks to process (defaults to number of vCPUs, or 1 if not "
+        "specified) [overrides $RMS_CLOUD_TASKS_NUM_TASKS_PER_INSTANCE]",
     )
     parser.add_argument(
         "--max-runtime",
@@ -191,8 +194,9 @@ def _parse_args(
     parser.add_argument(
         "--shutdown-grace-period",
         type=int,
-        help="How long to wait in seconds for processes to gracefully finish after shutdown is "
-        "requested [overrides $RMS_CLOUD_TASKS_SHUTDOWN_GRACE_PERIOD] (default 30 seconds)",
+        help="How long to wait in seconds for processes to gracefully finish after shutdown (SIGINT, "
+        "SIGTERM, or Ctrl-C) is requested [overrides $RMS_CLOUD_TASKS_SHUTDOWN_GRACE_PERIOD] "
+        "(default 30 seconds)",
     )
     parser.add_argument(
         "--tasks-to-skip",
@@ -208,35 +212,31 @@ def _parse_args(
         "--retry-on-exit",
         action="store_true",
         default=None,
-        help="If specified, tasks will be retried if the user function exits "
-        "prematurely [overrides $RMS_CLOUD_TASKS_RETRY_ON_EXIT]",
+        help="If specified, retry tasks on premature exit [overrides $RMS_CLOUD_TASKS_RETRY_ON_EXIT]",
     )
     parser.add_argument(
         "--no-retry-on-exit",
         action="store_false",
         dest="retry_on_exit",
-        help="If specified, tasks will not be retried if the user function exits "
-        "prematurely (default) [overrides $RMS_CLOUD_TASKS_RETRY_ON_EXIT]",
+        help="If specified, do not retry tasks on premature exit (default) [overrides $RMS_CLOUD_TASKS_RETRY_ON_EXIT]",
     )
     parser.add_argument(
         "--retry-on-exception",
         action="store_true",
         default=None,
-        help="If specified, tasks will be retried if the user function raises an unhandled "
-        "exception [overrides $RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION]",
+        help="If specified, retry tasks on unhandled exception [overrides $RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION]",
     )
     parser.add_argument(
         "--no-retry-on-exception",
         action="store_false",
         dest="retry_on_exception",
-        help="If specified, tasks will not be retried if the user function raises an unhandled "
-        "exception (default) [overrides $RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION]",
+        help="If specified, do not retry tasks on unhandled exception (default) [overrides $RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION]",
     )
     parser.add_argument(
         "--retry-on-timeout",
         action="store_true",
         default=None,
-        help="If specified, tasks will be retried if they exceed the maximum runtime specified"
+        help="If specified, tasks will be retried if they exceed the maximum runtime specified "
         "by --max-runtime [overrides $RMS_CLOUD_TASKS_RETRY_ON_TIMEOUT]",
     )
     parser.add_argument(
@@ -263,7 +263,7 @@ def _parse_args(
         "-v",
         "--verbose",
         action="store_true",
-        help="If specified, set the log level to DEBUG",
+        help="Set the log level to DEBUG",
     )
 
     return parser.parse_args(args)
@@ -480,6 +480,7 @@ class Worker:
                 logger.info("  Using task factory function")
             else:
                 logger.info(f'  Using local tasks file: "{self._task_source}"')
+        self._task_source_is_empty = False
 
         # Get number of tasks to skip from args or environment variable
         self._tasks_to_skip = parsed_args.tasks_to_skip
@@ -1122,7 +1123,19 @@ class Worker:
         """Wait for the shutdown event and then clean up."""
         # Wait until shutdown is requested
         while self._running and not self._data.received_shutdown_request:
-            if self._data.received_termination_notice and len(self._processes) == 0:
+            if self._task_source_is_empty:
+                if len(self._processes) == 0:
+                    logger.info("Local task source is empty and all processes complete; exiting")
+                    self._running = False
+                    return
+                logger.info(
+                    f"Local task source is empty; waiting for {len(self._processes)} processes to "
+                    "complete"
+                )
+                await asyncio.sleep(interval)
+                continue
+
+            if len(self._processes) == 0 and self._data.received_termination_notice:
                 logger.info("Termination event set and all processes complete; exiting")
                 self._running = False
                 return
@@ -1327,6 +1340,9 @@ class Worker:
                                 f"{len(self._processes)}"
                             )
                 else:
+                    # If no tasks and using a local task file or function, we're done
+                    if self._task_source is not None:
+                        self._task_source_is_empty = True
                     # If no tasks, sleep to avoid hammering the queue
                     await asyncio.sleep(1)
 
