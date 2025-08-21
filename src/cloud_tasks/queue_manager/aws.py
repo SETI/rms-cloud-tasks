@@ -436,3 +436,44 @@ class AWSSQSQueue(QueueManager):
         except Exception as e:
             self._logger.error(f"Error deleting queue: {str(e)}")
             raise
+
+    def get_max_visibility_timeout(self) -> int:
+        """Get the maximum visibility timeout allowed by AWS SQS.
+
+        Returns:
+            Maximum visibility timeout in seconds (43200 - 12 hours)
+        """
+        return 43200  # AWS SQS maximum visibility timeout
+
+    async def extend_message_visibility(
+        self, message_handle: Any, timeout: Optional[int] = None
+    ) -> None:
+        """Extend the visibility timeout for a message.
+
+        Args:
+            message_handle: Receipt handle from receive_tasks
+            timeout: New visibility timeout in seconds. If None, extends by the original timeout.
+        """
+        if timeout is None:
+            # Use a default extension time
+            timeout = 30
+
+        self._logger.debug(
+            f"Extending visibility timeout for message with ack_id '{message_handle}' "
+            f"to {timeout} seconds on queue '{self._queue_name}'"
+        )
+
+        self._create_queue()
+
+        # Get the event loop
+        loop = asyncio.get_event_loop()
+
+        # Run the blocking visibility change operation in a thread pool
+        await loop.run_in_executor(
+            None,
+            lambda: self._sqs.change_message_visibility(
+                QueueUrl=self._queue_url,
+                ReceiptHandle=message_handle,
+                VisibilityTimeout=timeout,
+            ),
+        )

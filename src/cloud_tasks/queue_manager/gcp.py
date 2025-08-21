@@ -53,7 +53,8 @@ class GCPPubSubQueue(QueueManager):
                 if a message is not completed within this time, it will be made available again for
                 processing. If None, and the queue already exists, the existing visibility timeout
                 will be used. If None and the queue does not exist, the default visibility timeout
-                of 30 seconds will be used.
+                of 30 seconds will be used. If larger than the maximum visibility timeout
+                of 600 seconds, the maximum visibility timeout will be used.
             exactly_once: If True, messages are guaranteed to be delivered exactly once to any
                 recipient. If False, messages will be delivered at least once, but could be
                 delivered multiple times. If None, use the value in the configuration.
@@ -77,7 +78,10 @@ class GCPPubSubQueue(QueueManager):
 
         self._logger = logging.getLogger(__name__)
 
-        self._visibility_timeout = visibility_timeout
+        if visibility_timeout is None:
+            self._visibility_timeout = None
+        else:
+            self._visibility_timeout = min(visibility_timeout, self._MAXIMUM_VISIBILITY_TIMEOUT)
 
         if "project_id" in kwargs and kwargs["project_id"] is not None:
             self._project_id = kwargs["project_id"]
@@ -732,6 +736,53 @@ class GCPPubSubQueue(QueueManager):
 
         self._logger.debug(f"Queue depth estimated at {total_messages} messages")
         return total_messages
+
+    def get_max_visibility_timeout(self) -> int:
+        """Get the maximum visibility timeout allowed by GCP Pub/Sub.
+
+        Returns:
+            Maximum visibility timeout in seconds (600)
+        """
+        return self._MAXIMUM_VISIBILITY_TIMEOUT
+
+    async def extend_message_visibility(
+        self, message_handle: Any, timeout: Optional[int] = None
+    ) -> None:
+        """Extend the visibility timeout for a message.
+
+        Args:
+            message_handle: Message object from receive_messages or "ack_id" from receive_tasks
+            timeout: New visibility timeout in seconds. If None, extends by the original timeout.
+        """
+        if timeout is None:
+            # Use the current visibility timeout setting
+            timeout = self._visibility_timeout or self._DEFAULT_VISIBILITY_TIMEOUT
+
+        if self._exactly_once:
+            # For exactly-once delivery, modify the ack deadline
+            self._logger.debug(
+                f"Extending visibility timeout for message {message_handle.message_id} "
+                f"to {timeout} seconds"
+            )
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, lambda: message_handle.modify_ack_deadline(timeout))
+        else:
+            # For pull-based delivery, modify the ack deadline
+            self._logger.debug(
+                f"Extending visibility timeout for message with ack_id {message_handle} "
+                f"to {timeout} seconds"
+            )
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(
+                None,
+                lambda: self._subscriber.modify_ack_deadline(
+                    request={
+                        "subscription": self._subscription_path,
+                        "ack_ids": [message_handle],
+                        "ack_deadline_seconds": timeout,
+                    }
+                ),
+            )
 
     async def purge_queue(self) -> None:
         """Remove all messages from the queue by deleting the subscription."""

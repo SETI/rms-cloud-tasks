@@ -77,3 +77,24 @@ class QueueManager(ABC):
     async def delete_queue(self) -> None:
         """Delete the queue and all associated resources."""
         pass  # pragma: no cover
+
+    @abstractmethod
+    def get_max_visibility_timeout(self) -> int:
+        """Get the maximum visibility timeout allowed by this queue provider.
+
+        Returns:
+            Maximum visibility timeout in seconds
+        """
+        pass  # pragma: no cover
+
+    @abstractmethod
+    async def extend_message_visibility(
+        self, message_handle: Any, timeout: Optional[int] = None
+    ) -> None:
+        """Extend the visibility timeout for a message.
+
+        Args:
+            message_handle: Message object from receive_messages or "ack_id" from receive_tasks
+            timeout: New visibility timeout in seconds. If None, extends by the original timeout.
+        """
+        pass  # pragma: no cover
