@@ -1703,7 +1703,7 @@ def add_instance_pool_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--max-runtime",
         type=int,
-        help="Maximum seconds a single worker job is allowed to run (default: 600)",
+        help="Maximum seconds a single worker job is allowed to run (default: 3600)",
     )
     parser.add_argument(
         "--retry-on-exit",

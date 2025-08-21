@@ -189,7 +189,7 @@ def _parse_args(
         type=int,
         help="Maximum allowed runtime in seconds; used to determine queue visibility "
         "timeout and to kill tasks that are running too long [overrides "
-        "$RMS_CLOUD_TASKS_MAX_RUNTIME] (default 600 seconds)",
+        "$RMS_CLOUD_TASKS_MAX_RUNTIME] (default 3600 seconds)",
     )
     parser.add_argument(
         "--shutdown-grace-period",
