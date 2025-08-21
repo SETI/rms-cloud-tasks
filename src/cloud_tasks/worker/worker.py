@@ -189,7 +189,7 @@ def _parse_args(
         type=int,
         help="Maximum allowed runtime in seconds; used to determine queue visibility "
         "timeout and to kill tasks that are running too long [overrides "
-        "$RMS_CLOUD_TASKS_MAX_RUNTIME] (default 600 seconds)",
+        "$RMS_CLOUD_TASKS_MAX_RUNTIME] (default 3600 seconds)",
     )
     parser.add_argument(
         "--shutdown-grace-period",
@@ -363,6 +363,16 @@ class LocalTaskQueue:
         # For local queue, we don't need to do anything
         pass
 
+    async def extend_message_visibility(self, ack_id: str, timeout: Optional[int] = None) -> None:
+        """Extend the visibility timeout for a message.
+
+        Args:
+            ack_id: The acknowledgement ID of the task.
+            timeout: New visibility timeout in seconds (ignored for local queues).
+        """
+        # For local queue, we don't need to do anything
+        pass
+
 
 class WorkerData:
     """Class containing properties that can be safely inherited by child processes."""
@@ -391,7 +401,7 @@ class WorkerData:
         self.is_spot: bool = False  #: Whether the instance is a spot instance
         self.price_per_hour: float | None = None  #: The price per hour for the instance
         self.num_simultaneous_tasks: int = 1  #: The number of simultaneous tasks to process
-        self.max_runtime: int = 600  #: The maximum runtime for a task in seconds
+        self.max_runtime: int = 3600  #: The maximum runtime for a task in seconds (1 hour)
         #: The time in seconds to wait for tasks to complete during shutdown
         self.shutdown_grace_period: int = 30
         self.retry_on_exit: bool = False  #: Whether to retry tasks on premature exit
@@ -667,7 +677,7 @@ class Worker:
         if self._data.max_runtime is None:
             self._data.max_runtime = os.getenv("RMS_CLOUD_TASKS_MAX_RUNTIME")
         if self._data.max_runtime is None:
-            self._data.max_runtime = 600  # Default to 10 minutes
+            self._data.max_runtime = 3600  # Default to 1 hour
         else:
             self._data.max_runtime = int(self._data.max_runtime)
         logger.info(f"  Maximum runtime: {self._data.max_runtime} seconds")
@@ -936,11 +946,10 @@ class Worker:
                     provider=self._data.provider,
                     queue_name=self._data.queue_name,
                     project_id=self._data.project_id,
-                    visibility_timeout=self._data.max_runtime
-                    + 5,  # Add 5 seconds to account for the
-                    # time it takes to notice an event is over time, kill it, and fail the task.
-                    # We only want the message to timeout if something goes really wrong with the
-                    # task manager.
+                    visibility_timeout=self._data.max_runtime + 10,
+                    # Add 10 seconds to account for the time it takes to notice an event
+                    # is over time, kill it, and fail the task. We only want the message
+                    # to timeout if something goes really wrong with the task manager.
                     exactly_once=self._data.exactly_once_queue,
                 )
             except Exception as e:
@@ -963,6 +972,10 @@ class Worker:
         # Start the termination check loop
         if self._is_spot:
             self._task_list.append(asyncio.create_task(self._check_termination_loop()))
+
+        # Start the visibility renewal worker for cloud queues only
+        if not self._task_source:
+            self._task_list.append(asyncio.create_task(self._visibility_renewal_worker()))
 
         # Process tasks until shutdown
         await self._wait_for_shutdown()
@@ -1334,6 +1347,7 @@ class Worker:
                                 "worker_id": worker_id,
                                 "process": p,
                                 "start_time": time.time(),
+                                "last_renewal_time": time.time(),
                                 "task": task,
                             }
                             logger.info(f"Started single-task worker #{worker_id} (PID {p.pid})")
@@ -1435,6 +1449,80 @@ class Worker:
                     del self._processes[worker_id]
 
             await asyncio.sleep(1)  # Check every second
+
+    async def _visibility_renewal_worker(self) -> None:
+        """Background worker that renews visibility timeouts for long-running tasks."""
+        # Calculate renewal interval based on max visibility timeout
+        max_visibility = self._task_queue.get_max_visibility_timeout()
+        if max_visibility is None:
+            logger.info("No max visibility timeout found, skipping visibility renewal worker")
+            return
+
+        renewal_check_interval = max(max_visibility // 10, 10)
+
+        when_to_renew = max_visibility // 2  # Renew half way through the visibility timeout
+
+        logger.info(f"Starting visibility renewal worker with {renewal_check_interval}s interval")
+
+        last_renewal_time = time.time()
+
+        while self._running:
+            try:
+                # Only perform renewals every renewal_interval seconds, but check more often
+                # so that we can notice when _running is set to False.
+                current_time = time.time()
+                if current_time - last_renewal_time >= renewal_check_interval:
+                    renewal_needed = []
+
+                    async with self._process_ops_semaphore:
+                        for worker_id, process_data in self._processes.items():
+                            time_since_last_renewal = (
+                                current_time - process_data["last_renewal_time"]
+                            )
+
+                            # Renew if we haven't renewed recently and the task is still running
+                            if (
+                                time_since_last_renewal >= when_to_renew
+                                and process_data["process"].is_alive()
+                            ):
+                                renewal_needed.append((worker_id, process_data))
+
+                    # Renew visibility timeouts
+                    for worker_id, process_data in renewal_needed:
+                        try:
+                            time_left = int(
+                                self._data.max_runtime - (current_time - process_data["start_time"])
+                            )
+                            if time_left <= 0:
+                                # Task has exceeded max runtime, don't renew
+                                continue
+
+                            # extend_message_visibility will automatically clip
+                            # to the maximum value allowed
+                            await self._task_queue.extend_message_visibility(
+                                process_data["task"]["ack_id"], time_left + 10
+                            )
+                            process_data["last_renewal_time"] = current_time
+                            logger.debug(
+                                f"Renewed visibility timeout for worker #{worker_id} "
+                                f"task {process_data['task']['task_id']} for {time_left + 10}s"
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                f"Failed to renew visibility timeout for worker #{worker_id} "
+                                f"task {process_data['task']['task_id']} for {time_left + 10}s: {e}"
+                            )
+                            # Continue with other renewals - we'll have more opportunities
+                            # to try this one again
+
+                    # Reset last_renewal_time after performing renewals
+                    last_renewal_time = current_time
+
+                await asyncio.sleep(1)
+
+            except Exception as e:
+                logger.error(f"Error in visibility renewal worker: {e}", exc_info=True)
+                await asyncio.sleep(1)
 
     @staticmethod
     def _worker_process_main(

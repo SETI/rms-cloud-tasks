@@ -17,6 +17,12 @@ from ..common.config import AWSConfig
 class AWSSQSQueue(QueueManager):
     """AWS SQS implementation of the TaskQueue interface."""
 
+    # A message not acknowledged within this time will be made available again for processing
+    _DEFAULT_VISIBILITY_TIMEOUT = 60
+
+    # Maximum visibility timeout allowed by AWS SQS
+    _MAXIMUM_VISIBILITY_TIMEOUT = 43200
+
     def __init__(
         self,
         aws_config: Optional[AWSConfig] = None,
@@ -87,7 +93,7 @@ class AWSSQSQueue(QueueManager):
             response = self._sqs.create_queue(
                 QueueName=self._queue_name,
                 Attributes={
-                    "VisibilityTimeout": "30",  # TODO Default visibility timeout in seconds
+                    "VisibilityTimeout": str(self._DEFAULT_VISIBILITY_TIMEOUT),
                     "MessageRetentionPeriod": "1209600",  # 14 days (maximum)
                 },
             )
@@ -237,7 +243,7 @@ class AWSSQSQueue(QueueManager):
     async def receive_tasks(
         self,
         max_count: int = 1,
-        visibility_timeout: int = 30,
+        visibility_timeout: int = 60,
     ) -> List[Dict[str, Any]]:
         """
         Receive tasks from the SQS queue.
@@ -436,3 +442,44 @@ class AWSSQSQueue(QueueManager):
         except Exception as e:
             self._logger.error(f"Error deleting queue: {str(e)}")
             raise
+
+    def get_max_visibility_timeout(self) -> int:
+        """Get the maximum visibility timeout allowed by AWS SQS.
+
+        Returns:
+            Maximum visibility timeout in seconds (43200 - 12 hours)
+        """
+        return 43200  # AWS SQS maximum visibility timeout
+
+    async def extend_message_visibility(
+        self, message_handle: Any, timeout: Optional[int] = None
+    ) -> None:
+        """Extend the visibility timeout for a message.
+
+        Args:
+            message_handle: Receipt handle from receive_tasks
+            timeout: New visibility timeout in seconds. If None, extends by the original timeout.
+        """
+        if timeout is None:
+            # Use the default visibility timeout
+            timeout = self._DEFAULT_VISIBILITY_TIMEOUT
+
+        self._logger.debug(
+            f"Extending visibility timeout for message with ack_id '{message_handle}' "
+            f"to {timeout} seconds on queue '{self._queue_name}'"
+        )
+
+        self._create_queue()
+
+        # Get the event loop
+        loop = asyncio.get_event_loop()
+
+        # Run the blocking visibility change operation in a thread pool
+        await loop.run_in_executor(
+            None,
+            lambda: self._sqs.change_message_visibility(
+                QueueUrl=self._queue_url,
+                ReceiptHandle=message_handle,
+                VisibilityTimeout=timeout,
+            ),
+        )

@@ -197,7 +197,7 @@ def test_update_run_config_from_provider_config_defaults():
     assert c.run.max_instances == 10
     assert c.run.scaling_check_interval == 60
     assert c.run.instance_termination_delay == 60
-    assert c.run.max_runtime == 60
+    assert c.run.max_runtime == 3600
     assert c.run.retry_on_exit is None
     assert c.run.retry_on_exception is None
     assert c.run.retry_on_timeout is None

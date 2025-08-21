@@ -440,7 +440,7 @@ class Config(BaseModel, validate_assignment=True):
         if self.run.instance_termination_delay is None:
             self.run.instance_termination_delay = 60
         if self.run.max_runtime is None:
-            self.run.max_runtime = 60
+            self.run.max_runtime = 3600
         if self.run.architecture is None:
             self.run.architecture = "X86_64"
         if self.run.local_ssd_base_size is None:

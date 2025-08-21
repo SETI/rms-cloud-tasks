@@ -275,7 +275,7 @@ async def test_purge_queue(gcp_queue, mock_pubsub_client):
     assert args["name"] == gcp_queue._subscription_path
     assert args["topic"] == gcp_queue._topic_path
     assert args["message_retention_duration"]["seconds"] == 7 * 24 * 60 * 60
-    assert args["ack_deadline_seconds"] == 30
+    assert args["ack_deadline_seconds"] == 60
     assert args["enable_exactly_once_delivery"] == gcp_queue._exactly_once
 
 
@@ -321,7 +321,7 @@ async def test_initialization(mock_pubsub_client, gcp_config):
             "topic": "projects/test-project/topics/test-queue-topic",
             "message_retention_duration": {"seconds": 7 * 24 * 60 * 60},
             "enable_exactly_once_delivery": False,
-            "ack_deadline_seconds": 30,
+            "ack_deadline_seconds": 60,
         }
     )
 
@@ -463,7 +463,7 @@ async def test_purge_queue_recreation_error(gcp_queue, mock_pubsub_client):
     assert args["name"] == gcp_queue._subscription_path
     assert args["topic"] == gcp_queue._topic_path
     assert args["message_retention_duration"]["seconds"] == 7 * 24 * 60 * 60
-    assert args["ack_deadline_seconds"] == 30
+    assert args["ack_deadline_seconds"] == 60
 
 
 @pytest.mark.asyncio
