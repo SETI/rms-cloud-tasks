@@ -23,10 +23,10 @@ class GCPPubSubQueue(QueueManager):
     """Google Cloud Pub/Sub implementation of the QueueManager interface."""
 
     # A message not acknowledged within this time will be made available again for processing
-    _DEFAULT_VISIBILITY_TIMEOUT = 30
+    _DEFAULT_VISIBILITY_TIMEOUT = 60
 
     # Maximum visibility timeout allowed by GCP
-    _MAXIMUM_VISIBILITY_TIMEOUT = 600
+    _MAXIMUM_VISIBILITY_TIMEOUT = 30
 
     # Maximum number of messages that can be received at once allowed by GCP
     _MAXIMUM_MESSAGE_RECEIVE_COUNT = 1000
@@ -53,8 +53,8 @@ class GCPPubSubQueue(QueueManager):
                 if a message is not completed within this time, it will be made available again for
                 processing. If None, and the queue already exists, the existing visibility timeout
                 will be used. If None and the queue does not exist, the default visibility timeout
-                of 30 seconds will be used. If larger than the maximum visibility timeout
-                of 600 seconds, the maximum visibility timeout will be used.
+                of 60 seconds will be used. If larger than the maximum visibility timeout
+                of 600 seconds, the maximum possible visibility timeout will be used.
             exactly_once: If True, messages are guaranteed to be delivered exactly once to any
                 recipient. If False, messages will be delivered at least once, but could be
                 delivered multiple times. If None, use the value in the configuration.

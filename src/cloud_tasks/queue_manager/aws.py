@@ -17,6 +17,12 @@ from ..common.config import AWSConfig
 class AWSSQSQueue(QueueManager):
     """AWS SQS implementation of the TaskQueue interface."""
 
+    # A message not acknowledged within this time will be made available again for processing
+    _DEFAULT_VISIBILITY_TIMEOUT = 60
+
+    # Maximum visibility timeout allowed by AWS SQS
+    _MAXIMUM_VISIBILITY_TIMEOUT = 43200
+
     def __init__(
         self,
         aws_config: Optional[AWSConfig] = None,
@@ -87,7 +93,7 @@ class AWSSQSQueue(QueueManager):
             response = self._sqs.create_queue(
                 QueueName=self._queue_name,
                 Attributes={
-                    "VisibilityTimeout": "30",  # TODO Default visibility timeout in seconds
+                    "VisibilityTimeout": str(self._DEFAULT_VISIBILITY_TIMEOUT),
                     "MessageRetentionPeriod": "1209600",  # 14 days (maximum)
                 },
             )
@@ -237,7 +243,7 @@ class AWSSQSQueue(QueueManager):
     async def receive_tasks(
         self,
         max_count: int = 1,
-        visibility_timeout: int = 30,
+        visibility_timeout: int = 60,
     ) -> List[Dict[str, Any]]:
         """
         Receive tasks from the SQS queue.
@@ -455,8 +461,8 @@ class AWSSQSQueue(QueueManager):
             timeout: New visibility timeout in seconds. If None, extends by the original timeout.
         """
         if timeout is None:
-            # Use a default extension time
-            timeout = 30
+            # Use the default visibility timeout
+            timeout = self._DEFAULT_VISIBILITY_TIMEOUT
 
         self._logger.debug(
             f"Extending visibility timeout for message with ack_id '{message_handle}' "

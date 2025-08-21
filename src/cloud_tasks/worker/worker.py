@@ -946,11 +946,10 @@ class Worker:
                     provider=self._data.provider,
                     queue_name=self._data.queue_name,
                     project_id=self._data.project_id,
-                    visibility_timeout=self._data.max_runtime + 5,
-                    # Add 5 seconds to account for the
-                    # time it takes to notice an event is over time, kill it, and fail the task.
-                    # We only want the message to timeout if something goes really wrong with the
-                    # task manager.
+                    visibility_timeout=self._data.max_runtime + 10,
+                    # Add 10 seconds to account for the time it takes to notice an event
+                    # is over time, kill it, and fail the task. We only want the message
+                    # to timeout if something goes really wrong with the task manager.
                     exactly_once=self._data.exactly_once_queue,
                 )
             except Exception as e:
@@ -1459,26 +1458,31 @@ class Worker:
             logger.info("No max visibility timeout found, skipping visibility renewal worker")
             return
 
-        renewal_interval = max(max_visibility // 10, 10)  # max_visibility / 10, minimum 10s
+        renewal_check_interval = max(max_visibility // 10, 10)
 
-        logger.info(f"Starting visibility renewal worker with {renewal_interval}s interval")
+        when_to_renew = max_visibility // 2  # Renew half way through the visibility timeout
+
+        logger.info(f"Starting visibility renewal worker with {renewal_check_interval}s interval")
 
         last_renewal_time = time.time()
 
         while self._running:
             try:
-                # Only perform renewals every renewal_interval seconds
+                # Only perform renewals every renewal_interval seconds, but check more often
+                # so that we can notice when _running is set to False.
                 current_time = time.time()
-                if current_time - last_renewal_time >= renewal_interval:
+                if current_time - last_renewal_time >= renewal_check_interval:
                     renewal_needed = []
 
                     async with self._process_ops_semaphore:
                         for worker_id, process_data in self._processes.items():
-                            last_renewal = current_time - process_data["last_renewal_time"]
+                            time_since_last_renewal = (
+                                current_time - process_data["last_renewal_time"]
+                            )
 
                             # Renew if we haven't renewed recently and the task is still running
                             if (
-                                last_renewal >= renewal_interval
+                                time_since_last_renewal >= when_to_renew
                                 and process_data["process"].is_alive()
                             ):
                                 renewal_needed.append((worker_id, process_data))
@@ -1486,23 +1490,30 @@ class Worker:
                     # Renew visibility timeouts
                     for worker_id, process_data in renewal_needed:
                         try:
-                            amount_to_extend = min(
-                                self._data.max_runtime - process_data["start_time"], max_visibility
+                            time_left = int(
+                                self._data.max_runtime - (current_time - process_data["start_time"])
                             )
+                            if time_left <= 0:
+                                # Task has exceeded max runtime, don't renew
+                                continue
+
+                            # extend_message_visibility will automatically clip
+                            # to the maximum value allowed
                             await self._task_queue.extend_message_visibility(
-                                process_data["task"]["ack_id"], amount_to_extend
+                                process_data["task"]["ack_id"], time_left + 10
                             )
                             process_data["last_renewal_time"] = current_time
                             logger.debug(
                                 f"Renewed visibility timeout for worker #{worker_id} "
-                                f"task {process_data['task']['task_id']}"
+                                f"task {process_data['task']['task_id']} for {time_left + 10}s"
                             )
                         except Exception as e:
                             logger.warning(
                                 f"Failed to renew visibility timeout for worker #{worker_id} "
-                                f"task {process_data['task']['task_id']}: {e}"
+                                f"task {process_data['task']['task_id']} for {time_left + 10}s: {e}"
                             )
                             # Continue with other renewals - we'll have more opportunities
+                            # to try this one again
 
                     # Reset last_renewal_time after performing renewals
                     last_renewal_time = current_time

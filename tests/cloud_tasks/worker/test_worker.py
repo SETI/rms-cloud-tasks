@@ -589,7 +589,7 @@ async def test_start_with_cloud_queue(mock_worker_function, mock_queue):
         queue_name="test-job",
         project_id=None,
         exactly_once=False,
-        visibility_timeout=3605,  # max_runtime (3600) + 5
+        visibility_timeout=3610,  # max_runtime (3600) + 10
     )
 
 
