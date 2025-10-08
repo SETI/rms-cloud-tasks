@@ -1,8 +1,9 @@
 provider: gcp
-
 gcp:
+  region: us-central1
   job_id: parallel-addition-job
   max_runtime: 10
+  boot_disk_types: pd-standard
   startup_script: |
     apt-get update -y
     apt-get install -y python3 python3-pip python3-venv git

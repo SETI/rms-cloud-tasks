@@ -1,0 +1,2 @@
+Process 1416002 on jns2 (SpawnProcess-6)
+Task addition-task-000006: -18485 + -88448 = -106933
