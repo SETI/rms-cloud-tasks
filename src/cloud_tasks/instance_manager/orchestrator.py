@@ -632,7 +632,7 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
         # we can start
         instances_to_add = available_instances
         if available_cpus is not None:
-            new_instances_to_add = available_cpus // self._optimal_instance_info["vcpu"]
+            new_instances_to_add = int(available_cpus // self._optimal_instance_info["vcpu"])
             if new_instances_to_add < instances_to_add:
                 instances_to_add = new_instances_to_add
                 self._logger.debug(
@@ -641,7 +641,9 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
                     f"instances_to_add={instances_to_add}"
                 )
         if available_price is not None:
-            new_instances_to_add = available_price // self._optimal_instance_info["total_price"]
+            new_instances_to_add = int(
+                available_price // self._optimal_instance_info["total_price"]
+            )
             if new_instances_to_add < instances_to_add:
                 instances_to_add = new_instances_to_add
                 self._logger.debug(
