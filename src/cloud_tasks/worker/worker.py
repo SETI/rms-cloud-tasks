@@ -432,7 +432,7 @@ class Worker:
 
     def __init__(
         self,
-        user_worker_function: Callable[[str, Dict[str, Any]], bool],
+        user_worker_function: Callable[[str, Dict[str, Any], WorkerData], Tuple[bool, str]],
         *,
         task_source: Optional[str | Path | FCPath | Callable[[], Iterable[Dict[str, Any]]]] = None,
         args: Optional[Sequence[str]] = None,
@@ -1527,7 +1527,7 @@ class Worker:
     @staticmethod
     def _worker_process_main(
         worker_id: int,
-        user_worker_function: Callable[[str, Dict[str, Any]], bool],
+        user_worker_function: Callable[[str, Dict[str, Any], WorkerData], Tuple[bool, str]],
         worker_data: WorkerData,
         task_id: str,
         task_data: Dict[str, Any],
@@ -1588,7 +1588,7 @@ class Worker:
         task_id: str,
         task_data: Dict[str, Any],
         worker_data: WorkerData,
-        user_worker_function: Callable[[str, Dict[str, Any]], bool],
+        user_worker_function: Callable[[str, Dict[str, Any], WorkerData], Tuple[bool, str]],
     ) -> Tuple[bool, str]:
         """
         Execute a task in isolation.
