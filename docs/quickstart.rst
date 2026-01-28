@@ -158,8 +158,24 @@ will give the current tasks a chance to complete cleanly, and then the task mana
 exit. You can change how long to wait before the current tasks are complete with the
 ``--shutdown-grace-period`` option.
 
-If you are only going to run the worker locally, you can stop reading here, although
-you may be interested in :ref:`quickstart_monitor` below.
+As tasks run, their status may optionally be sent to a local file and/or a cloud-based
+event queue. By default, if the tasks are read from a cloud-based task queue, their status
+is sent to a cloud-based event queue, and if the tasks are read from a local file, their
+status is sent to a local file.
+
+If a local event log is used while tasks are running on a local workstation, the event
+log can be monitored manually using standard Unix tools such as ``tail`` or ``less``.
+You may also write separate programs to process the event log and make reports as
+necessary.
+
+If a cloud-based event queue is used, Cloud Tasks provides a way to monitor the queue,
+report on the status of each task, save the events to a file, and collect statistics:
+
+.. code-block:: bash
+
+    cloud_tasks monitor_event_queue --config myconfig.yml --output-file events.json
+
+*If you are only going to run the worker locally, you can stop reading here.*
 
 
 Step 4: Create a Startup Script
@@ -223,11 +239,11 @@ Here is an example:
       instance-types: "n2-"
 
 
-Step 6: Load the Task Queue and Run the Worker
-----------------------------------------------
+Step 6: Run the Job and Monitor Progress
+----------------------------------------
 
-The ``cloud_tasks run`` command will load the task queue and then start the compute instance
-pool manager.
+The ``cloud_tasks run`` command provides a unified workflow that handles the entire job lifecycle
+in a single command, from task loading to completion and cleanup.
 
 .. code-block:: bash
 
@@ -235,14 +251,21 @@ pool manager.
 
 This will perform the following steps:
 
-#. Create the task queue.
+#. Delete any existing SQLite database file.
 
-#. Load the tasks from ``my_tasks.json`` into the task queue (this can be done separately using
-   the :ref:`cli_load_queue_cmd` command).
+#. Check if existing task queue has messages and prompt for confirmation if non-empty
+   (use ``--force`` to skip confirmation).
+
+#. Delete any existing task and event queues from previous runs.
+
+#. Create new task and event queues.
+
+#. Load tasks into a local SQLite database (``{job_id}.db``) for persistent tracking.
+
+#. Load the tasks from ``my_tasks.json`` into the cloud task queue.
 
 #. Based on the constraints given in the configuration file, choose the optimal compute
-   instance type (this and all subsequent steps can be done separately using the
-   :ref:`cli_manage_pool_cmd` command).
+   instance type.
 
 #. Based on the constraints given in the configuration file, choose the optimal number of
    compute instances.
@@ -251,56 +274,84 @@ This will perform the following steps:
 
 #. Monitor the compute instances and replace them if they fail or are terminated.
 
-#. Monitor the task queue and terminate the compute instances once it is empty, if this
-   functionality is supported by the cloud provider.
+#. Monitor the event queue and update the SQLite database with task status as
+   events arrive (this is the same general process as when running locally with
+   the ``monitor_event_queue`` command). If you want to save the raw events to a
+   file in addition to the SQLite database, use the ``--output-file`` option:
+
+   .. code-block:: bash
+
+       cloud_tasks run --config myconfig.yml --task-file my_tasks.json --output-file events.json
+
+   The events file will contain one JSON object per line for each event.
+
+#. When all tasks complete (or time out with no retry), automatically terminate instances
+   and delete queues.
+
+#. Print a comprehensive final report with statistics.
+
+The SQLite database provides persistent state tracking, enabling crash recovery (see below).
 
 
-.. _quickstart_monitor:
+.. _quickstart_interrupt:
 
-Step 7: Monitor the Job
+Step 7: Handling Interruptions
+------------------------------
+
+If you need to interrupt the run command (Ctrl+C), you'll be prompted with three options:
+
+.. code-block:: none
+
+    Received interrupt.
+
+    Choose action:
+      [T] Terminate all instances and delete queues
+      [L] Leave instances running (can resume with --continue)
+      [C] Cancel and continue running
+
+    Enter choice (T/L/C):
+
+- **[T] Terminate**: Clean shutdown. All instances are terminated and queues are deleted.
+  Use this when you're done with the job.
+
+- **[L] Leave**: Stops local monitoring but leaves instances running. The SQLite database
+  is saved. Use this if you need to restart your local machine or the connection was lost.
+  You can resume later with ``--continue`` (see below).
+
+- **[C] Cancel**: Cancels the interrupt and continues running normally.
+
+
+.. _quickstart_crash_recovery:
+
+Step 8: Crash Recovery
 -----------------------
 
-As tasks run, their status may optionally be sent to a local file and/or a cloud-based
-event queue. By default, if the tasks are read from a cloud-based task queue, their status
-is sent to a cloud-based event queue, and if the tasks are read from a local file, their
-status is sent to a local file.
-
-If a local event log is used while tasks are running on a local workstation, the event
-log can be monitored manually using standard Unix tools such as ``tail`` or ``less``.
-You may also write separate programs to process the event log and make reports as
-necessary.
-
-If a cloud-based event queue is used, Cloud Tasks provides a way to monitor the queue,
-report on the status of each task, save the events to a file, and collect statistics:
+If the ``run`` command crashes or is interrupted (and you chose "Leave"), you can resume
+from where it left off using the ``--continue`` option:
 
 .. code-block:: bash
 
-    cloud_tasks monitor_event_queue --config myconfig.yml --output-file events.json
+    cloud_tasks run --config myconfig.yml --continue
+
+This will:
+
+#. Open the existing SQLite database
+#. Drain any pending events from the event queue to catch up on missed updates
+#. Query the cloud for current instance status
+#. Resume monitoring and managing instances until all tasks complete
+
+.. note::
+
+   Any crash/exit and subsequent restart of the ``run`` command with the
+   ``--continue`` option does not affect the worker processes running on cloud
+   instances. They continue processing tasks regardless of local crashes. Only
+   the local monitoring and management process is affected.
 
 
-.. _quickstart_stop:
+What's Next?
+------------
 
-Step 8: Stop the Job
---------------------
-
-Once you see that all jobs have been processed, you can use the :ref:`cli_stop_cmd`
-command. This will terminate the compute instances.
-
-.. code-block:: bash
-
-    cloud_tasks stop --config myconfig.yml
-
-
-.. _quickstart_purge_queue:
-
-Step 9: Purge the Task Queue
-----------------------------
-
-If you want to purge the task and event queues of any remaining contents, you can use
-the :ref:`cli_purge_queue_cmd` command. Assuming you have successfully processed all tasks
-and monitored the event queue, these queues should already be empty. Either way you will
-now be starting with a clean slate if you want to run the job again.
-
-.. code-block:: bash
-
-    cloud_tasks purge_queue --config myconfig.yml
+- Learn more about the :doc:`CLI commands <cli>`
+- Explore :doc:`configuration options <config>`
+- Check out the :doc:`parallel addition example <example_parallel_addition>`
+- Read about :doc:`worker implementation <worker>`

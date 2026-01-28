@@ -223,6 +223,11 @@ class RunConfig(BaseModel, validate_assignment=True):
     retry_on_exception: Optional[bool] = None
     retry_on_timeout: Optional[bool] = None
 
+    #
+    # Database options
+    #
+    db_file: Optional[str] = None  # SQLite database file path
+
 
 class ProviderConfig(RunConfig, validate_assignment=True):
     """Config options valid for all cloud providers"""
@@ -449,6 +454,12 @@ class Config(BaseModel, validate_assignment=True):
             self.run.total_boot_disk_size = 10
         if self.run.boot_disk_base_size is None:
             self.run.boot_disk_base_size = 0
+
+        # Set default database file based on job_id
+        if self.run.db_file is None:
+            provider_config = self.get_provider_config()
+            if provider_config.job_id:
+                self.run.db_file = f"{provider_config.job_id}.db"
 
         # Fix case
         if self.run.architecture is not None:

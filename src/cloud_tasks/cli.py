@@ -8,7 +8,9 @@ from datetime import datetime
 import json
 import json_stream
 import logging
-import numpy as np
+import os
+from pathlib import Path
+import signal
 import sys
 from tqdm import tqdm  # type: ignore
 from typing import Any, Dict, Iterable, Optional
@@ -20,6 +22,7 @@ import pydantic
 
 from .common.config import Config, load_config
 from .common.logging_config import configure_logging
+from .common.task_db import TaskDatabase
 from .instance_manager import create_instance_manager
 from .instance_manager.orchestrator import InstanceOrchestrator
 from .queue_manager import create_queue
@@ -90,122 +93,6 @@ def yield_tasks_from_file(
                             return
                         limit -= 1
                     yield ret
-
-
-async def load_queue_cmd(args: argparse.Namespace, config: Config) -> None:
-    """
-    Load tasks into a queue without starting instances.
-
-    Parameters:
-        args: Command-line arguments
-        config: Configuration
-    """
-    try:
-        provider = config.provider
-        provider_config = config.get_provider_config(provider)
-        queue_name = provider_config.queue_name
-
-        try:
-            dry_run = args.dry_run
-        except AttributeError:
-            dry_run = False
-
-        if dry_run:
-            print("Dry run mode enabled. No task queue will be created.")
-            task_queue = None
-        else:
-            print(f"Creating task queue '{queue_name}' on {provider} if necessary...")
-            task_queue = await create_queue(config)
-
-        if dry_run:
-            print("Dry run mode enabled. No tasks will be loaded.")
-        else:
-            print(f"Populating task queue from {args.task_file}...")
-        num_tasks = 0
-
-        # Create a semaphore to limit concurrent tasks
-        semaphore = asyncio.Semaphore(args.max_concurrent_queue_operations)
-        pending_tasks = set()
-
-        load_failed_exception = None
-
-        async def enqueue_task(task):
-            """Helper function to enqueue a single task with semaphore control."""
-            nonlocal load_failed_exception
-            if load_failed_exception:
-                return
-            async with semaphore:
-                if "task_id" not in task:
-                    logger.error(f"Task #{task['task_num']} does not have a 'task_id' key")
-                    return
-                if not isinstance(task["task_id"], str):
-                    logger.error(
-                        f"Task #{task['task_num']} has a non-string 'task_id' "
-                        f"key: {task['task_id']}"
-                    )
-                    return
-                if "data" not in task:
-                    logger.error(f"Task #{task['task_num']} does not have a 'data' key")
-                    return
-                if not isinstance(task["data"], dict):
-                    logger.error(
-                        f"Task #{task['task_num']} has a non-dict 'data' key: {task['data']}"
-                    )
-                    return
-                try:
-                    if not dry_run:
-                        await task_queue.send_task(task["task_id"], task["data"])
-                except Exception as e:
-                    load_failed_exception = e
-
-        with tqdm(desc="Enqueueing tasks") as pbar:
-            for task_num, task in enumerate(
-                yield_tasks_from_file(args.task_file, args.start_task, args.limit)
-            ):
-                if load_failed_exception:
-                    raise load_failed_exception
-
-                if dry_run:
-                    logger.debug(f"Dry run mode - would load task: {task}")
-                else:
-                    logger.debug(f"Loading task: {task}")
-
-                # Create and track the task
-                task["task_num"] = task_num  # For errors
-                task_obj = asyncio.create_task(enqueue_task(task))
-                pending_tasks.add(task_obj)
-                task_obj.add_done_callback(pending_tasks.discard)
-
-                # Update progress when tasks complete
-                while len(pending_tasks) >= args.max_concurrent_queue_operations:
-                    done, pending_tasks = await asyncio.wait(
-                        pending_tasks, return_when=asyncio.FIRST_COMPLETED
-                    )
-                    pbar.update(len(done))
-                    num_tasks += len(done)
-                    logger.debug(f"Increment of {len(done)} task(s)")
-
-            # Wait for remaining tasks to complete
-            if pending_tasks:
-                done, pending_tasks = await asyncio.wait(pending_tasks)
-                pbar.update(len(done))
-                num_tasks += len(done)
-                logger.debug(f"Final increment of {len(done)} task(s)")
-
-        print(f"Loaded {num_tasks} task(s)")
-
-        if dry_run:
-            print("Dry run mode enabled. No queue depth will be shown.")
-        else:
-            queue_depth = await task_queue.get_queue_depth()
-            if queue_depth is None:
-                print("Tasks loaded successfully. Failed to get queue depth.")
-            else:
-                print(f"Tasks loaded successfully. Queue depth (may be approximate): {queue_depth}")
-
-    except Exception as e:
-        logger.fatal(f"Error loading tasks: {e}", exc_info=True)
-        sys.exit(1)
 
 
 async def show_queue_cmd(args: argparse.Namespace, config: Config) -> None:
@@ -427,50 +314,6 @@ async def delete_queue_cmd(args: argparse.Namespace, config: Config) -> None:
             sys.exit(1)
 
 
-async def manage_pool_cmd(args: argparse.Namespace, config: Config) -> None:
-    """
-    Manage an instance pool for processing tasks without loading tasks.
-
-    Parameters:
-        args: Command-line arguments
-        config: Configuration
-    """
-    try:
-        logger.info(f"Starting pool management for job: {config.get_provider_config().job_id}")
-
-        # Create the orchestrator using only the config object
-        # Configuration (including startup script, region, etc.) is handled
-        # during the config loading phase in main()
-        orchestrator = InstanceOrchestrator(config=config, dry_run=args.dry_run)
-
-        # Start orchestrator
-        logger.info("Starting orchestrator")
-        await orchestrator.start()
-    except Exception as e:
-        logger.fatal(f"Error starting instance pool: {e}", exc_info=True)
-        sys.exit(1)
-
-    # Monitor job progress (using orchestrator's task_queue)
-    try:
-        while orchestrator.is_running:
-            await asyncio.sleep(1)
-    except KeyboardInterrupt:
-        logger.info("Received interrupt, stopping job management")
-        print("Any instances are still running!")
-        await orchestrator.stop(terminate_instances=False)
-        sys.exit(1)
-    except Exception as monitor_err:
-        logger.fatal(f"Error during monitoring: {monitor_err}", exc_info=True)
-        print("Any instances are still running!")
-        await orchestrator.stop(terminate_instances=False)
-        sys.exit(1)
-
-    # We could call orchestrator.stop(terminate_instances=True) here, but it's not necessary
-    # because it would just terminate the threads but we're about exit the program anyway
-    # so we don't care.
-    logger.info("Job management complete")
-
-
 async def list_running_instances_cmd(args: argparse.Namespace, config: Config) -> None:
     """
     List all running instances for the specified provider.
@@ -626,9 +469,211 @@ async def list_running_instances_cmd(args: argparse.Namespace, config: Config) -
         sys.exit(1)
 
 
-async def monitor_event_queue_cmd(args: argparse.Namespace, config: Config) -> None:
+class EventMonitor:
+    """Helper class for monitoring events from the event queue and updating the database."""
+
+    def __init__(
+        self,
+        events_queue,
+        task_db,
+        output_file_path: Optional[str] = None,
+        print_events: bool = True,
+        print_summary: bool = True,
+    ):
+        """
+        Initialize the event monitor.
+
+        Args:
+            events_queue: Queue to receive events from
+            task_db: TaskDatabase instance
+            output_file_path: Optional path to write events to
+            print_events: Whether to print events to stdout
+            print_summary: Whether to print summary statistics
+        """
+        self.events_queue = events_queue
+        self.task_db = task_db
+        self.output_file_path = output_file_path
+        self.print_events = print_events
+        self.print_summary = print_summary
+        self.output_file = None
+        self.something_changed = True
+
+    async def start(self) -> None:
+        """Start monitoring events."""
+        if self.output_file_path:
+            try:
+                self.output_file = open(self.output_file_path, "a")
+                logger.info(f'Writing events to "{self.output_file_path}"')
+            except Exception as e:
+                logger.fatal(
+                    f'Error opening events file "{self.output_file_path}": {e}', exc_info=True
+                )
+                sys.exit(1)
+
+    async def process_events_batch(self) -> int:
+        """
+        Process a batch of events from the queue.
+
+        Returns:
+            Number of events processed
+        """
+        try:
+            # Receive a batch of messages
+            messages = await self.events_queue.receive_messages(max_count=100)
+
+            if messages:
+                self.something_changed = True
+                for message in messages:
+                    try:
+                        # Extract and parse the JSON data
+                        data = json.loads(message.get("data", "{}"))
+
+                        # Write to file if specified
+                        if self.output_file:
+                            self.output_file.write(json.dumps(data) + "\n")
+
+                        # Print to stdout if requested
+                        if self.print_events:
+                            print(json.dumps(data))
+
+                        # Update database
+                        self.task_db.insert_event(data)
+                        self.task_db.update_task_from_event(data)
+
+                    except json.JSONDecodeError as e:
+                        logger.error(f"Error decoding message: {e}")
+                    except Exception as e:
+                        logger.error(f"Error processing message: {e}")
+
+                if self.output_file:
+                    self.output_file.flush()
+
+                return len(messages)
+            else:
+                return 0
+
+        except Exception as e:
+            logger.error(f"Error receiving messages: {e}")
+            raise
+
+    def print_status_summary(self, force: bool = False) -> None:
+        """
+        Print a summary of the current status.
+
+        Args:
+            force: If True, always print even if nothing changed
+        """
+        if not self.print_summary:
+            return
+
+        if not force and not self.something_changed:
+            return
+
+        print()
+        counts = self.task_db.get_task_counts()
+        total_tasks = self.task_db.get_total_tasks()
+        remaining_task_ids = self.task_db.get_remaining_task_ids()
+
+        print("Summary:")
+        print(f"  Total tasks: {total_tasks}")
+        heard_from = total_tasks - counts.get("in_queue_original", 0)
+        print(f"  Heard from: {heard_from}")
+        for status in counts:
+            if status != "in_queue_original":
+                print(f"    {status}: {counts[status]}")
+        print(f"  Still in original queue: {total_tasks - heard_from}")
+
+        # Get statistics
+        stats = self.task_db.get_task_statistics()
+
+        if stats["exception_counts"]:
+            print("  Exceptions:")
+            for exception, count in list(stats["exception_counts"].items())[:10]:
+                # Truncate exception for display
+                exc_lines = exception.strip().split("\n")
+                if len(exc_lines) > 2:
+                    exc_display = f"{exc_lines[0]}...{exc_lines[-1]}"
+                else:
+                    exc_display = exception
+                print(f"    {count:6d}: {exc_display[:100]}")
+
+        if stats["time_stats"]["avg_time"]:
+            print("  Elapsed time statistics:")
+            print(
+                f"    Range:  {stats['time_stats']['min_time']:.2f} to "
+                f"{stats['time_stats']['max_time']:.2f} seconds"
+            )
+            print(
+                f"    Mean:   {stats['time_stats']['avg_time']:.2f} +/- "
+                f"{stats['percentiles'].get('std', 0):.2f} seconds"
+            )
+            if stats["percentiles"]:
+                print(f"    Median: {stats['percentiles']['median']:.2f} seconds")
+                print(f"    90th %: {stats['percentiles']['p90']:.2f} seconds")
+                print(f"    95th %: {stats['percentiles']['p95']:.2f} seconds")
+
+        if len(remaining_task_ids) > 0 and len(remaining_task_ids) < 50:
+            print(f"  Remaining tasks: {', '.join(remaining_task_ids)}")
+
+        print()
+        self.something_changed = False
+
+    def close(self) -> None:
+        """Close the output file if open."""
+        if self.output_file:
+            self.output_file.close()
+
+
+async def run_event_monitoring_loop(
+    event_monitor: EventMonitor,
+    task_db: TaskDatabase,
+    check_completion: bool = True,
+    stop_signal: Optional[asyncio.Event] = None,
+) -> None:
     """
-    Monitor the event queue and display or save events as they arrive.
+    Run the event monitoring loop.
+
+    This is a shared function used by both the `run` and `monitor_event_queue` commands.
+
+    Args:
+        event_monitor: EventMonitor instance to use
+        task_db: TaskDatabase instance for checking completion
+        check_completion: Whether to check for task completion and stop when done
+        stop_signal: Optional asyncio.Event to signal stopping the loop
+    """
+    job_complete = False
+
+    while not job_complete:
+        # Check stop signal
+        if stop_signal and stop_signal.is_set():
+            break
+
+        try:
+            count = await event_monitor.process_events_batch()
+
+            # Always print status summary (force=True if no new events)
+            event_monitor.print_status_summary(force=True)
+
+            # Check if all tasks are complete
+            if check_completion and task_db.is_all_tasks_complete():
+                print("\n=== All tasks complete ===")
+                job_complete = True
+                break
+
+            await asyncio.sleep(1)
+        except Exception as e:
+            logger.error(f"Error in event monitoring loop: {e}", exc_info=True)
+            await asyncio.sleep(5)
+
+
+async def monitor_event_queue_cmd(args, config: Config) -> None:
+    """
+    Monitor the event queue and update task status in SQLite database.
+
+    This command is useful when running workers locally rather than using
+    cloud-managed instances. It provides the same event monitoring and
+    SQLite tracking as the unified `run` command, but without instance
+    management.
 
     Parameters:
         args: Command-line arguments
@@ -636,242 +681,474 @@ async def monitor_event_queue_cmd(args: argparse.Namespace, config: Config) -> N
     """
     provider = config.provider
     provider_config = config.get_provider_config(provider)
-    event_queue_name = f"{provider_config.queue_name}-events"
+    queue_name = provider_config.queue_name
+    event_queue_name = f"{queue_name}-events"
 
-    # If a tasks file was specified, read it and get the list of task_ids
-    task_ids = set()
-    if args.task_file:
-        print(f'Reading tasks from "{args.task_file}"')
-        for task in yield_tasks_from_file(args.task_file, args.start_task, args.limit):
-            task_ids.add(task["task_id"])
+    # Determine database file path
+    db_file = args.db_file if args.db_file else config.run.db_file
+    if not db_file:
+        db_file = f"{provider_config.job_id}.db"
 
-    event_type_data = {}
-    task_exceptions = {}
-    non_fatal_exceptions = {}
-    fatal_exceptions = {}
-    spot_termination_hosts = set()
-    duplicate_completed_task_ids = set()
-    earliest_event_time = None
-    latest_event_time = None
-    elapsed_times = []
+    logger.info(f"Using database file: {db_file}")
 
-    def _process_log_entry(log_entry: Dict[str, Any]) -> None:
-        nonlocal earliest_event_time, latest_event_time
-        event_time = log_entry.get("timestamp")
-        if event_time:
-            event_time = datetime.fromisoformat(event_time)
+    # Initialize or open task database
+    if not Path(db_file).exists():
+        print(f"Error: Database file '{db_file}' does not exist.")
+        print("You must first create tasks using the 'run' command or load them manually.")
+        sys.exit(1)
 
-        if event_time and (earliest_event_time is None or event_time < earliest_event_time):
-            earliest_event_time = event_time
-        if event_time and (latest_event_time is None or event_time > latest_event_time):
-            latest_event_time = event_time
-
-        event_type = log_entry["event_type"]
-        retry = log_entry.get("retry")
-        task_id = log_entry.get("task_id")
-        exception = log_entry.get("exception")
-        if exception:
-            exception_split = [line.strip() for line in exception.strip().split("\n")]
-            exception_head = "; ".join(exception_split[1:3])
-            exception_tail = "; ".join(exception_split[-2:])
-            exception_str = f"{exception_head}; ...; {exception_tail}"
-        else:
-            exception_str = ""
-        hostname = log_entry.get("hostname")
-        elapsed_time = log_entry.get("elapsed_time")
-        if elapsed_time is not None:
-            elapsed_times.append(elapsed_time)
-
-        match event_type:
-            case "task_completed" | "task_timed_out" | "task_exited" | "task_exception":
-                if event_type == "task_exception":
-                    task_exceptions[exception_str] = task_exceptions.get(exception_str, 0) + 1
-                key = (event_type, retry)
-                if (
-                    key == ("task_completed", False)
-                    and key in event_type_data
-                    and task_id in event_type_data[key]
-                ):
-                    # This was already completed once before with no retry, and now we see it
-                    # again with no retry. This is a duplicate.
-                    duplicate_completed_task_ids.add(task_id)
-                else:
-                    if key not in event_type_data:
-                        event_type_data[key] = set()
-                    event_type_data[key].add(task_id)
-            # These are not task-specific
-            case "non_fatal_exception":
-                non_fatal_exceptions[exception_str] = non_fatal_exceptions.get(exception_str, 0) + 1
-            case "fatal_exception":
-                fatal_exceptions[exception_str] = fatal_exceptions.get(exception_str, 0) + 1
-            case "spot_termination":
-                key = (event_type, retry)
-                if key not in event_type_data:
-                    event_type_data[key] = set()
-                event_type_data[key].add(hostname)
-            case _:
-                pass
-
-    output_file = None
-    if args.output_file:
-        # If the results file already exists, read it and summarize the results
-        try:
-            with open(args.output_file, "r") as f:
-                print(f'Reading previous events from "{args.output_file}"')
-                while s := f.readline():
-                    log_entry = json.loads(s)
-                    _process_log_entry(log_entry)
-        except FileNotFoundError:
-            print("No previous events found...starting statistics from scratch")
-            pass
-        except json.decoder.JSONDecodeError as e:
-            print(f'Error parsing results file "{args.output_file}"')
-            print(e)
-        except Exception as e:
-            logger.fatal(f'Error reading results file "{args.output_file}": {e}', exc_info=True)
-            sys.exit(1)
-
-        try:
-            output_file = open(args.output_file, "a")
-            logger.info(f'Writing events to "{args.output_file}"')
-        except Exception as e:
-            logger.fatal(f'Error opening events file "{args.output_file}": {e}', exc_info=True)
-            sys.exit(1)
+    # Initialize variables that will be used in finally block
+    task_db = TaskDatabase(db_file)
+    event_monitor = None
 
     try:
-        # Create results queue
+        total_tasks = task_db.get_total_tasks()
+        if total_tasks == 0:
+            print(f"Warning: Database '{db_file}' has no tasks.")
+
+        print(f"Monitoring event queue '{event_queue_name}'...")
+        print(f"Database: {db_file} ({total_tasks} tasks)")
+
+        # Create event queue
         events_queue = await create_queue(config, queue_name=event_queue_name)
-        print(f"Monitoring event queue '{event_queue_name}' on {provider}...")
 
-        # Main monitoring loop
-        something_changed = True  # Start out with a summary
-        while True:
-            if something_changed:
-                print()
-                if args.task_file:
-                    if ("task_completed", False) in event_type_data:
-                        tasks_remaining = task_ids - event_type_data[("task_completed", False)]
-                    else:
-                        tasks_remaining = task_ids
-                else:
-                    tasks_remaining = None
-                print("Summary:")
-                if tasks_remaining is not None:
-                    print(
-                        f"  {len(tasks_remaining)} tasks have not been completed with retry=False"
-                    )
-                if len(duplicate_completed_task_ids) > 0:
-                    print(
-                        f"  {len(duplicate_completed_task_ids)} tasks completed with retry=False "
-                        "more than once but shouldn't have"
-                    )
-                if event_type_data:
-                    print("  Task event status:")
-                    for (event_type, retry), info in sorted(event_type_data.items()):
-                        count = len(info)
-                        print(f"    {event_type:<19s} (retry={str(retry):>5s}): {count:6d}")
-                    if task_exceptions:
-                        print("  Task exceptions:")
-                        for exception, count in sorted(task_exceptions.items()):
-                            print(f"    {count:6d}: {exception}")
-                    if fatal_exceptions:
-                        print("  Non-task fatal exceptions:")
-                        for exception, count in sorted(fatal_exceptions.items()):
-                            print(f"    {count:6d}: {exception}")
-                    if non_fatal_exceptions:
-                        print("  Non-task non-fatal exceptions:")
-                        for exception, count in sorted(non_fatal_exceptions.items()):
-                            print(f"    {count:6d}: {exception}")
-                    if spot_termination_hosts:
-                        print("  Spot terminations:")
-                        for host in sorted(spot_termination_hosts):
-                            print(f"    {host}")
-                if ("task_completed", False) in event_type_data:
-                    tasks_completed = len(event_type_data[("task_completed", False)])
-                    if earliest_event_time and latest_event_time:
-                        elapsed_time = (latest_event_time - earliest_event_time).total_seconds()
-                        if elapsed_time > 0:
-                            print(
-                                f"  Tasks completed: {tasks_completed} in {elapsed_time:.2f} seconds "
-                                f"({elapsed_time / tasks_completed:.2f} seconds/task)"
-                            )
-                if elapsed_times:
-                    elapsed_times_arr = np.array(elapsed_times)
-                    print("  Elapsed time statistics:")
-                    print(
-                        f"    Range:  {np.min(elapsed_times_arr):.2f} to "
-                        f"{np.max(elapsed_times_arr):.2f} seconds"
-                    )
-                    print(
-                        f"    Mean:   {np.mean(elapsed_times_arr):.2f} +/- "
-                        f"{np.std(elapsed_times_arr):.2f} seconds"
-                    )
-                    print(f"    Median: {np.median(elapsed_times_arr):.2f} seconds")
-                    print(f"    90th %: {np.percentile(elapsed_times_arr, 90):.2f} seconds")
-                    print(f"    95th %: {np.percentile(elapsed_times_arr, 95):.2f} seconds")
-                if tasks_remaining is not None and len(tasks_remaining) < 50:
-                    print(f"  Remaining tasks: {', '.join(tasks_remaining)}")
-                print()
-                something_changed = False
+        # Set up event monitor
+        event_monitor = EventMonitor(
+            events_queue,
+            task_db,
+            output_file_path=getattr(args, "output_file", None),
+            print_events=getattr(args, "print_events", False),
+            print_summary=True,
+        )
+        await event_monitor.start()
 
-            try:
-                # Receive a batch of messages
-                messages = await events_queue.receive_messages(max_count=100)
+        # Run monitoring loop
+        print("Starting event monitoring (Ctrl+C to stop)...")
+        await run_event_monitoring_loop(
+            event_monitor,
+            task_db,
+            check_completion=not getattr(args, "no_auto_complete", False),
+            stop_signal=None,
+        )
 
-                if messages:
-                    something_changed = True
-                    for message in messages:
-                        try:
-                            # Extract and parse the JSON data
-                            data = json.loads(message.get("data", "{}"))
+        print("\n=== Monitoring stopped ===")
+        print_final_report(task_db)
 
-                            # Format the output
-                            output = json.dumps(data)
-
-                            # Write to file if specified
-                            if output_file:
-                                output_file.write(output + "\n")
-
-                            # Always print to stdout
-                            print(output)
-
-                            _process_log_entry(data)
-
-                        except json.JSONDecodeError as e:
-                            logger.error(f"Error decoding message: {e}")
-                        except Exception as e:
-                            logger.error(f"Error processing message: {e}")
-                    output_file.flush()
-                else:
-                    # Sleep briefly to avoid hammering the queue
-                    await asyncio.sleep(1)
-
-            except KeyboardInterrupt:
-                print("\nMonitoring stopped by user")
-                break
-            except Exception as e:
-                logger.error(f"Error receiving messages: {e}")
-                await asyncio.sleep(5)  # Wait longer on error
-
+    except KeyboardInterrupt:
+        print("\n\nMonitoring interrupted by user.")
+        print_final_report(task_db)
     except Exception as e:
-        logger.fatal(f"Error monitoring event queue: {e}", exc_info=True)
+        logger.error(f"Error monitoring event queue: {e}", exc_info=True)
+        print(f"\nFatal error: {e}")
         sys.exit(1)
     finally:
-        # Clean up
-        if output_file:
-            output_file.close()
+        if event_monitor is not None:
+            event_monitor.close()
+        if task_db is not None:
+            task_db.close()
 
 
 async def run_cmd(args: argparse.Namespace, config: Config) -> None:
     """
     Run a job with the specified configuration.
-    This is a combination of loading tasks into the queue and managing an instance pool.
+    This is a unified command that handles queue management, instance orchestration,
+    and event monitoring with SQLite-based task tracking.
 
     Parameters:
         args: Command-line arguments
+        config: Configuration
     """
-    await load_queue_cmd(args, config)
-    await manage_pool_cmd(args, config)
+    # Validate arguments
+    if not args.continue_run and not args.task_file:
+        logger.fatal("--task-file is required unless --continue is specified")
+        print("Error: --task-file is required unless --continue is specified")
+        sys.exit(1)
+
+    provider = config.provider
+    provider_config = config.get_provider_config(provider)
+    queue_name = provider_config.queue_name
+    event_queue_name = f"{queue_name}-events"
+
+    # Determine database file path
+    db_file = args.db_file if args.db_file else config.run.db_file
+    if not db_file:
+        db_file = f"{provider_config.job_id}.db"
+
+    logger.info(f"Using database file: {db_file}")
+
+    # Initialize variables that will be used in finally block
+    task_db = None
+    event_monitor = None
+
+    try:
+        if args.continue_run:
+            # CONTINUE MODE: Resume from previous run
+            print(f"Continuing job '{provider_config.job_id}' from database '{db_file}'")
+
+            # Initialize database (must exist)
+            task_db = TaskDatabase(db_file)
+
+            # Check if database exists and has tasks
+            total_tasks = task_db.get_total_tasks()
+            if total_tasks == 0:
+                print(f"Error: Database '{db_file}' has no tasks. Cannot continue.")
+                sys.exit(1)
+
+            print(f"Found {total_tasks} tasks in database")
+
+            # Drain event queue to catch up on any missed events
+            # print("Draining event queue to update task statuses...")
+            events_queue = await create_queue(config, queue_name=event_queue_name)
+
+            # drained_count = 0
+            # while True:
+            #     messages = await events_queue.receive_messages(max_count=100)
+            #     if not messages:
+            #         break
+            #     for message in messages:
+            #         try:
+            #             data = json.loads(message.get("data", "{}"))
+            #             task_db.insert_event(data)
+            #             task_db.update_task_from_event(data)
+            #             drained_count += 1
+            #         except Exception as e:
+            #             logger.error(f"Error processing drained event: {e}")
+
+            # print(f"Drained {drained_count} events from queue")
+
+            # Show current status
+            counts = task_db.get_task_counts()
+            print("Current task status:")
+            for status, count in counts.items():
+                print(f"  {status}: {count}")
+
+            # Create task queue (don't delete/recreate)
+            print(f"Connecting to task queue '{queue_name}'...")
+            task_queue = await create_queue(config)
+
+        else:
+            # FRESH RUN MODE: Start from scratch
+            print(f"Starting fresh job '{provider_config.job_id}'")
+
+            # Check if database file exists and delete it
+            db_path = Path(db_file)
+            if db_path.exists():
+                print(f"Deleting existing database '{db_file}'...")
+                os.remove(db_file)
+
+            # Check existing queue depth before deletion
+            queue_depth = None
+            force = getattr(args, "force", False)
+
+            try:
+                # Try to connect to existing queue
+                temp_queue = await create_queue(config)
+                queue_depth = await temp_queue.get_queue_depth()
+            except Exception as e:
+                logger.debug(f"Could not check queue depth (queue may not exist): {e}")
+                queue_depth = None
+
+            # Warn user if queue has messages and not forcing
+            if queue_depth is not None and queue_depth > 0 and not force:
+                print(
+                    f"\nWARNING: Task queue '{queue_name}' currently has at least {queue_depth} message(s)."
+                )
+                print(f"Starting a fresh run will DELETE the existing queue and all its messages.")
+                confirm = input(f"\nType 'YES' to confirm deletion: ")
+                if confirm != "YES":
+                    print("Operation cancelled.")
+                    sys.exit(0)
+
+            # Delete existing queues
+            print("Deleting existing queues if they exist...")
+            try:
+                task_queue = await create_queue(config)
+                await task_queue.delete_queue()
+                print(f"Deleted task queue '{queue_name}'")
+            except Exception as e:
+                logger.info(f"Task queue deletion: {e}")
+
+            try:
+                events_queue = await create_queue(config, queue_name=event_queue_name)
+                await events_queue.delete_queue()
+                print(f"Deleted event queue '{event_queue_name}'")
+            except Exception as e:
+                logger.info(f"Event queue deletion: {e}")
+
+            # Small delay to ensure deletion completes
+            await asyncio.sleep(2)
+
+            # Create new queues
+            print(f"Creating task queue '{queue_name}'...")
+            task_queue = await create_queue(config)
+            print(f"Creating event queue '{event_queue_name}'...")
+            events_queue = await create_queue(config, queue_name=event_queue_name)
+
+            # Initialize new database
+            task_db = TaskDatabase(db_file)
+
+            # Load tasks from file into database
+            print(f"Loading tasks from '{args.task_file}' into database...")
+            num_tasks = 0
+            for task in yield_tasks_from_file(args.task_file, args.start_task, args.limit):
+                task_db.insert_task(task["task_id"], task["data"], status="pending")
+                num_tasks += 1
+
+            print(f"Loaded {num_tasks} tasks into database")
+
+            # Enqueue tasks to cloud queue
+            print(f"Enqueueing tasks to cloud queue '{queue_name}'...")
+            semaphore = asyncio.Semaphore(args.max_concurrent_queue_operations)
+            pending_tasks = set()
+
+            async def enqueue_task(task):
+                async with semaphore:
+                    try:
+                        await task_queue.send_task(task["task_id"], task["data"])
+                        task_db.update_task_enqueued(task["task_id"])
+                    except Exception as e:
+                        logger.error(f"Error enqueueing task {task['task_id']}: {e}")
+                        raise
+
+            with tqdm(desc="Enqueueing tasks", total=num_tasks) as pbar:
+                for task in yield_tasks_from_file(args.task_file, args.start_task, args.limit):
+                    task_obj = asyncio.create_task(enqueue_task(task))
+                    pending_tasks.add(task_obj)
+                    task_obj.add_done_callback(pending_tasks.discard)
+
+                    while len(pending_tasks) >= args.max_concurrent_queue_operations:
+                        done, pending_tasks = await asyncio.wait(
+                            pending_tasks, return_when=asyncio.FIRST_COMPLETED
+                        )
+                        pbar.update(len(done))
+
+                # Wait for remaining tasks
+                if pending_tasks:
+                    done, pending_tasks = await asyncio.wait(pending_tasks)
+                    pbar.update(len(done))
+
+            print(f"Enqueued {num_tasks} tasks to cloud queue")
+
+        # Create orchestrator (disable auto-termination since we control completion via SQLite)
+        print("Creating instance orchestrator...")
+        orchestrator = InstanceOrchestrator(
+            config=config, dry_run=args.dry_run, auto_terminate_on_empty=False
+        )
+
+        # Set up event monitor
+        event_monitor = EventMonitor(
+            events_queue,
+            task_db,
+            output_file_path=getattr(args, "output_file", None),
+            print_events=False,  # Don't print individual events
+            print_summary=True,
+        )
+        await event_monitor.start()
+
+        # Track if we should stop
+        job_complete = False
+        interrupted = False
+        stop_signal = asyncio.Event()
+
+        async def monitor_events_wrapper():
+            """Wrapper for the monitoring loop."""
+            nonlocal job_complete
+            await run_event_monitoring_loop(
+                event_monitor, task_db, check_completion=True, stop_signal=stop_signal
+            )
+            job_complete = True
+
+        async def run_orchestrator():
+            """Run the instance orchestrator."""
+            try:
+                await orchestrator.start()
+                # Keep checking until job is complete or interrupted
+                while orchestrator.is_running and not job_complete and not interrupted:
+                    await asyncio.sleep(1)
+            except Exception as e:
+                logger.error(f"Error in orchestrator: {e}", exc_info=True)
+                raise
+
+        # Set up signal handler for graceful shutdown
+        def signal_handler(signum, frame):
+            """Handle SIGINT (Ctrl+C) by raising KeyboardInterrupt."""
+            raise KeyboardInterrupt()
+
+        # Install signal handler
+        old_handler = signal.signal(signal.SIGINT, signal_handler)
+
+        # Start both tasks concurrently
+        print("Starting instance orchestrator and event monitor...")
+        orchestrator_task = asyncio.create_task(run_orchestrator())
+        event_monitor_task = asyncio.create_task(monitor_events_wrapper())
+
+        try:
+            # Wait for completion or interrupt
+            await asyncio.gather(orchestrator_task, event_monitor_task)
+        except (KeyboardInterrupt, asyncio.CancelledError) as e:
+            # Handle both KeyboardInterrupt and CancelledError (which asyncio may raise instead)
+            if isinstance(e, asyncio.CancelledError):
+                # Check if this was due to a KeyboardInterrupt
+                print("\n\nReceived interrupt.")
+            else:
+                print("\n\nReceived interrupt.")
+
+            interrupted = True
+            stop_signal.set()
+
+            # Cancel the tasks if they're still running
+            if not orchestrator_task.done():
+                orchestrator_task.cancel()
+            if not event_monitor_task.done():
+                event_monitor_task.cancel()
+
+            # Wait for tasks to finish cancelling
+            try:
+                await asyncio.gather(orchestrator_task, event_monitor_task, return_exceptions=True)
+            except Exception:
+                pass
+
+            # Prompt user for action
+            print("\nChoose action:")
+            print("  [T] Terminate all instances and delete queues")
+            print("  [L] Leave instances running (can resume with --continue)")
+            print("  [C] Cancel and continue running")
+
+            try:
+                choice = input("\nEnter choice (T/L/C): ").strip().upper()
+            except KeyboardInterrupt:
+                choice = "L"
+                print("\nDefaulting to [L] Leave instances running")
+
+            if choice == "T":
+                print("\nTerminating all instances and deleting queues...")
+                await orchestrator.stop(terminate_instances=True)
+                await task_queue.delete_queue()
+                await events_queue.delete_queue()
+                print("Job terminated")
+            elif choice == "L":
+                print("\nLeaving instances running. Use --continue to resume.")
+                await orchestrator.stop(terminate_instances=False)
+                print(f"Database saved to: {db_file}")
+            elif choice == "C":
+                print("\nContinuing job...")
+                interrupted = False
+                stop_signal.clear()
+                # Resume the tasks
+                orchestrator_task = asyncio.create_task(run_orchestrator())
+                event_monitor_task = asyncio.create_task(monitor_events_wrapper())
+                try:
+                    await asyncio.gather(orchestrator_task, event_monitor_task)
+                except (KeyboardInterrupt, asyncio.CancelledError):
+                    # If interrupted again, default to leaving instances running
+                    print("\n\nReceived second interrupt. Leaving instances running.")
+                    await orchestrator.stop(terminate_instances=False)
+                    print(f"Database saved to: {db_file}")
+            else:
+                print(f"\nInvalid choice '{choice}', defaulting to [L] Leave instances running")
+                await orchestrator.stop(terminate_instances=False)
+        finally:
+            # Restore original signal handler
+            signal.signal(signal.SIGINT, old_handler)
+
+        # If job completed normally, clean up
+        if job_complete and not interrupted:
+            print(
+                "\nJob complete! Cleaning up...this may take a few minutes; don't interrupt the process"
+            )
+            await orchestrator.stop(terminate_instances=True)
+
+            # Delete queues
+            print("Deleting queues...")
+            await task_queue.delete_queue()
+            await events_queue.delete_queue()
+
+            # Print final report
+            print_final_report(task_db)
+
+    except Exception as e:
+        logger.fatal(f"Error running job: {e}", exc_info=True)
+        print(f"\nFatal error: {e}")
+        sys.exit(1)
+    finally:
+        if event_monitor is not None:
+            event_monitor.close()
+        if task_db is not None:
+            task_db.close()
+
+
+def print_final_report(task_db: TaskDatabase) -> None:
+    """
+    Print final report with task statistics.
+
+    Args:
+        task_db: TaskDatabase instance
+    """
+    counts = task_db.get_task_counts()
+    total_tasks = task_db.get_total_tasks()
+    stats = task_db.get_task_statistics()
+
+    print("\n" + "=" * 60)
+    print("=== JOB COMPLETE ===")
+    print("=" * 60)
+    print(f"\nTotal tasks: {total_tasks}")
+    for status in counts:
+        print(f"  {status.capitalize()}: {counts[status]}")
+
+    # Calculate elapsed time
+    if stats["time_range"]["start_time"] and stats["time_range"]["end_time"]:
+        start = datetime.fromisoformat(stats["time_range"]["start_time"])
+        end = datetime.fromisoformat(stats["time_range"]["end_time"])
+        total_elapsed = (end - start).total_seconds()
+
+        hours = int(total_elapsed // 3600)
+        minutes = int((total_elapsed % 3600) // 60)
+        seconds = int(total_elapsed % 60)
+
+        print(f"\nElapsed time: {hours}h {minutes}m {seconds}s")
+
+        completed_count = counts.get("completed", 0)
+        if completed_count > 0 and total_elapsed > 0:
+            tasks_per_hour = completed_count / (total_elapsed / 3600)
+            print(f"Tasks/hour: {tasks_per_hour:.1f}")
+
+    # Print elapsed time statistics
+    if stats["time_stats"]["avg_time"]:
+        print("\nTask elapsed time statistics:")
+        print(
+            f"  Range:  {stats['time_stats']['min_time']:.2f} to "
+            f"{stats['time_stats']['max_time']:.2f} seconds"
+        )
+        print(
+            f"  Mean:   {stats['time_stats']['avg_time']:.2f} +/- "
+            f"{stats['percentiles'].get('std', 0):.2f} seconds"
+        )
+        if stats["percentiles"]:
+            print(f"  Median: {stats['percentiles']['median']:.2f} seconds")
+            print(f"  90th %: {stats['percentiles']['p90']:.2f} seconds")
+            print(f"  95th %: {stats['percentiles']['p95']:.2f} seconds")
+
+    # Print exception summary
+    if stats["exception_counts"]:
+        print("\nExceptions summary:")
+        for exception, count in list(stats["exception_counts"].items())[:10]:
+            # Truncate exception for display
+            exc_lines = exception.strip().split("\n")
+            if len(exc_lines) >= 3:
+                exc_head = "; ".join(exc_lines[1:3])
+                exc_tail = "; ".join(exc_lines[-2:])
+                exc_display = f"{exc_head}; ...; {exc_tail}"
+            else:
+                exc_display = exception
+            print(f"  {count:6d}: {exc_display[:120]}")
+
+    # Print spot terminations
+    if stats["spot_terminations"]:
+        print(f"\nSpot terminations: {len(stats['spot_terminations'])} hosts")
+        for host in stats["spot_terminations"]:
+            print(f"  {host}")
+
+    print("\n" + "=" * 60)
 
 
 async def status_cmd(args: argparse.Namespace, config: Config) -> None:
@@ -1613,26 +1890,6 @@ def add_common_args(
     )
 
 
-def add_load_queue_args(
-    parser: argparse.ArgumentParser, task_required: bool = True, include_max_concurrent: bool = True
-) -> None:
-    """Add load queue specific arguments."""
-    parser.add_argument(
-        "--task-file", required=task_required, help="Path to tasks file (JSON or YAML)"
-    )
-    parser.add_argument(
-        "--start-task", type=int, help="Skip tasks until this task number (1-based indexing)"
-    )
-    parser.add_argument("--limit", type=int, help="Maximum number of tasks to enqueue")
-    if include_max_concurrent:
-        parser.add_argument(
-            "--max-concurrent-queue-operations",
-            type=int,
-            default=100,
-            help="Maximum number of concurrent queue operations while loading tasks (default: 100)",
-        )
-
-
 def add_instance_pool_args(parser: argparse.ArgumentParser) -> None:
     """Add instance pool management specific arguments."""
 
@@ -1873,15 +2130,6 @@ def main():
     # QUEUE MANAGEMENT COMMANDS #
     # ------------------------- #
 
-    # --- Load queue command ---
-
-    load_queue_parser = subparsers.add_parser(
-        "load_queue", help="Load tasks into a queue without starting instances"
-    )
-    add_common_args(load_queue_parser)
-    add_load_queue_args(load_queue_parser)
-    load_queue_parser.set_defaults(func=load_queue_cmd)
-
     # --- Show queue command ---
 
     show_queue_parser = subparsers.add_parser(
@@ -1942,12 +2190,25 @@ def main():
     # INSTANCE MANAGEMENT COMMANDS #
     # ---------------------------- #
 
-    # --- Run command (combines load_queue and manage_pool)
+    # --- Run command ---
     run_parser = subparsers.add_parser(
         "run", help="Run a job (load tasks and manage instance pool)"
     )
     add_common_args(run_parser)
-    add_load_queue_args(run_parser)
+    run_parser.add_argument(
+        "--task-file",
+        help="Path to tasks file (JSON or YAML); required for fresh runs, not used with --continue",
+    )
+    run_parser.add_argument(
+        "--start-task", type=int, help="Skip tasks until this task number (1-based indexing)"
+    )
+    run_parser.add_argument("--limit", type=int, help="Maximum number of tasks to enqueue")
+    run_parser.add_argument(
+        "--max-concurrent-queue-operations",
+        type=int,
+        default=100,
+        help="Maximum number of concurrent queue operations while loading tasks (default: 100)",
+    )
     add_instance_pool_args(run_parser)
     add_instance_args(run_parser)
     run_parser.add_argument(
@@ -1955,28 +2216,60 @@ def main():
         action="store_true",
         help="Do not actually load any tasks or create or delete any instances",
     )
+    run_parser.add_argument(
+        "--continue",
+        dest="continue_run",
+        action="store_true",
+        help="Continue from a previous interrupted run using existing SQLite database and cloud state",
+    )
+    run_parser.add_argument(
+        "--db-file",
+        help="Path to SQLite database file (default: {job_id}.db)",
+    )
+    run_parser.add_argument(
+        "--output-file",
+        help="Optional file to write events to in JSON-lines format",
+    )
+    run_parser.add_argument(
+        "--force",
+        "-f",
+        action="store_true",
+        help="Force fresh run without confirmation even if queue has existing messages",
+    )
     run_parser.set_defaults(func=run_cmd)
+
+    # --- Monitor event queue command ---
+
+    monitor_events_parser = subparsers.add_parser(
+        "monitor_event_queue",
+        help="Monitor the event queue and update task database (for use with local workers)",
+    )
+    add_common_args(monitor_events_parser)
+    monitor_events_parser.add_argument(
+        "--db-file",
+        help="Path to SQLite database file (default: {job_id}.db)",
+    )
+    monitor_events_parser.add_argument(
+        "--output-file",
+        help="Optional file to write events to in JSON-lines format",
+    )
+    monitor_events_parser.add_argument(
+        "--print-events",
+        action="store_true",
+        help="Print events to stdout as they are received",
+    )
+    monitor_events_parser.add_argument(
+        "--no-auto-complete",
+        action="store_true",
+        help="Don't stop automatically when all tasks complete (monitor indefinitely)",
+    )
+    monitor_events_parser.set_defaults(func=monitor_event_queue_cmd)
 
     # --- Status command ---
 
     status_parser = subparsers.add_parser("status", help="Check job status")
     add_common_args(status_parser)
     status_parser.set_defaults(func=status_cmd)
-
-    # --- Manage pool command ---
-
-    manage_pool_parser = subparsers.add_parser(
-        "manage_pool", help="Manage an instance pool for processing tasks"
-    )
-    add_common_args(manage_pool_parser)
-    add_instance_pool_args(manage_pool_parser)
-    add_instance_args(manage_pool_parser)
-    manage_pool_parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Do not actually create or delete any instances",
-    )
-    manage_pool_parser.set_defaults(func=manage_pool_cmd)
 
     # --- Stop command ---
 
@@ -2016,22 +2309,6 @@ def main():
         "--detail", action="store_true", help="Show additional provider-specific information"
     )
     list_running_instances_parser.set_defaults(func=list_running_instances_cmd)
-
-    # --- Monitor results queue command ---
-
-    monitor_events_parser = subparsers.add_parser(
-        "monitor_event_queue",
-        help="Monitor the event queue and display or save events as they arrive",
-    )
-    add_common_args(monitor_events_parser)
-    add_load_queue_args(monitor_events_parser, task_required=False, include_max_concurrent=False)
-    monitor_events_parser.add_argument(
-        "--output-file",
-        required=True,
-        help="File to write events to (will be opened in append mode)",
-    )
-
-    monitor_events_parser.set_defaults(func=monitor_event_queue_cmd)
 
     # ------------------------------ #
     # INFORMATION GATHERING COMMANDS #
@@ -2157,7 +2434,13 @@ def main():
         sys.exit(1)
 
     # Run the appropriate command
-    asyncio.run(args.func(args, config))
+    try:
+        asyncio.run(args.func(args, config))
+    except KeyboardInterrupt:
+        # KeyboardInterrupt should be handled within the command itself
+        # If it propagates here, it means the command didn't handle it
+        print("\n\nOperation interrupted by user.")
+        sys.exit(130)  # Standard exit code for SIGINT
 
     sys.exit(0)
 

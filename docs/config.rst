@@ -263,8 +263,8 @@ Options to specify the boot process
 
 .. _config_worker_and_manage_pool_options:
 
-Options to specify the worker and manage_pool processes
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Options to specify the worker process and run process
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 * ``scaling_check_interval``: The interval in seconds to check for scaling opportunities
   (defaults to 60)
@@ -281,6 +281,10 @@ Options to specify the worker and manage_pool processes
   unhandled exception
 * ``retry_on_timeout``: If True, tasks will be retried if they exceed the maximum runtime
   specified by ``max_runtime``
+* ``db_file``: Path to the SQLite database file used by the ``run`` command to track task
+  status and events (defaults to ``{job_id}.db`` in the current working directory). The 
+  database enables crash recovery via the ``--continue`` option and stores comprehensive 
+  task execution data including results, exceptions, and timing information.
 
 .. _config_provider_specific_options:
 
@@ -356,7 +360,7 @@ or:
 
 .. code-block:: text
 
-    $ cloud_tasks manage_pool --config config.yml --min-cpu 16
+    $ cloud_tasks run --config config.yml --task-file tasks.json --min-cpu 16
 
     2025-06-03 14:04:33.848 - cloud_tasks.common.config - WARNING - Overloading run.min_cpu=2 with CLI=16
 
@@ -383,7 +387,7 @@ a job ID, a project ID, a region, and a startup script.
 
 .. code-block:: bash
 
-    $ cloud_tasks manage_pool --config config.yaml
+    $ cloud_tasks run --config config.yaml --task-file tasks.json
 
 Given the lack of
 :ref:`configuration options to constrain the instance type <config_compute_instance_options>`,
@@ -413,8 +417,9 @@ command line:
 
 .. code-block:: bash
 
-    $ cloud_tasks manage_pool \
+    $ cloud_tasks run \
       --config config.yaml \
+      --task-file tasks.json \
       --provider gcp \
       --job-id my-processing-job \
       --project-id my-project-id \
@@ -425,7 +430,8 @@ at all:
 
 .. code-block:: bash
 
-    $ cloud_tasks manage_pool \
+    $ cloud_tasks run \
+      --task-file tasks.json \
       --provider gcp \
       --job-id my-processing-job \
       --project-id my-project-id \

@@ -29,18 +29,28 @@ class InstanceOrchestrator:
 
     _DEFAULT_BOOT_DISK_SIZE_PER_CPU_GB = 10
 
-    def __init__(self, config: Config, dry_run: Optional[bool] = False):
+    def __init__(
+        self,
+        config: Config,
+        dry_run: Optional[bool] = False,
+        auto_terminate_on_empty: Optional[bool] = True,
+    ):
         """
         Initialize the instance orchestrator.
 
         Args:
             config: Configuration object containing all settings.
+            dry_run: If True, don't actually create or terminate instances
+            auto_terminate_on_empty: If True, automatically terminate instances when queue
+                is empty for instance_termination_delay seconds. If False, instances will
+                continue running until stop() is called externally.
         """
         self._logger = logging.getLogger(__name__)
         self._logger.debug("Initializing InstanceOrchestrator")
 
         self._config = config
         self._dry_run = dry_run
+        self._auto_terminate_on_empty = auto_terminate_on_empty
 
         self._provider = self._config.provider
 
@@ -517,19 +527,28 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
             else:
                 self._logger.info(f"Current queue depth: {queue_depth}")
 
-            # Check if queue is empty
+            # Check if queue is empty (only auto-terminate if enabled)
             if queue_depth == 0:
-                if self._empty_queue_since is None:
-                    self._empty_queue_since = float(time.time())
-                    self._logger.info("Queue is empty, starting termination timer")
+                if self._auto_terminate_on_empty:
+                    if self._empty_queue_since is None:
+                        self._empty_queue_since = float(time.time())
+                        self._logger.info("Queue is empty, starting termination timer")
+                    else:
+                        empty_duration = float(time.time()) - self._empty_queue_since
+                        self._logger.info(f"Queue has been empty for {empty_duration:.1f} seconds")
+                        if empty_duration > self._instance_termination_delay:
+                            self._logger.info("TERMINATION TIMER EXPIRED - TERMINATING ALL INSTANCES")
+                            await self.terminate_all_instances()
+                            self._running = False
+                    return
                 else:
-                    empty_duration = float(time.time()) - self._empty_queue_since
-                    self._logger.info(f"Queue has been empty for {empty_duration:.1f} seconds")
-                    if empty_duration > self._instance_termination_delay:
-                        self._logger.info("TERMINATION TIMER EXPIRED - TERMINATING ALL INSTANCES")
-                        await self.terminate_all_instances()
-                        self._running = False
-                return
+                    # Don't auto-terminate, but log that queue is empty
+                    if self._empty_queue_since is None:
+                        self._empty_queue_since = float(time.time())
+                        self._logger.info(
+                            "Queue is empty (auto-termination disabled, waiting for external stop)"
+                        )
+                    return
 
         # Queue is not empty, reset timer
         if self._empty_queue_since is not None:

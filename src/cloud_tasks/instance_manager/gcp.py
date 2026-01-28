@@ -70,6 +70,8 @@ class GCPComputeInstanceManager(InstanceManager):
         "c4a": "Google Axion",
         "c4d": "AMD Turin",
         "n4": "Intel Emerald Rapids",
+        "n4a": "Google Axion",
+        "n4d": "AMD Turin",
         "c3": "Intel Sapphire Rapids",
         "c3d": "AMD Genoa",
         "e2": "Intel Broadwell",
@@ -132,6 +134,8 @@ class GCPComputeInstanceManager(InstanceManager):
         "n2": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd"],
         "n2d": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd", "hd-balanced"],
         "n4": ["hd-balanced"],
+        "n4a": ["hd-balanced"],
+        "n4d": ["hd-balanced"],
         "t2a": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd"],
         "t2d": ["pd-standard", "pd-balanced", "pd-ssd"],
         # Compute-optimized
