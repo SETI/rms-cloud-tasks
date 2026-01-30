@@ -786,9 +786,7 @@ def test_config_overload_from_cli_aws_warning(config_obj):
     cli_args = {"region": "us-west-1"}
     with patch.object(config_mod, "LOGGER") as mock_logger:
         c.overload_from_cli(cli_args)
-        mock_logger.warning.assert_called_with(
-            "Overloading aws.region=us-east-1 with CLI=us-west-1"
-        )
+        mock_logger.warning.assert_called_with("overriding aws.region=us-east-1 with CLI=us-west-1")
     assert c.aws.region == "us-west-1"
 
 
@@ -799,7 +797,7 @@ def test_config_overload_from_cli_gcp_warning(config_obj):
     cli_args = {"region": "us-west1"}
     with patch.object(config_mod, "LOGGER") as mock_logger:
         c.overload_from_cli(cli_args)
-        mock_logger.warning.assert_called_with("Overloading gcp.region=us-east1 with CLI=us-west1")
+        mock_logger.warning.assert_called_with("overriding gcp.region=us-east1 with CLI=us-west1")
     assert c.gcp.region == "us-west1"
 
 
@@ -810,7 +808,7 @@ def test_config_overload_from_cli_azure_warning(config_obj):
     cli_args = {"region": "westus"}
     with patch.object(config_mod, "LOGGER") as mock_logger:
         c.overload_from_cli(cli_args)
-        mock_logger.warning.assert_called_with("Overloading azure.region=eastus with CLI=westus")
+        mock_logger.warning.assert_called_with("overriding azure.region=eastus with CLI=westus")
     assert c.azure.region == "westus"
 
 
@@ -831,7 +829,7 @@ def test_config_overload_from_cli_run_warning(config_obj):
     cli_args = {"min_instances": 2}
     with patch.object(config_mod, "LOGGER") as mock_logger:
         c.overload_from_cli(cli_args)
-        mock_logger.warning.assert_called_with("Overloading run.min_instances=1 with CLI=2")
+        mock_logger.warning.assert_called_with("overriding run.min_instances=1 with CLI=2")
     assert c.run.min_instances == 2
 
 

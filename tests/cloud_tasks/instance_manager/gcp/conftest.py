@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import threading
 import time
 from typing import Any, Dict, Tuple, List
 
@@ -501,15 +502,18 @@ def mock_machine_types_client_n1_2_4(
 def deepcopy_gcp_instance_manager(
     gcp_instance_manager: GCPComputeInstanceManager,
 ) -> GCPComputeInstanceManager:
-    """Deepcopy a GCP instance manager."""
-    if hasattr(gcp_instance_manager, "_thread_local"):
-        old_thread = gcp_instance_manager._thread_local
+    """Deepcopy a GCP instance manager, excluding non-serializable attributes (thread local, lock)."""
+    old_thread = getattr(gcp_instance_manager, "_thread_local", None)
+    old_lock = getattr(gcp_instance_manager, "_pricing_cache_lock", None)
+    try:
         gcp_instance_manager._thread_local = None
-        print(gcp_instance_manager._thread_local)
-    new_gcp_instance_manager = copy.deepcopy(gcp_instance_manager)
-    if hasattr(gcp_instance_manager, "_thread_local"):
+        gcp_instance_manager._pricing_cache_lock = None
+        new_gcp_instance_manager = copy.deepcopy(gcp_instance_manager)
+    finally:
         gcp_instance_manager._thread_local = old_thread
-        new_gcp_instance_manager._thread_local = old_thread
+        gcp_instance_manager._pricing_cache_lock = old_lock
+    new_gcp_instance_manager._thread_local = old_thread
+    new_gcp_instance_manager._pricing_cache_lock = threading.Lock()
     return new_gcp_instance_manager
 
 
