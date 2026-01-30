@@ -7,7 +7,6 @@ It uses multiprocessing to achieve true parallelism across multiple CPU cores.
 
 import argparse
 import asyncio
-import datetime
 import json
 import json_stream
 import logging

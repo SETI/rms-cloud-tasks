@@ -254,6 +254,7 @@ class GCPComputeInstanceManager(InstanceManager):
             Tuple[str, bool], Dict[str, Dict[str, float | str | None]] | None
         ] = {}
         self._pricing_cache_file_loaded = False
+        self._pricing_cache_lock = threading.Lock()
 
         self._logger.debug(
             f"Initialized GCP Compute Engine: project '{self._project_id}', "
@@ -282,9 +283,10 @@ class GCPComputeInstanceManager(InstanceManager):
 
     def _load_pricing_cache_from_file(self) -> None:
         """Load pricing cache from file if it exists and is not older than 24 hours."""
-        if self._pricing_cache_file_loaded:
-            return
-        self._pricing_cache_file_loaded = True
+        with self._pricing_cache_lock:
+            if self._pricing_cache_file_loaded:
+                return
+            self._pricing_cache_file_loaded = True
         path = self._get_pricing_cache_path()
         if not os.path.isfile(path):
             return
@@ -293,32 +295,51 @@ class GCPComputeInstanceManager(InstanceManager):
             mtime_utc = datetime.fromtimestamp(os.path.getmtime(path), tz=timezone.utc)
             if (datetime.now(timezone.utc) - mtime_utc).total_seconds() > 24 * 3600:
                 return
-            with open(path, "r") as f:
+            with open(path) as f:
                 data = json.load(f)
-            for key_str, value in data.items():
-                part = key_str.rsplit("|", 1)
-                if len(part) != 2:
-                    continue
-                family, use_spot_str = part[0], part[1]
-                use_spot = use_spot_str.lower() == "true"
-                self._instance_pricing_cache[(family, use_spot)] = value
+            with self._pricing_cache_lock:
+                for key_str, value in data.items():
+                    part = key_str.rsplit("|", 1)
+                    if len(part) != 2:
+                        continue
+                    family, use_spot_str = part[0], part[1]
+                    use_spot = use_spot_str.lower() == "true"
+                    self._instance_pricing_cache[(family, use_spot)] = value
             self._logger.debug(f"Loaded GCP pricing cache from {path}")
         except (OSError, json.JSONDecodeError) as e:
             self._logger.debug(f"Could not load pricing cache from {path}: {e}")
 
     def _save_pricing_cache_to_file(self) -> None:
-        """Write current in-memory pricing cache to the file in the temp directory."""
+        """Write current in-memory pricing cache to the file in the temp directory (atomic)."""
         path = self._get_pricing_cache_path()
+        cache_dir = os.path.dirname(path)
+        fd = None
+        temp_path = None
         try:
-            data = {}
-            for (family, use_spot), value in self._instance_pricing_cache.items():
-                key_str = f"{family}|{use_spot}"
-                data[key_str] = value
-            with open(path, "w") as f:
+            with self._pricing_cache_lock:
+                data = {}
+                for (family, use_spot), value in self._instance_pricing_cache.items():
+                    key_str = f"{family}|{use_spot}"
+                    data[key_str] = value
+            fd, temp_path = tempfile.mkstemp(dir=cache_dir or None, suffix=".json", prefix=".cloud_tasks_gcp_pricing_")
+            with os.fdopen(fd, "w") as f:
                 json.dump(data, f, indent=2)
+                f.flush()
+                try:
+                    os.fsync(f.fileno())
+                except OSError:
+                    pass
+            os.replace(temp_path, path)
+            temp_path = None
             self._logger.debug(f"Saved GCP pricing cache to {path}")
         except OSError as e:
             self._logger.debug(f"Could not save pricing cache to {path}: {e}")
+        finally:
+            if temp_path is not None and os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
 
     async def get_available_instance_types(
         self, constraints: Optional[Dict[str, Any]] = None

@@ -35,11 +35,11 @@ class InstanceOrchestrator:
         dry_run: Optional[bool] = False,
         auto_terminate_on_empty: Optional[bool] = True,
         get_remaining_task_count: Optional[Callable[[], int]] = None,
-    ):
+    ) -> None:
         """
         Initialize the instance orchestrator.
 
-        Args:
+        Parameters:
             config: Configuration object containing all settings.
             dry_run: If True, don't actually create or terminate instances
             auto_terminate_on_empty: If True, automatically terminate instances when queue
@@ -781,7 +781,7 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
         """
         Provision new instances for the job.
 
-        Args:
+        Parameters:
             count: Number of instances to provision
 
         Returns:
