@@ -4,11 +4,15 @@ Google Cloud Compute Engine implementation of the InstanceManager interface.
 
 import asyncio
 import copy
+import json
 import logging
+import os
 import random
 import re
 import shortuuid
+import tempfile
 import threading
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple, cast
 
 from google.api_core.exceptions import NotFound  # type: ignore
@@ -249,6 +253,7 @@ class GCPComputeInstanceManager(InstanceManager):
         self._instance_pricing_cache: Dict[
             Tuple[str, bool], Dict[str, Dict[str, float | str | None]] | None
         ] = {}
+        self._pricing_cache_file_loaded = False
 
         self._logger.debug(
             f"Initialized GCP Compute Engine: project '{self._project_id}', "
@@ -265,6 +270,55 @@ class GCPComputeInstanceManager(InstanceManager):
 
     def _job_id_to_tag(self, job_id: str) -> str:
         return f"{self._JOB_ID_TAG_PREFIX}{job_id}"
+
+    def _get_pricing_cache_path(self) -> str:
+        """Return path to the file-backed pricing cache (temp dir, keyed by project and region)."""
+        safe_project = re.sub(r"[^\w\-]", "_", self._project_id or "")
+        safe_region = re.sub(r"[^\w\-]", "_", self._region or "")
+        return os.path.join(
+            tempfile.gettempdir(),
+            f"cloud_tasks_gcp_pricing_{safe_project}_{safe_region}.json",
+        )
+
+    def _load_pricing_cache_from_file(self) -> None:
+        """Load pricing cache from file if it exists and is not older than 24 hours."""
+        if self._pricing_cache_file_loaded:
+            return
+        self._pricing_cache_file_loaded = True
+        path = self._get_pricing_cache_path()
+        if not os.path.isfile(path):
+            return
+        try:
+            # getmtime returns seconds since epoch (UTC); compare as UTC datetimes
+            mtime_utc = datetime.fromtimestamp(os.path.getmtime(path), tz=timezone.utc)
+            if (datetime.now(timezone.utc) - mtime_utc).total_seconds() > 24 * 3600:
+                return
+            with open(path, "r") as f:
+                data = json.load(f)
+            for key_str, value in data.items():
+                part = key_str.rsplit("|", 1)
+                if len(part) != 2:
+                    continue
+                family, use_spot_str = part[0], part[1]
+                use_spot = use_spot_str.lower() == "true"
+                self._instance_pricing_cache[(family, use_spot)] = value
+            self._logger.debug(f"Loaded GCP pricing cache from {path}")
+        except (OSError, json.JSONDecodeError) as e:
+            self._logger.debug(f"Could not load pricing cache from {path}: {e}")
+
+    def _save_pricing_cache_to_file(self) -> None:
+        """Write current in-memory pricing cache to the file in the temp directory."""
+        path = self._get_pricing_cache_path()
+        try:
+            data = {}
+            for (family, use_spot), value in self._instance_pricing_cache.items():
+                key_str = f"{family}|{use_spot}"
+                data[key_str] = value
+            with open(path, "w") as f:
+                json.dump(data, f, indent=2)
+            self._logger.debug(f"Saved GCP pricing cache to {path}")
+        except OSError as e:
+            self._logger.debug(f"Could not save pricing cache to {path}: {e}")
 
     async def get_available_instance_types(
         self, constraints: Optional[Dict[str, Any]] = None
@@ -607,7 +661,10 @@ class GCPComputeInstanceManager(InstanceManager):
         )
         self._logger.debug(f"Boot disk constraints: {boot_disk_constraints}")
 
+        self._load_pricing_cache_from_file()
+
         ret: Dict[str, Dict[str, Dict[str, float | str | None]]] = {}
+        cache_modified = False
 
         if len(instance_types) == 0:
             self._logger.debug("No instance types provided")
@@ -721,6 +778,7 @@ class GCPComputeInstanceManager(InstanceManager):
 
             # Save None to mark we tried, even if we don't eventually find a match
             self._instance_pricing_cache[cache_key] = None
+            cache_modified = True
 
             # Find matching SKU for the instance type in this region.
             # This is kind of a hack because we are figuring out which SKU to use based on
@@ -1156,6 +1214,7 @@ class GCPComputeInstanceManager(InstanceManager):
 
             # We only cache the pricing info for the machine family
             self._instance_pricing_cache[cache_key] = ret_val
+            cache_modified = True
 
             if pricing_by_boot_disk == {}:
                 self._logger.warning(
@@ -1166,6 +1225,9 @@ class GCPComputeInstanceManager(InstanceManager):
 
             # Add the instance type info to the return value
             ret[machine_type] = ret_val
+
+        if cache_modified:
+            self._save_pricing_cache_to_file()
 
         return ret
 

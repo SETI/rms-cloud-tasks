@@ -548,11 +548,21 @@ async def gcp_instance_manager_n1_n2(
         ),
         patch("google.cloud.compute_v1.ImagesClient", return_value=MagicMock()),
         patch("google.cloud.billing.CloudCatalogClient", return_value=MagicMock()),
+        patch.object(
+            GCPComputeInstanceManager,
+            "_load_pricing_cache_from_file",
+            lambda self: None,
+        ),
+        patch.object(
+            GCPComputeInstanceManager,
+            "_save_pricing_cache_to_file",
+            lambda self: None,
+        ),
     ):
         manager = GCPComputeInstanceManager(gcp_config)
         end = time.time()
         print(f"Time taken to create GCPComputeInstanceManager: {end - start} seconds")
-        return manager
+        yield manager
 
 
 @pytest_asyncio.fixture
@@ -577,8 +587,18 @@ async def gcp_instance_manager_n1_2_4(
         ),
         patch("google.cloud.compute_v1.ImagesClient", return_value=MagicMock()),
         patch("google.cloud.billing.CloudCatalogClient", return_value=MagicMock()),
+        patch.object(
+            GCPComputeInstanceManager,
+            "_load_pricing_cache_from_file",
+            lambda self: None,
+        ),
+        patch.object(
+            GCPComputeInstanceManager,
+            "_save_pricing_cache_to_file",
+            lambda self: None,
+        ),
     ):
         manager = GCPComputeInstanceManager(gcp_config)
         end = time.time()
         print(f"Time taken to create GCPComputeInstanceManager: {end - start} seconds")
-        return manager
+        yield manager
