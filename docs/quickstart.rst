@@ -13,6 +13,27 @@ Activate your Python virtual environment, as appropriate, then:
 
     pip install rms-cloud-tasks
 
+You may also install `cloud_tasks` using `pipx`, which will isolate the installation from
+your system Python without requiring the creation of a virtual environment. To install
+`pipx`, please see the [installation
+instructions](https://pipx.pypa.io/stable/installation/). Once `pipx` is available, you
+may install `cloud_tasks` with:
+
+```sh
+pipx install rms-cloud-tasks
+```
+
+If you already have the `rms-cloud-tasks` package installed with `pipx`, you may
+upgrade to a more recent version with:
+
+```sh
+pipx upgrade rms-cloud-tasks
+```
+
+Using `pipx` is only useful if you want to use the command line interface and not access
+the Python module; however, it does not require you to worry about the Python version,
+setting up a virtual environment, etc.
+
 
 Step 2: Modify Your Code to be a Worker
 ---------------------------------------
@@ -161,19 +182,14 @@ exit. You can change how long to wait before the current tasks are complete with
 As tasks run, their status may optionally be sent to a local file and/or a cloud-based
 event queue. By default, if the tasks are read from a cloud-based task queue, their status
 is sent to a cloud-based event queue, and if the tasks are read from a local file, their
-status is sent to a local file.
+status is sent to a local file. While it is possible to run a worker locally and receive
+events from a cloud-based event queue, it is not recommended for most use cases and is
+not discussed here.
 
 If a local event log is used while tasks are running on a local workstation, the event
 log can be monitored manually using standard Unix tools such as ``tail`` or ``less``.
 You may also write separate programs to process the event log and make reports as
 necessary.
-
-If a cloud-based event queue is used, Cloud Tasks provides a way to monitor the queue,
-report on the status of each task, save the events to a file, and collect statistics:
-
-.. code-block:: bash
-
-    cloud_tasks monitor_event_queue --config myconfig.yml --output-file events.json
 
 *If you are only going to run the worker locally, you can stop reading here.*
 
@@ -329,6 +345,14 @@ If you need to interrupt the run command (Ctrl+C), you'll be prompted with three
   You can resume later with ``--continue`` (see below).
 
 - **[C] Cancel**: Cancels the interrupt and continues running normally.
+
+If you choose T or L, you will be further asked if you want to dump the task
+files by status. If you say yes, a series of JSON files will be created in the
+current directory, each containing those tasks that have the corresponding
+status. All of these files together will equal the same tasks in the original
+task file. This can be useful for debugging or if the job has gotten wedged in
+some way and you want to abort and start over, but only run the tasks that did
+not complete or failed for some other reason.
 
 
 .. _quickstart_crash_recovery:

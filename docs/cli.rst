@@ -459,6 +459,12 @@ The ``run`` command handles the complete task execution workflow in a single com
 It automates: queue management, task loading, instance orchestration, event monitoring,
 and cleanup.
 
+During job execution, the status of each task is tracked in a SQLite database and reported
+to the console. The name of the database file is derived from the job ID or can be specified
+with the ``--db-file`` option. If the job run is interrupted, the database file is saved and
+job execution can be resumed by using the ``--continue`` option based on the contents of the
+database file.
+
 **Fresh Run Mode** (default): Deletes existing SQLite database and queues, creates new ones,
 loads tasks into the database and cloud queue, manages instances, monitors events, and
 automatically terminates instances and deletes queues when all tasks complete. If the existing
@@ -559,78 +565,15 @@ Examples:
          cloud_tasks run --config myconfig.yml --task-file tasks.json --db-file custom.db
 
 
-.. _cli_load_queue_cmd:
-
-load_queue
-~~~~~~~~~~
-
-Load tasks into the local SQLite database and cloud task queue without starting any
-compute instances. This allows you to separate the task loading step from the
-:ref:`run <cli_run_cmd>` command (e.g. load once, then run with ``--continue`` to manage
-instances only).
-
-**Fresh load** (default): Deletes the existing SQLite database and cloud queues (after
-optional confirmation if the queue has messages), creates new queues, loads tasks from
-the task file into the database and enqueues them to the cloud task queue.
-
-**Continue mode** (``--continue``): Opens the existing SQLite database and prints task
-statistics and queue depth only. No task file is read and no messages are enqueued.
-
-.. code-block:: none
-
-   cloud_tasks load_queue
-     [Common options]
-     [Job-specific options]
-     [Provider-specific options]
-     [Additional options]
-
-Additional options:
-
---task-file TASK_FILE                 Path to task file (JSON or YAML); required unless
-                                      --continue
---start-task N                        Skip tasks until this task number (1-based)
---limit N                             Maximum number of tasks to enqueue
---max-concurrent-queue-operations N  Maximum concurrent queue operations (default: 100)
---db-file DB_FILE                     Path to SQLite database file (default: {job_id}.db)
---continue                            Open existing database and show status only (no load)
---force, -f                           Force fresh load without confirmation even if queue
-                                      has existing messages
-
-Examples:
-
-.. tabs::
-
-   .. tab:: AWS
-
-      .. code-block:: none
-
-         $ cloud_tasks load_queue --provider aws --job-id my-job --task-file examples/parallel_addition/addition_tasks.json
-         Loaded 10000 tasks. Queue depth (may be approximate): 10000
-
-         $ cloud_tasks load_queue --config myconfig.yml --continue
-         Database: my-job.db (10000 tasks)
-         Status: ...
-
-   .. tab:: GCP
-
-      .. code-block:: none
-
-         $ cloud_tasks load_queue --provider gcp --job-id my-job --project my-project --task-file examples/parallel_addition/addition_tasks.json
-         Loaded 10000 tasks. Queue depth (may be approximate): 10000
-
-         $ cloud_tasks load_queue --config myconfig.yml --db-file my-job.db --continue
-         Database: my-job.db (10000 tasks)
-         Status: ...
-
-
 .. _cli_monitor_event_queue:
 
 monitor_event_queue
 ~~~~~~~~~~~~~~~~~~~
 
-Monitor the event queue and update task database. This command is useful when running workers
-locally (not using cloud-managed instances) but still want automated event monitoring and
-SQLite-based task tracking.
+Monitor the event queue and update the task database. This command is useful
+when you are running workers locally (not using cloud-managed compute instances)
+but still want automated event monitoring and SQLite-based task tracking. Note
+this does not manage compute instances.
 
 .. code-block:: none
 
@@ -857,6 +800,70 @@ Examples:
 
 Queue Management Commands
 -------------------------
+
+
+.. _cli_load_queue_cmd:
+
+load_queue
+~~~~~~~~~~
+
+Load tasks into the local SQLite database and cloud task queue without starting any
+compute instances. This allows you to separate the task loading step from the
+:ref:`run <cli_run_cmd>` command (e.g. load once, then run with ``--continue`` to manage
+instances only).
+
+**Fresh load** (default): Deletes the existing SQLite database and cloud queues (after
+optional confirmation if the queue has messages), creates new queues, loads tasks from
+the task file into the database and enqueues them to the cloud task queue.
+
+**Continue mode** (``--continue``): Opens the existing SQLite database and prints task
+statistics and queue depth only. No task file is read and no messages are enqueued.
+
+.. code-block:: none
+
+   cloud_tasks load_queue
+     [Common options]
+     [Job-specific options]
+     [Provider-specific options]
+     [Additional options]
+
+Additional options:
+
+--task-file TASK_FILE                 Path to task file (JSON or YAML); required unless
+                                      --continue
+--start-task N                        Skip tasks until this task number (1-based)
+--limit N                             Maximum number of tasks to enqueue
+--max-concurrent-queue-operations N  Maximum concurrent queue operations (default: 100)
+--db-file DB_FILE                     Path to SQLite database file (default: {job_id}.db)
+--continue                            Open existing database and show status only (no load)
+--force, -f                           Force fresh load without confirmation even if queue
+                                      has existing messages
+
+Examples:
+
+.. tabs::
+
+   .. tab:: AWS
+
+      .. code-block:: none
+
+         $ cloud_tasks load_queue --provider aws --job-id my-job --task-file examples/parallel_addition/addition_tasks.json
+         Loaded 10000 tasks. Queue depth (may be approximate): 10000
+
+         $ cloud_tasks load_queue --config myconfig.yml --continue
+         Database: my-job.db (10000 tasks)
+         Status: ...
+
+   .. tab:: GCP
+
+      .. code-block:: none
+
+         $ cloud_tasks load_queue --provider gcp --job-id my-job --project my-project --task-file examples/parallel_addition/addition_tasks.json
+         Loaded 10000 tasks. Queue depth (may be approximate): 10000
+
+         $ cloud_tasks load_queue --config myconfig.yml --db-file my-job.db --continue
+         Database: my-job.db (10000 tasks)
+         Status: ...
 
 
 .. _cli_show_queue_cmd:

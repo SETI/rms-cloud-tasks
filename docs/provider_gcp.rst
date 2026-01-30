@@ -359,6 +359,22 @@ with CPU family and performance rank.
      - X
      - Intel Ice Lake
      - 16
+   * - n4a
+     -
+     - X
+     -
+     -
+     -
+     - Google Axion
+     - 27
+   * - n4d
+     -
+     - X
+     -
+     -
+     -
+     - AMD Turin
+     - 26
    * - t2a
      - X
      - X

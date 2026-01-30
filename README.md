@@ -43,7 +43,7 @@ Cloud Tasks is extremely easy to use with a simple command line interface and
 straightforward configuration file. It supports AWS and GCP compute instances and queues
 along with the ability to run jobs on a local workstation, all using a
 provider-independent API. Although each cloud provider has implemented similar
-functionality as part of their offering (e.g. GCP's Cloud Batch), Cloud Tasks is unique in
+functionality as part of their offering (e.g. GCP's Cloud Run), Cloud Tasks is unique in
 that it unifies all supported providers into a single, simple, universal system that does
 not require learning the often-complicated details of the official full-featured services.
 

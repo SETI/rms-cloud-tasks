@@ -754,9 +754,7 @@ async def load_queue_common(
         logger.info(
             f"WARNING: Task queue '{queue_name}' currently has at least {queue_depth} message(s)."
         )
-        logger.info(
-            "Starting a fresh run will DELETE the existing queue and all its messages."
-        )
+        logger.info("Starting a fresh run will DELETE the existing queue and all its messages.")
         confirm = input("Type 'YES' to confirm deletion: ")
         if confirm != "YES":
             logger.info("Operation cancelled.")
@@ -891,7 +889,9 @@ async def load_queue_cmd(args: argparse.Namespace, config: Config) -> None:
             if queue_depth is None:
                 logger.info(f"Loaded {num_tasks} tasks. Failed to get queue depth.")
             else:
-                logger.info(f"Loaded {num_tasks} tasks. Queue depth (may be approximate): {queue_depth}")
+                logger.info(
+                    f"Loaded {num_tasks} tasks. Queue depth (may be approximate): {queue_depth}"
+                )
     except Exception as e:
         logger.fatal(f"Error loading tasks: {e}", exc_info=True)
         logger.info(f"Fatal error: {e}")
@@ -1608,10 +1608,7 @@ async def list_images_cmd(args: argparse.Namespace, config: Config) -> None:
                         )
                         # TODO Update for --detail
 
-        print(
-            "\nTo use a custom image with the 'run' or 'manage_pool' commands, use the "
-            "--image parameter."
-        )
+        print("\nTo use a custom image with the 'run' command, use the " "--image parameter.")
         if args.provider == "AWS":
             print("For AWS, specify the AMI ID: --image ami-12345678")
         elif args.provider == "GCP":
