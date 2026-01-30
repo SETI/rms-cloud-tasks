@@ -15,20 +15,20 @@ Activate your Python virtual environment, as appropriate, then:
 
 You may also install `cloud_tasks` using `pipx`, which will isolate the installation from
 your system Python without requiring the creation of a virtual environment. To install
-`pipx`, please see the [installation
-instructions](https://pipx.pypa.io/stable/installation/). Once `pipx` is available, you
+`pipx`, see the installation instructions
+<https://pipx.pypa.io/stable/installation/>_. Once `pipx` is available, you
 may install `cloud_tasks` with:
 
-```sh
-pipx install rms-cloud-tasks
-```
+.. code-block:: bash
+
+   pipx install rms-cloud-tasks
 
 If you already have the `rms-cloud-tasks` package installed with `pipx`, you may
 upgrade to a more recent version with:
 
-```sh
-pipx upgrade rms-cloud-tasks
-```
+.. code-block:: bash
+
+   pipx upgrade rms-cloud-tasks
 
 Using `pipx` is only useful if you want to use the command line interface and not access
 the Python module; however, it does not require you to worry about the Python version,

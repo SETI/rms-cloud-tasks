@@ -362,7 +362,7 @@ or:
 
     $ cloud_tasks run --config config.yml --task-file tasks.json --min-cpu 16
 
-    2025-06-03 14:04:33.848 - cloud_tasks.common.config - WARNING - Overloading run.min_cpu=2 with CLI=16
+    2025-06-03 14:04:33.848 - cloud_tasks.common.config - WARNING - overriding run.min_cpu=2 with CLI=16
 
 
 Examples

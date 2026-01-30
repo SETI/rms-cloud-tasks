@@ -319,7 +319,7 @@ class Config(BaseModel, validate_assignment=True):
                     val = getattr(self, attr_name)
                     if val is not None and val != cli_args[attr_name]:
                         LOGGER.warning(
-                            f"Overloading {attr_name}={val} with CLI={cli_args[attr_name]}"
+                            f"overriding {attr_name}={val} with CLI={cli_args[attr_name]}"
                         )
                     setattr(self, attr_name, cli_args[attr_name])
             if self.provider is not None:
@@ -331,7 +331,7 @@ class Config(BaseModel, validate_assignment=True):
                     val = getattr(self.run, attr_name)
                     if val is not None and val != cli_args[attr_name]:
                         LOGGER.warning(
-                            f"Overloading run.{attr_name}={val} with CLI={cli_args[attr_name]}"
+                            f"overriding run.{attr_name}={val} with CLI={cli_args[attr_name]}"
                         )
                     setattr(self.run, attr_name, cli_args[attr_name])
             if self.provider == "AWS" and self.aws is not None:
@@ -340,7 +340,7 @@ class Config(BaseModel, validate_assignment=True):
                         val = getattr(self.aws, attr_name)
                         if val is not None and val != cli_args[attr_name]:
                             LOGGER.warning(
-                                f"Overloading aws.{attr_name}={val} with CLI={cli_args[attr_name]}"
+                                f"overriding aws.{attr_name}={val} with CLI={cli_args[attr_name]}"
                             )
                         setattr(self.aws, attr_name, cli_args[attr_name])
             if self.provider == "GCP" and self.gcp is not None:
@@ -349,7 +349,7 @@ class Config(BaseModel, validate_assignment=True):
                         val = getattr(self.gcp, attr_name)
                         if val is not None and val != cli_args[attr_name]:
                             LOGGER.warning(
-                                f"Overloading gcp.{attr_name}={val} with CLI={cli_args[attr_name]}"
+                                f"overriding gcp.{attr_name}={val} with CLI={cli_args[attr_name]}"
                             )
                         setattr(self.gcp, attr_name, cli_args[attr_name])
             if self.provider == "AZURE" and self.azure is not None:
@@ -358,7 +358,7 @@ class Config(BaseModel, validate_assignment=True):
                         val = getattr(self.azure, attr_name)
                         if val is not None and val != cli_args[attr_name]:
                             LOGGER.warning(
-                                f"Overloading azure.{attr_name}={val} with "
+                                f"overriding azure.{attr_name}={val} with "
                                 f"CLI={cli_args[attr_name]}"
                             )
                         setattr(self.azure, attr_name, cli_args[attr_name])

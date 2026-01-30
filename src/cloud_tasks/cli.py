@@ -4,7 +4,6 @@ Command-line interface for the multi-cloud task processing system.
 
 import argparse
 import asyncio
-from datetime import datetime
 import json
 import json_stream
 import logging
@@ -13,7 +12,8 @@ from pathlib import Path
 import signal
 import sys
 from tqdm import tqdm  # type: ignore
-from typing import Any, Dict, Iterable, Optional, Tuple
+from collections.abc import Iterable
+from typing import Any
 import yaml  # type: ignore
 
 from filecache import FCPath
@@ -26,7 +26,7 @@ from .common.task_db import TaskDatabase
 from .common.time_utils import parse_utc, utc_now
 from .instance_manager import create_instance_manager
 from .instance_manager.orchestrator import InstanceOrchestrator
-from .queue_manager import create_queue
+from .queue_manager import QueueManager, create_queue
 
 
 # Use custom logging configuration
@@ -35,8 +35,8 @@ logger = logging.getLogger(__name__)
 
 
 def yield_tasks_from_file(
-    task_file: str, start_task: Optional[int] = None, limit: Optional[int] = None
-) -> Iterable[Dict[str, Any]]:
+    task_file: str, start_task: int | None = None, limit: int | None = None
+) -> Iterable[dict[str, Any]]:
     """
     Yield tasks from a JSON or YAML file as an iterator.
 
@@ -475,16 +475,17 @@ class EventMonitor:
 
     def __init__(
         self,
-        events_queue,
-        task_db,
-        output_file_path: Optional[str] = None,
+        events_queue: QueueManager,
+        task_db: TaskDatabase,
+        output_file_path: str | None = None,
+        *,
         print_events: bool = True,
         print_summary: bool = True,
-    ):
+    ) -> None:
         """
         Initialize the event monitor.
 
-        Args:
+        Parameters:
             events_queue: Queue to receive events from
             task_db: TaskDatabase instance
             output_file_path: Optional path to write events to
@@ -503,7 +504,7 @@ class EventMonitor:
         """Start monitoring events."""
         if self.output_file_path:
             try:
-                self.output_file = open(self.output_file_path, "a")
+                self.output_file = await asyncio.to_thread(open, self.output_file_path, "a")
                 logger.info(f'Writing events to "{self.output_file_path}"')
             except Exception as e:
                 logger.fatal(
@@ -526,8 +527,15 @@ class EventMonitor:
                 self.something_changed = True
                 for message in messages:
                     try:
-                        # Extract and parse the JSON data
-                        data = json.loads(message.get("data", "{}"))
+                        payload = message.get("data", {})
+                        if isinstance(payload, str):
+                            data = json.loads(payload)
+                        elif isinstance(payload, dict):
+                            data = payload
+                        else:
+                            data = {}
+                        if not isinstance(data, dict):
+                            data = {}
 
                         # Write to file if specified
                         if self.output_file:
@@ -562,7 +570,7 @@ class EventMonitor:
         Print a summary of the current status.
         Uses the shared task stats output also used when the job completes.
 
-        Args:
+        Parameters:
             force: If True, always print even if nothing changed
         """
         if not self.print_summary:
@@ -584,19 +592,20 @@ class EventMonitor:
 async def run_event_monitoring_loop(
     event_monitor: EventMonitor,
     task_db: TaskDatabase,
+    *,
     check_completion: bool = True,
-    stop_signal: Optional[asyncio.Event] = None,
+    stop_signal: asyncio.Event | None = None,
 ) -> None:
     """
     Run the event monitoring loop.
 
     This is a shared function used by both the `run` and `monitor_event_queue` commands.
 
-    Args:
+    Parameters:
         event_monitor: EventMonitor instance to use
         task_db: TaskDatabase instance for checking completion
-        check_completion: Whether to check for task completion and stop when done
-        stop_signal: Optional asyncio.Event to signal stopping the loop
+        check_completion: Whether to check for task completion and stop when done (default True)
+        stop_signal: Optional asyncio.Event to signal stopping the loop (default None)
     """
     job_complete = False
 
@@ -631,7 +640,7 @@ async def run_event_monitoring_loop(
             await asyncio.sleep(5)
 
 
-async def monitor_event_queue_cmd(args, config: Config) -> None:
+async def monitor_event_queue_cmd(args: argparse.Namespace, config: Config) -> None:
     """
     Monitor the event queue and update task status in SQLite database.
 
@@ -717,15 +726,24 @@ async def load_queue_common(
     config: Config,
     db_file: str,
     task_file: str,
-    start_task: Optional[int],
-    limit: Optional[int],
+    start_task: int | None,
+    limit: int | None,
     max_concurrent_queue_operations: int,
     force: bool = False,
-) -> Tuple[TaskDatabase, Any, Any, int]:
+) -> tuple[TaskDatabase, Any, Any, int]:
     """
     Common logic: delete db, (confirm queue overwrite), delete/create queues,
     load tasks from file into database, enqueue to cloud.
     Used by both load_queue_cmd and run_cmd (fresh run).
+
+    Parameters:
+        config: Application configuration
+        db_file: Path to the SQLite database file
+        task_file: Path to the tasks file (JSON or YAML)
+        start_task: Start index (1-based); skip tasks before this
+        limit: Maximum number of tasks to load; None for no limit
+        max_concurrent_queue_operations: Concurrency limit for queue operations
+        force: If True, overwrite existing queues without confirmation
 
     Returns:
         (task_db, task_queue, events_queue, num_tasks)
@@ -776,6 +794,7 @@ async def load_queue_common(
     except Exception as e:
         logger.info(f"Event queue deletion: {e}")
 
+    # Wait for queue deletion to propagate to the backend before creating new queues
     await asyncio.sleep(2)
 
     # Create new queues
@@ -806,6 +825,11 @@ async def load_queue_common(
             await task_queue.send_task(task["task_id"], task["data"])
             task_db.update_task_enqueued(task["task_id"])
 
+    # For each task from yield_tasks_from_file we create an asyncio task (enqueue_task),
+    # add it to pending_tasks, and when len(pending_tasks) reaches
+    # max_concurrent_queue_operations we block by awaiting asyncio.wait until at least one
+    # pending task completes. This enforces a max concurrent enqueue limit and avoids
+    # unbounded task creation. tqdm tracks progress as tasks complete.
     with tqdm(desc="Enqueueing tasks", total=num_tasks) as pbar:
         for task in yield_tasks_from_file(task_file, start_task, limit):
             task_obj = asyncio.create_task(enqueue_task(task))
@@ -837,7 +861,6 @@ async def load_queue_cmd(args: argparse.Namespace, config: Config) -> None:
     """
     provider = config.provider
     provider_config = config.get_provider_config(provider)
-    queue_name = provider_config.queue_name
 
     db_file = getattr(args, "db_file", None) or config.run.db_file
     if not db_file:
@@ -906,7 +929,26 @@ def add_load_queue_args(
     task_required: bool = True,
     include_max_concurrent: bool = True,
 ) -> None:
-    """Add load-queue specific arguments (task file, start, limit, concurrency)."""
+    """
+    Add load-queue specific arguments to an argument parser.
+
+    Parameters:
+        parser: The ArgumentParser to add arguments to
+        task_required: If True, --task-file is required; if False, it is optional
+            (e.g. when --continue is used and no task file is needed)
+        include_max_concurrent: If True, add --max-concurrent-queue-operations
+            (default 100); if False, omit it
+
+    The following arguments are added:
+        --task-file: Path to tasks file (JSON or YAML); required unless --continue
+        --start-task: Skip tasks until this task number (1-based indexing)
+        --limit: Maximum number of tasks to enqueue
+        --max-concurrent-queue-operations: Maximum concurrent queue operations
+            while loading (default 100); only added when include_max_concurrent is True
+
+    When flags are omitted, --start-task and --limit default to None (process all
+    tasks from the file). No side effects beyond modifying the given parser.
+    """
     parser.add_argument(
         "--task-file",
         required=task_required,
@@ -1004,7 +1046,13 @@ async def run_cmd(args: argparse.Namespace, config: Config) -> None:
             task_queue = await create_queue(config)
 
         else:
-            # FRESH RUN MODE: use common load logic
+            # FRESH RUN MODE: use common load logic (skip when dry-run to avoid mutating queues/DB)
+            if args.dry_run:
+                logger.info(
+                    "Dry run: skipping queue load and instance orchestration "
+                    "(no TaskDatabase, create_queue, or enqueue logic will run)."
+                )
+                return
             logger.info(f"Starting fresh job '{provider_config.job_id}'")
             task_db, task_queue, events_queue, _num_tasks = await load_queue_common(
                 config=config,
@@ -1020,7 +1068,8 @@ async def run_cmd(args: argparse.Namespace, config: Config) -> None:
         logger.info("Creating instance orchestrator...")
 
         # Provide callback to get remaining task count from database
-        def get_remaining_task_count():
+        def get_remaining_task_count() -> int:
+            """Return the number of tasks not yet in a terminal state."""
             return len(task_db.get_remaining_task_ids())
 
         orchestrator = InstanceOrchestrator(
@@ -1045,16 +1094,16 @@ async def run_cmd(args: argparse.Namespace, config: Config) -> None:
         interrupted = False
         stop_signal = asyncio.Event()
 
-        async def monitor_events_wrapper():
-            """Wrapper for the monitoring loop."""
+        async def monitor_events_wrapper() -> None:
+            """Run the event monitoring loop and set job_complete when done."""
             nonlocal job_complete
             await run_event_monitoring_loop(
                 event_monitor, task_db, check_completion=True, stop_signal=stop_signal
             )
             job_complete = True
 
-        async def run_orchestrator():
-            """Run the instance orchestrator."""
+        async def run_orchestrator() -> None:
+            """Start the InstanceOrchestrator and wait while it runs."""
             try:
                 await orchestrator.start()
                 # Keep checking until job is complete or interrupted
@@ -1065,8 +1114,8 @@ async def run_cmd(args: argparse.Namespace, config: Config) -> None:
                 raise
 
         # Set up signal handler for graceful shutdown
-        def signal_handler(signum, frame):
-            """Handle SIGINT (Ctrl+C) by raising KeyboardInterrupt."""
+        def signal_handler(signum: int, frame: Any) -> None:
+            """Handle SIGINT by raising KeyboardInterrupt."""
             raise KeyboardInterrupt()
 
         # Install signal handler
@@ -1080,7 +1129,7 @@ async def run_cmd(args: argparse.Namespace, config: Config) -> None:
         try:
             # Wait for completion or interrupt
             await asyncio.gather(orchestrator_task, event_monitor_task)
-        except (KeyboardInterrupt, asyncio.CancelledError) as e:
+        except (KeyboardInterrupt, asyncio.CancelledError):
             # Handle both KeyboardInterrupt and CancelledError (which asyncio may raise instead)
             logger.info("Received interrupt.")
 
@@ -1096,8 +1145,8 @@ async def run_cmd(args: argparse.Namespace, config: Config) -> None:
             # Wait for tasks to finish cancelling
             try:
                 await asyncio.gather(orchestrator_task, event_monitor_task, return_exceptions=True)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("Error during orchestrator/event-monitor cleanup: %s", e, exc_info=True)
 
             # Prompt user for action (force valid input)
             choice = None
@@ -1195,7 +1244,7 @@ def dump_tasks_by_status(task_db: TaskDatabase, output_base_path: str) -> None:
     Write one JSON task file per status containing full task definitions.
     Each file is loadable into the task queue (same format as --task-file).
 
-    Args:
+    Parameters:
         task_db: TaskDatabase instance
         output_base_path: Base path for output files; each file will be
             {output_base_path}_{status}.json
@@ -1249,7 +1298,7 @@ def log_task_stats(
     Log task statistics (counts, exceptions, elapsed time stats).
     Used by both print_status_summary and print_final_report.
 
-    Args:
+    Parameters:
         task_db: TaskDatabase instance
         header: Section header (e.g. "Summary:" or "Final:")
         include_remaining_ids: Whether to list remaining task IDs if < 50
@@ -1327,12 +1376,11 @@ def print_final_report(task_db: TaskDatabase) -> None:
     Print final report with task statistics.
     Uses the same stats block as print_status_summary via log_task_stats.
 
-    Args:
+    Parameters:
         task_db: TaskDatabase instance
     """
     counts = task_db.get_task_counts()
     total_tasks = task_db.get_total_tasks()
-    stats = task_db.get_task_statistics()
 
     logger.info("")
     logger.info("=" * 60)

@@ -2,11 +2,11 @@
 SQLite database for task tracking and event logging.
 """
 
-import datetime
 import json
 import logging
 import sqlite3
 from pathlib import Path
+from types import TracebackType
 from typing import Any, Dict, List, Optional
 
 from .time_utils import parse_utc, utc_now_iso
@@ -18,11 +18,11 @@ logger = logging.getLogger(__name__)
 class TaskDatabase:
     """SQLite database for tracking task status and events."""
 
-    def __init__(self, db_file: str):
+    def __init__(self, db_file: str) -> None:
         """
         Initialize the task database.
 
-        Args:
+        Parameters:
             db_file: Path to the SQLite database file
         """
         self.db_file = Path(db_file)
@@ -91,7 +91,7 @@ class TaskDatabase:
         """
         Insert a new task into the database.
 
-        Args:
+        Parameters:
             task_id: Unique task identifier
             task_data: Task data dictionary
             status: Initial task status (default: pending)
@@ -110,7 +110,7 @@ class TaskDatabase:
         """
         Update task status to in_queue_original when first enqueued to cloud queue.
 
-        Args:
+        Parameters:
             task_id: Task identifier
         """
         cursor = self.conn.cursor()
@@ -128,7 +128,7 @@ class TaskDatabase:
         """
         Update task status based on an event.
 
-        Args:
+        Parameters:
             event: Event dictionary from worker
         """
         event_type = event.get("event_type")
@@ -205,7 +205,7 @@ class TaskDatabase:
         Insert an event into the events table.
         Event timestamp is normalized to UTC for storage.
 
-        Args:
+        Parameters:
             event: Event dictionary
         """
         ts = event.get("timestamp")
@@ -289,7 +289,7 @@ class TaskDatabase:
         """
         Get all tasks with a specific status.
 
-        Args:
+        Parameters:
             status: Task status to filter by
 
         Returns:
@@ -427,10 +427,16 @@ class TaskDatabase:
             self.conn.close()
             self.conn = None
 
-    def __enter__(self):
+    def __enter__(self) -> "TaskDatabase":
         """Context manager entry."""
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> bool | None:
         """Context manager exit."""
         self.close()
+        return None
