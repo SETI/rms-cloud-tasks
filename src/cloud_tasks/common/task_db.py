@@ -9,6 +9,8 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from .time_utils import parse_utc, utc_now_iso
+
 
 logger = logging.getLogger(__name__)
 
@@ -100,13 +102,13 @@ class TaskDatabase:
             INSERT INTO tasks (task_id, task_data, status, enqueued_at)
             VALUES (?, ?, ?, ?)
             """,
-            (task_id, json.dumps(task_data), status, datetime.datetime.now().isoformat()),
+            (task_id, json.dumps(task_data), status, utc_now_iso()),
         )
         self.conn.commit()
 
     def update_task_enqueued(self, task_id: str) -> None:
         """
-        Update task status to in_queue when enqueued to cloud queue.
+        Update task status to in_queue_original when first enqueued to cloud queue.
 
         Args:
             task_id: Task identifier
@@ -115,10 +117,10 @@ class TaskDatabase:
         cursor.execute(
             """
             UPDATE tasks
-            SET status = 'in_queue', started_at = ?
+            SET status = 'in_queue_original', started_at = ?
             WHERE task_id = ?
             """,
-            (datetime.datetime.now().isoformat(), task_id),
+            (utc_now_iso(), task_id),
         )
         self.conn.commit()
 
@@ -140,7 +142,7 @@ class TaskDatabase:
         cursor = self.conn.cursor()
 
         # Determine new status based on event type and retry flag
-        if event_type == "in_queue":
+        if event_type == "in_queue_original":
             status = "in_queue_original"
         elif event_type == "task_completed":
             status = "completed"
@@ -163,11 +165,15 @@ class TaskDatabase:
             logger.warning(f"Unknown event type: {event_type}")
             return
 
-        # Update task record
+        # Update task record (normalize timestamp to UTC for storage)
+        completed_at = event.get("timestamp")
+        if completed_at is not None:
+            dt = parse_utc(completed_at if isinstance(completed_at, str) else str(completed_at))
+            completed_at = dt.isoformat() if dt is not None else completed_at
         update_fields = {
             "status": status,
             "retry": retry,
-            "completed_at": event.get("timestamp"),
+            "completed_at": completed_at,
             "elapsed_time": event.get("elapsed_time"),
             "hostname": event.get("hostname"),
         }
@@ -197,10 +203,15 @@ class TaskDatabase:
     def insert_event(self, event: Dict[str, Any]) -> None:
         """
         Insert an event into the events table.
+        Event timestamp is normalized to UTC for storage.
 
         Args:
             event: Event dictionary
         """
+        ts = event.get("timestamp")
+        if ts is not None:
+            dt = parse_utc(ts if isinstance(ts, str) else str(ts))
+            ts = dt.isoformat() if dt is not None else ts
         cursor = self.conn.cursor()
         cursor.execute(
             """
@@ -208,7 +219,7 @@ class TaskDatabase:
             VALUES (?, ?, ?, ?, ?)
             """,
             (
-                event.get("timestamp"),
+                ts,
                 event.get("hostname"),
                 event.get("event_type"),
                 event.get("task_id"),

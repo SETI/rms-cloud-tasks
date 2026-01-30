@@ -13,7 +13,7 @@ from pathlib import Path
 import signal
 import sys
 from tqdm import tqdm  # type: ignore
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, Optional, Tuple
 import yaml  # type: ignore
 
 from filecache import FCPath
@@ -23,6 +23,7 @@ import pydantic
 from .common.config import Config, load_config
 from .common.logging_config import configure_logging
 from .common.task_db import TaskDatabase
+from .common.time_utils import parse_utc, utc_now
 from .instance_manager import create_instance_manager
 from .instance_manager.orchestrator import InstanceOrchestrator
 from .queue_manager import create_queue
@@ -559,6 +560,7 @@ class EventMonitor:
     def print_status_summary(self, force: bool = False) -> None:
         """
         Print a summary of the current status.
+        Uses the shared task stats output also used when the job completes.
 
         Args:
             force: If True, always print even if nothing changed
@@ -569,53 +571,8 @@ class EventMonitor:
         if not force and not self.something_changed:
             return
 
-        print()
-        counts = self.task_db.get_task_counts()
-        total_tasks = self.task_db.get_total_tasks()
-        remaining_task_ids = self.task_db.get_remaining_task_ids()
-
-        print("Summary:")
-        print(f"  Total tasks: {total_tasks}")
-        heard_from = total_tasks - counts.get("in_queue_original", 0)
-        print(f"  Heard from: {heard_from}")
-        for status in counts:
-            if status != "in_queue_original":
-                print(f"    {status}: {counts[status]}")
-        print(f"  Still in original queue: {total_tasks - heard_from}")
-
-        # Get statistics
-        stats = self.task_db.get_task_statistics()
-
-        if stats["exception_counts"]:
-            print("  Exceptions:")
-            for exception, count in list(stats["exception_counts"].items())[:10]:
-                # Truncate exception for display
-                exc_lines = exception.strip().split("\n")
-                if len(exc_lines) > 2:
-                    exc_display = f"{exc_lines[0]}...{exc_lines[-1]}"
-                else:
-                    exc_display = exception
-                print(f"    {count:6d}: {exc_display[:100]}")
-
-        if stats["time_stats"]["avg_time"]:
-            print("  Elapsed time statistics:")
-            print(
-                f"    Range:  {stats['time_stats']['min_time']:.2f} to "
-                f"{stats['time_stats']['max_time']:.2f} seconds"
-            )
-            print(
-                f"    Mean:   {stats['time_stats']['avg_time']:.2f} +/- "
-                f"{stats['percentiles'].get('std', 0):.2f} seconds"
-            )
-            if stats["percentiles"]:
-                print(f"    Median: {stats['percentiles']['median']:.2f} seconds")
-                print(f"    90th %: {stats['percentiles']['p90']:.2f} seconds")
-                print(f"    95th %: {stats['percentiles']['p95']:.2f} seconds")
-
-        if len(remaining_task_ids) > 0 and len(remaining_task_ids) < 50:
-            print(f"  Remaining tasks: {', '.join(remaining_task_ids)}")
-
-        print()
+        logger.info("")
+        log_task_stats(self.task_db, header="Summary:", include_remaining_ids=True)
         self.something_changed = False
 
     def close(self) -> None:
@@ -649,18 +606,26 @@ async def run_event_monitoring_loop(
             break
 
         try:
-            count = await event_monitor.process_events_batch()
+            did_something = False
+            for _loop_count in range(20):
+                count = await event_monitor.process_events_batch()
+                if count == 0:
+                    break
+                did_something = True
 
             # Always print status summary (force=True if no new events)
             event_monitor.print_status_summary(force=True)
 
             # Check if all tasks are complete
             if check_completion and task_db.is_all_tasks_complete():
-                print("\n=== All tasks complete ===")
+                logger.info("All tasks complete")
                 job_complete = True
                 break
 
-            await asyncio.sleep(1)
+            if did_something:
+                await asyncio.sleep(1)
+            else:
+                await asyncio.sleep(10)
         except Exception as e:
             logger.error(f"Error in event monitoring loop: {e}", exc_info=True)
             await asyncio.sleep(5)
@@ -748,6 +713,218 @@ async def monitor_event_queue_cmd(args, config: Config) -> None:
             task_db.close()
 
 
+async def load_queue_common(
+    config: Config,
+    db_file: str,
+    task_file: str,
+    start_task: Optional[int],
+    limit: Optional[int],
+    max_concurrent_queue_operations: int,
+    force: bool = False,
+) -> Tuple[TaskDatabase, Any, Any, int]:
+    """
+    Common logic: delete db, (confirm queue overwrite), delete/create queues,
+    load tasks from file into database, enqueue to cloud.
+    Used by both load_queue_cmd and run_cmd (fresh run).
+
+    Returns:
+        (task_db, task_queue, events_queue, num_tasks)
+    """
+    provider = config.provider
+    provider_config = config.get_provider_config(provider)
+    queue_name = provider_config.queue_name
+    event_queue_name = f"{queue_name}-events"
+
+    # Delete existing database
+    db_path = Path(db_file)
+    if db_path.exists():
+        logger.info(f"Deleting existing database '{db_file}'...")
+        os.remove(db_file)
+
+    # Check existing queue depth before deletion
+    queue_depth = None
+    try:
+        temp_queue = await create_queue(config)
+        queue_depth = await temp_queue.get_queue_depth()
+    except Exception as e:
+        logger.debug(f"Could not check queue depth (queue may not exist): {e}")
+        queue_depth = None
+
+    if queue_depth is not None and queue_depth > 0 and not force:
+        logger.info(
+            f"WARNING: Task queue '{queue_name}' currently has at least {queue_depth} message(s)."
+        )
+        logger.info(
+            "Starting a fresh run will DELETE the existing queue and all its messages."
+        )
+        confirm = input("Type 'YES' to confirm deletion: ")
+        if confirm != "YES":
+            logger.info("Operation cancelled.")
+            sys.exit(0)
+
+    # Delete existing queues
+    logger.info("Deleting existing queues if they exist...")
+    try:
+        task_queue = await create_queue(config)
+        await task_queue.delete_queue()
+        logger.info(f"Deleted task queue '{queue_name}'")
+    except Exception as e:
+        logger.info(f"Task queue deletion: {e}")
+
+    try:
+        events_queue = await create_queue(config, queue_name=event_queue_name)
+        await events_queue.delete_queue()
+        logger.info(f"Deleted event queue '{event_queue_name}'")
+    except Exception as e:
+        logger.info(f"Event queue deletion: {e}")
+
+    await asyncio.sleep(2)
+
+    # Create new queues
+    logger.info(f"Creating task queue '{queue_name}'...")
+    task_queue = await create_queue(config)
+    logger.info(f"Creating event queue '{event_queue_name}'...")
+    events_queue = await create_queue(config, queue_name=event_queue_name)
+
+    task_db = TaskDatabase(db_file)
+
+    # Load tasks from file into database
+    logger.info(f"Loading tasks from '{task_file}' into database...")
+    num_tasks = 0
+    for task in yield_tasks_from_file(task_file, start_task, limit):
+        task_db.insert_task(task["task_id"], task["data"], status="pending")
+        num_tasks += 1
+
+    logger.info(f"Loaded {num_tasks} tasks into database")
+
+    await task_queue.ensure_queue_ready()
+
+    logger.info(f"Enqueueing tasks to cloud queue '{queue_name}'...")
+    semaphore = asyncio.Semaphore(max_concurrent_queue_operations)
+    pending_tasks = set()
+
+    async def enqueue_task(task):
+        async with semaphore:
+            await task_queue.send_task(task["task_id"], task["data"])
+            task_db.update_task_enqueued(task["task_id"])
+
+    with tqdm(desc="Enqueueing tasks", total=num_tasks) as pbar:
+        for task in yield_tasks_from_file(task_file, start_task, limit):
+            task_obj = asyncio.create_task(enqueue_task(task))
+            pending_tasks.add(task_obj)
+            task_obj.add_done_callback(pending_tasks.discard)
+
+            while len(pending_tasks) >= max_concurrent_queue_operations:
+                done, pending_tasks = await asyncio.wait(
+                    pending_tasks, return_when=asyncio.FIRST_COMPLETED
+                )
+                pbar.update(len(done))
+
+        if pending_tasks:
+            done, pending_tasks = await asyncio.wait(pending_tasks)
+            pbar.update(len(done))
+
+    logger.info(f"Enqueued {num_tasks} tasks to cloud queue")
+    return (task_db, task_queue, events_queue, num_tasks)
+
+
+async def load_queue_cmd(args: argparse.Namespace, config: Config) -> None:
+    """
+    Load tasks into the database and task queue without starting instances.
+    With --continue, open existing database and show status (no load).
+
+    Parameters:
+        args: Command-line arguments
+        config: Configuration
+    """
+    provider = config.provider
+    provider_config = config.get_provider_config(provider)
+    queue_name = provider_config.queue_name
+
+    db_file = getattr(args, "db_file", None) or config.run.db_file
+    if not db_file:
+        db_file = f"{provider_config.job_id}.db"
+
+    task_db = None
+
+    try:
+        if getattr(args, "continue_run", False):
+            # Continue mode: open existing db, show status and queue depth
+            if not Path(db_file).exists():
+                logger.info(f"Error: Database file '{db_file}' does not exist.")
+                logger.info("Run without --continue to create and load from a task file.")
+                sys.exit(1)
+
+            task_db = TaskDatabase(db_file)
+            total_tasks = task_db.get_total_tasks()
+            if total_tasks == 0:
+                logger.info(f"Warning: Database '{db_file}' has no tasks.")
+
+            logger.info(f"Database: {db_file} ({total_tasks} tasks)")
+            log_task_stats(task_db, header="Status:", include_remaining_ids=True)
+
+            task_queue = await create_queue(config)
+            queue_depth = await task_queue.get_queue_depth()
+            if queue_depth is None:
+                logger.info("Tasks loaded. Failed to get queue depth.")
+            else:
+                logger.info(f"Queue depth (may be approximate): {queue_depth}")
+        else:
+            # Fresh load
+            if not getattr(args, "task_file", None):
+                logger.fatal("--task-file is required unless --continue is specified")
+                logger.info("Error: --task-file is required unless --continue is specified")
+                sys.exit(1)
+
+            task_db, task_queue, _events_queue, num_tasks = await load_queue_common(
+                config=config,
+                db_file=db_file,
+                task_file=args.task_file,
+                start_task=getattr(args, "start_task", None),
+                limit=getattr(args, "limit", None),
+                max_concurrent_queue_operations=getattr(
+                    args, "max_concurrent_queue_operations", 100
+                ),
+                force=getattr(args, "force", False),
+            )
+            queue_depth = await task_queue.get_queue_depth()
+            if queue_depth is None:
+                logger.info(f"Loaded {num_tasks} tasks. Failed to get queue depth.")
+            else:
+                logger.info(f"Loaded {num_tasks} tasks. Queue depth (may be approximate): {queue_depth}")
+    except Exception as e:
+        logger.fatal(f"Error loading tasks: {e}", exc_info=True)
+        logger.info(f"Fatal error: {e}")
+        sys.exit(1)
+    finally:
+        if task_db is not None:
+            task_db.close()
+
+
+def add_load_queue_args(
+    parser: argparse.ArgumentParser,
+    task_required: bool = True,
+    include_max_concurrent: bool = True,
+) -> None:
+    """Add load-queue specific arguments (task file, start, limit, concurrency)."""
+    parser.add_argument(
+        "--task-file",
+        required=task_required,
+        help="Path to tasks file (JSON or YAML); required unless --continue",
+    )
+    parser.add_argument(
+        "--start-task", type=int, help="Skip tasks until this task number (1-based indexing)"
+    )
+    parser.add_argument("--limit", type=int, help="Maximum number of tasks to enqueue")
+    if include_max_concurrent:
+        parser.add_argument(
+            "--max-concurrent-queue-operations",
+            type=int,
+            default=100,
+            help="Maximum number of concurrent queue operations while loading (default: 100)",
+        )
+
+
 async def run_cmd(args: argparse.Namespace, config: Config) -> None:
     """
     Run a job with the specified configuration.
@@ -761,7 +938,7 @@ async def run_cmd(args: argparse.Namespace, config: Config) -> None:
     # Validate arguments
     if not args.continue_run and not args.task_file:
         logger.fatal("--task-file is required unless --continue is specified")
-        print("Error: --task-file is required unless --continue is specified")
+        logger.info("Error: --task-file is required unless --continue is specified")
         sys.exit(1)
 
     provider = config.provider
@@ -783,7 +960,7 @@ async def run_cmd(args: argparse.Namespace, config: Config) -> None:
     try:
         if args.continue_run:
             # CONTINUE MODE: Resume from previous run
-            print(f"Continuing job '{provider_config.job_id}' from database '{db_file}'")
+            logger.info(f"Continuing job '{provider_config.job_id}' from database '{db_file}'")
 
             # Initialize database (must exist)
             task_db = TaskDatabase(db_file)
@@ -791,10 +968,10 @@ async def run_cmd(args: argparse.Namespace, config: Config) -> None:
             # Check if database exists and has tasks
             total_tasks = task_db.get_total_tasks()
             if total_tasks == 0:
-                print(f"Error: Database '{db_file}' has no tasks. Cannot continue.")
+                logger.info(f"Error: Database '{db_file}' has no tasks. Cannot continue.")
                 sys.exit(1)
 
-            print(f"Found {total_tasks} tasks in database")
+            logger.info(f"Found {total_tasks} tasks in database")
 
             # Drain event queue to catch up on any missed events
             # print("Draining event queue to update task statuses...")
@@ -818,121 +995,39 @@ async def run_cmd(args: argparse.Namespace, config: Config) -> None:
 
             # Show current status
             counts = task_db.get_task_counts()
-            print("Current task status:")
+            logger.info("Current task status:")
             for status, count in counts.items():
-                print(f"  {status}: {count}")
+                logger.info(f"  {status}: {count}")
 
             # Create task queue (don't delete/recreate)
-            print(f"Connecting to task queue '{queue_name}'...")
+            logger.info(f"Connecting to task queue '{queue_name}'...")
             task_queue = await create_queue(config)
 
         else:
-            # FRESH RUN MODE: Start from scratch
-            print(f"Starting fresh job '{provider_config.job_id}'")
-
-            # Check if database file exists and delete it
-            db_path = Path(db_file)
-            if db_path.exists():
-                print(f"Deleting existing database '{db_file}'...")
-                os.remove(db_file)
-
-            # Check existing queue depth before deletion
-            queue_depth = None
-            force = getattr(args, "force", False)
-
-            try:
-                # Try to connect to existing queue
-                temp_queue = await create_queue(config)
-                queue_depth = await temp_queue.get_queue_depth()
-            except Exception as e:
-                logger.debug(f"Could not check queue depth (queue may not exist): {e}")
-                queue_depth = None
-
-            # Warn user if queue has messages and not forcing
-            if queue_depth is not None and queue_depth > 0 and not force:
-                print(
-                    f"\nWARNING: Task queue '{queue_name}' currently has at least {queue_depth} message(s)."
-                )
-                print(f"Starting a fresh run will DELETE the existing queue and all its messages.")
-                confirm = input(f"\nType 'YES' to confirm deletion: ")
-                if confirm != "YES":
-                    print("Operation cancelled.")
-                    sys.exit(0)
-
-            # Delete existing queues
-            print("Deleting existing queues if they exist...")
-            try:
-                task_queue = await create_queue(config)
-                await task_queue.delete_queue()
-                print(f"Deleted task queue '{queue_name}'")
-            except Exception as e:
-                logger.info(f"Task queue deletion: {e}")
-
-            try:
-                events_queue = await create_queue(config, queue_name=event_queue_name)
-                await events_queue.delete_queue()
-                print(f"Deleted event queue '{event_queue_name}'")
-            except Exception as e:
-                logger.info(f"Event queue deletion: {e}")
-
-            # Small delay to ensure deletion completes
-            await asyncio.sleep(2)
-
-            # Create new queues
-            print(f"Creating task queue '{queue_name}'...")
-            task_queue = await create_queue(config)
-            print(f"Creating event queue '{event_queue_name}'...")
-            events_queue = await create_queue(config, queue_name=event_queue_name)
-
-            # Initialize new database
-            task_db = TaskDatabase(db_file)
-
-            # Load tasks from file into database
-            print(f"Loading tasks from '{args.task_file}' into database...")
-            num_tasks = 0
-            for task in yield_tasks_from_file(args.task_file, args.start_task, args.limit):
-                task_db.insert_task(task["task_id"], task["data"], status="pending")
-                num_tasks += 1
-
-            print(f"Loaded {num_tasks} tasks into database")
-
-            # Enqueue tasks to cloud queue
-            print(f"Enqueueing tasks to cloud queue '{queue_name}'...")
-            semaphore = asyncio.Semaphore(args.max_concurrent_queue_operations)
-            pending_tasks = set()
-
-            async def enqueue_task(task):
-                async with semaphore:
-                    try:
-                        await task_queue.send_task(task["task_id"], task["data"])
-                        task_db.update_task_enqueued(task["task_id"])
-                    except Exception as e:
-                        logger.error(f"Error enqueueing task {task['task_id']}: {e}")
-                        raise
-
-            with tqdm(desc="Enqueueing tasks", total=num_tasks) as pbar:
-                for task in yield_tasks_from_file(args.task_file, args.start_task, args.limit):
-                    task_obj = asyncio.create_task(enqueue_task(task))
-                    pending_tasks.add(task_obj)
-                    task_obj.add_done_callback(pending_tasks.discard)
-
-                    while len(pending_tasks) >= args.max_concurrent_queue_operations:
-                        done, pending_tasks = await asyncio.wait(
-                            pending_tasks, return_when=asyncio.FIRST_COMPLETED
-                        )
-                        pbar.update(len(done))
-
-                # Wait for remaining tasks
-                if pending_tasks:
-                    done, pending_tasks = await asyncio.wait(pending_tasks)
-                    pbar.update(len(done))
-
-            print(f"Enqueued {num_tasks} tasks to cloud queue")
+            # FRESH RUN MODE: use common load logic
+            logger.info(f"Starting fresh job '{provider_config.job_id}'")
+            task_db, task_queue, events_queue, _num_tasks = await load_queue_common(
+                config=config,
+                db_file=db_file,
+                task_file=args.task_file,
+                start_task=args.start_task,
+                limit=args.limit,
+                max_concurrent_queue_operations=args.max_concurrent_queue_operations,
+                force=getattr(args, "force", False),
+            )
 
         # Create orchestrator (disable auto-termination since we control completion via SQLite)
-        print("Creating instance orchestrator...")
+        logger.info("Creating instance orchestrator...")
+
+        # Provide callback to get remaining task count from database
+        def get_remaining_task_count():
+            return len(task_db.get_remaining_task_ids())
+
         orchestrator = InstanceOrchestrator(
-            config=config, dry_run=args.dry_run, auto_terminate_on_empty=False
+            config=config,
+            dry_run=args.dry_run,
+            auto_terminate_on_empty=False,
+            get_remaining_task_count=get_remaining_task_count,
         )
 
         # Set up event monitor
@@ -978,7 +1073,7 @@ async def run_cmd(args: argparse.Namespace, config: Config) -> None:
         old_handler = signal.signal(signal.SIGINT, signal_handler)
 
         # Start both tasks concurrently
-        print("Starting instance orchestrator and event monitor...")
+        logger.info("Starting instance orchestrator and event monitor...")
         orchestrator_task = asyncio.create_task(run_orchestrator())
         event_monitor_task = asyncio.create_task(monitor_events_wrapper())
 
@@ -987,11 +1082,7 @@ async def run_cmd(args: argparse.Namespace, config: Config) -> None:
             await asyncio.gather(orchestrator_task, event_monitor_task)
         except (KeyboardInterrupt, asyncio.CancelledError) as e:
             # Handle both KeyboardInterrupt and CancelledError (which asyncio may raise instead)
-            if isinstance(e, asyncio.CancelledError):
-                # Check if this was due to a KeyboardInterrupt
-                print("\n\nReceived interrupt.")
-            else:
-                print("\n\nReceived interrupt.")
+            logger.info("Received interrupt.")
 
             interrupted = True
             stop_signal.set()
@@ -1008,30 +1099,34 @@ async def run_cmd(args: argparse.Namespace, config: Config) -> None:
             except Exception:
                 pass
 
-            # Prompt user for action
-            print("\nChoose action:")
-            print("  [T] Terminate all instances and delete queues")
-            print("  [L] Leave instances running (can resume with --continue)")
-            print("  [C] Cancel and continue running")
-
-            try:
-                choice = input("\nEnter choice (T/L/C): ").strip().upper()
-            except KeyboardInterrupt:
-                choice = "L"
-                print("\nDefaulting to [L] Leave instances running")
+            # Prompt user for action (force valid input)
+            choice = None
+            while choice not in ("T", "L", "C"):
+                print("\n\nChoose action:")
+                print("  [T] Terminate all instances and delete queues")
+                print("  [L] Leave instances running (can resume with --continue)")
+                print("  [C] Cancel and continue running")
+                try:
+                    choice = input("\nEnter choice (T/L/C): ").strip().upper()
+                except KeyboardInterrupt:
+                    choice = "L"
+                    print("Defaulting to [L] Leave instances running")
+                    break
+                if choice not in ("T", "L", "C"):
+                    print(f"Invalid choice '{choice}'. Please enter T, L, or C.")
 
             if choice == "T":
-                print("\nTerminating all instances and deleting queues...")
+                logger.info("Terminating all instances and deleting queues...")
                 await orchestrator.stop(terminate_instances=True)
                 await task_queue.delete_queue()
                 await events_queue.delete_queue()
-                print("Job terminated")
+                logger.info("Job terminated")
             elif choice == "L":
-                print("\nLeaving instances running. Use --continue to resume.")
+                logger.info("Leaving instances running. Use --continue to resume.")
                 await orchestrator.stop(terminate_instances=False)
-                print(f"Database saved to: {db_file}")
+                logger.info(f"Database saved to: {db_file}")
             elif choice == "C":
-                print("\nContinuing job...")
+                logger.info("Continuing job...")
                 interrupted = False
                 stop_signal.clear()
                 # Resume the tasks
@@ -1041,25 +1136,43 @@ async def run_cmd(args: argparse.Namespace, config: Config) -> None:
                     await asyncio.gather(orchestrator_task, event_monitor_task)
                 except (KeyboardInterrupt, asyncio.CancelledError):
                     # If interrupted again, default to leaving instances running
-                    print("\n\nReceived second interrupt. Leaving instances running.")
+                    logger.info("Received second interrupt. Leaving instances running.")
                     await orchestrator.stop(terminate_instances=False)
-                    print(f"Database saved to: {db_file}")
+                    logger.info(f"Database saved to: {db_file}")
             else:
-                print(f"\nInvalid choice '{choice}', defaulting to [L] Leave instances running")
-                await orchestrator.stop(terminate_instances=False)
+                # Can't get here
+                raise RuntimeError("Can't get here")
+
+            # Offer to dump task files by status (when exiting, not when continuing)
+            if choice != "C":
+                dump_choice = None
+                while dump_choice not in ("y", "yes", "n", "no"):
+                    print("\n\nDump task files by status? Each file contains full task definitions")
+                    print("loadable with --task-file (e.g. for retrying failed or pending tasks).")
+                    try:
+                        dump_choice = input("Dump? (Y/N): ").strip().lower()
+                    except KeyboardInterrupt:
+                        dump_choice = "n"
+                        print("Skipping dump.")
+                        break
+                    if dump_choice not in ("y", "yes", "n", "no"):
+                        print("Please enter y or n.")
+                if dump_choice in ("y", "yes"):
+                    base_path = provider_config.job_id
+                    dump_tasks_by_status(task_db, base_path)
         finally:
             # Restore original signal handler
             signal.signal(signal.SIGINT, old_handler)
 
         # If job completed normally, clean up
         if job_complete and not interrupted:
-            print(
-                "\nJob complete! Cleaning up...this may take a few minutes; don't interrupt the process"
+            logger.info(
+                "Job complete! Cleaning up...this may take a few minutes; don't interrupt the process"
             )
             await orchestrator.stop(terminate_instances=True)
 
             # Delete queues
-            print("Deleting queues...")
+            logger.info("Deleting queues...")
             await task_queue.delete_queue()
             await events_queue.delete_queue()
 
@@ -1068,7 +1181,7 @@ async def run_cmd(args: argparse.Namespace, config: Config) -> None:
 
     except Exception as e:
         logger.fatal(f"Error running job: {e}", exc_info=True)
-        print(f"\nFatal error: {e}")
+        logger.info(f"Fatal error: {e}")
         sys.exit(1)
     finally:
         if event_monitor is not None:
@@ -1077,9 +1190,142 @@ async def run_cmd(args: argparse.Namespace, config: Config) -> None:
             task_db.close()
 
 
+def dump_tasks_by_status(task_db: TaskDatabase, output_base_path: str) -> None:
+    """
+    Write one JSON task file per status containing full task definitions.
+    Each file is loadable into the task queue (same format as --task-file).
+
+    Args:
+        task_db: TaskDatabase instance
+        output_base_path: Base path for output files; each file will be
+            {output_base_path}_{status}.json
+    """
+    counts = task_db.get_task_counts()
+    if not counts:
+        logger.info("  No tasks in database.")
+        return
+
+    written = []
+    for status in sorted(counts.keys()):
+        if counts[status] == 0:
+            continue
+        tasks = task_db.get_tasks_by_status(status)
+        # Build loadable format: list of {"task_id": ..., "data": ...}
+        task_list = []
+        for row in tasks:
+            task_data = row.get("task_data")
+            if task_data is None:
+                task_data = {}
+            elif isinstance(task_data, str):
+                try:
+                    task_data = json.loads(task_data)
+                except json.JSONDecodeError:
+                    task_data = {}
+            task_list.append({"task_id": row["task_id"], "data": task_data})
+
+        # Sanitize status for filename (replace any path-unsafe chars)
+        safe_status = status.replace("/", "_").replace("\\", "_")
+        path = f"{output_base_path}_{safe_status}.json"
+        with open(path, "w") as f:
+            json.dump(task_list, f, indent=2)
+        written.append(f"  {path} ({len(task_list)} tasks)")
+        logger.info(f"Dumped {len(task_list)} tasks with status '{status}' to {path}")
+
+    if written:
+        logger.info("Task files by status:")
+        for line in written:
+            logger.info(line)
+    else:
+        logger.info("  No task files written.")
+
+
+def log_task_stats(
+    task_db: TaskDatabase,
+    *,
+    header: str = "Summary:",
+    include_remaining_ids: bool = True,
+) -> None:
+    """
+    Log task statistics (counts, exceptions, elapsed time stats).
+    Used by both print_status_summary and print_final_report.
+
+    Args:
+        task_db: TaskDatabase instance
+        header: Section header (e.g. "Summary:" or "Final:")
+        include_remaining_ids: Whether to list remaining task IDs if < 50
+    """
+    counts = task_db.get_task_counts()
+    total_tasks = task_db.get_total_tasks()
+    remaining_task_ids = task_db.get_remaining_task_ids()
+    stats = task_db.get_task_statistics()
+
+    logger.info(header)
+    logger.info(f"  Total tasks: {total_tasks}")
+    heard_from = total_tasks - counts.get("in_queue_original", 0)
+    logger.info(f"  Heard from: {heard_from}")
+    for status in counts:
+        if status != "in_queue_original":
+            logger.info(f"    {status}: {counts[status]}")
+    logger.info(f"  Still in original queue: {total_tasks - heard_from}")
+
+    if stats["exception_counts"]:
+        logger.info("  Exceptions:")
+        for exception, count in list(stats["exception_counts"].items())[:10]:
+            exc_lines = exception.strip().split("\n")
+            if len(exc_lines) > 2:
+                exc_display = f"{exc_lines[0]}...{exc_lines[-1]}"
+            else:
+                exc_display = exception
+            logger.info(f"    {count:6d}: {exc_display[:100]}")
+
+    if stats["time_stats"]["avg_time"]:
+        logger.info("  Elapsed time statistics:")
+        logger.info(
+            f"    Range:  {stats['time_stats']['min_time']:.2f} to "
+            f"{stats['time_stats']['max_time']:.2f} seconds"
+        )
+        logger.info(
+            f"    Mean:   {stats['time_stats']['avg_time']:.2f} +/- "
+            f"{stats['percentiles'].get('std', 0):.2f} seconds"
+        )
+        if stats["percentiles"]:
+            logger.info(f"    Median: {stats['percentiles']['median']:.2f} seconds")
+            logger.info(f"    90th %: {stats['percentiles']['p90']:.2f} seconds")
+            logger.info(f"    95th %: {stats['percentiles']['p95']:.2f} seconds")
+
+    if include_remaining_ids and len(remaining_task_ids) > 0 and len(remaining_task_ids) < 50:
+        logger.info(f"  Remaining tasks: {', '.join(remaining_task_ids)}")
+
+    # Wall-clock elapsed time and throughput (from time_range)
+    time_range = stats.get("time_range") or {}
+    start_time = time_range.get("start_time")
+    end_time = time_range.get("end_time")
+    if start_time:
+        start = parse_utc(start_time)
+        end = parse_utc(end_time) if end_time else utc_now()
+        if start is not None and end is not None:
+            total_elapsed = (end - start).total_seconds()
+            hours = int(total_elapsed // 3600)
+            minutes = int((total_elapsed % 3600) // 60)
+            seconds = int(total_elapsed % 60)
+            logger.info(f"  Elapsed time: {hours}h {minutes}m {seconds}s")
+            completed_count = counts.get("completed", 0)
+            if completed_count > 0 and total_elapsed > 0:
+                tasks_per_hour = completed_count / (total_elapsed / 3600)
+                logger.info(f"  Tasks/hour: {tasks_per_hour:.1f}")
+
+    if stats.get("spot_terminations"):
+        logger.info(f"  Spot terminations: {len(stats['spot_terminations'])} hosts")
+        for host in stats["spot_terminations"]:
+            logger.info(f"    {host}")
+
+    logger.info("")
+
+
 def print_final_report(task_db: TaskDatabase) -> None:
     """
     Print final report with task statistics.
+    Uses the same stats block as print_status_summary via log_task_stats.
 
     Args:
         task_db: TaskDatabase instance
@@ -1088,67 +1334,21 @@ def print_final_report(task_db: TaskDatabase) -> None:
     total_tasks = task_db.get_total_tasks()
     stats = task_db.get_task_statistics()
 
-    print("\n" + "=" * 60)
-    print("=== JOB COMPLETE ===")
-    print("=" * 60)
-    print(f"\nTotal tasks: {total_tasks}")
+    logger.info("")
+    logger.info("=" * 60)
+    logger.info("")
+    logger.info("********************")
+    logger.info("*** JOB COMPLETE ***")
+    logger.info("********************")
+    logger.info("")
+    logger.info(f"Total tasks: {total_tasks}")
     for status in counts:
-        print(f"  {status.capitalize()}: {counts[status]}")
+        logger.info(f"  {status.capitalize()}: {counts[status]}")
 
-    # Calculate elapsed time
-    if stats["time_range"]["start_time"] and stats["time_range"]["end_time"]:
-        start = datetime.fromisoformat(stats["time_range"]["start_time"])
-        end = datetime.fromisoformat(stats["time_range"]["end_time"])
-        total_elapsed = (end - start).total_seconds()
+    # Same stats block as during run (exceptions, time stats, remaining, elapsed, tasks/hour, spot terminations)
+    log_task_stats(task_db, header="Final:", include_remaining_ids=True)
 
-        hours = int(total_elapsed // 3600)
-        minutes = int((total_elapsed % 3600) // 60)
-        seconds = int(total_elapsed % 60)
-
-        print(f"\nElapsed time: {hours}h {minutes}m {seconds}s")
-
-        completed_count = counts.get("completed", 0)
-        if completed_count > 0 and total_elapsed > 0:
-            tasks_per_hour = completed_count / (total_elapsed / 3600)
-            print(f"Tasks/hour: {tasks_per_hour:.1f}")
-
-    # Print elapsed time statistics
-    if stats["time_stats"]["avg_time"]:
-        print("\nTask elapsed time statistics:")
-        print(
-            f"  Range:  {stats['time_stats']['min_time']:.2f} to "
-            f"{stats['time_stats']['max_time']:.2f} seconds"
-        )
-        print(
-            f"  Mean:   {stats['time_stats']['avg_time']:.2f} +/- "
-            f"{stats['percentiles'].get('std', 0):.2f} seconds"
-        )
-        if stats["percentiles"]:
-            print(f"  Median: {stats['percentiles']['median']:.2f} seconds")
-            print(f"  90th %: {stats['percentiles']['p90']:.2f} seconds")
-            print(f"  95th %: {stats['percentiles']['p95']:.2f} seconds")
-
-    # Print exception summary
-    if stats["exception_counts"]:
-        print("\nExceptions summary:")
-        for exception, count in list(stats["exception_counts"].items())[:10]:
-            # Truncate exception for display
-            exc_lines = exception.strip().split("\n")
-            if len(exc_lines) >= 3:
-                exc_head = "; ".join(exc_lines[1:3])
-                exc_tail = "; ".join(exc_lines[-2:])
-                exc_display = f"{exc_head}; ...; {exc_tail}"
-            else:
-                exc_display = exception
-            print(f"  {count:6d}: {exc_display[:120]}")
-
-    # Print spot terminations
-    if stats["spot_terminations"]:
-        print(f"\nSpot terminations: {len(stats['spot_terminations'])} hosts")
-        for host in stats["spot_terminations"]:
-            print(f"  {host}")
-
-    print("\n" + "=" * 60)
+    logger.info("=" * 60)
 
 
 async def status_cmd(args: argparse.Namespace, config: Config) -> None:
@@ -1896,7 +2096,7 @@ def add_instance_pool_args(parser: argparse.ArgumentParser) -> None:
     # From RunConfig class
     # Constraints on number of instances
     parser.add_argument(
-        "--min-instances", type=int, help="Minimum number of compute instances (default: 1)"
+        "--min-instances", type=int, help="Minimum number of compute instances (default: 0)"
     )
     parser.add_argument(
         "--max-instances", type=int, help="Maximum number of compute instances (default: 10)"
@@ -2238,6 +2438,32 @@ def main():
     )
     run_parser.set_defaults(func=run_cmd)
 
+    # --- Load queue command ---
+
+    load_queue_parser = subparsers.add_parser(
+        "load_queue",
+        help="Load tasks into database and cloud queue (no instance management)",
+    )
+    add_common_args(load_queue_parser)
+    add_load_queue_args(load_queue_parser, task_required=False, include_max_concurrent=True)
+    load_queue_parser.add_argument(
+        "--db-file",
+        help="Path to SQLite database file (default: {job_id}.db)",
+    )
+    load_queue_parser.add_argument(
+        "--continue",
+        dest="continue_run",
+        action="store_true",
+        help="Open existing database and show status only (no load)",
+    )
+    load_queue_parser.add_argument(
+        "--force",
+        "-f",
+        action="store_true",
+        help="Force fresh load without confirmation even if queue has existing messages",
+    )
+    load_queue_parser.set_defaults(func=load_queue_cmd)
+
     # --- Monitor event queue command ---
 
     monitor_events_parser = subparsers.add_parser(
@@ -2413,6 +2639,9 @@ def main():
         args.instance_types = new_instance_types
 
     # Set up logging level based on verbosity
+    # Force at least INFO when using run command so progress is visible
+    if getattr(args, "func", None) is run_cmd and hasattr(args, "verbose") and args.verbose < 1:
+        args.verbose = 1
     if hasattr(args, "verbose"):
         if args.verbose == 0:
             logging.getLogger().setLevel(logging.WARNING)

@@ -193,7 +193,7 @@ def test_update_run_config_from_provider_config_defaults():
 
     # Verify all defaults are set correctly
     assert c.run.cpus_per_task == 1
-    assert c.run.min_instances == 1
+    assert c.run.min_instances == 0
     assert c.run.max_instances == 10
     assert c.run.scaling_check_interval == 60
     assert c.run.instance_termination_delay == 60

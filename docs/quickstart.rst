@@ -239,11 +239,21 @@ Here is an example:
       instance-types: "n2-"
 
 
-Step 6: Run the Job and Monitor Progress
-----------------------------------------
+Step 6: Load the Task Queue and Run the Job
+-------------------------------------------
 
-The ``cloud_tasks run`` command provides a unified workflow that handles the entire job lifecycle
-in a single command, from task loading to completion and cleanup.
+You can run the job in one of two ways:
+
+- **Single command**: The ``cloud_tasks run`` command loads the task queue and then starts
+  the compute instances, monitors events, and cleans up when done. This is the most common
+  workflow.
+
+- **Two-step**: Use the :ref:`load_queue <cli_load_queue_cmd>` command to load tasks into
+  the database and cloud queue first, then run ``cloud_tasks run --continue`` to manage
+  instances and monitor events without re-loading. This is not recommended for most use 
+  cases.
+
+To run the job in one command:
 
 .. code-block:: bash
 

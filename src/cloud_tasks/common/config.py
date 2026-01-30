@@ -435,7 +435,7 @@ class Config(BaseModel, validate_assignment=True):
         if self.run.cpus_per_task is None:
             self.run.cpus_per_task = 1
         if self.run.min_instances is None:
-            self.run.min_instances = 1
+            self.run.min_instances = 0
         if self.run.max_instances is None:
             self.run.max_instances = 10
         if self.run.max_total_price_per_hour is None:

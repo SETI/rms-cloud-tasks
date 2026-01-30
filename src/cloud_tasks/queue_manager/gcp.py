@@ -243,9 +243,17 @@ class GCPPubSubQueue(QueueManager):
             raise
 
     async def _create_topic_and_subscription(self) -> None:
-        """Create the Pub/Sub subscription if it doesn't exist."""
+        """Create the Pub/Sub topic and subscription if they don't exist."""
         await self._create_topic()
         await self._create_subscription()
+
+    async def ensure_queue_ready(self) -> None:
+        """
+        Ensure the Pub/Sub topic and subscription exist before concurrent operations.
+        Call this once before starting a multi-threaded or concurrent task enqueue loop
+        so that each concurrent send_task does not try to create the topic.
+        """
+        await self._create_topic_and_subscription()
 
     async def _delete_subscription(self) -> None:
         """Delete the Pub/Sub subscription."""

@@ -12,5 +12,3 @@ These rules must be followed:
 - Write all tests in pytest format. If any tests are in unittest format, convert them to pytest.
 - Whenever making any modifications, also update or create new tests and update all documentation including docstrings and the README file.
 - Never use mocks when writing the main code unless explicitly told to. It is ok to use mocks for tests.
-
-
