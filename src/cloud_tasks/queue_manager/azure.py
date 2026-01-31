@@ -18,17 +18,17 @@ from .queue_manager import QueueManager
 class AzureServiceBusQueue(QueueManager):
     """Azure Service Bus implementation of the TaskQueue interface."""
 
-    def __init__(self, azure_config: AzureConfig) -> None:
+    def __init__(self, azure_config: AzureConfig, **kwargs: Any) -> None:
         """
         Initialize the Azure Service Bus queue with configuration.
 
         Args:
-            queue_name: Name of the Service Bus queue
-            config: Azure configuration with tenant_id, client_id, client_secret, and subscription_id
+            azure_config: Azure configuration with tenant_id, client_id, client_secret, etc.
+            **kwargs: Ignored (visibility_timeout, exactly_once from create_queue).
         """
-        self._service_bus_client = None
-        self._admin_client = None
-        self._queue_name = None
+        self._service_bus_client: ServiceBusClient | None = None
+        self._admin_client: ServiceBusAdministrationClient | None = None
+        self._queue_name: str | None = None
         self._connection_string = None
         self._logger = logging.getLogger(__name__)
 
@@ -81,6 +81,14 @@ class AzureServiceBusQueue(QueueManager):
             self._logger.error(f"Failed to initialize Azure Service Bus queue: {str(e)}")
             raise
 
+    async def send_message(self, message: dict[str, Any], _quiet: bool = False) -> None:
+        """Send a message to the queue (delegates to send_task with task_id from message)."""
+        import shortuuid
+
+        task_id = message.get("task_id", shortuuid.uuid())
+        data = message.get("data", message)
+        await self.send_task(task_id, data)
+
     async def send_task(self, task_id: str, task_data: dict[str, Any]) -> None:
         """
         Send a task to the Service Bus queue.
@@ -106,6 +114,8 @@ class AzureServiceBusQueue(QueueManager):
             # Get the event loop
             loop = asyncio.get_event_loop()
 
+            assert self._service_bus_client is not None
+            assert self._queue_name is not None
             # Send message to queue in a thread pool
             async with self._service_bus_client:
                 sender = self._service_bus_client.get_queue_sender(queue_name=self._queue_name)
@@ -114,6 +124,20 @@ class AzureServiceBusQueue(QueueManager):
         except Exception as e:
             self._logger.error(f"Failed to publish message for task {task_id}: {str(e)}")
             raise RuntimeError(f"Failed to publish task to Azure Service Bus: {str(e)}")
+
+    async def receive_messages(
+        self, max_count: int = 1, acknowledge: bool = True
+    ) -> list[dict[str, Any]]:
+        """Receive messages; returns list with message_id, data, receipt_handle (lock_token)."""
+        tasks = await self.receive_tasks(max_count=max_count)
+        return [
+            {
+                "message_id": t.get("task_id", ""),
+                "data": t.get("data", {}),
+                "receipt_handle": t.get("lock_token"),
+            }
+            for t in tasks
+        ]
 
     async def receive_tasks(
         self,
@@ -136,6 +160,8 @@ class AzureServiceBusQueue(QueueManager):
             tasks = []
             loop = asyncio.get_event_loop()
 
+            assert self._service_bus_client is not None
+            assert self._queue_name is not None
             # Create receiver for the queue
             async with self._service_bus_client:
                 receiver = self._service_bus_client.get_queue_receiver(
@@ -171,6 +197,10 @@ class AzureServiceBusQueue(QueueManager):
             self._logger.error(f"Error receiving tasks: {str(e)}")
             return []
 
+    async def acknowledge_message(self, message_handle: Any) -> None:
+        """Acknowledge a message (alias for acknowledge_task)."""
+        await self.acknowledge_task(message_handle)
+
     async def acknowledge_task(self, task_handle: Any) -> None:
         """
         Mark a task as completed and remove from the queue.
@@ -185,6 +215,8 @@ class AzureServiceBusQueue(QueueManager):
         try:
             loop = asyncio.get_event_loop()
 
+            assert self._service_bus_client is not None
+            assert self._queue_name is not None
             async with self._service_bus_client:
                 receiver = self._service_bus_client.get_queue_receiver(queue_name=self._queue_name)
                 # Complete the message using its lock token in a thread pool
@@ -192,6 +224,10 @@ class AzureServiceBusQueue(QueueManager):
         except Exception as e:
             self._logger.error(f"Error completing task: {str(e)}")
             raise
+
+    async def retry_message(self, message_handle: Any) -> None:
+        """Retry a message (alias for retry_task)."""
+        await self.retry_task(message_handle)
 
     async def retry_task(self, task_handle: Any) -> None:
         """
@@ -207,6 +243,8 @@ class AzureServiceBusQueue(QueueManager):
         try:
             loop = asyncio.get_event_loop()
 
+            assert self._service_bus_client is not None
+            assert self._queue_name is not None
             async with self._service_bus_client:
                 receiver = self._service_bus_client.get_queue_receiver(queue_name=self._queue_name)
                 # Abandon the message in a thread pool
@@ -227,9 +265,13 @@ class AzureServiceBusQueue(QueueManager):
         try:
             loop = asyncio.get_event_loop()
 
+            assert self._admin_client is not None
+            assert self._queue_name is not None
+            admin_client = self._admin_client
+            queue_name = self._queue_name
             # Get queue runtime properties in a thread pool
             queue_properties = await loop.run_in_executor(
-                None, lambda: self._admin_client.get_queue_runtime_properties(self._queue_name)
+                None, lambda: admin_client.get_queue_runtime_properties(queue_name)
             )
 
             return queue_properties.active_message_count
@@ -245,10 +287,12 @@ class AzureServiceBusQueue(QueueManager):
         try:
             loop = asyncio.get_event_loop()
 
+            assert self._admin_client is not None
+            assert self._queue_name is not None
+            admin_client = self._admin_client
+            queue_name = self._queue_name
             # Delete the queue if it exists in a thread pool
-            await loop.run_in_executor(
-                None, lambda: self._admin_client.delete_queue(self._queue_name)
-            )
+            await loop.run_in_executor(None, lambda: admin_client.delete_queue(queue_name))
 
             # Wait a moment for deletion to complete
             await asyncio.sleep(2)
@@ -256,8 +300,8 @@ class AzureServiceBusQueue(QueueManager):
             # Create a new queue with the same properties in a thread pool
             await loop.run_in_executor(
                 None,
-                lambda: self._admin_client.create_queue(
-                    self._queue_name,
+                lambda: admin_client.create_queue(
+                    queue_name,
                     max_delivery_count=10,
                     lock_duration=timedelta(seconds=30),
                     max_size_in_megabytes=1024,
@@ -276,11 +320,23 @@ class AzureServiceBusQueue(QueueManager):
         try:
             loop = asyncio.get_event_loop()
 
+            assert self._admin_client is not None
+            assert self._queue_name is not None
+            admin_client = self._admin_client
+            queue_name = self._queue_name
             # Delete the queue in a thread pool
-            await loop.run_in_executor(
-                None, lambda: self._admin_client.delete_queue(self._queue_name)
-            )
+            await loop.run_in_executor(None, lambda: admin_client.delete_queue(queue_name))
             self._logger.info(f"Successfully deleted queue {self._queue_name}")
         except Exception as e:
             self._logger.error(f"Error deleting queue: {str(e)}")
             raise
+
+    def get_max_visibility_timeout(self) -> int:
+        """Return maximum visibility timeout in seconds (Azure default)."""
+        return 300
+
+    async def extend_message_visibility(
+        self, message_handle: Any, timeout: int | None = None
+    ) -> None:
+        """Extend message visibility; Azure Service Bus uses lock renewal elsewhere."""
+        pass  # No-op; lock renewal is done in receive_tasks

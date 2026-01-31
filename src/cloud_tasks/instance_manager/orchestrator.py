@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from ..common.config import Config
-from ..queue_manager import create_queue
+from ..queue_manager import QueueManager, create_queue
 from . import create_instance_manager
 from .instance_manager import InstanceManager
 
@@ -76,7 +76,7 @@ class InstanceOrchestrator:
         if not self._run_config:
             raise ValueError("Run configuration section is missing - this should not happen")
 
-        self._task_queue = None
+        self._task_queue: QueueManager | None = None
 
         # TODO: Add scale_up/down_thresholds to RunConfig?
         # self._scale_up_threshold = 10  # Default or fetch from config if added
@@ -88,17 +88,19 @@ class InstanceOrchestrator:
 
         # Will be initialized in start()
         self._instance_manager: InstanceManager | None = None
-        self._optimal_instance_info = None
-        self._optimal_instance_boot_disk_size = None
-        self._optimal_instance_num_tasks = None
-        self._image_uri = None
-        self._all_instance_info = None
-        self._pricing_info = None
+        self._optimal_instance_info: dict[str, Any] | None = None
+        self._optimal_instance_boot_disk_size: int | None = None
+        self._optimal_instance_num_tasks: int | None = None
+        self._image_uri: str | None = None
+        self._all_instance_info: dict[str, dict[str, Any]] | None = None
+        self._pricing_info: (
+            dict[str, dict[str, dict[str, dict[str, float | str | None]]]] | None
+        ) = None
 
         # Empty queue tracking for scale-down
         self._empty_queue_since = None
         self._instance_termination_delay = self._run_config.instance_termination_delay
-        self._scaling_task = None
+        self._scaling_task: asyncio.Task[None] | None = None
 
         # Initialize lock for instance creation
         self._instance_creation_lock = asyncio.Lock()
@@ -108,10 +110,12 @@ class InstanceOrchestrator:
 
         # Initialize last scaling time
         self._last_scaling_time = None
-        self._scaling_task = None
 
         # Set check interval for scaling loop
-        self._scaling_check_interval = self._run_config.scaling_check_interval
+        scaling_interval = self._run_config.scaling_check_interval
+        self._scaling_check_interval: float = (
+            float(scaling_interval) if scaling_interval is not None else 60.0
+        )
 
         # Maximum number of instances to create in parallel
         self._min_instances = self._run_config.min_instances
@@ -222,24 +226,30 @@ class InstanceOrchestrator:
         Returns:
             Shell script for instance startup
         """
+        gcp_supplement = ""
         if self._provider == "GCP":
+            project_id = getattr(self._provider_config, "project_id", "") or ""
             gcp_supplement = f"""\
-export RMS_CLOUD_TASKS_PROJECT_ID={self._provider_config.project_id}
+export RMS_CLOUD_TASKS_PROJECT_ID={project_id}
 """
 
+        assert self._optimal_instance_info is not None
+        assert self._optimal_instance_boot_disk_size is not None
+        assert self._optimal_instance_num_tasks is not None
+        oii = self._optimal_instance_info
         supplement = f"""\
 export RMS_CLOUD_TASKS_PROVIDER={self._provider}
 {gcp_supplement}
 export RMS_CLOUD_TASKS_JOB_ID={self._job_id}
 export RMS_CLOUD_TASKS_QUEUE_NAME={self._queue_name}
 export RMS_CLOUD_TASKS_EVENT_LOG_TO_QUEUE=1
-export RMS_CLOUD_TASKS_INSTANCE_TYPE={self._optimal_instance_info["name"]}
-export RMS_CLOUD_TASKS_INSTANCE_NUM_VCPUS={self._optimal_instance_info["vcpu"]}
-export RMS_CLOUD_TASKS_INSTANCE_MEM_GB={self._optimal_instance_info["mem_gb"]}
-export RMS_CLOUD_TASKS_INSTANCE_SSD_GB={self._optimal_instance_info["local_ssd_gb"]}
+export RMS_CLOUD_TASKS_INSTANCE_TYPE={oii["name"]}
+export RMS_CLOUD_TASKS_INSTANCE_NUM_VCPUS={oii["vcpu"]}
+export RMS_CLOUD_TASKS_INSTANCE_MEM_GB={oii["mem_gb"]}
+export RMS_CLOUD_TASKS_INSTANCE_SSD_GB={oii["local_ssd_gb"]}
 export RMS_CLOUD_TASKS_INSTANCE_BOOT_DISK_GB={self._optimal_instance_boot_disk_size}
 export RMS_CLOUD_TASKS_INSTANCE_IS_SPOT={self._run_config.use_spot}
-export RMS_CLOUD_TASKS_INSTANCE_PRICE={self._optimal_instance_info["total_price"]}
+export RMS_CLOUD_TASKS_INSTANCE_PRICE={oii["total_price"]}
 export RMS_CLOUD_TASKS_NUM_TASKS_PER_INSTANCE={self._optimal_instance_num_tasks}
 export RMS_CLOUD_TASKS_MAX_RUNTIME={self._run_config.max_runtime}
 export RMS_CLOUD_TASKS_RETRY_ON_EXIT={self._run_config.retry_on_exit}
@@ -257,7 +267,8 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
                 msg = "Startup script uses shell other than bash; this is not supported"
                 self._logger.error(msg)
                 raise RuntimeError(msg)
-            ss = f"{ss_lines[0]}\n{supplement}\n{ss_lines}"
+            rest = ss_lines[1] if len(ss_lines) > 1 else ""
+            ss = f"{ss_lines[0]}\n{supplement}\n{rest}"
         else:
             ss = f"{supplement}\n{ss}"
 
@@ -279,6 +290,7 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
 
     async def _initialize_pricing_info(self) -> None:
         """Initialize the pricing information."""
+        assert self._instance_manager is not None
         if self._all_instance_info is None:
             # No constraints on the instance types - we want all of them so that we can analyze
             # any running instances that may already exist.
@@ -292,9 +304,10 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
                 "boot_disk_iops": self._run_config.boot_disk_iops,
                 "boot_disk_throughput": self._run_config.boot_disk_throughput,
             }
+            use_spot = self._run_config.use_spot if self._run_config.use_spot is not None else False
             self._pricing_info = await self._instance_manager.get_instance_pricing(
                 self._all_instance_info,
-                use_spot=self._run_config.use_spot,
+                use_spot=use_spot,
                 boot_disk_constraints=boot_disk_constraints,
             )
 
@@ -317,6 +330,7 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
 
         # Get image - either custom or default
         image = self._run_config.image
+        assert self._instance_manager is not None
         if image is not None:
             # If it's a full URI, use it directly
             if image.startswith("https://") or "/" in image:
@@ -366,22 +380,24 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
 
         boot_disk_size = optimal_instance_info["boot_disk_gb"]
 
+        vcpu_val = optimal_instance_info.get("vcpu")
+        vcpu = int(vcpu_val) if vcpu_val is not None else 0
         if boot_disk_size is None:
             self._logger.warning(
                 "No boot disk size constraints provided; using default of "
                 f"{self._DEFAULT_BOOT_DISK_SIZE_PER_CPU_GB} GB per CPU",
             )
-            boot_disk_size = self._DEFAULT_BOOT_DISK_SIZE_PER_CPU_GB * optimal_instance_info["vcpu"]
+            boot_disk_size = self._DEFAULT_BOOT_DISK_SIZE_PER_CPU_GB * vcpu
         else:
             self._logger.info(f"|| Derived boot disk size: {boot_disk_size} GB")
-        self._optimal_instance_boot_disk_size = boot_disk_size
+        self._optimal_instance_boot_disk_size = int(boot_disk_size)
 
         # Derive the number of tasks per instance from the constraints and the number of vCPUs in the
         # optimal instance
         if self._run_config.cpus_per_task is None:
-            num_tasks = optimal_instance_info["vcpu"]  # Default to one task per vCPU
+            num_tasks = vcpu  # Default to one task per vCPU
         else:
-            num_tasks = int(optimal_instance_info["vcpu"] // self._run_config.cpus_per_task)
+            num_tasks = int(vcpu // self._run_config.cpus_per_task)
         # Enforce min/max constraints
         if self._run_config.min_tasks_per_instance is not None:
             num_tasks = max(num_tasks, self._run_config.min_tasks_per_instance)
@@ -428,15 +444,21 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
         except Exception as e:
             self._logger.error(f"Failed to get running instances: {e}", exc_info=True)
             self._logger.error("Cannot make scaling decisions without instance information")
-            return
+            return 0, 0, 0.0, "Error getting running instances"
 
         # Count the number of instances of each type and running status
         # Also count by "state" and "zone" fields
         running_instances_by_type = {}
+        boot_disk_types_cfg = self._run_config.boot_disk_types
+        default_boot_disk = (
+            boot_disk_types_cfg[0]
+            if isinstance(boot_disk_types_cfg, list) and len(boot_disk_types_cfg) > 0
+            else (boot_disk_types_cfg if isinstance(boot_disk_types_cfg, str) else "pd-balanced")
+        )
         for instance in running_instances:
             boot_disk_type = instance["boot_disk_type"]
             if boot_disk_type is None:
-                boot_disk_type = self._run_config.boot_disk_types[0]
+                boot_disk_type = default_boot_disk
             key = (
                 instance["type"],
                 boot_disk_type,
@@ -448,12 +470,14 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
             running_instances_by_type[key] += 1
 
         num_running = 0
-        running_cpus = 0
-        running_price = 0
+        running_cpus: int = 0
+        running_price: float = 0.0
         if len(running_instances_by_type) == 0:
             summary = "No running instances found"
             return num_running, running_cpus, running_price, summary
 
+        assert self._all_instance_info is not None
+        assert self._pricing_info is not None
         summary = ""
         summary += "Running instance summary:\n"
         summary += "  State       Instance Type             Boot Disk    vCPUs  Zone             Count  Total Price\n"
@@ -463,16 +487,15 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
         for type_, boot_disk_type, state, zone in sorted_keys:
             count = running_instances_by_type[(type_, boot_disk_type, state, zone)]
             instance = self._all_instance_info[type_]
-            cpus = instance["vcpu"]
+            cpus = int(instance["vcpu"]) if instance.get("vcpu") is not None else 0
             try:
-                price = self._pricing_info[type_][zone][boot_disk_type]["total_price"] * count
+                price_val = self._pricing_info[type_][zone][boot_disk_type]["total_price"]
+                price = (float(price_val) if price_val is not None else 0) * count
             except KeyError:
                 wildcard_zone = zone[:-1] + "*"
                 try:
-                    price = (
-                        self._pricing_info[type_][wildcard_zone][boot_disk_type]["total_price"]
-                        * count
-                    )
+                    pv = self._pricing_info[type_][wildcard_zone][boot_disk_type]["total_price"]
+                    price = (float(pv) if pv is not None else 0) * count
                 except KeyError:
                     self._logger.warning(
                         f"No pricing info for instance type {type_} ({boot_disk_type}) in "
@@ -569,6 +592,7 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
             if self._dry_run:
                 remaining_tasks = 1
             else:
+                assert self._task_queue is not None
                 queue_depth = await self._task_queue.get_queue_depth()
                 if queue_depth is None:
                     self._logger.error("Failed to get queue depth, assuming depth of 1")
@@ -590,19 +614,20 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
             self._logger.info(summary_line)
 
         # Find our budget for new instances, cpus, and $$
-
-        if num_running > self._max_instances:  # max_instances always has a value
+        max_instances = self._max_instances
+        if max_instances is not None and num_running > max_instances:
             self._logger.warning(
-                f"  More instances running than max allowed: {num_running} > {self._max_instances}"
+                f"  More instances running than max allowed: {num_running} > {max_instances}"
             )
 
         # Find the maximum number of instances allowed by looking at
         # --max-instances and --max-simultaneous-tasks with --cpus-per-task
-        max_allowed_instances = self._max_instances
+        max_allowed_instances = max_instances if max_instances is not None else 999999
         self._logger.debug(f"Initial constraint: max allowed instances: {max_allowed_instances}")
 
         # Derive the number of tasks per instance from the constraints and the number of vCPUs
         # in the optimal instance
+        assert self._optimal_instance_num_tasks is not None
         cpus_per_task = self._run_config.cpus_per_task or 1
         tasks_per_instance = self._optimal_instance_num_tasks
         tasks_running = int(running_cpus // cpus_per_task)
@@ -655,7 +680,7 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
                     f"  More money being spent than max allowed: ${running_price:.2f} > "
                     f"${self._run_config.max_total_price_per_hour:.2f}"
                 )
-                available_price = 0
+                available_price = 0.0
             else:
                 available_price = self._run_config.max_total_price_per_hour - running_price
         else:
@@ -670,9 +695,13 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
 
         # Find the minimum of the three budgets - this gives us the maximum number of instances
         # we can start
+        assert self._optimal_instance_info is not None
+        oii = self._optimal_instance_info
+        opt_vcpu = int(oii["vcpu"]) if oii.get("vcpu") is not None else 0
+        opt_price = float(oii["total_price"]) if oii.get("total_price") is not None else 0.0
         instances_to_add = available_instances
-        if available_cpus is not None:
-            new_instances_to_add = int(available_cpus // self._optimal_instance_info["vcpu"])
+        if available_cpus is not None and opt_vcpu > 0:
+            new_instances_to_add = int(available_cpus // opt_vcpu)
             if new_instances_to_add < instances_to_add:
                 instances_to_add = new_instances_to_add
                 self._logger.debug(
@@ -680,10 +709,8 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
                     f"available_cpus={available_cpus}, "
                     f"instances_to_add={instances_to_add}"
                 )
-        if available_price is not None:
-            new_instances_to_add = int(
-                available_price // self._optimal_instance_info["total_price"]
-            )
+        if available_price is not None and opt_price > 0:
+            new_instances_to_add = int(available_price // opt_price)
             if new_instances_to_add < instances_to_add:
                 instances_to_add = new_instances_to_add
                 self._logger.debug(
@@ -694,17 +721,16 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
 
         if instances_to_add > 0:
             # Now see if we violated the minimum constraints
+            min_inst = self._min_instances
             if (
-                instances_to_add < self._min_instances
+                (min_inst is not None and instances_to_add < min_inst)
                 or (
                     self._run_config.min_total_cpus is not None
-                    and instances_to_add * self._optimal_instance_info["vcpu"]
-                    < self._run_config.min_total_cpus
+                    and instances_to_add * opt_vcpu < self._run_config.min_total_cpus
                 )
                 or (
                     self._run_config.min_total_price_per_hour is not None
-                    and instances_to_add * self._optimal_instance_info["total_price"]
-                    < self._run_config.min_total_price_per_hour
+                    and instances_to_add * opt_price < self._run_config.min_total_price_per_hour
                 )
                 or (
                     self._run_config.min_simultaneous_tasks is not None
@@ -715,9 +741,9 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
                 self._logger.warning(
                     f"Violated minimum constraints: Max instances we can add is "
                     f"{instances_to_add} at "
-                    f"${instances_to_add * self._optimal_instance_info['total_price']:.2f}/hour "
+                    f"${instances_to_add * opt_price:.2f}/hour "
                     f"giving a total of {tasks_running + instances_to_add * tasks_per_instance} "
-                    f"simultaneous tasks, but minimums are {self._min_instances} instances, "
+                    f"simultaneous tasks, but minimums are {min_inst} instances, "
                     f"{self._run_config.min_total_cpus} vCPUs, "
                     f"${self._run_config.min_total_price_per_hour:.2f}/hour, "
                     f"{self._run_config.min_simultaneous_tasks} simultaneous tasks"
@@ -727,12 +753,12 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
                     self._logger.info(
                         f"Dry run mode - would start {instances_to_add} new instances for an "
                         "incremental price of "
-                        f"${instances_to_add * self._optimal_instance_info['total_price']:.2f}/hour"
+                        f"${instances_to_add * opt_price:.2f}/hour"
                     )
                 else:
                     self._logger.info(
                         f"Starting {instances_to_add} new instances for an incremental price of "
-                        f"${instances_to_add * self._optimal_instance_info['total_price']:.2f}/hour"
+                        f"${instances_to_add * opt_price:.2f}/hour"
                     )
                     await self._provision_instances(instances_to_add)
 

@@ -4,6 +4,7 @@ Custom logging configuration with proper microsecond support.
 
 import datetime
 import logging
+from typing import override
 
 
 class MicrosecondFormatter(logging.Formatter):
@@ -12,11 +13,16 @@ class MicrosecondFormatter(logging.Formatter):
     The standard logging.Formatter doesn't properly support %f in datefmt.
     """
 
-    def formatTime(self, record: logging.LogRecord, datefmt: str | None) -> str:  # noqa: N802
+    @override
+    def formatTime(  # noqa: N802
+        self, record: logging.LogRecord, datefmt: str | None = None
+    ) -> str:
         """
         Override the standard formatTime to correctly handle microseconds.
         """
         ct = datetime.datetime.fromtimestamp(record.created)
+        if datefmt is None:
+            datefmt = "%Y-%m-%d %H:%M:%S"
         s = ct.strftime(datefmt)
         # Always truncate to 3 digits (millisecond precision) even when datefmt is provided
         if ".%f" in datefmt:

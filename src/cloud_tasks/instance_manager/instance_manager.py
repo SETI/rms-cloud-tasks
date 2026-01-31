@@ -250,7 +250,7 @@ class InstanceManager(ABC):
         *,
         use_spot: bool = False,
         boot_disk_constraints: dict[str, Any] | None = None,
-    ) -> dict[str, dict[str, dict[str, float | str | None]]]:
+    ) -> dict[str, dict[str, dict[str, dict[str, float | str | None]]]]:
         """
         Get the hourly price for one or more specific instance types.
 
@@ -378,7 +378,7 @@ class InstanceManager(ABC):
         pass  # pragma: no cover
 
     @abstractmethod
-    async def get_image_from_family(self, family_name: str) -> str:
+    async def get_image_from_family(self, family_name: str) -> str | None:
         """
         Get the latest image from a specific family.
 
@@ -391,7 +391,7 @@ class InstanceManager(ABC):
         pass  # pragma: no cover
 
     @abstractmethod
-    async def get_default_image(self) -> str:
+    async def get_default_image(self) -> str | None:
         """
         Get the latest Ubuntu 24.04 LTS image for Compute Engine.
 
@@ -401,6 +401,6 @@ class InstanceManager(ABC):
         pass  # pragma: no cover
 
     @abstractmethod
-    async def get_available_regions(self) -> dict[str, Any]:
+    async def get_available_regions(self, prefix: str | None = None) -> dict[str, Any]:
         """Get all available regions and their attributes."""
         pass  # pragma: no cover

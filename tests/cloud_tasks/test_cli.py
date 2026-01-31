@@ -914,14 +914,16 @@ def test_run_argv_stop_with_purge_queue(tmp_path, capsys):
     mock_orch.queue_name = "test-job"
     mock_orch.initialize = AsyncMock()
     mock_orch.stop = AsyncMock()
-    mock_orch.task_queue = AsyncMock()
-    mock_orch.task_queue.purge_queue = AsyncMock()
+    mock_task_queue = AsyncMock()
+    mock_task_queue.purge_queue = AsyncMock()
+    mock_orch.task_queue = mock_task_queue
+    mock_orch._task_queue = mock_task_queue  # CLI uses _task_queue for purge
     with patch("cloud_tasks.cli.InstanceOrchestrator", return_value=mock_orch):
         code = run_argv(
             ["stop", "--config", str(config_path), "--provider", "gcp", "--purge-queue"]
         )
     assert code == 0
-    mock_orch.task_queue.purge_queue.assert_called_once()
+    mock_task_queue.purge_queue.assert_called_once()
 
 
 def test_run_argv_stop_raises_exits_one(tmp_path):

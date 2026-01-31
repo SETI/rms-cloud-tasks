@@ -88,27 +88,5 @@ plugins = "pydantic.mypy"
 follow_imports = "silent"
 
 [[tool.mypy.overrides]]
-module = ["json_stream.*", "google.cloud.pubsub_v1.*"]
+module = ["json_stream.*", "google.cloud.pubsub_v1.*", "google.cloud"]
 ignore_missing_imports = true
-
-# Gradual typing: disable noisy checks until fixed (union-attr, index, override, etc.)
-[[tool.mypy.overrides]]
-module = ["cloud_tasks.*"]
-disable_error_code = [
-    "union-attr",
-    "index",
-    "assignment",
-    "operator",
-    "attr-defined",
-    "call-arg",
-    "arg-type",
-    "abstract",
-    "override",
-    "var-annotated",
-    "return-value",
-    "name-defined",
-    "misc",
-    "func-returns-value",
-    "type-var",
-]
-

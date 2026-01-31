@@ -250,7 +250,8 @@ class GCPComputeInstanceManager(InstanceManager):
         self._billing_client = billing.CloudCatalogClient(credentials=self._credentials)
         self._billing_compute_skus: list[billing.Sku] | None = None
         self._instance_pricing_cache: dict[
-            tuple[str, bool], dict[str, dict[str, float | str | None]] | None
+            tuple[str, bool],
+            dict[str, dict[str, dict[str, float | str | None]]] | None,
         ] = {}
         self._pricing_cache_file_loaded = False
         self._pricing_cache_lock = threading.Lock()
@@ -652,7 +653,7 @@ class GCPComputeInstanceManager(InstanceManager):
         *,
         use_spot: bool = False,
         boot_disk_constraints: dict[str, Any] | None = None,
-    ) -> dict[str, dict[str, dict[str, float | str | None]]]:
+    ) -> dict[str, dict[str, dict[str, dict[str, float | str | None]]]]:
         """
         Get the hourly price for one or more specific instance types.
 
@@ -697,7 +698,7 @@ class GCPComputeInstanceManager(InstanceManager):
 
         self._load_pricing_cache_from_file()
 
-        ret: dict[str, dict[str, dict[str, float | str | None]]] = {}
+        ret: dict[str, dict[str, dict[str, dict[str, float | str | None]]]] = {}
         cache_modified = False
 
         if len(instance_types) == 0:
@@ -749,21 +750,26 @@ class GCPComputeInstanceManager(InstanceManager):
                     cpu_price = per_cpu_price * machine_info["vcpu"]
                     ram_price = per_gb_ram_price * machine_info["mem_gb"]
                     local_ssd_price = per_gb_local_ssd_price * machine_info["local_ssd_gb"]
-                    boot_disk_per_iops_price = 0
-                    boot_disk_iops_price = 0
-                    boot_disk_per_throughput_price = 0
-                    boot_disk_throughput_price = 0
+                    boot_disk_per_iops_price: float = 0.0
+                    boot_disk_iops_price: float = 0.0
+                    boot_disk_per_throughput_price: float = 0.0
+                    boot_disk_throughput_price: float = 0.0
                     match boot_disk_type:
                         case "pd-extreme":
-                            boot_disk_per_iops_price = zone_boot_val["boot_disk_per_iops_price"]
+                            boot_disk_per_iops_price = cast(
+                                float, zone_boot_val["boot_disk_per_iops_price"]
+                            )
                             boot_disk_iops_price = (
                                 boot_disk_per_iops_price * machine_info["boot_disk_iops"]
                             )
                         case "hd-balanced":
-                            boot_disk_per_iops_price = zone_boot_val["boot_disk_per_iops_price"]
-                            boot_disk_per_throughput_price = zone_boot_val[
-                                "boot_disk_per_throughput_price"
-                            ]
+                            boot_disk_per_iops_price = cast(
+                                float, zone_boot_val["boot_disk_per_iops_price"]
+                            )
+                            boot_disk_per_throughput_price = cast(
+                                float,
+                                zone_boot_val["boot_disk_per_throughput_price"],
+                            )
                             boot_disk_iops_price = (
                                 boot_disk_per_iops_price * machine_info["boot_disk_iops"]
                             )
@@ -1338,8 +1344,9 @@ class GCPComputeInstanceManager(InstanceManager):
             boot_disk_constraints=constraints,
         )
 
-        # Rearrange the pricing data into a dictionary of (machine_type, zone) -> price
-        zone_pricing_data = {}
+        # Rearrange the pricing data into a dictionary of (machine_type, zone, boot_disk_type) ->
+        # price info dict
+        zone_pricing_data: dict[tuple[str, str, str], dict[str, float | str | None]] = {}
         for machine_type, price in pricing_data.items():
             if price is None:
                 self._logger.debug(f"No pricing data found for {machine_type}; ignoring")
@@ -1352,7 +1359,8 @@ class GCPComputeInstanceManager(InstanceManager):
                     continue
                 for boot_disk_type, price_info in price_in_zone.items():
                     # Filter out the boot disk types that were not selected by the constraints
-                    if boot_disk_type not in price_info["available_boot_disk_types"]:
+                    avail_types = price_info.get("available_boot_disk_types")
+                    if not isinstance(avail_types, list) or boot_disk_type not in avail_types:
                         continue
                     zone_pricing_data[(machine_type, zone, boot_disk_type)] = price_info
 
@@ -1372,24 +1380,26 @@ class GCPComputeInstanceManager(InstanceManager):
         # make us choose an instance with fewer vCPUs that would otherwise cost the same.
         priced_instances.sort(
             key=lambda x: (
-                round(cast(float, x[3]["total_price"]) / x[3]["vcpu"], 4),
+                round(cast(float, x[3]["total_price"]) / cast(int, x[3]["vcpu"]), 4),
                 -cast(int, x[3]["vcpu"]),
             )
         )
 
         self._logger.debug("Instance types sorted by price (cheapest and most vCPUs first):")
         for i, (machine_type, zone, boot_disk_type, price_info) in enumerate(priced_instances):
+            total_p = cast(float, price_info["total_price"])
+            vcpu = cast(int, price_info["vcpu"])
             self._logger.debug(
                 f"  [{i + 1:3d}] {machine_type:20s} ({boot_disk_type:12s}) "
                 f"in {zone:15s}: "
-                f"${price_info['total_price']:10.6f}/hour = "
-                f"${price_info['total_price'] / price_info['vcpu']:10.6f}/vCPU/hour"
+                f"${total_p:10.6f}/hour = "
+                f"${total_p / vcpu:10.6f}/vCPU/hour"
             )
 
         selected_type, selected_zone, selected_boot_disk_type, selected_price_info = (
             priced_instances[0]
         )
-        total_price = selected_price_info["total_price"]
+        total_price = cast(float, selected_price_info["total_price"])
         self._logger.debug(
             f"Selected {selected_type} ({selected_boot_disk_type:12s}) in "
             f"{selected_zone} at ${total_price:.6f} per hour "
@@ -1472,7 +1482,7 @@ class GCPComputeInstanceManager(InstanceManager):
 
         gcp_disk_type = disk_type_map[boot_disk_type]
 
-        disk_config = {
+        disk_config: dict[str, Any] = {
             "boot": True,
             "auto_delete": True,
             "initialize_params": {
@@ -1698,7 +1708,9 @@ class GCPComputeInstanceManager(InstanceManager):
 
         return instances
 
-    def _get_boot_disk_info(self, instance) -> tuple[str, int, int, int]:
+    def _get_boot_disk_info(
+        self, instance: Any
+    ) -> tuple[str | None, int | None, int | None, int | None]:
         """
         Retrieves full information about a running instance's boot disk,
         including its type and provisioned IOPS/throughput if applicable.
@@ -1794,7 +1806,9 @@ class GCPComputeInstanceManager(InstanceManager):
                 "pd-extreme": "pd-extreme",
                 "hyperdisk-balanced": "hd-balanced",
             }
-            instance_info["boot_disk_type"] = disk_type_map.get(boot_disk_type)
+            instance_info["boot_disk_type"] = disk_type_map.get(
+                boot_disk_type if boot_disk_type is not None else ""
+            )
             if instance_info["boot_disk_type"] is None:
                 self._logger.warning(f"Unknown boot disk type: {boot_disk_type}")
             instance_info["boot_disk_iops"] = boot_disk_iops

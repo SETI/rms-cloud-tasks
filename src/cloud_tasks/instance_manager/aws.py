@@ -390,7 +390,7 @@ class AWSEC2InstanceManager(InstanceManager):
         *,
         use_spot: bool = False,
         boot_disk_constraints: dict[str, Any] | None = None,
-    ) -> dict[str, dict[str, dict[str, float | str | None]]]:
+    ) -> dict[str, dict[str, dict[str, dict[str, float | str | None]]]]:
         """
         Get the hourly price for one or more specific instance types.
 
@@ -426,7 +426,7 @@ class AWSEC2InstanceManager(InstanceManager):
         )
         self._logger.debug(f"Boot disk constraints: {boot_disk_constraints}")
 
-        ret: dict[str, dict[str, dict[str, float | str | None]]] = {}
+        ret: dict[str, dict[str, dict[str, dict[str, float | str | None]]]] = {}
 
         if len(instance_types) == 0:
             self._logger.warning("No instance types provided")
@@ -463,9 +463,11 @@ class AWSEC2InstanceManager(InstanceManager):
                 inst_type = price["InstanceType"]
                 if inst_type not in ret:
                     ret[inst_type] = {}
+                if zone not in ret[inst_type]:
+                    ret[inst_type][zone] = {}
                 cpu_price = float(price["SpotPrice"])
                 vcpus = instance_types[inst_type]["vcpu"]
-                ret[inst_type][zone] = {
+                ret[inst_type][zone][boot_disk_type] = {
                     "cpu_price": round(cpu_price, 6),  # CPU price (combined CPU and memory)
                     "per_cpu_price": round(cpu_price / vcpus, 6),  # Per-CPU price
                     "mem_price": 0.0,  # Memory price (we don't have this)
@@ -538,7 +540,7 @@ class AWSEC2InstanceManager(InstanceManager):
                         # We're missing pricing data for a huge chunk, so just give up
                         self._logger.error("No pricing data found - aborting")
                         for inst_name in instance_types:
-                            ret[inst_name] = {}
+                            ret[inst_name] = {f"{self._region}*": {boot_disk_type: {}}}
                         return ret
                     for price_item in response["PriceList"]:
                         price_data = json.loads(price_item)
@@ -556,7 +558,7 @@ class AWSEC2InstanceManager(InstanceManager):
                 price_data = pricing_dict.get(inst_name)
                 if price_data is None:
                     self._logger.warning(f"Could not find pricing data for {inst_name}")
-                    ret[inst_name] = {}
+                    ret[inst_name] = {f"{self._region}*": {}}
                     continue
                 attributes = price_data.get("product", {}).get("attributes", {})
                 if attributes is None:
@@ -577,26 +579,27 @@ class AWSEC2InstanceManager(InstanceManager):
                             self._logger.debug(
                                 f"Found on-demand price for {inst_name}: ${price:.4f}/hour"
                             )
+                            zone_key = f"{self._region}*"
                             ret[inst_name] = {
-                                f"{self._region}*": {
-                                    "cpu_price": round(
-                                        price, 6
-                                    ),  # CPU price (combined CPU and memory)
-                                    "per_cpu_price": round(
-                                        price / float(attributes["vcpu"]), 6
-                                    ),  # Per-CPU price
-                                    "mem_price": 0.0,  # Memory price
-                                    "mem_per_gb_price": 0.0,  # Per-GB price (we don't have this)
-                                    "local_ssd_price": 0.0,  # Local SSD price (we don't have this)
-                                    "local_ssd_per_gb_price": 0.0,  # Local SSD per-GB price (we don't have this)
-                                    "boot_disk_price": 0.0,  # TODO
-                                    "boot_disk_per_gb_price": 0.0,  # TODO
-                                    "total_price": round(price, 6),  # Total price
-                                    "total_price_per_cpu": round(
-                                        price / float(attributes["vcpu"]), 6
-                                    ),
-                                    "zone": f"{self._region}*",
-                                    **inst_info,
+                                zone_key: {
+                                    boot_disk_type: {
+                                        "cpu_price": round(price, 6),
+                                        "per_cpu_price": round(
+                                            price / float(attributes["vcpu"]), 6
+                                        ),
+                                        "mem_price": 0.0,
+                                        "mem_per_gb_price": 0.0,
+                                        "local_ssd_price": 0.0,
+                                        "local_ssd_per_gb_price": 0.0,
+                                        "boot_disk_price": 0.0,
+                                        "boot_disk_per_gb_price": 0.0,
+                                        "total_price": round(price, 6),
+                                        "total_price_per_cpu": round(
+                                            price / float(attributes["vcpu"]), 6
+                                        ),
+                                        "zone": zone_key,
+                                        **inst_info,
+                                    }
                                 }
                             }
                             break
@@ -604,7 +607,7 @@ class AWSEC2InstanceManager(InstanceManager):
                         break
                 if inst_name not in ret:
                     self._logger.warning(f"Could not find pricing data for {inst_name}")
-                    ret[inst_name] = {}
+                    ret[inst_name] = {f"{self._region}*": {}}
 
         return ret
 
@@ -612,11 +615,14 @@ class AWSEC2InstanceManager(InstanceManager):
         self,
         *,
         instance_type: str,
-        boot_disk_size: int,  # GB
         startup_script: str,
         job_id: str,
         use_spot: bool,
-        image: str,
+        image_uri: str,
+        boot_disk_type: str,
+        boot_disk_size: int,  # GB
+        boot_disk_iops: int | None = None,
+        boot_disk_throughput: int | None = None,
         zone: str | None = None,
     ) -> tuple[str, str]:
         """
@@ -624,10 +630,15 @@ class AWSEC2InstanceManager(InstanceManager):
 
         Args:
             instance_type: EC2 instance type (e.g., 't3.micro')
-            user_data: User data script to run at instance startup
-            tags: Dictionary of tags to apply to the instance
+            startup_script: User data script to run at instance startup
+            job_id: Job ID for the instance
             use_spot: Whether to use spot instances (cheaper but can be terminated)
-            custom_image: Custom AMI ID or name to use
+            image_uri: Custom AMI ID or name to use
+            boot_disk_type: Boot disk type (unused for AWS)
+            boot_disk_size: Boot disk size in GB
+            boot_disk_iops: Boot disk IOPS (unused for AWS)
+            boot_disk_throughput: Boot disk throughput (unused for AWS)
+            zone: Availability zone (optional)
 
         Returns:
             A tuple containing the ID of the started instance and the zone it was started
@@ -638,17 +649,17 @@ class AWSEC2InstanceManager(InstanceManager):
         )
 
         # Get a default AMI or use custom image
-        if image:
+        if image_uri:
             # If it looks like an AMI ID, use it directly
-            if image.startswith("ami-"):
-                ami_id = image
+            if image_uri.startswith("ami-"):
+                ami_id = image_uri
                 self._logger.info(f"Using custom AMI: {ami_id}")
             else:
                 # Otherwise, search for an AMI by name
                 try:
                     response = self._ec2_client.describe_images(
                         Filters=[
-                            {"Name": "name", "Values": [image]},
+                            {"Name": "name", "Values": [image_uri]},
                             {"Name": "state", "Values": ["available"]},
                         ]
                     )
@@ -660,9 +671,9 @@ class AWSEC2InstanceManager(InstanceManager):
                             reverse=True,
                         )
                         ami_id = images[0]["ImageId"]
-                        self._logger.info(f"Found AMI {ami_id} for name: {image}")
+                        self._logger.info(f"Found AMI {ami_id} for name: {image_uri}")
                     else:
-                        self._logger.warning(f"No AMI found for name: {image}, using default")
+                        self._logger.warning(f"No AMI found for name: {image_uri}, using default")
                         ami_id = await self._get_default_ami()
                 except Exception as e:
                     self._logger.error(f"Error finding AMI by name: {e}")
@@ -725,8 +736,13 @@ class AWSEC2InstanceManager(InstanceManager):
                 # Apply tags to the instance
                 self._ec2_client.create_tags(Resources=[instance_id], Tags=aws_tags)
 
+                # Get the availability zone for the instance
+                inst_response = self._ec2_client.describe_instances(InstanceIds=[instance_id])
+                inst_zone = inst_response["Reservations"][0]["Instances"][0]["Placement"][
+                    "AvailabilityZone"
+                ]
                 self._logger.info(f"Created spot instance: {instance_id}")
-                return instance_id
+                return instance_id, inst_zone
 
             except Exception as e:
                 self._logger.error(f"Failed to create spot instance: {e}")
@@ -905,27 +921,27 @@ class AWSEC2InstanceManager(InstanceManager):
             boot_disk_constraints=constraints,
         )
 
-        # Rearrange the pricing data into a dictionary of (machine_type, zone) -> price
-        zone_pricing_data = {}
+        # Rearrange the pricing data into (machine_type, zone, boot_disk_type) -> price_info
+        zone_pricing_data: dict[tuple[str, str, str], dict[str, float | str | None]] = {}
         for machine_type, price in pricing_data.items():
             if price is None:
                 self._logger.debug(f"No pricing data found for {machine_type}; ignoring")
                 continue
             for zone, price_in_zone in price.items():
                 if price_in_zone is None:
-                    self._logger.debug(
-                        f"No pricing data found for {machine_type} in zone {zone}; ignoring"
-                    )
                     continue
-                zone_pricing_data[(machine_type, zone)] = price_in_zone
+                for boot_disk_type, price_info in price_in_zone.items():
+                    if price_info is None:
+                        continue
+                    zone_pricing_data[(machine_type, zone, boot_disk_type)] = price_info
 
         if len(zone_pricing_data) == 0:
             raise ValueError("No pricing data found for any instance types")
 
         # Select instance with the lowest price
         priced_instances = [
-            (machine_type, zone, price_info)
-            for (machine_type, zone), price_info in zone_pricing_data.items()
+            (machine_type, zone, boot_disk_type, price_info)
+            for (machine_type, zone, boot_disk_type), price_info in zone_pricing_data.items()
         ]
         # Sort by price per vCPU, then by decreasing vCPU (this gives us the cheapest
         # instance type with the most vCPUs). We round the price to 2 decimal places so
@@ -933,25 +949,29 @@ class AWSEC2InstanceManager(InstanceManager):
         # vCPUs that would otherwise cost the same.
         priced_instances.sort(
             key=lambda x: (
-                round(cast(float, x[2]["total_price_per_cpu"]), 2),
-                -cast(int, x[2]["vcpu"]),
+                round(cast(float, x[3]["total_price_per_cpu"]), 2),
+                -cast(int, x[3]["vcpu"]),
             )
         )
 
         self._logger.debug("Instance types sorted by price (cheapest and most vCPUs first):")
-        for i, (machine_type, zone, price_info) in enumerate(priced_instances):
+        for i, (machine_type, zone, boot_disk_type, price_info) in enumerate(priced_instances):
             self._logger.debug(
-                f"  [{i + 1:3d}] {machine_type:20s} in {zone:15s}: ${price_info['total_price']:10.6f}/hour"
+                f"  [{i + 1:3d}] {machine_type:20s} in {zone:15s}: "
+                f"${price_info['total_price']:10.6f}/hour"
             )
 
-        selected_type, selected_zone, selected_price_info = priced_instances[0]
-        total_price = selected_price_info["total_price"]
-        self._logger.debug(
-            f"Selected {selected_type} in {selected_zone} at ${total_price:.6f} per hour "
-            f"{' (spot)' if constraints['use_spot'] else '(on demand)'}"
+        selected_type, selected_zone, selected_boot_disk_type, selected_price_info = (
+            priced_instances[0]
         )
-
-        return selected_price_info
+        total_price = cast(float, selected_price_info["total_price"])
+        self._logger.debug(
+            f"Selected {selected_type} ({selected_boot_disk_type}) in {selected_zone} at "
+            f"${total_price:.6f}/hour {' (spot)' if constraints.get('use_spot') else '(on demand)'}"
+        )
+        result: dict[str, float | str | None] = dict(selected_price_info)
+        result["boot_disk_type"] = selected_boot_disk_type
+        return result
 
     async def _get_default_ami(self) -> str:
         """
@@ -979,6 +999,29 @@ class AWSEC2InstanceManager(InstanceManager):
             raise ValueError(f"No Ubuntu 24.04 LTS AMI found in region {self._region}")
 
         return amis[0]["ImageId"]
+
+    async def get_default_image(self) -> str | None:
+        """Get the latest Ubuntu 24.04 LTS AMI ID for the current region."""
+        try:
+            return await self._get_default_ami()
+        except ValueError:
+            return None
+
+    async def get_image_from_family(self, family_name: str) -> str | None:
+        """Get the latest AMI ID matching the given family/name pattern."""
+        try:
+            response = self._ec2_client.describe_images(
+                Filters=[
+                    {"Name": "name", "Values": [f"*{family_name}*"]},
+                    {"Name": "state", "Values": ["available"]},
+                ]
+            )
+            if not response["Images"]:
+                return None
+            amis = sorted(response["Images"], key=lambda x: x.get("CreationDate", ""), reverse=True)
+            return amis[0]["ImageId"]
+        except (ClientError, KeyError, IndexError):
+            return None
 
     async def list_available_images(self) -> list[dict[str, Any]]:
         """

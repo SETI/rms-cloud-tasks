@@ -144,14 +144,14 @@ class AWSSQSQueue(QueueManager):
             # Get the event loop
             loop = asyncio.get_event_loop()
 
-            # Run the blocking SQS operation in a thread pool
-            await loop.run_in_executor(
-                None,
-                lambda: sqs.send_message(
+            def _do_send() -> Any:
+                return sqs.send_message(
                     QueueUrl=queue_url,
                     MessageBody=json.dumps(message),
-                ),
-            )
+                )
+
+            # Run the blocking SQS operation in a thread pool
+            await loop.run_in_executor(None, _do_send)
 
             self._logger.debug(f"Published message to queue {self._queue_name}")
         except Exception as e:
@@ -178,15 +178,15 @@ class AWSSQSQueue(QueueManager):
             # Get the event loop
             loop = asyncio.get_event_loop()
 
-            # Run the blocking SQS operation in a thread pool
-            await loop.run_in_executor(
-                None,
-                lambda: sqs.send_message(
+            def _do_send_task() -> Any:
+                return sqs.send_message(
                     QueueUrl=queue_url,
                     MessageBody=json.dumps(message),
                     MessageAttributes={"TaskId": {"DataType": "String", "StringValue": task_id}},
-                ),
-            )
+                )
+
+            # Run the blocking SQS operation in a thread pool
+            await loop.run_in_executor(None, _do_send_task)
 
             self._logger.debug(f"Published message for task {task_id}")
         except Exception as e:
@@ -249,10 +249,11 @@ class AWSSQSQueue(QueueManager):
 
                     # Delete the message immediately (default arg captures receipt per iteration)
                     receipt = message["ReceiptHandle"]
-                    await loop.run_in_executor(
-                        None,
-                        lambda r=receipt: sqs.delete_message(QueueUrl=queue_url, ReceiptHandle=r),
-                    )
+
+                    def _delete_one(r: str) -> Any:
+                        return sqs.delete_message(QueueUrl=queue_url, ReceiptHandle=r)
+
+                    await loop.run_in_executor(None, _delete_one, receipt)
 
             self._logger.debug(f"Received and deleted {len(messages)} messages from SQS queue")
             return messages
@@ -324,6 +325,10 @@ class AWSSQSQueue(QueueManager):
             self._logger.error(f"Error receiving tasks: {str(e)}")
             raise
 
+    async def acknowledge_message(self, message_handle: Any) -> None:
+        """Acknowledge a message and remove it from the queue (alias for acknowledge_task)."""
+        await self.acknowledge_task(message_handle)
+
     async def acknowledge_task(self, task_handle: Any) -> None:
         """
         Mark a task as completed and remove from the queue.
@@ -352,6 +357,10 @@ class AWSSQSQueue(QueueManager):
         except Exception as e:
             self._logger.error(f"Error completing task: {str(e)}")
             raise
+
+    async def retry_message(self, message_handle: Any) -> None:
+        """Retry a message (alias for retry_task)."""
+        await self.retry_task(message_handle)
 
     async def retry_task(self, task_handle: Any) -> None:
         """

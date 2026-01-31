@@ -199,8 +199,12 @@ async def test_event_logging_to_queue(mock_worker_function):
             # Verify queue messages
             assert mock_queue.send_message.call_count == 7
 
-            # Get all sent messages
-            messages = [json.loads(call.args[0]) for call in mock_queue.send_message.call_args_list]
+            # Get all sent messages (send_message accepts dict; queue may pass through as-is)
+            def _msg(call: object) -> dict:
+                arg = call.args[0]
+                return arg if isinstance(arg, dict) else json.loads(arg)
+
+            messages = [_msg(c) for c in mock_queue.send_message.call_args_list]
 
             # Verify task completion event
             completion_event = next(
@@ -308,7 +312,8 @@ async def test_event_logging_both_file_and_queue(mock_worker_function, tmp_path)
 
                 # Verify queue logging
                 assert mock_queue.send_message.call_count == 1
-                queue_event = json.loads(mock_queue.send_message.call_args[0][0])
+                arg = mock_queue.send_message.call_args[0][0]
+                queue_event = arg if isinstance(arg, dict) else json.loads(arg)
                 assert queue_event["task_id"] == "task1"
             finally:
                 worker._running = False

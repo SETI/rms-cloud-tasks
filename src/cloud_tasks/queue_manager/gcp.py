@@ -10,12 +10,14 @@ import time
 from typing import Any
 
 from google.api_core import exceptions as gcp_exceptions
-from google.cloud import (
-    monitoring_v3,
-    pubsub_v1,  # type: ignore
-)
+from google.cloud import monitoring_v3
 from google.cloud.monitoring_v3 import query
+from google.cloud.pubsub_v1 import (  # type: ignore[attr-defined]
+    PublisherClient,
+    SubscriberClient,
+)
 from google.cloud.pubsub_v1.subscriber import exceptions as sub_exceptions
+from google.cloud.pubsub_v1.subscriber.message import Message as PubSubMessage
 
 from ..common.config import GCPConfig
 from .queue_manager import QueueManager
@@ -62,21 +64,24 @@ class GCPPubSubQueue(QueueManager):
                 delivered multiple times. If None, use the value in the configuration.
             **kwargs: Additional configuration parameters
         """
-        if queue_name is not None:
-            self._queue_name = queue_name
-        else:
-            self._queue_name = gcp_config.queue_name
+        if gcp_config is None and queue_name is None:
+            raise ValueError("Either gcp_config or queue_name must be provided")
 
-        if self._queue_name is None:
-            raise ValueError("Queue name is required")
+        self._message_queue: asyncio.Queue[dict[str, Any]] | None = None
+
+        if queue_name is not None:
+            self._queue_name: str = queue_name
+        else:
+            qn = gcp_config.queue_name if gcp_config else None
+            if qn is None:
+                raise ValueError("Queue name is required")
+            self._queue_name = qn
 
         if exactly_once is not None:
-            self._exactly_once = exactly_once
+            self._exactly_once: bool = exactly_once
         else:
-            self._exactly_once = gcp_config.exactly_once_queue
-
-        if self._exactly_once is None:
-            self._exactly_once = False
+            eq = gcp_config.exactly_once_queue if gcp_config else None
+            self._exactly_once = eq if eq is not None else False
 
         self._logger = logging.getLogger(__name__)
 
@@ -88,7 +93,7 @@ class GCPPubSubQueue(QueueManager):
         if "project_id" in kwargs and kwargs["project_id"] is not None:
             self._project_id = kwargs["project_id"]
         else:
-            self._project_id = gcp_config.project_id
+            self._project_id = gcp_config.project_id if gcp_config is not None else ""
 
         self._logger.info(
             f'Initializing GCP Pub/Sub queue "{self._queue_name}" with project ID '
@@ -100,15 +105,13 @@ class GCPPubSubQueue(QueueManager):
         # If credentials file provided, use it
         if credentials_file:
             self._logger.info(f'Using credentials from "{credentials_file}"')
-            self._publisher = pubsub_v1.PublisherClient.from_service_account_file(credentials_file)
-            self._subscriber = pubsub_v1.SubscriberClient.from_service_account_file(
-                credentials_file
-            )
+            self._publisher = PublisherClient.from_service_account_file(credentials_file)
+            self._subscriber = SubscriberClient.from_service_account_file(credentials_file)
         else:
             # Use default credentials
             self._logger.info("Using default application credentials")
-            self._publisher = pubsub_v1.PublisherClient()
-            self._subscriber = pubsub_v1.SubscriberClient()
+            self._publisher = PublisherClient()
+            self._subscriber = SubscriberClient()
 
         # Derive topic and subscription names
         self._topic_name = f"{self._queue_name}-topic"
@@ -292,7 +295,7 @@ class GCPPubSubQueue(QueueManager):
         if self._streaming_pull_future is not None:
             return
 
-        def callback(message: pubsub_v1.subscriber.message.Message) -> None:
+        def callback(message: PubSubMessage) -> None:
             try:
                 # Put message in queue - asyncio.Queue is thread-safe
                 message_dict = {
@@ -303,6 +306,7 @@ class GCPPubSubQueue(QueueManager):
                     # on it.
                     "ack_id": message,
                 }
+                assert self._message_queue is not None
                 self._message_queue.put_nowait(message_dict)
 
             except Exception as e:
@@ -384,7 +388,8 @@ class GCPPubSubQueue(QueueManager):
 
         # Messages arrive asynchronously through the pull thread, so we just need to return
         # messages that we already have.
-        messages = []
+        assert self._message_queue is not None
+        messages: list[dict[str, Any]] = []
         while len(messages) < max_count:
             try:
                 # Try to get a message without waiting
@@ -694,6 +699,7 @@ class GCPPubSubQueue(QueueManager):
 
         if self._exactly_once:
             # Get the current size of the message queue that we have already received
+            assert self._message_queue is not None
             queue_size = self._message_queue.qsize()
         else:
             queue_size = 0

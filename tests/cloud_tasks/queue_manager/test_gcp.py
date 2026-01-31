@@ -24,8 +24,8 @@ warnings.filterwarnings("ignore", message="coroutine .* was never awaited")
 def mock_pubsub_client():
     """Create mocked Pub/Sub clients with all necessary method mocks."""
     with (
-        patch("google.cloud.pubsub_v1.PublisherClient") as mock_publisher_cls,
-        patch("google.cloud.pubsub_v1.SubscriberClient") as mock_subscriber_cls,
+        patch("cloud_tasks.queue_manager.gcp.PublisherClient") as mock_publisher_cls,
+        patch("cloud_tasks.queue_manager.gcp.SubscriberClient") as mock_subscriber_cls,
         patch("time.sleep") as mock_sleep,  # Mock time.sleep to be a no-op
     ):
         # Create the mock instances

@@ -11,7 +11,7 @@ import signal
 import sys
 from collections.abc import Iterable
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import json_stream
 import pydantic
@@ -396,7 +396,7 @@ async def list_running_instances_cmd(args: argparse.Namespace, config: Config) -
                 instances.sort(key=lambda x: x.get("id", ""))
 
             instance_count = 0
-            state_counts = {}
+            state_counts: dict[str, int] = {}
 
             if args.detail:
                 for instance in instances:
@@ -505,14 +505,20 @@ class EventMonitor:
     async def start(self) -> None:
         """Start monitoring events."""
         if self.output_file_path:
+            path = self.output_file_path
             try:
-                self.output_file = await asyncio.to_thread(open, self.output_file_path, "a")
-                logger.info(f'Writing events to "{self.output_file_path}"')
-            except Exception as e:
-                logger.fatal(
-                    f'Error opening events file "{self.output_file_path}": {e}', exc_info=True
+
+                def _open_file(p: str, mode: str) -> Any:
+                    return open(p, mode)
+
+                self.output_file = await asyncio.to_thread(  # type: ignore[func-returns-value]
+                    _open_file, path, "a"
                 )
+                logger.info(f'Writing events to "{path}"')
+            except Exception as e:
+                logger.fatal(f'Error opening events file "{path}": {e}', exc_info=True)
                 sys.exit(1)
+        return
 
     async def process_events_batch(self) -> int:
         """
@@ -1218,7 +1224,10 @@ async def run_cmd(args: argparse.Namespace, config: Config) -> None:
                         print("Please enter y or n.")
                 if dump_choice in ("y", "yes"):
                     base_path = provider_config.job_id
-                    dump_tasks_by_status(task_db, base_path)
+                    if base_path is None:
+                        logger.error("job_id is required for dump_tasks_by_status")
+                    else:
+                        dump_tasks_by_status(task_db, base_path)
         finally:
             # Restore original signal handler
             signal.signal(signal.SIGINT, old_handler)
@@ -1432,11 +1441,14 @@ async def status_cmd(args: argparse.Namespace, config: Config) -> None:
         ) = await orchestrator.get_job_instances()
         print(job_status)
 
-        queue_depth = await orchestrator._task_queue.get_queue_depth()
-        if queue_depth is None:
-            print("Failed to get queue depth for task queue.")
+        if orchestrator._task_queue is None:
+            print("Task queue not initialized.")
         else:
-            print(f"Current queue depth: {queue_depth}")
+            queue_depth = await orchestrator._task_queue.get_queue_depth()
+            if queue_depth is None:
+                print("Failed to get queue depth for task queue.")
+            else:
+                print(f"Current queue depth: {queue_depth}")
 
     except Exception as e:
         logger.error(f"Error checking job status: {e}", exc_info=True)
@@ -1466,8 +1478,8 @@ async def stop_cmd(args: argparse.Namespace, config: Config) -> None:
         if args.purge_queue:
             queue_name_to_purge = orchestrator.queue_name  # Get queue_name from orchestrator
             logger.info(f"Purging queue {queue_name_to_purge}")
-            # Ensure task_queue is available before purging
-            await orchestrator.task_queue.purge_queue()
+            if orchestrator._task_queue is not None:
+                await orchestrator._task_queue.purge_queue()
 
         print(f"Job '{job_id_to_stop}' stopped")
 
@@ -1853,13 +1865,30 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
                     if field_name is None:
                         print(f"Invalid sort field: {sort_field}")
                         sys.exit(1)
-                    pricing_data_list.sort(key=lambda x: x[field_name], reverse=descending)
+                    pricing_data_list.sort(
+                        key=lambda x: cast(float, x.get(field_name) or 0),
+                        reverse=descending,
+                    )
             else:
                 # Default sort if no fields specified
-                pricing_data_list.sort(key=lambda x: (x["vcpu"], x["mem_gb"], x["name"], x["zone"]))
+                pricing_data_list.sort(
+                    key=lambda x: (
+                        cast(int, x.get("vcpu") or 0),
+                        cast(float, x.get("mem_gb") or 0),
+                        str(x.get("name") or ""),
+                        str(x.get("zone") or ""),
+                    ),
+                )
         else:
             # Default sort by vCPU, then memory if no sort-by specified
-            pricing_data_list.sort(key=lambda x: (x["vcpu"], x["mem_gb"], x["name"], x["zone"]))
+            pricing_data_list.sort(
+                key=lambda x: (
+                    cast(int, x.get("vcpu") or 0),
+                    cast(float, x.get("mem_gb") or 0),
+                    str(x.get("name") or ""),
+                    str(x.get("zone") or ""),
+                ),
+            )
 
         # Limit results if specified - applied after sorting
         if args.limit and len(pricing_data_list) > args.limit:
@@ -1868,10 +1897,16 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
         # Display results with pricing if available
         print()
 
-        has_lssd = any(price_data["local_ssd_gb"] > 0 for price_data in pricing_data_list)
-        has_iops = any(price_data["boot_disk_iops_price"] > 0 for price_data in pricing_data_list)
+        has_lssd = any(
+            cast(float, price_data.get("local_ssd_gb") or 0) > 0 for price_data in pricing_data_list
+        )
+        has_iops = any(
+            cast(float, price_data.get("boot_disk_iops_price") or 0) > 0
+            for price_data in pricing_data_list
+        )
         has_throughput = any(
-            price_data["boot_disk_throughput_price"] > 0 for price_data in pricing_data_list
+            cast(float, price_data.get("boot_disk_throughput_price") or 0) > 0
+            for price_data in pricing_data_list
         )
 
         # All of this complexity is because 1) prettytable doesn't support multi-line headers and
@@ -1950,26 +1985,41 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
 
         rows = []
         for price_data in pricing_data_list:
-            vcpu_str = f"{price_data['vcpu']:d}"
-            mem_gb_str = f"{price_data['mem_gb']:.2f}"
-            local_ssd_gb_str = f"{price_data['local_ssd_gb']:.2f}"
-            boot_disk_gb_str = f"{price_data['boot_disk_gb']:.2f}"
-            cpu_price_str = f"${price_data['per_cpu_price']:.5f}"
-            mem_price_str = f"${price_data['mem_per_gb_price']:.5f}"
-            total_price_str = f"${price_data['total_price']:.4f}"
-            total_price_per_cpu_str = f"${price_data['total_price_per_cpu']:.5f}"
-            local_ssd_price_str = f"${price_data['local_ssd_per_gb_price']:.6f}"
-            boot_disk_price_str = f"${price_data['boot_disk_per_gb_price']:.6f}"
-            boot_disk_iops_price_str = f"${price_data['boot_disk_iops_price']:.5f}"
-            boot_disk_throughput_price_str = f"${price_data['boot_disk_throughput_price']:.6f}"
-            cpu_rank_str = f"{price_data['cpu_rank']:d}"
+            vcpu_str = f"{cast(int, price_data.get('vcpu') or 0):d}"
+            mem_gb_str = f"{cast(float, price_data.get('mem_gb') or 0):.2f}"
+            local_ssd_gb_str = f"{cast(float, price_data.get('local_ssd_gb') or 0):.2f}"
+            boot_disk_gb_str = f"{cast(float, price_data.get('boot_disk_gb') or 0):.2f}"
+            cpu_price_str = f"${cast(float, price_data.get('per_cpu_price') or 0):.5f}"
+            mem_price_str = f"${cast(float, price_data.get('mem_per_gb_price') or 0):.5f}"
+            total_price_str = f"${cast(float, price_data.get('total_price') or 0):.4f}"
+            total_price_per_cpu_str = (
+                f"${cast(float, price_data.get('total_price_per_cpu') or 0):.5f}"
+            )
+            local_ssd_price_str = (
+                f"${cast(float, price_data.get('local_ssd_per_gb_price') or 0):.6f}"
+            )
+            boot_disk_price_str = (
+                f"${cast(float, price_data.get('boot_disk_per_gb_price') or 0):.6f}"
+            )
+            boot_disk_iops_price_str = (
+                f"${cast(float, price_data.get('boot_disk_iops_price') or 0):.5f}"
+            )
+            boot_disk_throughput_price_str = (
+                f"${cast(float, price_data.get('boot_disk_throughput_price') or 0):.6f}"
+            )
+            cpu_rank_str = f"{cast(int, price_data.get('cpu_rank') or 0):d}"
 
-            row = [price_data["name"], price_data["architecture"], vcpu_str, mem_gb_str]
+            row = [
+                str(price_data.get("name") or ""),
+                str(price_data.get("architecture") or ""),
+                vcpu_str,
+                mem_gb_str,
+            ]
             if has_lssd:
                 row += [local_ssd_gb_str]
             row += [
                 boot_disk_gb_str,
-                price_data["boot_disk_type"],
+                str(price_data.get("boot_disk_type") or ""),
             ]
             if args.detail:
                 row += [cpu_price_str, mem_price_str]
@@ -1983,9 +2033,13 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
             row += [total_price_str]
             if args.detail:
                 row += [total_price_per_cpu_str]
-            row += [price_data["zone"]]
+            row += [str(price_data.get("zone") or "")]
             if args.detail:
-                row += [price_data["cpu_family"], cpu_rank_str, price_data["description"]]
+                row += [
+                    str(price_data.get("cpu_family") or ""),
+                    cpu_rank_str,
+                    str(price_data.get("description") or ""),
+                ]
             rows.append(row)
 
         table = PrettyTable()
@@ -2725,7 +2779,8 @@ def run_argv(argv: list[str] | None = None) -> int:
         asyncio.run(args.func(args, config))
         return 0
     except SystemExit as e:
-        return e.code if e.code is not None else 1
+        code: int = e.code if isinstance(e.code, int) else 1
+        return code
     except KeyboardInterrupt:
         print("\n\nOperation interrupted by user.")
         return 130
