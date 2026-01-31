@@ -11,7 +11,7 @@ on:
     - cron: "21 11 * * 0"
 
 jobs:
-  flake8:
+  lint:
     name: Lint cloud_tasks
     runs-on: ubuntu-latest
     steps:
@@ -20,22 +20,26 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
-      - name: Set up Python ${{ matrix.python-version }}
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.12"
 
       - name: Install dependencies
         run: |
           python -m pip install -r requirements.txt
 
-      - name: Flake8
+      - name: Ruff format
         run: |
-          flake8 src tests
+          ruff format --check .
 
-      # - name: Mypy
-      #   run: |
-      #     mypy src tests
+      - name: Ruff check
+        run: |
+          ruff check src tests examples
+
+      - name: Mypy
+        run: |
+          mypy src
 
   test:
     name: Test cloud_tasks

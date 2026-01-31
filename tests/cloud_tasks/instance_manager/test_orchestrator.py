@@ -2,10 +2,11 @@
 
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 
-from cloud_tasks.instance_manager.orchestrator import InstanceOrchestrator
 from cloud_tasks.common.config import Config
+from cloud_tasks.instance_manager.orchestrator import InstanceOrchestrator
 
 
 @pytest.fixture
@@ -151,9 +152,9 @@ async def test_provision_instances_parallel(orchestrator):
 
     # In parallel execution, the time between first and last start should be less
     # We check against 0.8 * sequential time to allow for some test timing variability
-    assert (
-        actual_time < 0.8 * sequential_time
-    ), f"Expected parallel execution to be faster than sequential (actual: {actual_time}, sequential: {sequential_time})"
+    assert actual_time < 0.8 * sequential_time, (
+        f"Expected parallel execution to be faster than sequential (actual: {actual_time}, sequential: {sequential_time})"
+    )
 
 
 @pytest.mark.asyncio

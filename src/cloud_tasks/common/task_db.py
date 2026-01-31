@@ -7,10 +7,9 @@ import logging
 import sqlite3
 from pathlib import Path
 from types import TracebackType
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from .time_utils import parse_utc, utc_now_iso
-
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +25,7 @@ class TaskDatabase:
             db_file: Path to the SQLite database file
         """
         self.db_file = Path(db_file)
-        self.conn: Optional[sqlite3.Connection] = None
+        self.conn: sqlite3.Connection | None = None
         self._initialize_database()
 
     def _initialize_database(self) -> None:
@@ -87,7 +86,12 @@ class TaskDatabase:
         self.conn.commit()
         logger.debug(f"Initialized task database at {self.db_file}")
 
-    def insert_task(self, task_id: str, task_data: Dict[str, Any], status: str = "pending") -> None:
+    def _get_conn(self) -> sqlite3.Connection:
+        """Return the database connection; raises if closed."""
+        assert self.conn is not None, "database is closed"
+        return self.conn
+
+    def insert_task(self, task_id: str, task_data: dict[str, Any], status: str = "pending") -> None:
         """
         Insert a new task into the database.
 
@@ -96,7 +100,8 @@ class TaskDatabase:
             task_data: Task data dictionary
             status: Initial task status (default: pending)
         """
-        cursor = self.conn.cursor()
+        conn = self._get_conn()
+        cursor = conn.cursor()
         cursor.execute(
             """
             INSERT INTO tasks (task_id, task_data, status, enqueued_at)
@@ -104,7 +109,7 @@ class TaskDatabase:
             """,
             (task_id, json.dumps(task_data), status, utc_now_iso()),
         )
-        self.conn.commit()
+        conn.commit()
 
     def update_task_enqueued(self, task_id: str) -> None:
         """
@@ -113,7 +118,8 @@ class TaskDatabase:
         Parameters:
             task_id: Task identifier
         """
-        cursor = self.conn.cursor()
+        conn = self._get_conn()
+        cursor = conn.cursor()
         cursor.execute(
             """
             UPDATE tasks
@@ -122,9 +128,9 @@ class TaskDatabase:
             """,
             (utc_now_iso(), task_id),
         )
-        self.conn.commit()
+        conn.commit()
 
-    def update_task_from_event(self, event: Dict[str, Any]) -> None:
+    def update_task_from_event(self, event: dict[str, Any]) -> None:
         """
         Update task status based on an event.
 
@@ -139,7 +145,8 @@ class TaskDatabase:
             # Non-task event (e.g., spot_termination, non_fatal_exception)
             return
 
-        cursor = self.conn.cursor()
+        conn = self._get_conn()
+        cursor = conn.cursor()
 
         # Determine new status based on event type and retry flag
         if event_type == "in_queue_original":
@@ -206,9 +213,9 @@ class TaskDatabase:
             """,
             [update_fields.get(c) for c in update_task_columns] + [task_id],
         )
-        self.conn.commit()
+        conn.commit()
 
-    def insert_event(self, event: Dict[str, Any]) -> None:
+    def insert_event(self, event: dict[str, Any]) -> None:
         """
         Insert an event into the events table.
         Event timestamp is normalized to UTC for storage.
@@ -220,7 +227,8 @@ class TaskDatabase:
         if ts is not None:
             dt = parse_utc(ts if isinstance(ts, str) else str(ts))
             ts = dt.isoformat() if dt is not None else ts
-        cursor = self.conn.cursor()
+        conn = self._get_conn()
+        cursor = conn.cursor()
         cursor.execute(
             """
             INSERT INTO events (timestamp, hostname, event_type, task_id, raw_event)
@@ -234,16 +242,17 @@ class TaskDatabase:
                 json.dumps(event),
             ),
         )
-        self.conn.commit()
+        conn.commit()
 
-    def get_task_counts(self) -> Dict[str, int]:
+    def get_task_counts(self) -> dict[str, int]:
         """
         Get counts of tasks by status.
 
         Returns:
             Dictionary mapping status to count
         """
-        cursor = self.conn.cursor()
+        conn = self._get_conn()
+        cursor = conn.cursor()
         cursor.execute(
             """
             SELECT status, COUNT(*) as count
@@ -261,7 +270,8 @@ class TaskDatabase:
         Returns:
             Total task count
         """
-        cursor = self.conn.cursor()
+        conn = self._get_conn()
+        cursor = conn.cursor()
         cursor.execute("SELECT COUNT(*) as count FROM tasks")
         return cursor.fetchone()["count"]
 
@@ -276,7 +286,8 @@ class TaskDatabase:
         Returns:
             True if all tasks are in a terminal state
         """
-        cursor = self.conn.cursor()
+        conn = self._get_conn()
+        cursor = conn.cursor()
         cursor.execute(
             """
             SELECT COUNT(*) as count
@@ -293,7 +304,7 @@ class TaskDatabase:
         incomplete_count = cursor.fetchone()["count"]
         return incomplete_count == 0
 
-    def get_tasks_by_status(self, status: str) -> List[Dict[str, Any]]:
+    def get_tasks_by_status(self, status: str) -> list[dict[str, Any]]:
         """
         Get all tasks with a specific status.
 
@@ -303,7 +314,8 @@ class TaskDatabase:
         Returns:
             List of task dictionaries
         """
-        cursor = self.conn.cursor()
+        conn = self._get_conn()
+        cursor = conn.cursor()
         cursor.execute(
             """
             SELECT * FROM tasks WHERE status = ?
@@ -312,14 +324,15 @@ class TaskDatabase:
         )
         return [dict(row) for row in cursor.fetchall()]
 
-    def get_task_statistics(self) -> Dict[str, Any]:
+    def get_task_statistics(self) -> dict[str, Any]:
         """
         Get comprehensive task statistics.
 
         Returns:
             Dictionary with statistics
         """
-        cursor = self.conn.cursor()
+        conn = self._get_conn()
+        cursor = conn.cursor()
 
         # Get elapsed time statistics for completed tasks
         cursor.execute(
@@ -400,7 +413,7 @@ class TaskDatabase:
             "time_range": time_range,
         }
 
-    def get_remaining_task_ids(self) -> List[str]:
+    def get_remaining_task_ids(self) -> list[str]:
         """
         Get task IDs of tasks that are not yet complete.
 
@@ -413,7 +426,8 @@ class TaskDatabase:
         Returns:
             List of task IDs
         """
-        cursor = self.conn.cursor()
+        conn = self._get_conn()
+        cursor = conn.cursor()
         cursor.execute(
             """
             SELECT task_id

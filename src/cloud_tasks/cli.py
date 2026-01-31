@@ -5,20 +5,20 @@ Command-line interface for the multi-cloud task processing system.
 import argparse
 import asyncio
 import json
-import json_stream
 import logging
 import os
-from pathlib import Path
 import signal
 import sys
-from tqdm import tqdm  # type: ignore
 from collections.abc import Iterable
-from typing import Any, Dict
-import yaml  # type: ignore
+from pathlib import Path
+from typing import Any
 
+import json_stream
+import pydantic
+import yaml  # type: ignore
 from filecache import FCPath
 from prettytable import PrettyTable, TableStyle
-import pydantic
+from tqdm import tqdm  # type: ignore
 
 from .common.config import Config, load_config
 from .common.logging_config import configure_logging
@@ -27,7 +27,6 @@ from .common.time_utils import parse_utc, utc_now
 from .instance_manager import create_instance_manager
 from .instance_manager.orchestrator import InstanceOrchestrator
 from .queue_manager import QueueManager, create_queue
-
 
 # Use custom logging configuration
 configure_logging(level=logging.WARNING)
@@ -823,7 +822,7 @@ async def load_queue_common(
     semaphore = asyncio.Semaphore(max_concurrent_queue_operations)
     pending_tasks = set()
 
-    async def enqueue_task(task: Dict[str, Any]) -> None:
+    async def enqueue_task(task: dict[str, Any]) -> None:
         """Acquire semaphore, send the task via task_queue.send_task(task["task_id"],
         task["data"]), and mark it enqueued with task_db.update_task_enqueued(
         task["task_id"]). DB writes are serialized under db_write_lock."""
@@ -1155,7 +1154,9 @@ async def run_cmd(args: argparse.Namespace, config: Config) -> None:
             try:
                 await asyncio.gather(orchestrator_task, event_monitor_task, return_exceptions=True)
             except Exception as e:
-                logger.debug("Error during orchestrator/event-monitor cleanup: %s", e, exc_info=True)
+                logger.debug(
+                    "Error during orchestrator/event-monitor cleanup: %s", e, exc_info=True
+                )
 
             # Prompt user for action (force valid input)
             choice = None
@@ -1423,9 +1424,12 @@ async def status_cmd(args: argparse.Namespace, config: Config) -> None:
         orchestrator = InstanceOrchestrator(config=config)
         await orchestrator.initialize()
 
-        num_running, running_cpus, running_price, job_status = (
-            await orchestrator.get_job_instances()
-        )
+        (
+            num_running,
+            running_cpus,
+            running_price,
+            job_status,
+        ) = await orchestrator.get_job_instances()
         print(job_status)
 
         queue_depth = await orchestrator._task_queue.get_queue_depth()
@@ -1572,8 +1576,7 @@ async def list_images_cmd(args: argparse.Namespace, config: Config) -> None:
 
         # Display results
         print(
-            f"Found {len(images)} {'filtered ' if args.filter else ''}images for "
-            f"{args.provider}:"
+            f"Found {len(images)} {'filtered ' if args.filter else ''}images for {args.provider}:"
         )
         print()
 
@@ -1665,7 +1668,7 @@ async def list_images_cmd(args: argparse.Namespace, config: Config) -> None:
                         )
                         # TODO Update for --detail
 
-        print("\nTo use a custom image with the 'run' command, use the " "--image parameter.")
+        print("\nTo use a custom image with the 'run' command, use the --image parameter.")
         if args.provider == "AWS":
             print("For AWS, specify the AMI ID: --image ami-12345678")
         elif args.provider == "GCP":
@@ -1882,7 +1885,7 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
             "",
             "(GB)",
         ]
-        left_fields += [f"Field {field_num}", f"Field {field_num+1}"]
+        left_fields += [f"Field {field_num}", f"Field {field_num + 1}"]
         field_num += 4
 
         if has_lssd:
@@ -1898,7 +1901,7 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
             "(GB)",
             "Disk Type",
         ]
-        left_fields += [f"Field {field_num+1}"]
+        left_fields += [f"Field {field_num + 1}"]
         field_num += 2
 
         if args.detail:
@@ -1943,7 +1946,7 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
         if args.detail:
             header1 += ["Processor", "Perf", "Description"]
             header2 += ["", "Rank", ""]
-        left_fields += [f"Field {field_num}", f"Field {field_num+2}"]
+        left_fields += [f"Field {field_num}", f"Field {field_num + 2}"]
 
         rows = []
         for price_data in pricing_data_list:
@@ -2374,8 +2377,8 @@ def add_instance_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def main():
-    """Main entry point for the CLI."""
+def build_parser() -> argparse.ArgumentParser:
+    """Build and return the argument parser. Used by main() and run_argv() for testing."""
     parser = argparse.ArgumentParser(description="Multi-Cloud Task Processing System")
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
     subparsers.required = True
@@ -2676,56 +2679,61 @@ def main():
     )
     list_instance_types_parser.set_defaults(func=list_instance_types_cmd)
 
-    # -------------- #
-    # MAIN EXECUTION #
-    # -------------- #
+    return parser
 
-    # Parse arguments
-    args = parser.parse_args()
 
-    if hasattr(args, "instance_types") and args.instance_types:
-        new_instance_types = []
-        for str1 in args.instance_types:
-            for str2 in str1.split(","):
-                for str3 in str2.split(" "):
-                    if str3.strip():
-                        new_instance_types.append(str3.strip())
-        args.instance_types = new_instance_types
-
-    # Set up logging level based on verbosity
-    # Force at least INFO when using run command so progress is visible
-    if getattr(args, "func", None) is run_cmd and hasattr(args, "verbose") and args.verbose < 1:
-        args.verbose = 1
-    if hasattr(args, "verbose"):
-        if args.verbose == 0:
-            logging.getLogger().setLevel(logging.WARNING)
-        elif args.verbose == 1:
-            logging.getLogger().setLevel(logging.INFO)
-        elif args.verbose > 1:
-            logging.getLogger().setLevel(logging.DEBUG)
-
-    # Load configuration
-    logger.info(f"Loading configuration from {args.config}")
+def run_argv(argv: list[str] | None = None) -> int:
+    """Run CLI with given argv. Returns exit code. Used for testing."""
     try:
-        config = load_config(args.config)
-        config.overload_from_cli(vars(args))
-        config.update_run_config_from_provider_config()
-        config.validate_config()
-    except (pydantic.ValidationError, ValueError) as e:
-        logger.fatal(f"Invalid configuration: {e}")
-        print(f"Invalid configuration: {e}")
-        sys.exit(1)
+        parser = build_parser()
+        args = parser.parse_args(argv)
 
-    # Run the appropriate command
-    try:
+        if hasattr(args, "instance_types") and args.instance_types:
+            new_instance_types = []
+            for str1 in args.instance_types:
+                for str2 in str1.split(","):
+                    for str3 in str2.split(" "):
+                        if str3.strip():
+                            new_instance_types.append(str3.strip())
+            args.instance_types = new_instance_types
+
+        # Set up logging level based on verbosity
+        # Force at least INFO when using run command so progress is visible
+        if getattr(args, "func", None) is run_cmd and hasattr(args, "verbose") and args.verbose < 1:
+            args.verbose = 1
+        if hasattr(args, "verbose"):
+            if args.verbose == 0:
+                logging.getLogger().setLevel(logging.WARNING)
+            elif args.verbose == 1:
+                logging.getLogger().setLevel(logging.INFO)
+            elif args.verbose > 1:
+                logging.getLogger().setLevel(logging.DEBUG)
+
+        # Load configuration
+        logger.info(f"Loading configuration from {args.config}")
+        try:
+            config = load_config(args.config)
+            config.overload_from_cli(vars(args))
+            config.update_run_config_from_provider_config()
+            config.validate_config()
+        except (FileNotFoundError, pydantic.ValidationError, ValueError) as e:
+            logger.fatal(f"Invalid configuration: {e}")
+            print(f"Invalid configuration: {e}")
+            sys.exit(1)
+
+        # Run the appropriate command
         asyncio.run(args.func(args, config))
+        return 0
+    except SystemExit as e:
+        return e.code if e.code is not None else 1
     except KeyboardInterrupt:
-        # KeyboardInterrupt should be handled within the command itself
-        # If it propagates here, it means the command didn't handle it
         print("\n\nOperation interrupted by user.")
-        sys.exit(130)  # Standard exit code for SIGINT
+        return 130
 
-    sys.exit(0)
+
+def main() -> None:
+    """Main entry point for the CLI."""
+    sys.exit(run_argv())
 
 
 if __name__ == "__main__":

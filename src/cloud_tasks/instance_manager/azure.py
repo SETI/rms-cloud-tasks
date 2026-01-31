@@ -5,20 +5,19 @@ Azure Virtual Machines implementation of the InstanceManager interface.
 # TODO Fix type errors
 # mypy: ignore-errors
 
-import time
-import base64
 import asyncio
-import aiohttp
+import base64
 import logging
-import traceback
-from typing import Any, Dict, List, Optional, Tuple
+import time
+from typing import Any
 
+import aiohttp
+from azure.core.exceptions import ResourceNotFoundError  # type: ignore
 from azure.identity import ClientSecretCredential  # type: ignore
+from azure.mgmt.commerce import UsageManagementClient  # type: ignore
 from azure.mgmt.compute import ComputeManagementClient  # type: ignore
 from azure.mgmt.network import NetworkManagementClient  # type: ignore
-from azure.core.exceptions import ResourceNotFoundError  # type: ignore
 from azure.mgmt.resource import ResourceManagementClient  # type: ignore
-from azure.mgmt.commerce import UsageManagementClient  # type: ignore
 
 from ..common.base import InstanceManager
 
@@ -57,7 +56,7 @@ class AzureVMInstanceManager(InstanceManager):
         self.retail_client = None
         super().__init__()
 
-    async def initialize(self, config: Dict[str, Any]) -> None:
+    async def initialize(self, config: dict[str, Any]) -> None:
         """
         Initialize Azure clients with the provided configuration.
 
@@ -268,7 +267,7 @@ class AzureVMInstanceManager(InstanceManager):
         logger.debug(f"Found {len(eligible_vms)} VM sizes that meet requirements:")
         for idx, vm in enumerate(eligible_vms):
             logger.debug(
-                f"  [{idx+1}] {vm['name']}: {vm['vcpu']} vCPU, {vm['memory_gb']:.2f} GB memory, {vm.get('storage_gb', 0):.2f} GB storage"
+                f"  [{idx + 1}] {vm['name']}: {vm['vcpu']} vCPU, {vm['memory_gb']:.2f} GB memory, {vm.get('storage_gb', 0):.2f} GB storage"
             )
 
         # Filter by instance_types if specified in configuration
@@ -290,7 +289,7 @@ class AzureVMInstanceManager(InstanceManager):
                 )
                 for idx, vm in enumerate(eligible_vms):
                     logger.debug(
-                        f"  [{idx+1}] {vm['name']}: {vm['vcpu']} vCPU, {vm['memory_gb']:.2f} GB memory, {vm.get('storage_gb', 0):.2f} GB storage"
+                        f"  [{idx + 1}] {vm['name']}: {vm['vcpu']} vCPU, {vm['memory_gb']:.2f} GB memory, {vm.get('storage_gb', 0):.2f} GB storage"
                     )
             else:
                 error_msg = f"No VM sizes match the instance_types patterns: {self.instance_types}. Available VM sizes meeting requirements: {[v['name'] for v in eligible_vms]}"
@@ -316,7 +315,7 @@ class AzureVMInstanceManager(InstanceManager):
 
                 # Build filter for the API
                 filters = [
-                    f"serviceName eq 'Virtual Machines'",
+                    "serviceName eq 'Virtual Machines'",
                     f"armRegionName eq '{self.location}'",
                     f"armSkuName eq '{vm_size}'",
                 ]
@@ -346,7 +345,7 @@ class AzureVMInstanceManager(InstanceManager):
                                 # Log all returned price items
                                 for idx, item in enumerate(data["Items"]):
                                     logger.debug(
-                                        f"  Price item {idx+1}: ${item.get('unitPrice', 0):.6f} per {item.get('unitOfMeasure', 'hour')}"
+                                        f"  Price item {idx + 1}: ${item.get('unitPrice', 0):.6f} per {item.get('unitOfMeasure', 'hour')}"
                                     )
                                     logger.debug(
                                         f"    - Product name: {item.get('productName', 'Unknown')}"
@@ -414,7 +413,7 @@ class AzureVMInstanceManager(InstanceManager):
         # Debug log for all priced VMs in order
         logger.debug("VM sizes sorted by price (cheapest first):")
         for i, (vm_size, price) in enumerate(priced_vms):
-            logger.debug(f"  {i+1}. {vm_size}: ${price:.6f}/hour")
+            logger.debug(f"  {i + 1}. {vm_size}: ${price:.6f}/hour")
 
         selected_type = priced_vms[0][0]
         price = priced_vms[0][1]
@@ -423,7 +422,7 @@ class AzureVMInstanceManager(InstanceManager):
         )
         return selected_type
 
-    async def list_available_instance_types(self) -> List[Dict[str, Any]]:
+    async def list_available_instance_types(self) -> list[dict[str, Any]]:
         """
         List available Azure VM sizes with their specifications.
 
@@ -532,9 +531,9 @@ class AzureVMInstanceManager(InstanceManager):
         self,
         vm_size: str,
         startup_script: str,
-        tags: Dict[str, str],
+        tags: dict[str, str],
         use_spot: bool = False,
-        custom_image: Optional[str] = None,
+        custom_image: str | None = None,
     ) -> str:
         """
         Start a new Azure VM instance.
@@ -704,8 +703,8 @@ class AzureVMInstanceManager(InstanceManager):
         # Clean up associated resources in a real implementation
 
     async def list_running_instances(
-        self, tag_filter: Optional[Dict[str, str]] = None
-    ) -> List[Dict[str, Any]]:
+        self, tag_filter: dict[str, str] | None = None
+    ) -> list[dict[str, Any]]:
         """
         List currently running Azure VMs, optionally filtered by tags.
 
@@ -811,7 +810,7 @@ class AzureVMInstanceManager(InstanceManager):
         except ResourceNotFoundError:
             return "not_found"
 
-    def _match_tags(self, vm_tags: Dict[str, str], filter_tags: Dict[str, str]) -> bool:
+    def _match_tags(self, vm_tags: dict[str, str], filter_tags: dict[str, str]) -> bool:
         """
         Check if VM tags match the filter tags.
 
@@ -834,7 +833,7 @@ class AzureVMInstanceManager(InstanceManager):
 
         return True
 
-    async def list_available_images(self) -> List[Dict[str, Any]]:
+    async def list_available_images(self) -> list[dict[str, Any]]:
         """
         List available VM images in Azure.
         Returns standard marketplace images from common publishers and user's own images.
@@ -942,7 +941,7 @@ class AzureVMInstanceManager(InstanceManager):
         logger.info(f"Found {len(all_images)} available images")
         return all_images
 
-    async def get_available_regions(self, prefix: Optional[str] = None) -> Dict[str, Any]:
+    async def get_available_regions(self, prefix: str | None = None) -> dict[str, Any]:
         """
         Return all available Azure regions and their attributes.
 
@@ -1024,7 +1023,6 @@ class AzureVMInstanceManager(InstanceManager):
                 region_dict[location.name] = region_info
 
         self._logger.debug(
-            f"Found {len(region_dict)} available regions: "
-            f"{', '.join(sorted(region_dict.keys()))}"
+            f"Found {len(region_dict)} available regions: {', '.join(sorted(region_dict.keys()))}"
         )
         return region_dict

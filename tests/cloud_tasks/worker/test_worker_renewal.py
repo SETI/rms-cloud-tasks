@@ -1,9 +1,10 @@
 """Tests for the worker module."""
 
 import asyncio
-import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
 import time
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from cloud_tasks.worker.worker import Worker
 
@@ -135,9 +136,9 @@ async def test_visibility_renewal_worker_calculates_interval_correctly(mock_work
 
                 # Test the interval calculation logic directly
                 renewal_interval = max(max_visibility // 10, 10)
-                assert (
-                    renewal_interval == expected_interval
-                ), f"Expected {expected_interval}, got {renewal_interval} for max_visibility {max_visibility}"
+                assert renewal_interval == expected_interval, (
+                    f"Expected {expected_interval}, got {renewal_interval} for max_visibility {max_visibility}"
+                )
 
 
 @pytest.mark.asyncio

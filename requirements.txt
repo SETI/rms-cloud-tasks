@@ -12,10 +12,9 @@ shortuuid
 tqdm
 
 # Type checking and linting
-black
-flake8
 moto
 mypy
+ruff
 types-aiofiles
 types-PyYAML
 types-tqdm

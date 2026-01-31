@@ -4,7 +4,6 @@ All timestamps and event times should be normalized to UTC.
 """
 
 import datetime
-from typing import Optional
 
 
 def utc_now() -> datetime.datetime:
@@ -27,7 +26,7 @@ def utc_now_iso() -> str:
     return utc_now().isoformat()
 
 
-def parse_utc(s: Optional[str]) -> Optional[datetime.datetime]:
+def parse_utc(s: str | None) -> datetime.datetime | None:
     """
     Parse ISO timestamp string and return as UTC timezone-aware datetime.
 

@@ -1,12 +1,13 @@
 """Tests for the worker module."""
 
 import json
-from filecache import FCPath
 import os
-import pytest
 import tempfile
-from unittest.mock import patch
 from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+from filecache import FCPath
 
 from cloud_tasks.worker.worker import Worker
 
@@ -49,8 +50,7 @@ def mock_task_factory():
             {"task_id": "factory-task-2", "data": {"key": "value2"}},
             {"task_id": "factory-task-3", "data": {"key": "value3"}},
         ]
-        for task in tasks:
-            yield task
+        yield from tasks
 
     return factory
 
@@ -161,19 +161,17 @@ def test_worker_init_with_task_source_none_logging(mock_worker_function, caplog)
             assert "Provider not specified" in caplog.text
 
 
-def test_worker_init_with_task_source_string_logging(
-    mock_worker_function, local_task_file_json, caplog
-):
+def test_worker_init_with_task_source_string_logging(mock_worker_function, local_task_file_json):
     """Test that Worker logs when using task_source as string."""
-    with patch("sys.argv", ["worker.py"]):
+    with patch("sys.argv", ["worker.py"]), patch("cloud_tasks.worker.worker.logger") as mock_logger:
         _ = Worker(mock_worker_function, task_source=local_task_file_json)
-        assert f'Using local tasks file: "{local_task_file_json}"' in caplog.text
+        info_calls = [str(c) for c in mock_logger.info.call_args_list]
+        assert any("Using local tasks file" in c and local_task_file_json in c for c in info_calls)
 
 
-def test_worker_init_with_task_source_factory_logging(
-    mock_worker_function, mock_task_factory, caplog
-):
+def test_worker_init_with_task_source_factory_logging(mock_worker_function, mock_task_factory):
     """Test that Worker logs when using task_source as factory."""
-    with patch("sys.argv", ["worker.py"]):
+    with patch("sys.argv", ["worker.py"]), patch("cloud_tasks.worker.worker.logger") as mock_logger:
         _ = Worker(mock_worker_function, task_source=mock_task_factory)
-        assert "Using task factory function" in caplog.text
+        info_calls = [str(c) for c in mock_logger.info.call_args_list]
+        assert any("Using task factory function" in c for c in info_calls)

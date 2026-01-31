@@ -8,27 +8,27 @@ It uses multiprocessing to achieve true parallelism across multiple CPU cores.
 import argparse
 import asyncio
 import json
-import json_stream
 import logging
+import multiprocessing
 import os
-from pathlib import Path
-import requests
 import signal
 import socket
 import sys
 import time
 import traceback
-from typing import Any, Dict, Iterable, List, Optional, Tuple, Callable, Sequence
 import uuid
-import yaml
-import multiprocessing
+from collections.abc import Callable, Iterable, Sequence
+from pathlib import Path
+from typing import Any
 
+import json_stream
+import requests
+import yaml
 from filecache import FCPath
 
 from ..common.logging_config import configure_logging
 from ..common.time_utils import utc_now_iso
 from ..queue_manager import create_queue
-
 
 MP_CTX = multiprocessing.get_context("spawn")
 
@@ -272,7 +272,7 @@ def _parse_args(
 class LocalTaskQueue:
     """A local task queue that reads tasks from a JSON file or a factory function."""
 
-    def __init__(self, task_source: FCPath | Callable[[], Iterable[Dict[str, Any]]]):
+    def __init__(self, task_source: FCPath | Callable[[], Iterable[dict[str, Any]]]):
         """Initialize the local task queue.
 
         Args:
@@ -280,15 +280,15 @@ class LocalTaskQueue:
                 iterator of tasks.
         """
         if isinstance(task_source, FCPath):
-            self._tasks_iter = self._yield_tasks_from_file(task_source)
+            self._tasks_iter = iter(self._yield_tasks_from_file(task_source))
         elif callable(task_source):
-            self._tasks_iter = task_source()
+            self._tasks_iter = iter(task_source())
         else:
             raise TypeError(
                 f"task_source must be FCPath or callable, got {type(task_source).__name__}"
             )
 
-    def _yield_tasks_from_file(self, task_file: FCPath) -> Iterable[Dict[str, Any]]:
+    def _yield_tasks_from_file(self, task_file: FCPath) -> Iterable[dict[str, Any]]:
         """
         Yield tasks from a JSON or YAML file as an iterator.
 
@@ -326,7 +326,7 @@ class LocalTaskQueue:
                         yield yaml.load(y, Loader=yaml.Loader)[0]
                         y = ln
 
-    async def receive_tasks(self, max_count: int) -> List[Dict[str, Any]]:
+    async def receive_tasks(self, max_count: int) -> list[dict[str, Any]]:
         """Get a batch of tasks from the queue.
 
         Args:
@@ -335,7 +335,7 @@ class LocalTaskQueue:
         Returns:
             List of tasks.
         """
-        tasks: List[Dict[str, Any]] = []
+        tasks: list[dict[str, Any]] = []
         for _ in range(max_count):
             try:
                 task = next(self._tasks_iter)
@@ -363,7 +363,7 @@ class LocalTaskQueue:
         # For local queue, we don't need to do anything
         pass
 
-    async def extend_message_visibility(self, ack_id: str, timeout: Optional[int] = None) -> None:
+    async def extend_message_visibility(self, ack_id: str, timeout: int | None = None) -> None:
         """Extend the visibility timeout for a message.
 
         Args:
@@ -377,7 +377,7 @@ class LocalTaskQueue:
 class WorkerData:
     """Class containing properties that can be safely inherited by child processes."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         # Initialize all attributes to None
 
         #: argparse.Namespace containing the command line arguments, including any additional
@@ -432,11 +432,11 @@ class Worker:
 
     def __init__(
         self,
-        user_worker_function: Callable[[str, Dict[str, Any], WorkerData], Tuple[bool, str]],
+        user_worker_function: Callable[[str, dict[str, Any], WorkerData], tuple[bool, str]],
         *,
-        task_source: Optional[str | Path | FCPath | Callable[[], Iterable[Dict[str, Any]]]] = None,
-        args: Optional[Sequence[str]] = None,
-        argparser: Optional[argparse.ArgumentParser] = None,
+        task_source: str | Path | FCPath | Callable[[], Iterable[dict[str, Any]]] | None = None,
+        args: Sequence[str] | None = None,
+        argparser: argparse.ArgumentParser | None = None,
     ):
         """
         Initialize the worker.
@@ -748,7 +748,7 @@ class Worker:
 
         # Track processes
         self._next_worker_id: int = 0
-        self._processes: Dict[int, Dict[str, Any]] = {}  # Maps worker # to process and task
+        self._processes: dict[int, dict[str, Any]] = {}  # Maps worker # to process and task
         self._num_tasks_not_retried: int = 0
         self._num_tasks_retried: int = 0
         self._num_tasks_timed_out: int = 0
@@ -783,7 +783,7 @@ class Worker:
         signal.signal(signal.SIGINT, signal.SIG_DFL)  # So a second time will kill the process
         signal.signal(signal.SIGTERM, signal.SIG_DFL)
 
-    async def _queue_acknowledge_task_with_logging(self, task: Dict[str, Any]) -> None:
+    async def _queue_acknowledge_task_with_logging(self, task: dict[str, Any]) -> None:
         """Complete a task with logging of errors."""
         try:
             async with self._task_queue_semaphore:
@@ -792,7 +792,7 @@ class Worker:
             logger.error(f"Error completing task {task['task_id']}: {e}", exc_info=True)
             await self._log_non_fatal_exception(traceback.format_exc())
 
-    async def _queue_retry_task_with_logging(self, task: Dict[str, Any]) -> None:
+    async def _queue_retry_task_with_logging(self, task: dict[str, Any]) -> None:
         """Fail a task with logging of errors."""
         try:
             async with self._task_queue_semaphore:
@@ -809,7 +809,7 @@ class Worker:
     _EVENT_TYPE_FATAL_EXCEPTION = "fatal_exception"
     _EVENT_TYPE_SPOT_TERMINATION = "spot_termination"
 
-    async def _log_event(self, event: Dict[str, Any]) -> None:
+    async def _log_event(self, event: dict[str, Any]) -> None:
         """Log an event to the event log."""
         # Reorder so these fields are first in the diction to make the display nicer
         new_event = {
@@ -1404,7 +1404,7 @@ class Worker:
                             p.join(timeout=1)
                     except Exception as e:
                         logger.error(
-                            f"Error terminating process worker #{worker_id} (PID " f"{p.pid}): {e}"
+                            f"Error terminating process worker #{worker_id} (PID {p.pid}): {e}"
                         )
                         await self._log_non_fatal_exception(traceback.format_exc())
 
@@ -1419,8 +1419,7 @@ class Worker:
                                 await self._queue_retry_task_with_logging(task)
                             except Exception as e:
                                 logger.error(
-                                    f"Error failing task {task['task_id']} after "
-                                    f"exception: {e}",
+                                    f"Error failing task {task['task_id']} after exception: {e}",
                                     exc_info=True,
                                 )
                                 await self._log_non_fatal_exception(traceback.format_exc())
@@ -1433,8 +1432,7 @@ class Worker:
                                 await self._queue_acknowledge_task_with_logging(task)
                             except Exception as e:
                                 logger.error(
-                                    f"Error completing task {task['task_id']} after "
-                                    f"exception: {e}",
+                                    f"Error completing task {task['task_id']} after exception: {e}",
                                     exc_info=True,
                                 )
                                 await self._log_non_fatal_exception(traceback.format_exc())
@@ -1527,10 +1525,10 @@ class Worker:
     @staticmethod
     def _worker_process_main(
         worker_id: int,
-        user_worker_function: Callable[[str, Dict[str, Any], WorkerData], Tuple[bool, str]],
+        user_worker_function: Callable[[str, dict[str, Any], WorkerData], tuple[bool, str]],
         worker_data: WorkerData,
         task_id: str,
-        task_data: Dict[str, Any],
+        task_data: dict[str, Any],
         result_queue: MP_Queue,
     ) -> None:
         """Main function for worker processes."""
@@ -1586,10 +1584,10 @@ class Worker:
     @staticmethod
     def _execute_task_isolated(
         task_id: str,
-        task_data: Dict[str, Any],
+        task_data: dict[str, Any],
         worker_data: WorkerData,
-        user_worker_function: Callable[[str, Dict[str, Any], WorkerData], Tuple[bool, str]],
-    ) -> Tuple[bool, str]:
+        user_worker_function: Callable[[str, dict[str, Any], WorkerData], tuple[bool, str]],
+    ) -> tuple[bool, str]:
         """
         Execute a task in isolation.
 

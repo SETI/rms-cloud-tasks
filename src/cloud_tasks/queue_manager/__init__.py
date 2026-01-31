@@ -2,24 +2,23 @@
 Task Queue Manager module and factory function
 """
 
-from typing import Any, cast, Optional
+from typing import Any, cast
 
+from ..common.config import AWSConfig, AzureConfig, Config, GCPConfig
 from .queue_manager import QueueManager
-
-from ..common.config import Config, AWSConfig, GCPConfig, AzureConfig
 
 
 async def create_queue(
-    config: Optional[Config] = None,
-    visibility_timeout: Optional[int] = None,
-    exactly_once: Optional[bool] = None,
+    config: Config | None = None,
+    visibility_timeout: int | None = None,
+    exactly_once: bool | None = None,
     **kwargs: Any,
 ) -> QueueManager:
     """
     Create a TaskQueue implementation for the specified cloud provider.
 
-    Args:
-        config: Configuration
+    Parameters:
+        config: Configuration.
         visibility_timeout: Visibility timeout (in seconds) for messages pulled from the queue;
             if a message is not completed within this time, it will be made available again for
             processing.

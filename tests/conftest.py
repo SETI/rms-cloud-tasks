@@ -5,9 +5,10 @@ Configuration for pytest.
 import os
 import sys
 import tempfile
-import pytest
 import uuid
 from pathlib import Path
+
+import pytest
 
 # Add the src directory to the Python path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))

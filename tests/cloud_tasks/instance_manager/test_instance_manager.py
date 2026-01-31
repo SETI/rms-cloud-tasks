@@ -1,6 +1,7 @@
 import pytest
-from src.cloud_tasks.instance_manager.instance_manager import InstanceManager
-from src.cloud_tasks.common.config import ProviderConfig
+
+from cloud_tasks.common.config import ProviderConfig
+from cloud_tasks.instance_manager.instance_manager import InstanceManager
 
 
 class TestInstanceManager:
@@ -103,10 +104,12 @@ class TestInstanceManager:
         """Test tasks per instance constraints affecting CPU limits"""
         # Test min_tasks_per_instance affecting min_cpu
         assert not instance_manager._instance_matches_constraints(
-            base_instance_info, {"cpus_per_task": 2, "min_tasks_per_instance": 3}  # Requires 6 CPUs
+            base_instance_info,
+            {"cpus_per_task": 2, "min_tasks_per_instance": 3},  # Requires 6 CPUs
         )
         assert instance_manager._instance_matches_constraints(
-            base_instance_info, {"cpus_per_task": 1, "min_tasks_per_instance": 2}  # Requires 2 CPUs
+            base_instance_info,
+            {"cpus_per_task": 1, "min_tasks_per_instance": 2},  # Requires 2 CPUs
         )
 
         # Test max_tasks_per_instance affecting max_cpu

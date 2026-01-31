@@ -2,8 +2,8 @@
 Custom logging configuration with proper microsecond support.
 """
 
-import logging
 import datetime
+import logging
 
 
 class MicrosecondFormatter(logging.Formatter):
@@ -12,7 +12,7 @@ class MicrosecondFormatter(logging.Formatter):
     The standard logging.Formatter doesn't properly support %f in datefmt.
     """
 
-    def formatTime(self, record, datefmt):
+    def formatTime(self, record: logging.LogRecord, datefmt: str | None) -> str:  # noqa: N802
         """
         Override the standard formatTime to correctly handle microseconds.
         """
@@ -30,13 +30,19 @@ class MicrosecondFormatter(logging.Formatter):
         return s
 
 
-def configure_logging(level=logging.INFO, libraries_level=logging.CRITICAL):
+def configure_logging(
+    level: int = logging.INFO,
+    libraries_level: int = logging.CRITICAL,
+) -> logging.Logger:
     """
     Configure logging with proper microsecond support.
 
-    Args:
-        level: Logging level to use (default: INFO)
-        libraries_level: Logging level for libraries (default: CRITICAL)
+    Parameters:
+        level: Logging level to use (default: INFO).
+        libraries_level: Logging level for libraries (default: CRITICAL).
+
+    Returns:
+        The root logger.
     """
 
     logging.getLogger("asyncio").setLevel(libraries_level)

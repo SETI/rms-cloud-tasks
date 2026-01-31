@@ -3,9 +3,10 @@
 import asyncio
 import json
 import os
-import pytest
 import tempfile
 from unittest.mock import AsyncMock, patch
+
+import pytest
 
 from cloud_tasks.worker.worker import Worker
 

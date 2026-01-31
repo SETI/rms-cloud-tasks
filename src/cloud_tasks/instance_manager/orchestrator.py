@@ -5,13 +5,14 @@ Instance Orchestrator core module.
 import asyncio
 import logging
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any
 
-from .instance_manager import InstanceManager
-from . import create_instance_manager
 from ..common.config import Config
 from ..queue_manager import create_queue
+from . import create_instance_manager
+from .instance_manager import InstanceManager
 
 # Notes:
 # - Instance selection constraints
@@ -33,9 +34,9 @@ class InstanceOrchestrator:
         self,
         config: Config,
         *,
-        dry_run: Optional[bool] = False,
-        auto_terminate_on_empty: Optional[bool] = True,
-        get_remaining_task_count: Optional[Callable[[], int]] = None,
+        dry_run: bool | None = False,
+        auto_terminate_on_empty: bool | None = True,
+        get_remaining_task_count: Callable[[], int] | None = None,
     ) -> None:
         """
         Initialize the instance orchestrator.
@@ -86,7 +87,7 @@ class InstanceOrchestrator:
         self._zone = provider_config.zone
 
         # Will be initialized in start()
-        self._instance_manager: Optional[InstanceManager] = None
+        self._instance_manager: InstanceManager | None = None
         self._optimal_instance_info = None
         self._optimal_instance_boot_disk_size = None
         self._optimal_instance_num_tasks = None
@@ -150,8 +151,7 @@ class InstanceOrchestrator:
         self._logger.info(f"  Boot disk per CPU: {self._run_config.boot_disk_per_cpu} GB")
         self._logger.info(f"  Boot disk per task: {self._run_config.boot_disk_per_task} GB")
         self._logger.info(
-            f"  Local SSD: {self._run_config.min_local_ssd} to "
-            f"{self._run_config.max_local_ssd} GB"
+            f"  Local SSD: {self._run_config.min_local_ssd} to {self._run_config.max_local_ssd} GB"
         )
         self._logger.info(
             f"  Local SSD per CPU: {self._run_config.min_local_ssd_per_cpu} to "
@@ -164,8 +164,7 @@ class InstanceOrchestrator:
         self._logger.info("Number of instances constraints:")
         self._logger.info(f"  # Instances: {self._min_instances} to {self._max_instances}")
         self._logger.info(
-            f"  Total CPUs: {self._run_config.min_total_cpus} to "
-            f"{self._run_config.max_total_cpus}"
+            f"  Total CPUs: {self._run_config.min_total_cpus} to {self._run_config.max_total_cpus}"
         )
         self._logger.info(f"  CPUs per task: {self._run_config.cpus_per_task}")
         self._logger.info(
@@ -421,7 +420,7 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
             self._logger.info("Scaling loop cancelled")
             raise  # Re-raise to properly handle cancellation
 
-    async def get_job_instances(self) -> Tuple[int, int, float, str]:
+    async def get_job_instances(self) -> tuple[int, int, float, str]:
         await self._initialize_pricing_info()
 
         try:
@@ -594,8 +593,7 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
 
         if num_running > self._max_instances:  # max_instances always has a value
             self._logger.warning(
-                f"  More instances running than max allowed: {num_running} > "
-                f"{self._max_instances}"
+                f"  More instances running than max allowed: {num_running} > {self._max_instances}"
             )
 
         # Find the maximum number of instances allowed by looking at
@@ -761,7 +759,7 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
         # Shutdown thread pool
         self._thread_pool.shutdown(wait=True)
 
-    async def list_job_instances(self) -> List[Dict[str, Any]]:
+    async def list_job_instances(self) -> list[dict[str, Any]]:
         """
         List instances for the current job.
 
@@ -778,7 +776,7 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
         )
         return instances
 
-    async def _provision_instances(self, count: int) -> List[str]:
+    async def _provision_instances(self, count: int) -> list[str]:
         """
         Provision new instances for the job.
 

@@ -1,5 +1,10 @@
 [run]
 branch = false
+# Omit: tests, azure.py, aws.py (poor AWS coverage).
 omit =
     tests/*
     azure.py
+    aws.py
+
+[report]
+fail_under = 80

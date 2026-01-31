@@ -7,13 +7,15 @@ import datetime
 import json
 import logging
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from google.api_core import exceptions as gcp_exceptions
-from google.cloud import pubsub_v1  # type: ignore
-from google.cloud.pubsub_v1.subscriber import exceptions as sub_exceptions
-from google.cloud import monitoring_v3
+from google.cloud import (
+    monitoring_v3,
+    pubsub_v1,  # type: ignore
+)
 from google.cloud.monitoring_v3 import query
+from google.cloud.pubsub_v1.subscriber import exceptions as sub_exceptions
 
 from ..common.config import GCPConfig
 from .queue_manager import QueueManager
@@ -36,11 +38,11 @@ class GCPPubSubQueue(QueueManager):
 
     def __init__(
         self,
-        gcp_config: Optional[GCPConfig] = None,
+        gcp_config: GCPConfig | None = None,
         *,
-        queue_name: Optional[str] = None,
-        visibility_timeout: Optional[int] = None,
-        exactly_once: Optional[bool] = None,
+        queue_name: str | None = None,
+        visibility_timeout: int | None = None,
+        exactly_once: bool | None = None,
         **kwargs: Any,
     ) -> None:
         """
@@ -333,7 +335,7 @@ class GCPPubSubQueue(QueueManager):
             finally:
                 self._streaming_pull_future = None
 
-    async def send_message(self, message: Dict[str, Any], _quiet: bool = False) -> None:
+    async def send_message(self, message: dict[str, Any], _quiet: bool = False) -> None:
         """
         Send a message to the Pub/Sub topic.
 
@@ -359,7 +361,7 @@ class GCPPubSubQueue(QueueManager):
 
         self._logger.debug(f'Published message "{message_id}" on queue "{self._queue_name}"')
 
-    async def send_task(self, task_id: str, task_data: Dict[str, Any]) -> None:
+    async def send_task(self, task_id: str, task_data: dict[str, Any]) -> None:
         """
         Send a task to the Pub/Sub topic.
 
@@ -376,7 +378,7 @@ class GCPPubSubQueue(QueueManager):
 
     async def _receive_messages_exactly_once(
         self, max_count: int, acknowledge: bool
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Receive messages from the Pub/Sub subscription using exactly-once delivery."""
         self._start_streaming_pull()
 
@@ -403,7 +405,7 @@ class GCPPubSubQueue(QueueManager):
 
     async def _receive_messages_pull(
         self, max_count: int, acknowledge: bool
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Receive messages from the Pub/Sub subscription using pull delivery."""
         # Use pull to receive messages
         loop = asyncio.get_event_loop()
@@ -461,7 +463,7 @@ class GCPPubSubQueue(QueueManager):
         self,
         max_count: int = 1,
         acknowledge: bool = True,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """
         Receive messages from the Pub/Sub subscription.
 
@@ -490,7 +492,7 @@ class GCPPubSubQueue(QueueManager):
 
     async def receive_tasks(
         self, max_count: int = 1, acknowledge: bool = False
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """
         Receive tasks from the Pub/Sub subscription.
 
@@ -544,7 +546,7 @@ class GCPPubSubQueue(QueueManager):
                 except (asyncio.TimeoutError, sub_exceptions.AcknowledgeError) as e:
                     if attempt < max_retries - 1:
                         self._logger.warning(
-                            f"Attempt {attempt+1} failed to acknowledge message "
+                            f"Attempt {attempt + 1} failed to acknowledge message "
                             f"{message_handle.message_id}, "
                             f"retrying in {retry_delay} seconds: {str(e)}"
                         )
@@ -754,7 +756,7 @@ class GCPPubSubQueue(QueueManager):
         return self._MAXIMUM_VISIBILITY_TIMEOUT
 
     async def extend_message_visibility(
-        self, message_handle: Any, timeout: Optional[int] = None
+        self, message_handle: Any, timeout: int | None = None
     ) -> None:
         """Extend the visibility timeout for a message.
 

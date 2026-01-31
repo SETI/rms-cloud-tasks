@@ -70,4 +70,5 @@ alwaysApply: true
 - When writing tests followed by writing code, ALWAYS ensure the test is checking for a precise return value, not a range or set of return values. If necessary, go back and modify the test after writing the code.
 - If two tests run essentially the same code but test different parts of the return value, combine them into a single test.
 - ALWAYS use assert to test a single check. Do not use "and" to test multiple things in a single assert.
-
+- Coverage should be at least 80% and cover almost all of the non-exception lines. Coverage should be checked by running the entire test suite, not just a subset.
+- When testing exceptions that have messages, the exception message contents needs to be checked, not just that the exception was raised.

@@ -1,7 +1,7 @@
 """Unit tests for the GCP Compute Engine instance manager."""
 
 import copy
-from typing import Any, Dict, List
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -9,32 +9,32 @@ import pytest
 from cloud_tasks.instance_manager.gcp import GCPComputeInstanceManager
 
 from .conftest import (
-    deepcopy_gcp_instance_manager,
+    LSSD_PREEMPTIBLE_PRICE,
+    LSSD_PRICE,
     N1_2_CPU_PRICE,
     N1_2_RAM_PRICE,
     N1_4_CPU_PRICE,
     N1_4_RAM_PRICE,
     N2_CPU_PRICE,
-    N2_RAM_PRICE,
     N2_PREEMPTIBLE_CPU_PRICE,
     N2_PREEMPTIBLE_RAM_PRICE,
-    PD_STANDARD_PRICE,
+    N2_RAM_PRICE,
     PD_BALANCED_PRICE,
-    LSSD_PRICE,
-    LSSD_PREEMPTIBLE_PRICE,
+    PD_STANDARD_PRICE,
+    deepcopy_gcp_instance_manager,
 )
 
 
 @pytest.mark.asyncio
 async def test_get_optimal_instance_type_basic(
     gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
-    mock_instance_types_n1_n2: Dict[str, Dict[str, Any]],
+    mock_instance_types_n1_n2: dict[str, dict[str, Any]],
     cpu_pricing_n1_sku: MagicMock,
     ram_pricing_n1_sku: MagicMock,
     cpu_pricing_n2_sku: MagicMock,
     ram_pricing_n2_sku: MagicMock,
     local_ssd_pricing_n2_sku: MagicMock,
-    boot_disk_pricing_default_skus: List[MagicMock],
+    boot_disk_pricing_default_skus: list[MagicMock],
 ) -> None:
     """Test getting optimal instance type with minimal constraints."""
     gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
@@ -66,12 +66,12 @@ async def test_get_optimal_instance_type_basic(
 @pytest.mark.asyncio
 async def test_get_optimal_instance_type_no_matches(
     gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
-    mock_instance_types_n1_n2: Dict[str, Dict[str, Any]],
+    mock_instance_types_n1_n2: dict[str, dict[str, Any]],
     cpu_pricing_n1_sku: MagicMock,
     ram_pricing_n1_sku: MagicMock,
     cpu_pricing_n2_sku: MagicMock,
     ram_pricing_n2_sku: MagicMock,
-    boot_disk_pricing_default_skus: List[MagicMock],
+    boot_disk_pricing_default_skus: list[MagicMock],
 ) -> None:
     """Test getting optimal instance type when no instances match constraints."""
     gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
@@ -98,13 +98,13 @@ async def test_get_optimal_instance_type_no_matches(
 @pytest.mark.asyncio
 async def test_get_optimal_instance_type_spot_instance(
     gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
-    mock_instance_types_n1_n2: Dict[str, Dict[str, Any]],
+    mock_instance_types_n1_n2: dict[str, dict[str, Any]],
     cpu_pricing_n1_preemptible_sku: MagicMock,
     ram_pricing_n1_preemptible_sku: MagicMock,
     cpu_pricing_n2_preemptible_sku: MagicMock,
     ram_pricing_n2_preemptible_sku: MagicMock,
     local_ssd_pricing_n2_preemptible_sku: MagicMock,
-    boot_disk_pricing_default_skus: List[MagicMock],
+    boot_disk_pricing_default_skus: list[MagicMock],
 ) -> None:
     """Test getting optimal instance type with spot instance requirement."""
     gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
@@ -142,11 +142,11 @@ async def test_get_optimal_instance_type_spot_instance(
 @pytest.mark.asyncio
 async def test_get_optimal_instance_type_with_memory_constraints(
     gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
-    mock_instance_types_n1_n2: Dict[str, Dict[str, Any]],
+    mock_instance_types_n1_n2: dict[str, dict[str, Any]],
     cpu_pricing_n2_sku: MagicMock,
     ram_pricing_n2_sku: MagicMock,
     local_ssd_pricing_n2_sku: MagicMock,
-    boot_disk_pricing_default_skus: List[MagicMock],
+    boot_disk_pricing_default_skus: list[MagicMock],
 ) -> None:
     """Test getting optimal instance type with memory constraints."""
     gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
@@ -182,11 +182,11 @@ async def test_get_optimal_instance_type_with_memory_constraints(
 @pytest.mark.asyncio
 async def test_get_optimal_instance_type_with_local_ssd_constraint(
     gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
-    mock_instance_types_n1_n2: Dict[str, Dict[str, Any]],
+    mock_instance_types_n1_n2: dict[str, dict[str, Any]],
     cpu_pricing_n2_sku: MagicMock,
     ram_pricing_n2_sku: MagicMock,
     local_ssd_pricing_n2_sku: MagicMock,
-    boot_disk_pricing_default_skus: List[MagicMock],
+    boot_disk_pricing_default_skus: list[MagicMock],
 ) -> None:
     """Test getting optimal instance type with local SSD requirement."""
     gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
@@ -222,10 +222,10 @@ async def test_get_optimal_instance_type_with_local_ssd_constraint(
 @pytest.mark.asyncio
 async def test_get_optimal_instance_type_prefer_more_cpus(
     gcp_instance_manager_n1_2_4: GCPComputeInstanceManager,
-    mock_instance_types_n1_2_4: Dict[str, Dict[str, Any]],
+    mock_instance_types_n1_2_4: dict[str, dict[str, Any]],
     cpu_pricing_n1_sku: MagicMock,
     ram_pricing_n1_sku: MagicMock,
-    boot_disk_pricing_default_skus: List[MagicMock],
+    boot_disk_pricing_default_skus: list[MagicMock],
 ) -> None:
     """Test that among equally priced instances, one with more CPUs is preferred."""
     gcp_instance_manager_n1_2_4 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_2_4)
@@ -279,7 +279,7 @@ async def test_get_optimal_instance_type_logs_sorted_instances(
     cpu_pricing_n2_sku: MagicMock,
     ram_pricing_n2_sku: MagicMock,
     local_ssd_pricing_n2_sku: MagicMock,
-    boot_disk_pricing_default_skus: List[MagicMock],
+    boot_disk_pricing_default_skus: list[MagicMock],
     caplog,
 ) -> None:
     """Test get_optimal_instance_type logs sorted instance types by price (line 712)."""
@@ -323,11 +323,11 @@ async def test_get_optimal_instance_type_logs_sorted_instances(
 @pytest.mark.asyncio
 async def test_get_optimal_instance_type_partial_pricing(
     gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
-    mock_instance_types_n1_n2: Dict[str, Dict[str, Any]],
+    mock_instance_types_n1_n2: dict[str, dict[str, Any]],
     cpu_pricing_n2_sku: MagicMock,
     ram_pricing_n2_sku: MagicMock,
     local_ssd_pricing_n2_sku: MagicMock,
-    boot_disk_pricing_default_skus: List[MagicMock],
+    boot_disk_pricing_default_skus: list[MagicMock],
 ) -> None:
     """Test get_optimal_instance_type returns the valid instance if only one has pricing."""
     # Arrange: two instance types, one with valid pricing, one with None
@@ -354,11 +354,11 @@ async def test_get_optimal_instance_type_partial_pricing(
 @pytest.mark.asyncio
 async def test_get_optimal_instance_type_all_missing_pricing(
     gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
-    mock_instance_types_n1_n2: Dict[str, Dict[str, Any]],
+    mock_instance_types_n1_n2: dict[str, dict[str, Any]],
     ram_pricing_n1_sku: MagicMock,
     ram_pricing_n2_sku: MagicMock,
     local_ssd_pricing_n2_sku: MagicMock,
-    boot_disk_pricing_default_skus: List[MagicMock],
+    boot_disk_pricing_default_skus: list[MagicMock],
 ) -> None:
     """Test get_optimal_instance_type raises ValueError if all pricing data is missing."""
     # Arrange: two instance types, both with None pricing

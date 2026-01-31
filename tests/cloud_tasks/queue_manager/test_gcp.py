@@ -1,16 +1,16 @@
 # Manually verified 4/29/2025
 
-import pytest
+import json
+import logging
 import sys
+import time
 import uuid
 import warnings
-import time
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import ANY, MagicMock, patch
+
+import pytest
 from google.api_core import exceptions as gcp_exceptions
-import logging
-import json
-from unittest.mock import ANY
 
 # Add the src directory to the path so we can import cloud_tasks modules
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -140,9 +140,7 @@ async def test_receive_tasks(gcp_queue, mock_pubsub_client):
     mock_message = MagicMock()
     mock_message.ack_id = "test-ack-id"
     mock_message.message = MagicMock()
-    mock_message.message.data = ('{"task_id": "test-task-id", "data": {"key": "value"}}').encode(
-        "utf-8"
-    )
+    mock_message.message.data = b'{"task_id": "test-task-id", "data": {"key": "value"}}'
 
     # Create a mock response with the message
     mock_response = MagicMock()
@@ -786,9 +784,7 @@ async def test_receive_tasks_error_handling(gcp_queue, mock_pubsub_client):
     mock_message = MagicMock()
     mock_message.ack_id = "test-ack-id"
     mock_message.message = MagicMock()
-    mock_message.message.data = ('{"task_id": "test-task-id", "data": {"key": "value"}}').encode(
-        "utf-8"
-    )
+    mock_message.message.data = b'{"task_id": "test-task-id", "data": {"key": "value"}}'
 
     # Create a mock response with the message
     mock_response = MagicMock()
@@ -919,7 +915,7 @@ async def test_receive_messages(gcp_queue, mock_pubsub_client):
     mock_message = MagicMock()
     mock_message.ack_id = "test-ack-id"
     mock_message.message = MagicMock()
-    mock_message.message.data = ('{"key": "value"}').encode("utf-8")
+    mock_message.message.data = b'{"key": "value"}'
 
     # Create a mock response with the message
     mock_response = MagicMock()
@@ -983,7 +979,7 @@ async def test_receive_messages_acknowledge_error(gcp_queue, mock_pubsub_client)
     mock_message = MagicMock()
     mock_message.ack_id = "test-ack-id"
     mock_message.message = MagicMock()
-    mock_message.message.data = ('{"key": "value"}').encode("utf-8")
+    mock_message.message.data = b'{"key": "value"}'
 
     # Create a mock response with the message
     mock_response = MagicMock()

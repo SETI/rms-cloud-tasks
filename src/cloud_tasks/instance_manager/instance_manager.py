@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from ..common.config import ProviderConfig
 
@@ -64,7 +64,7 @@ class InstanceManager(ABC):
         self.config = config
 
     def _instance_matches_constraints(
-        self, instance_info: Dict[str, Any], constraints: Optional[Dict[str, Any]] = None
+        self, instance_info: dict[str, Any], constraints: dict[str, Any] | None = None
     ) -> bool:
         """Check if an instance matches the constraints."""
         if constraints is None:
@@ -175,7 +175,7 @@ class InstanceManager(ABC):
         )
 
     def _get_boot_disk_size(
-        self, instance_info: Dict[str, Any], boot_disk_constraints: Dict[str, Any]
+        self, instance_info: dict[str, Any], boot_disk_constraints: dict[str, Any]
     ) -> float:
         """Get the boot disk size for an instance."""
         boot_disk_base_size = boot_disk_constraints.get("boot_disk_base_size")
@@ -203,8 +203,8 @@ class InstanceManager(ABC):
 
     @abstractmethod
     async def get_available_instance_types(
-        self, constraints: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Dict[str, Any]]:
+        self, constraints: dict[str, Any] | None = None
+    ) -> dict[str, dict[str, Any]]:
         """Get available instance types with their specifications.
 
 
@@ -246,11 +246,11 @@ class InstanceManager(ABC):
     @abstractmethod
     async def get_instance_pricing(
         self,
-        instance_types: Dict[str, Dict[str, Any]],
+        instance_types: dict[str, dict[str, Any]],
         *,
         use_spot: bool = False,
-        boot_disk_constraints: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Dict[str, Dict[str, float | str | None]]]:
+        boot_disk_constraints: dict[str, Any] | None = None,
+    ) -> dict[str, dict[str, dict[str, float | str | None]]]:
         """
         Get the hourly price for one or more specific instance types.
 
@@ -282,8 +282,8 @@ class InstanceManager(ABC):
 
     @abstractmethod
     async def get_optimal_instance_type(
-        self, constraints: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, float | str | None]:
+        self, constraints: dict[str, Any] | None = None
+    ) -> dict[str, float | str | None]:
         """
         Get the most cost-effective instance type that meets the constraints.
 
@@ -327,10 +327,10 @@ class InstanceManager(ABC):
         image_uri: str,
         boot_disk_type: str,
         boot_disk_size: int,  # GB
-        boot_disk_iops: Optional[int] = None,
-        boot_disk_throughput: Optional[int] = None,  # MB/s
-        zone: Optional[str] = None,
-    ) -> Tuple[str, str]:
+        boot_disk_iops: int | None = None,
+        boot_disk_throughput: int | None = None,  # MB/s
+        zone: str | None = None,
+    ) -> tuple[str, str]:
         """
         Start a new instance and return its ID.
 
@@ -350,7 +350,7 @@ class InstanceManager(ABC):
         pass  # pragma: no cover
 
     @abstractmethod
-    async def terminate_instance(self, instance_id: str, zone: Optional[str] = None) -> None:
+    async def terminate_instance(self, instance_id: str, zone: str | None = None) -> None:
         """Terminate an instance by ID.
 
         Args:
@@ -361,13 +361,13 @@ class InstanceManager(ABC):
 
     @abstractmethod
     async def list_running_instances(
-        self, job_id: Optional[str] = None, include_non_job: bool = False
-    ) -> List[Dict[str, Any]]:
+        self, job_id: str | None = None, include_non_job: bool = False
+    ) -> list[dict[str, Any]]:
         """List currently running instances, optionally filtered by tags."""
         pass  # pragma: no cover
 
     @abstractmethod
-    async def list_available_images(self) -> List[Dict[str, Any]]:
+    async def list_available_images(self) -> list[dict[str, Any]]:
         """
         List available VM images.
         Returns common public OS images and the user's own custom images.
@@ -401,6 +401,6 @@ class InstanceManager(ABC):
         pass  # pragma: no cover
 
     @abstractmethod
-    async def get_available_regions(self) -> Dict[str, Any]:
+    async def get_available_regions(self) -> dict[str, Any]:
         """Get all available regions and their attributes."""
         pass  # pragma: no cover

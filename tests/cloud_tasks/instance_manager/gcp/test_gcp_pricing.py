@@ -1,7 +1,7 @@
 """Unit tests for the GCP Compute Engine instance manager."""
 
 import copy
-from typing import Any, Dict, List
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -10,16 +10,16 @@ from google.cloud import billing
 from cloud_tasks.instance_manager.gcp import GCPComputeInstanceManager
 
 from .conftest import (
-    deepcopy_gcp_instance_manager,
+    LSSD_PRICE,
     N1_2_CPU_PRICE,
     N1_2_RAM_PRICE,
-    N2_CPU_PRICE,
-    N2_RAM_PRICE,
     N1_PREEMPTIBLE_CPU_PRICE,
     N1_PREEMPTIBLE_RAM_PRICE,
-    PD_STANDARD_PRICE,
+    N2_CPU_PRICE,
+    N2_RAM_PRICE,
     PD_BALANCED_PRICE,
-    LSSD_PRICE,
+    PD_STANDARD_PRICE,
+    deepcopy_gcp_instance_manager,
 )
 
 
@@ -257,10 +257,10 @@ async def test_extract_pricing_info_success(
 @pytest.mark.asyncio
 async def test_get_instance_pricing_basic(
     gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
-    mock_instance_types_n1_n2: Dict[str, Dict[str, Any]],
+    mock_instance_types_n1_n2: dict[str, dict[str, Any]],
     cpu_pricing_n1_sku: MagicMock,
     ram_pricing_n1_sku: MagicMock,
-    boot_disk_pricing_default_skus: List[MagicMock],
+    boot_disk_pricing_default_skus: list[MagicMock],
 ) -> None:
     """Test getting instance pricing with basic successful case."""
     gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
@@ -328,11 +328,11 @@ async def test_get_instance_pricing_basic(
 @pytest.mark.asyncio
 async def test_get_instance_pricing_with_local_ssd(
     gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
-    mock_instance_types_n1_n2: Dict[str, Dict[str, Any]],
+    mock_instance_types_n1_n2: dict[str, dict[str, Any]],
     cpu_pricing_n2_sku: MagicMock,
     ram_pricing_n2_sku: MagicMock,
     local_ssd_pricing_n2_sku: MagicMock,
-    boot_disk_pricing_default_skus: List[MagicMock],
+    boot_disk_pricing_default_skus: list[MagicMock],
 ) -> None:
     """Test getting instance pricing for instance with local SSD."""
     gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
@@ -407,10 +407,10 @@ async def test_get_instance_pricing_with_local_ssd(
 @pytest.mark.asyncio
 async def test_get_instance_pricing_spot_instance(
     gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
-    mock_instance_types_n1_n2: Dict[str, Dict[str, Any]],
+    mock_instance_types_n1_n2: dict[str, dict[str, Any]],
     cpu_pricing_n1_preemptible_sku: MagicMock,
     ram_pricing_n1_preemptible_sku: MagicMock,
-    boot_disk_pricing_default_skus: List[MagicMock],
+    boot_disk_pricing_default_skus: list[MagicMock],
 ) -> None:
     """Test getting instance pricing for spot instances."""
     gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
@@ -474,7 +474,7 @@ async def test_get_instance_pricing_spot_instance(
 @pytest.mark.asyncio
 async def test_get_instance_pricing_cache_hit(
     gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
-    mock_instance_types_n1_n2: Dict[str, Dict[str, Any]],
+    mock_instance_types_n1_n2: dict[str, dict[str, Any]],
 ) -> None:
     """Test getting instance pricing with cache hit."""
     gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
@@ -571,9 +571,9 @@ async def test_get_instance_pricing_cache_hit(
 @pytest.mark.asyncio
 async def test_get_instance_pricing_no_family_skus(
     gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
-    mock_instance_types_n1_n2: Dict[str, Dict[str, Any]],
+    mock_instance_types_n1_n2: dict[str, dict[str, Any]],
     local_ssd_pricing_n2_sku: MagicMock,
-    boot_disk_pricing_default_skus: List[MagicMock],
+    boot_disk_pricing_default_skus: list[MagicMock],
 ) -> None:
     """Test get_instance_pricing when no SKUs are found for a machine family."""
     # Arrange
@@ -600,12 +600,12 @@ async def test_get_instance_pricing_no_family_skus(
 @pytest.mark.asyncio
 async def test_get_instance_pricing_missing_component_skus(
     gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
-    mock_instance_types_n1_n2: Dict[str, Dict[str, Any]],
+    mock_instance_types_n1_n2: dict[str, dict[str, Any]],
     cpu_pricing_n1_sku: MagicMock,
     ram_pricing_n1_sku: MagicMock,
     cpu_pricing_n2_sku: MagicMock,
     ram_pricing_n2_sku: MagicMock,
-    boot_disk_pricing_default_skus: List[MagicMock],
+    boot_disk_pricing_default_skus: list[MagicMock],
 ) -> None:
     """Test get_instance_pricing when SKUs for some components are missing."""
     # Arrange
@@ -635,13 +635,13 @@ async def test_get_instance_pricing_missing_component_skus(
 @pytest.mark.asyncio
 async def test_get_instance_pricing_region_mismatch(
     gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
-    mock_instance_types_n1_n2: Dict[str, Dict[str, Any]],
+    mock_instance_types_n1_n2: dict[str, dict[str, Any]],
     cpu_pricing_n1_sku: MagicMock,
     ram_pricing_n1_sku: MagicMock,
     cpu_pricing_n2_sku: MagicMock,
     ram_pricing_n2_sku: MagicMock,
     local_ssd_pricing_n2_sku: MagicMock,
-    boot_disk_pricing_default_skus: List[MagicMock],
+    boot_disk_pricing_default_skus: list[MagicMock],
 ) -> None:
     """Test get_instance_pricing when SKUs don't match the expected region."""
     # Arrange
@@ -688,7 +688,7 @@ async def test_get_instance_pricing_empty_instance_types(
 @pytest.mark.asyncio
 async def test_get_instance_pricing_no_billing_skus(
     gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
-    mock_instance_types_n1_n2: Dict[str, Dict[str, Any]],
+    mock_instance_types_n1_n2: dict[str, dict[str, Any]],
 ) -> None:
     """Test get_instance_pricing when no billing SKUs are available."""
     gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
@@ -706,14 +706,14 @@ async def test_get_instance_pricing_no_billing_skus(
 @pytest.mark.asyncio
 async def test_get_instance_pricing_multiple_skus_for_cpu(
     gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
-    mock_instance_types_n1_n2: Dict[str, Dict[str, Any]],
+    mock_instance_types_n1_n2: dict[str, dict[str, Any]],
     caplog,
     cpu_pricing_n1_sku: MagicMock,
     ram_pricing_n1_sku: MagicMock,
     cpu_pricing_n2_sku: MagicMock,
     ram_pricing_n2_sku: MagicMock,
     local_ssd_pricing_n2_sku: MagicMock,
-    boot_disk_pricing_default_skus: List[MagicMock],
+    boot_disk_pricing_default_skus: list[MagicMock],
 ) -> None:
     """Test get_instance_pricing when multiple SKUs exist for a component (ambiguous)."""
     # Arrange
@@ -799,14 +799,14 @@ async def test_get_instance_pricing_multiple_skus_for_cpu(
 @pytest.mark.asyncio
 async def test_get_instance_pricing_multiple_skus_for_ram(
     gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
-    mock_instance_types_n1_n2: Dict[str, Dict[str, Any]],
+    mock_instance_types_n1_n2: dict[str, dict[str, Any]],
     caplog,
     cpu_pricing_n1_sku: MagicMock,
     ram_pricing_n1_sku: MagicMock,
     cpu_pricing_n2_sku: MagicMock,
     ram_pricing_n2_sku: MagicMock,
     local_ssd_pricing_n2_sku: MagicMock,
-    boot_disk_pricing_default_skus: List[MagicMock],
+    boot_disk_pricing_default_skus: list[MagicMock],
 ) -> None:
     """Test get_instance_pricing when multiple SKUs exist for a component (ambiguous)."""
     # Arrange
@@ -892,14 +892,14 @@ async def test_get_instance_pricing_multiple_skus_for_ram(
 @pytest.mark.asyncio
 async def test_get_instance_pricing_multiple_skus_for_ssd(
     gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
-    mock_instance_types_n1_n2: Dict[str, Dict[str, Any]],
+    mock_instance_types_n1_n2: dict[str, dict[str, Any]],
     caplog,
     cpu_pricing_n1_sku: MagicMock,
     ram_pricing_n1_sku: MagicMock,
     cpu_pricing_n2_sku: MagicMock,
     ram_pricing_n2_sku: MagicMock,
     local_ssd_pricing_n2_sku: MagicMock,
-    boot_disk_pricing_default_skus: List[MagicMock],
+    boot_disk_pricing_default_skus: list[MagicMock],
 ) -> None:
     """Test get_instance_pricing when multiple SKUs exist for a component (ambiguous)."""
     # Arrange
@@ -990,9 +990,9 @@ async def test_get_instance_pricing_multiple_skus_for_ssd(
 @pytest.mark.asyncio
 async def test_get_instance_pricing_pricing_info_none(
     gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
-    mock_instance_types_n1_n2: Dict[str, Dict[str, Any]],
+    mock_instance_types_n1_n2: dict[str, dict[str, Any]],
     cpu_pricing_n1_sku: MagicMock,
-    boot_disk_pricing_default_skus: List[MagicMock],
+    boot_disk_pricing_default_skus: list[MagicMock],
 ) -> None:
     """Test get_instance_pricing when pricing info extraction returns None for a component."""
     gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
@@ -1017,10 +1017,10 @@ async def test_get_instance_pricing_pricing_info_none(
 @pytest.mark.asyncio
 async def test_get_instance_pricing_spot_not_available(
     gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
-    mock_instance_types_n1_n2: Dict[str, Dict[str, Any]],
+    mock_instance_types_n1_n2: dict[str, dict[str, Any]],
     cpu_pricing_n1_sku: MagicMock,
     ram_pricing_n1_sku: MagicMock,
-    boot_disk_pricing_default_skus: List[MagicMock],
+    boot_disk_pricing_default_skus: list[MagicMock],
 ) -> None:
     """Test get_instance_pricing when spot pricing is requested but not available."""
     # Arrange
@@ -1041,9 +1041,9 @@ async def test_get_instance_pricing_spot_not_available(
 @pytest.mark.asyncio
 async def test_get_instance_pricing_ignores_sole_tenancy_custom_commitment(
     gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
-    mock_instance_types_n1_n2: Dict[str, Dict[str, Any]],
+    mock_instance_types_n1_n2: dict[str, dict[str, Any]],
     ram_pricing_n1_sku: MagicMock,
-    boot_disk_pricing_default_skus: List[MagicMock],
+    boot_disk_pricing_default_skus: list[MagicMock],
 ) -> None:
     """Test get_instance_pricing ignores sole tenancy, custom, and commitment SKUs (continue)."""
     # Arrange
@@ -1078,10 +1078,10 @@ async def test_get_instance_pricing_ignores_sole_tenancy_custom_commitment(
 @pytest.mark.asyncio
 async def test_get_instance_pricing_local_ssd_sku_but_no_ssd(
     gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
-    mock_instance_types_n1_n2: Dict[str, Dict[str, Any]],
+    mock_instance_types_n1_n2: dict[str, dict[str, Any]],
     cpu_pricing_n1_sku: MagicMock,
     ram_pricing_n1_sku: MagicMock,
-    boot_disk_pricing_default_skus: List[MagicMock],
+    boot_disk_pricing_default_skus: list[MagicMock],
 ) -> None:
     """Test get_instance_pricing ignores local SSD SKUs if instance type has no SSD (continue)."""
     # Arrange
@@ -1113,11 +1113,11 @@ async def test_get_instance_pricing_local_ssd_sku_but_no_ssd(
 @pytest.mark.asyncio
 async def test_get_instance_pricing_lssd_instance_no_local_ssd_sku(
     gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
-    mock_instance_types_n1_n2: Dict[str, Dict[str, Any]],
+    mock_instance_types_n1_n2: dict[str, dict[str, Any]],
     caplog,
     cpu_pricing_n2_sku: MagicMock,
     ram_pricing_n2_sku: MagicMock,
-    boot_disk_pricing_default_skus: List[MagicMock],
+    boot_disk_pricing_default_skus: list[MagicMock],
 ) -> None:
     """Test get_instance_pricing returns empty dict and logs warning if -lssd instance has no local SSD SKU."""
     gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
@@ -1142,12 +1142,12 @@ async def test_get_instance_pricing_lssd_instance_no_local_ssd_sku(
 @pytest.mark.asyncio
 async def test_get_instance_pricing_preemptible_mismatch(
     gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
-    mock_instance_types_n1_n2: Dict[str, Dict[str, Any]],
+    mock_instance_types_n1_n2: dict[str, dict[str, Any]],
     cpu_pricing_n1_sku: MagicMock,
     ram_pricing_n1_sku: MagicMock,
     cpu_pricing_n1_preemptible_sku: MagicMock,
     ram_pricing_n1_preemptible_sku: MagicMock,
-    boot_disk_pricing_default_skus: List[MagicMock],
+    boot_disk_pricing_default_skus: list[MagicMock],
 ) -> None:
     """Test get_instance_pricing ignores preemptible SKUs if use_spot is False, and vice versa (continue)."""
     gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
@@ -1173,10 +1173,10 @@ async def test_get_instance_pricing_preemptible_mismatch(
 @pytest.mark.asyncio
 async def test_get_instance_pricing_missing_core_sku(
     gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
-    mock_instance_types_n1_n2: Dict[str, Dict[str, Any]],
+    mock_instance_types_n1_n2: dict[str, dict[str, Any]],
     caplog,
     ram_pricing_n1_sku: MagicMock,
-    boot_disk_pricing_default_skus: List[MagicMock],
+    boot_disk_pricing_default_skus: list[MagicMock],
 ) -> None:
     """Test get_instance_pricing returns empty dict and logs warning if core SKU is missing (line 556)."""
     # Arrange: Only RAM SKU present
@@ -1195,10 +1195,10 @@ async def test_get_instance_pricing_missing_core_sku(
 @pytest.mark.asyncio
 async def test_get_instance_pricing_missing_ram_sku(
     gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
-    mock_instance_types_n1_n2: Dict[str, Dict[str, Any]],
+    mock_instance_types_n1_n2: dict[str, dict[str, Any]],
     caplog,
     cpu_pricing_n1_sku: MagicMock,
-    boot_disk_pricing_default_skus: List[MagicMock],
+    boot_disk_pricing_default_skus: list[MagicMock],
 ) -> None:
     """Test get_instance_pricing returns empty dict and logs warning if RAM SKU is missing (line 572)."""
     # Arrange: Only core SKU present
@@ -1217,11 +1217,11 @@ async def test_get_instance_pricing_missing_ram_sku(
 @pytest.mark.asyncio
 async def test_get_instance_pricing_missing_pd_standard_sku(
     gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
-    mock_instance_types_n1_n2: Dict[str, Dict[str, Any]],
+    mock_instance_types_n1_n2: dict[str, dict[str, Any]],
     caplog,
     cpu_pricing_n1_sku: MagicMock,
     ram_pricing_n1_sku: MagicMock,
-    boot_disk_pricing_default_skus: List[MagicMock],
+    boot_disk_pricing_default_skus: list[MagicMock],
 ) -> None:
     """Test get_instance_pricing returns empty dict and logs warning if pd-standard SKU is missing."""
     gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
@@ -1250,11 +1250,11 @@ async def test_get_instance_pricing_missing_pd_standard_sku(
 @pytest.mark.asyncio
 async def test_get_instance_pricing_missing_pd_balanced_sku(
     gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
-    mock_instance_types_n1_n2: Dict[str, Dict[str, Any]],
+    mock_instance_types_n1_n2: dict[str, dict[str, Any]],
     caplog,
     cpu_pricing_n1_sku: MagicMock,
     ram_pricing_n1_sku: MagicMock,
-    boot_disk_pricing_default_skus: List[MagicMock],
+    boot_disk_pricing_default_skus: list[MagicMock],
 ) -> None:
     """Test get_instance_pricing returns empty dict and logs warning if pd-balanced SKU is missing."""
     gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
@@ -1283,11 +1283,11 @@ async def test_get_instance_pricing_missing_pd_balanced_sku(
 @pytest.mark.asyncio
 async def test_get_instance_pricing_missing_pd_ssd_sku(
     gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
-    mock_instance_types_n1_n2: Dict[str, Dict[str, Any]],
+    mock_instance_types_n1_n2: dict[str, dict[str, Any]],
     caplog,
     cpu_pricing_n1_sku: MagicMock,
     ram_pricing_n1_sku: MagicMock,
-    boot_disk_pricing_default_skus: List[MagicMock],
+    boot_disk_pricing_default_skus: list[MagicMock],
 ) -> None:
     """Test get_instance_pricing returns empty dict and logs warning if pd-ssd SKU is missing."""
     gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
@@ -1316,11 +1316,11 @@ async def test_get_instance_pricing_missing_pd_ssd_sku(
 @pytest.mark.asyncio
 async def test_get_instance_pricing_missing_pd_extreme_sku(
     gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
-    mock_instance_types_n1_n2: Dict[str, Dict[str, Any]],
+    mock_instance_types_n1_n2: dict[str, dict[str, Any]],
     caplog,
     cpu_pricing_n1_sku: MagicMock,
     ram_pricing_n1_sku: MagicMock,
-    boot_disk_pricing_default_skus: List[MagicMock],
+    boot_disk_pricing_default_skus: list[MagicMock],
 ) -> None:
     """Test get_instance_pricing returns empty dict and logs warning if pd-extreme SKU is missing."""
     gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
@@ -1349,11 +1349,11 @@ async def test_get_instance_pricing_missing_pd_extreme_sku(
 @pytest.mark.asyncio
 async def test_get_instance_pricing_missing_hd_balanced_sku(
     gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
-    mock_instance_types_n1_n2: Dict[str, Dict[str, Any]],
+    mock_instance_types_n1_n2: dict[str, dict[str, Any]],
     caplog,
     cpu_pricing_n1_sku: MagicMock,
     ram_pricing_n1_sku: MagicMock,
-    boot_disk_pricing_default_skus: List[MagicMock],
+    boot_disk_pricing_default_skus: list[MagicMock],
 ) -> None:
     """Test get_instance_pricing returns empty dict and logs warning if hd-balanced SKU is missing."""
     gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
@@ -1382,11 +1382,11 @@ async def test_get_instance_pricing_missing_hd_balanced_sku(
 @pytest.mark.asyncio
 async def test_get_instance_pricing_missing_pd_extreme_iops_sku(
     gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
-    mock_instance_types_n1_n2: Dict[str, Dict[str, Any]],
+    mock_instance_types_n1_n2: dict[str, dict[str, Any]],
     caplog,
     cpu_pricing_n1_sku: MagicMock,
     ram_pricing_n1_sku: MagicMock,
-    boot_disk_pricing_default_skus: List[MagicMock],
+    boot_disk_pricing_default_skus: list[MagicMock],
 ) -> None:
     """Test get_instance_pricing returns empty dict and logs warning if pd-extreme IOPS SKU is missing."""
     gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
@@ -1415,11 +1415,11 @@ async def test_get_instance_pricing_missing_pd_extreme_iops_sku(
 @pytest.mark.asyncio
 async def test_get_instance_pricing_missing_hd_balanced_iops_sku(
     gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
-    mock_instance_types_n1_n2: Dict[str, Dict[str, Any]],
+    mock_instance_types_n1_n2: dict[str, dict[str, Any]],
     caplog,
     cpu_pricing_n1_sku: MagicMock,
     ram_pricing_n1_sku: MagicMock,
-    boot_disk_pricing_default_skus: List[MagicMock],
+    boot_disk_pricing_default_skus: list[MagicMock],
 ) -> None:
     """Test get_instance_pricing returns empty dict and logs warning if hd-balanced IOPS SKU is missing."""
     gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
@@ -1448,11 +1448,11 @@ async def test_get_instance_pricing_missing_hd_balanced_iops_sku(
 @pytest.mark.asyncio
 async def test_get_instance_pricing_missing_hd_balanced_throughput_sku(
     gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
-    mock_instance_types_n1_n2: Dict[str, Dict[str, Any]],
+    mock_instance_types_n1_n2: dict[str, dict[str, Any]],
     caplog,
     cpu_pricing_n1_sku: MagicMock,
     ram_pricing_n1_sku: MagicMock,
-    boot_disk_pricing_default_skus: List[MagicMock],
+    boot_disk_pricing_default_skus: list[MagicMock],
 ) -> None:
     """Test get_instance_pricing returns empty dict and logs warning if hd-balanced throughput SKU is missing."""
     gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
@@ -1481,10 +1481,10 @@ async def test_get_instance_pricing_missing_hd_balanced_throughput_sku(
 @pytest.mark.asyncio
 async def test_get_instance_pricing_cpu_pricing_info_none(
     gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
-    mock_instance_types_n1_n2: Dict[str, Dict[str, Any]],
+    mock_instance_types_n1_n2: dict[str, dict[str, Any]],
     caplog,
     ram_pricing_n1_sku: MagicMock,
-    boot_disk_pricing_default_skus: List[MagicMock],
+    boot_disk_pricing_default_skus: list[MagicMock],
 ) -> None:
     """Test get_instance_pricing returns empty dict and logs warning if cpu_pricing_info is None."""
     gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
@@ -1508,10 +1508,10 @@ async def test_get_instance_pricing_cpu_pricing_info_none(
 @pytest.mark.asyncio
 async def test_get_instance_pricing_ram_pricing_info_none(
     gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
-    mock_instance_types_n1_n2: Dict[str, Dict[str, Any]],
+    mock_instance_types_n1_n2: dict[str, dict[str, Any]],
     caplog,
     cpu_pricing_n1_sku: MagicMock,
-    boot_disk_pricing_default_skus: List[MagicMock],
+    boot_disk_pricing_default_skus: list[MagicMock],
 ) -> None:
     """Test get_instance_pricing returns empty dict and logs warning if ram_pricing_info is None (line 606)."""
     gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
@@ -1535,11 +1535,11 @@ async def test_get_instance_pricing_ram_pricing_info_none(
 @pytest.mark.asyncio
 async def test_get_instance_pricing_boot_disk_pricing_info_none_pd_standard(
     gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
-    mock_instance_types_n1_n2: Dict[str, Dict[str, Any]],
+    mock_instance_types_n1_n2: dict[str, dict[str, Any]],
     caplog,
     cpu_pricing_n1_sku: MagicMock,
     ram_pricing_n1_sku: MagicMock,
-    boot_disk_pricing_default_skus: List[MagicMock],
+    boot_disk_pricing_default_skus: list[MagicMock],
 ) -> None:
     """Test get_instance_pricing returns empty dict and logs warning if pd-standard boot disk pricing_info is None."""
     gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
@@ -1573,11 +1573,11 @@ async def test_get_instance_pricing_boot_disk_pricing_info_none_pd_standard(
 @pytest.mark.asyncio
 async def test_get_instance_pricing_boot_disk_pricing_info_none_pd_extreme_iops(
     gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
-    mock_instance_types_n1_n2: Dict[str, Dict[str, Any]],
+    mock_instance_types_n1_n2: dict[str, dict[str, Any]],
     caplog,
     cpu_pricing_n1_sku: MagicMock,
     ram_pricing_n1_sku: MagicMock,
-    boot_disk_pricing_default_skus: List[MagicMock],
+    boot_disk_pricing_default_skus: list[MagicMock],
 ) -> None:
     """Test get_instance_pricing returns empty dict and logs warning if pd-extreme IOPS pricing_info is None."""
     gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
@@ -1610,11 +1610,11 @@ async def test_get_instance_pricing_boot_disk_pricing_info_none_pd_extreme_iops(
 @pytest.mark.asyncio
 async def test_get_instance_pricing_boot_disk_pricing_info_none_hd_balanced_iops(
     gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
-    mock_instance_types_n1_n2: Dict[str, Dict[str, Any]],
+    mock_instance_types_n1_n2: dict[str, dict[str, Any]],
     caplog,
     cpu_pricing_n1_sku: MagicMock,
     ram_pricing_n1_sku: MagicMock,
-    boot_disk_pricing_default_skus: List[MagicMock],
+    boot_disk_pricing_default_skus: list[MagicMock],
 ) -> None:
     """Test get_instance_pricing returns empty dict and logs warning if hd-balanced IOPS pricing_info is None."""
     gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
@@ -1647,11 +1647,11 @@ async def test_get_instance_pricing_boot_disk_pricing_info_none_hd_balanced_iops
 @pytest.mark.asyncio
 async def test_get_instance_pricing_boot_disk_pricing_info_none_hd_balanced_throughput(
     gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
-    mock_instance_types_n1_n2: Dict[str, Dict[str, Any]],
+    mock_instance_types_n1_n2: dict[str, dict[str, Any]],
     caplog,
     cpu_pricing_n1_sku: MagicMock,
     ram_pricing_n1_sku: MagicMock,
-    boot_disk_pricing_default_skus: List[MagicMock],
+    boot_disk_pricing_default_skus: list[MagicMock],
 ) -> None:
     """Test get_instance_pricing returns empty dict and logs warning if hd-balanced throughput pricing_info is None."""
     gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)

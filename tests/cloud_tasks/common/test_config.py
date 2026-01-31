@@ -1,17 +1,19 @@
 # Manually verified 5/7/2025
 
-import yaml
-import pytest
+from unittest.mock import MagicMock, patch
+
 import pydantic
-from unittest.mock import patch, MagicMock
-from src.cloud_tasks.common import config as config_mod
-from src.cloud_tasks.common.config import (
-    RunConfig,
-    ProviderConfig,
+import pytest
+import yaml
+
+from cloud_tasks.common import config as config_mod
+from cloud_tasks.common.config import (
     AWSConfig,
-    GCPConfig,
     AzureConfig,
     Config,
+    GCPConfig,
+    ProviderConfig,
+    RunConfig,
     load_config,
 )
 

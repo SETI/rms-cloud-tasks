@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from ..common.config import ProviderConfig
 
@@ -9,10 +9,10 @@ class QueueManager(ABC):
 
     def __init__(
         self,
-        config: Optional[ProviderConfig] = None,
+        config: ProviderConfig | None = None,
         *,
-        queue_name: Optional[str] = None,
-        visibility_timeout: Optional[int] = None,
+        queue_name: str | None = None,
+        visibility_timeout: int | None = None,
         exactly_once: bool = False,
         **kwargs: Any,
     ) -> None:
@@ -20,26 +20,26 @@ class QueueManager(ABC):
         pass  # pragma: no cover
 
     @abstractmethod
-    async def send_message(self, message: Dict[str, Any], _quiet: bool = False) -> None:
+    async def send_message(self, message: dict[str, Any], _quiet: bool = False) -> None:
         """Send a message to the queue."""
         pass  # pragma: no cover
 
     @abstractmethod
-    async def send_task(self, task_id: str, task_data: Dict[str, Any]) -> None:
+    async def send_task(self, task_id: str, task_data: dict[str, Any]) -> None:
         """Send a task to the queue."""
         pass  # pragma: no cover
 
     @abstractmethod
     async def receive_messages(
         self, max_count: int = 1, acknowledge: bool = True
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Receive messages from the queue."""
         pass  # pragma: no cover
 
     @abstractmethod
     async def receive_tasks(
         self, max_count: int = 1, acknowledge: bool = True
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Receive tasks from the queue."""
         pass  # pragma: no cover
 
@@ -97,7 +97,7 @@ class QueueManager(ABC):
 
     @abstractmethod
     async def extend_message_visibility(
-        self, message_handle: Any, timeout: Optional[int] = None
+        self, message_handle: Any, timeout: int | None = None
     ) -> None:
         """Extend the visibility timeout for a message.
 

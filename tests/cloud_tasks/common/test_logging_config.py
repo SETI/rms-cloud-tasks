@@ -1,10 +1,10 @@
 # Manually verified 4/29/2025
 
+import io
 import logging
 import re
-import io
 
-from cloud_tasks.common.logging_config import configure_logging, MicrosecondFormatter
+from cloud_tasks.common.logging_config import MicrosecondFormatter, configure_logging
 
 
 def test_microsecond_formatter():

@@ -7,15 +7,13 @@ import datetime
 import json
 import logging
 import re
-from typing import Any, Dict, List, Optional, Tuple, cast
+from typing import Any, cast
 
 import boto3  # type: ignore
 from botocore.exceptions import ClientError  # type: ignore
 
 from ..common.config import AWSConfig
-
 from .instance_manager import InstanceManager
-
 
 # Notes:
 # - AWS EC2 instances are per-region, not per-zone
@@ -193,15 +191,6 @@ class AWSEC2InstanceManager(InstanceManager):
         "hpc6id": "Intel Ice Lake",
         "hpc6a": "AMD Milan",
         "hpc7g": "AWS Graviton3E",
-        # Burstable Performance
-        "t4g": "AWS Graviton2",
-        "t3": "Intel Skylake",
-        "t3a": "AMD Naples",
-        "t2": "Intel",  # Various generations
-        # Dense Storage
-        "d3": "Intel Cascade Lake",
-        "d3en": "Intel Cascade Lake",
-        "h1": "Intel Broadwell",
         # Other/Legacy
         "a1": "AWS Graviton",
         "m3": "Intel Ivy Bridge",
@@ -263,8 +252,8 @@ class AWSEC2InstanceManager(InstanceManager):
         self._logger.debug(f"Initialized AWS EC2: region '{self._region}', zone '{self._zone}'")
 
     async def get_available_instance_types(
-        self, constraints: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Dict[str, Any]]:
+        self, constraints: dict[str, Any] | None = None
+    ) -> dict[str, dict[str, Any]]:
         """Get available EC2 instance types with their specifications.
 
         This skips instance types that are bare metal or that don't support on-demand
@@ -397,11 +386,11 @@ class AWSEC2InstanceManager(InstanceManager):
 
     async def get_instance_pricing(
         self,
-        instance_types: Dict[str, Dict[str, Any]],
+        instance_types: dict[str, dict[str, Any]],
         *,
         use_spot: bool = False,
-        boot_disk_constraints: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Dict[str, Dict[str, float | str | None]]]:
+        boot_disk_constraints: dict[str, Any] | None = None,
+    ) -> dict[str, dict[str, dict[str, float | str | None]]]:
         """
         Get the hourly price for one or more specific instance types.
 
@@ -437,7 +426,7 @@ class AWSEC2InstanceManager(InstanceManager):
         )
         self._logger.debug(f"Boot disk constraints: {boot_disk_constraints}")
 
-        ret: Dict[str, Dict[str, Dict[str, float | str | None]]] = {}
+        ret: dict[str, dict[str, dict[str, float | str | None]]] = {}
 
         if len(instance_types) == 0:
             self._logger.warning("No instance types provided")
@@ -491,13 +480,13 @@ class AWSEC2InstanceManager(InstanceManager):
                     **instance_types[price["InstanceType"]],
                 }
                 self._logger.debug(
-                    f"Price for spot instance type: \"{price['InstanceType']}\" in "
-                    f"zone \"{price['AvailabilityZone']}\" is ${float(price['SpotPrice']):.4f}/hour"
+                    f'Price for spot instance type: "{price["InstanceType"]}" in '
+                    f'zone "{price["AvailabilityZone"]}" is ${float(price["SpotPrice"]):.4f}/hour'
                 )
 
         else:
             # Non-spot pricing
-            pricing_dict: Dict[str, Dict[str, Any] | None] = {}  # inst_name -> pricing_data
+            pricing_dict: dict[str, dict[str, Any] | None] = {}  # inst_name -> pricing_data
             filter_list = [
                 {"Type": "TERM_MATCH", "Field": "operatingSystem", "Value": "Linux"},
                 {"Type": "TERM_MATCH", "Field": "regionCode", "Value": self._region},
@@ -628,8 +617,8 @@ class AWSEC2InstanceManager(InstanceManager):
         job_id: str,
         use_spot: bool,
         image: str,
-        zone: Optional[str] = None,
-    ) -> Tuple[str, str]:
+        zone: str | None = None,
+    ) -> tuple[str, str]:
         """
         Start a new EC2 instance.
 
@@ -754,7 +743,7 @@ class AWSEC2InstanceManager(InstanceManager):
             self._logger.error(f"Failed to create instance: {e}")
             raise
 
-    async def terminate_instance(self, instance_id: str, zone: Optional[str] = None) -> None:
+    async def terminate_instance(self, instance_id: str, zone: str | None = None) -> None:
         """
         Terminate an EC2 instance by ID.
 
@@ -765,8 +754,8 @@ class AWSEC2InstanceManager(InstanceManager):
         self._ec2_client.terminate_instances(InstanceIds=[instance_id])
 
     async def list_running_instances(
-        self, job_id: Optional[str] = None, include_non_job: bool = False
-    ) -> List[Dict[str, Any]]:
+        self, job_id: str | None = None, include_non_job: bool = False
+    ) -> list[dict[str, Any]]:
         """
         List currently running Compute Engine instances, optionally filtered by job_id.
 
@@ -855,8 +844,8 @@ class AWSEC2InstanceManager(InstanceManager):
             raise
 
     async def get_optimal_instance_type(
-        self, constraints: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, float | str | None]:
+        self, constraints: dict[str, Any] | None = None
+    ) -> dict[str, float | str | None]:
         """
         Get the most cost-effective EC2 instance type that meets the constraints.
 
@@ -898,7 +887,7 @@ class AWSEC2InstanceManager(InstanceManager):
             constraints = {}
 
         self._logger.debug(
-            f"Getting optimal instance type in region {self._region} and zone " f"{self._zone}"
+            f"Getting optimal instance type in region {self._region} and zone {self._zone}"
         )
         self._logger.debug(f"Constraints: {constraints}")
 
@@ -952,7 +941,7 @@ class AWSEC2InstanceManager(InstanceManager):
         self._logger.debug("Instance types sorted by price (cheapest and most vCPUs first):")
         for i, (machine_type, zone, price_info) in enumerate(priced_instances):
             self._logger.debug(
-                f"  [{i+1:3d}] {machine_type:20s} in {zone:15s}: ${price_info['total_price']:10.6f}/hour"
+                f"  [{i + 1:3d}] {machine_type:20s} in {zone:15s}: ${price_info['total_price']:10.6f}/hour"
             )
 
         selected_type, selected_zone, selected_price_info = priced_instances[0]
@@ -991,7 +980,7 @@ class AWSEC2InstanceManager(InstanceManager):
 
         return amis[0]["ImageId"]
 
-    async def list_available_images(self) -> List[Dict[str, Any]]:
+    async def list_available_images(self) -> list[dict[str, Any]]:
         """
         List available AMIs in the current region.
         Returns only standard AWS images and user's own images, excludes third-party Marketplace images.
@@ -1070,7 +1059,7 @@ class AWSEC2InstanceManager(InstanceManager):
         self._logger.info(f"Found {len(formatted_images)} available AMIs")
         return formatted_images
 
-    async def get_available_regions(self, prefix: Optional[str] = None) -> Dict[str, Any]:
+    async def get_available_regions(self, prefix: str | None = None) -> dict[str, Any]:
         """
         Return all available AWS regions and their attributes.
 
@@ -1127,7 +1116,6 @@ class AWSEC2InstanceManager(InstanceManager):
             region_dict[region_name] = region_info
 
         self._logger.debug(
-            f"Found {len(region_dict)} available regions: "
-            f"{', '.join(sorted(region_dict.keys()))}"
+            f"Found {len(region_dict)} available regions: {', '.join(sorted(region_dict.keys()))}"
         )
         return region_dict

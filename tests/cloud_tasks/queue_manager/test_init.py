@@ -1,10 +1,11 @@
 # Manually verified 4/29/2025
 
-import pytest
 from unittest.mock import patch
 
+import pytest
+
+from cloud_tasks.common.config import AWSConfig, Config, GCPConfig
 from cloud_tasks.queue_manager import create_queue
-from cloud_tasks.common.config import Config, AWSConfig, GCPConfig
 
 
 @pytest.fixture

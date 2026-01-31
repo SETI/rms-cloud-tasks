@@ -9,19 +9,18 @@ import logging
 import os
 import random
 import re
-import shortuuid
 import tempfile
 import threading
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple, cast
+from typing import Any, cast
 
+import shortuuid
 from google.api_core.exceptions import NotFound  # type: ignore
 from google.auth import default as get_default_credentials
 from google.cloud import billing, compute_v1  # type: ignore
 from google.oauth2 import service_account
 
 from ..common.config import GCPConfig
-
 from .instance_manager import InstanceManager
 
 shortuuid.set_alphabet("abcdefghijklmnopqrstuvwxyz0123456789")
@@ -249,9 +248,9 @@ class GCPComputeInstanceManager(InstanceManager):
         self._disks_client = compute_v1.DisksClient(credentials=self._credentials)
         self._images_client = compute_v1.ImagesClient(credentials=self._credentials)
         self._billing_client = billing.CloudCatalogClient(credentials=self._credentials)
-        self._billing_compute_skus: List[billing.Sku] | None = None
-        self._instance_pricing_cache: Dict[
-            Tuple[str, bool], Dict[str, Dict[str, float | str | None]] | None
+        self._billing_compute_skus: list[billing.Sku] | None = None
+        self._instance_pricing_cache: dict[
+            tuple[str, bool], dict[str, dict[str, float | str | None]] | None
         ] = {}
         self._pricing_cache_file_loaded = False
         self._pricing_cache_lock = threading.Lock()
@@ -333,7 +332,9 @@ class GCPComputeInstanceManager(InstanceManager):
                 for (family, use_spot), value in self._instance_pricing_cache.items():
                     key_str = f"{family}|{use_spot}"
                     data[key_str] = value
-            fd, temp_path = tempfile.mkstemp(dir=cache_dir or None, suffix=".json", prefix=".cloud_tasks_gcp_pricing_")
+            fd, temp_path = tempfile.mkstemp(
+                dir=cache_dir or None, suffix=".json", prefix=".cloud_tasks_gcp_pricing_"
+            )
             with os.fdopen(fd, "w") as f:
                 json.dump(data, f, indent=2)
                 f.flush()
@@ -354,8 +355,8 @@ class GCPComputeInstanceManager(InstanceManager):
                     pass
 
     async def get_available_instance_types(
-        self, constraints: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Dict[str, Any]]:
+        self, constraints: dict[str, Any] | None = None
+    ) -> dict[str, dict[str, Any]]:
         """Get available instance types with their specifications.
 
         Args:
@@ -525,7 +526,7 @@ class GCPComputeInstanceManager(InstanceManager):
 
         return instance_types
 
-    async def _get_billing_compute_skus(self) -> List[billing.Sku]:
+    async def _get_billing_compute_skus(self) -> list[billing.Sku]:
         """Get and cache the billing compute SKUs."""
         if self._billing_compute_skus is not None:
             return self._billing_compute_skus
@@ -560,9 +561,9 @@ class GCPComputeInstanceManager(InstanceManager):
         self,
         machine_family: str,
         sku: Any,
-        expected_units: str | Tuple[str, ...],
+        expected_units: str | tuple[str, ...],
         component_name: str,
-    ) -> Optional[Any]:
+    ) -> Any | None:
         """
         Extract pricing information from a SKU.
 
@@ -647,11 +648,11 @@ class GCPComputeInstanceManager(InstanceManager):
 
     async def get_instance_pricing(
         self,
-        instance_types: Dict[str, Dict[str, Any]],
+        instance_types: dict[str, dict[str, Any]],
         *,
         use_spot: bool = False,
-        boot_disk_constraints: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Dict[str, Dict[str, float | str | None]]]:
+        boot_disk_constraints: dict[str, Any] | None = None,
+    ) -> dict[str, dict[str, dict[str, float | str | None]]]:
         """
         Get the hourly price for one or more specific instance types.
 
@@ -696,7 +697,7 @@ class GCPComputeInstanceManager(InstanceManager):
 
         self._load_pricing_cache_from_file()
 
-        ret: Dict[str, Dict[str, Dict[str, float | str | None]]] = {}
+        ret: dict[str, dict[str, dict[str, float | str | None]]] = {}
         cache_modified = False
 
         if len(instance_types) == 0:
@@ -1265,8 +1266,8 @@ class GCPComputeInstanceManager(InstanceManager):
         return ret
 
     async def get_optimal_instance_type(
-        self, constraints: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, float | str | None]:
+        self, constraints: dict[str, Any] | None = None
+    ) -> dict[str, float | str | None]:
         """
         Get the most cost-effective GCP instance type that meets the constraints.
 
@@ -1309,7 +1310,7 @@ class GCPComputeInstanceManager(InstanceManager):
             constraints = {}
 
         self._logger.debug(
-            f"Getting optimal instance type in region {self._region} and zone " f"{self._zone}"
+            f"Getting optimal instance type in region {self._region} and zone {self._zone}"
         )
         self._logger.debug(f"Constraints: {constraints}")
 
@@ -1379,7 +1380,7 @@ class GCPComputeInstanceManager(InstanceManager):
         self._logger.debug("Instance types sorted by price (cheapest and most vCPUs first):")
         for i, (machine_type, zone, boot_disk_type, price_info) in enumerate(priced_instances):
             self._logger.debug(
-                f"  [{i+1:3d}] {machine_type:20s} ({boot_disk_type:12s}) "
+                f"  [{i + 1:3d}] {machine_type:20s} ({boot_disk_type:12s}) "
                 f"in {zone:15s}: "
                 f"${price_info['total_price']:10.6f}/hour = "
                 f"${price_info['total_price'] / price_info['vcpu']:10.6f}/vCPU/hour"
@@ -1407,10 +1408,10 @@ class GCPComputeInstanceManager(InstanceManager):
         image_uri: str,
         boot_disk_type: str,
         boot_disk_size: int,  # GB
-        boot_disk_iops: Optional[int] = None,
-        boot_disk_throughput: Optional[int] = None,  # MB/s
-        zone: Optional[str] = None,
-    ) -> Tuple[str, str]:
+        boot_disk_iops: int | None = None,
+        boot_disk_throughput: int | None = None,  # MB/s
+        zone: str | None = None,
+    ) -> tuple[str, str]:
         """
         Start a new GCP Compute Engine instance.
 
@@ -1570,7 +1571,7 @@ class GCPComputeInstanceManager(InstanceManager):
             )
             raise
 
-    async def terminate_instance(self, instance_id: str, zone: Optional[str] = None) -> None:
+    async def terminate_instance(self, instance_id: str, zone: str | None = None) -> None:
         """
         Terminate a Compute Engine instance by ID.
 
@@ -1609,8 +1610,8 @@ class GCPComputeInstanceManager(InstanceManager):
             raise
 
     async def list_running_instances(
-        self, job_id: Optional[str] = None, include_non_job: bool = False
-    ) -> List[Dict[str, Any]]:
+        self, job_id: str | None = None, include_non_job: bool = False
+    ) -> list[dict[str, Any]]:
         """
         List currently running Compute Engine instances, optionally filtered by job_id.
 
@@ -1697,7 +1698,7 @@ class GCPComputeInstanceManager(InstanceManager):
 
         return instances
 
-    def _get_boot_disk_info(self, instance) -> Tuple[str, int, int, int]:
+    def _get_boot_disk_info(self, instance) -> tuple[str, int, int, int]:
         """
         Retrieves full information about a running instance's boot disk,
         including its type and provisioned IOPS/throughput if applicable.
@@ -1745,8 +1746,8 @@ class GCPComputeInstanceManager(InstanceManager):
         return disk_type, disk_size, provisioned_iops, provisioned_throughput
 
     def _standardize_instance_data(
-        self, instances_list, job_id: Optional[str], include_non_job: bool
-    ) -> List[Dict[str, Any]]:
+        self, instances_list, job_id: str | None, include_non_job: bool
+    ) -> list[dict[str, Any]]:
         """
         Process the list of GCP instances into a standardized format.
 
@@ -1806,8 +1807,7 @@ class GCPComputeInstanceManager(InstanceManager):
             if instance.tags and instance.tags.items:
                 for tag in instance.tags.items:
                     if tag.startswith(self._JOB_ID_TAG_PREFIX):
-                        # black keeps reformatting this line in a way flake8 doesn't like
-                        inst_job_id = tag[len(self._JOB_ID_TAG_PREFIX) :]  # noqa
+                        inst_job_id = tag[len(self._JOB_ID_TAG_PREFIX) :]
                         if job_id and inst_job_id != job_id:
                             self._logger.debug(
                                 f"Skipping instance {instance.name} because it has job_id "
@@ -1842,7 +1842,7 @@ class GCPComputeInstanceManager(InstanceManager):
 
         return instances
 
-    async def list_available_images(self) -> List[Dict[str, Any]]:
+    async def list_available_images(self) -> list[dict[str, Any]]:
         """
         List available VM images in GCP.
         Returns common public OS images and the user's own custom images.
@@ -1908,7 +1908,7 @@ class GCPComputeInstanceManager(InstanceManager):
                         filtered_images.append(image)
 
                 # Group filtered images by family
-                family_images: Dict[str, List[compute_v1.Image]] = {}
+                family_images: dict[str, list[compute_v1.Image]] = {}
                 for image in filtered_images:
                     if image.family:
                         if image.family not in family_images:
@@ -2045,7 +2045,7 @@ class GCPComputeInstanceManager(InstanceManager):
         self._logger.debug(f"Operation {operation.name} completed with result: {result}")
         return result
 
-    async def get_available_regions(self, prefix: Optional[str] = None) -> Dict[str, Any]:
+    async def get_available_regions(self, prefix: str | None = None) -> dict[str, Any]:
         """
         Return all available GCP regions and their attributes.
 
@@ -2091,7 +2091,7 @@ class GCPComputeInstanceManager(InstanceManager):
         )
         return region_dict
 
-    async def _get_default_zone(self, region: Optional[str] = None) -> str:
+    async def _get_default_zone(self, region: str | None = None) -> str:
         """
         Get the default zone for the region.
 
@@ -2126,7 +2126,7 @@ class GCPComputeInstanceManager(InstanceManager):
         self._logger.debug(f"Default zone is {zones[0].name}")
         return zones[0].name
 
-    async def _get_random_zone(self, region: Optional[str] = None) -> str:
+    async def _get_random_zone(self, region: str | None = None) -> str:
         """
         Get a random zone for the region.
 

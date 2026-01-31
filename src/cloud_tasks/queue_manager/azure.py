@@ -2,17 +2,17 @@
 Azure Service Bus implementation of the TaskQueue interface.
 """
 
+import asyncio
 import json
 import logging
-import asyncio
-from typing import Any, Dict, List
 from datetime import timedelta
+from typing import Any
 
 from azure.servicebus import ServiceBusClient, ServiceBusMessage  # type: ignore
 from azure.servicebus.management import ServiceBusAdministrationClient  # type: ignore
 
-from .queue_manager import QueueManager
 from ..common.config import AzureConfig
+from .queue_manager import QueueManager
 
 
 class AzureServiceBusQueue(QueueManager):
@@ -35,9 +35,7 @@ class AzureServiceBusQueue(QueueManager):
         try:
             self._queue_name = azure_config.queue_name
 
-            # Construct connection string from config
-            tenant_id = azure_config.tenant_id
-            client_id = azure_config.client_id
+            # Construct connection string from config (tenant_id, client_id reserved for future auth)
             client_secret = azure_config.client_secret
             namespace_name = azure_config.namespace_name
 
@@ -83,7 +81,7 @@ class AzureServiceBusQueue(QueueManager):
             self._logger.error(f"Failed to initialize Azure Service Bus queue: {str(e)}")
             raise
 
-    async def send_task(self, task_id: str, task_data: Dict[str, Any]) -> None:
+    async def send_task(self, task_id: str, task_data: dict[str, Any]) -> None:
         """
         Send a task to the Service Bus queue.
 
@@ -121,7 +119,7 @@ class AzureServiceBusQueue(QueueManager):
         self,
         max_count: int = 1,
         visibility_timeout: int = 30,  # TODO Default visibility timeout in seconds
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """
         Receive tasks from the Service Bus queue with a lock.
 

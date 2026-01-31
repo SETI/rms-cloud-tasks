@@ -8,23 +8,23 @@ This version allows variable delays.
 """
 
 import asyncio
-import os
 import multiprocessing
+import os
 import random
 import socket
 import sys
 import time
-from typing import Any, Dict, Tuple
+from typing import Any
+
+from filecache import FCPath
 
 # Import the cloud task adapter
 from cloud_tasks.worker import Worker, WorkerData
 
-from filecache import FCPath
-
 
 def process_task(
-    task_id: str, task_data: Dict[str, Any], worker_data: WorkerData
-) -> Tuple[bool, Any]:
+    task_id: str, task_data: dict[str, Any], worker_data: WorkerData
+) -> tuple[bool, Any]:
     """
     Process a task by adding two numbers together.
 
