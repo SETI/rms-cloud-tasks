@@ -502,9 +502,26 @@ def mock_machine_types_client_n1_2_4(
 def deepcopy_gcp_instance_manager(
     gcp_instance_manager: GCPComputeInstanceManager,
 ) -> GCPComputeInstanceManager:
-    """Deepcopy a GCP instance manager, excluding non-serializable attributes (thread local, lock)."""
+    """Deepcopy a GCPComputeInstanceManager for tests, working around non-serializable state.
+
+    GCPComputeInstanceManager holds _thread_local and _pricing_cache_lock, which
+    copy.deepcopy cannot serialize. This function temporarily clears those attributes
+    on the source instance, runs deepcopy, restores the source, and assigns the new
+    instance a fresh threading.Lock (and the source's _thread_local) so both instances
+    are usable.
+
+    Parameters:
+        gcp_instance_manager: The GCPComputeInstanceManager instance to deep copy.
+
+    Returns:
+        GCPComputeInstanceManager: A deep copy with _thread_local and
+        _pricing_cache_lock reinitialized appropriately.
+    """
     old_thread = getattr(gcp_instance_manager, "_thread_local", None)
     old_lock = getattr(gcp_instance_manager, "_pricing_cache_lock", None)
+    # Remove _thread_local and _pricing_cache_lock before deepcopy to avoid
+    # serialization errors; restore them on the source; give the new instance
+    # the source's _thread_local and a fresh threading.Lock.
     try:
         gcp_instance_manager._thread_local = None
         gcp_instance_manager._pricing_cache_lock = None

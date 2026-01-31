@@ -1,0 +1,9 @@
+---
+alwaysApply: true
+---
+
+# Environment Best Practices
+
+- ALWAYS use git for source code control.
+- ALWAYS use GitHub Actions for CI/CD.
+- ALWAYS use environment isolation tools (e.g., Python venv, Node.js nvm, Docker).

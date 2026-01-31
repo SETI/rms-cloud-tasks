@@ -1,0 +1,73 @@
+---
+alwaysApply: true
+---
+
+# Python Best Practices
+
+- Always use these rules when writing new Python code or modifying existing code.
+
+## General Coding
+
+- NEVER include code for backwards compatibility unless explicitly requested to.
+- ALWAYS keep modules small and self-contained, limited to 1000 lines if possible. When longer modules are needed, split into multiple files and make an actual Python module as needed.
+- ALWAYS write simple and clear code; avoid unnecessary complexity.
+- NEVER hardcode magic constants. Define them at a global scope, in a config module, or using environment variables, as appropriate.
+- AWAYS catch exceptions at the smallest granularity possible. Do not enclose large blocks of code in a single try/except. NEVER allow an uncaught exception to reach the top level. ALWAYS provide full exception information for debugging.
+- ALWAYS include meaningful logging for debugging that can be disabled or redirected.
+- Avoid global variables; if you must use them, document purpose, limit scope, and prefer module-level constants or dependency injection. Module-private globals should be prefixed with _.
+- ALWAYS prefer list comprehensions for creating lists over traditional loops when appropriate.
+- When updating code, ALWAYS make the minimal changes necessary. NEVER make changes outside the scope of what is specifically requested or needed to accomplish the goal.
+- ALWAYS use the DRY principle. NEVER duplicate code. ALWAYS put useful functions in a utility module for reuse. ALWAYS look in the utility module(s) to find existing code before writing new functions. When necessary, parameterize utility functions to make them more general.
+- ALWAYS place imports at the top of the file, not inline, unless specifically needed to protect against unneeded imports for things like UI libraries. When adding new code or tests, update the import list at the top of the file; do not place them adjacent to the new code.
+- Imports should be in three sections, each arranged in alphabetical order. The first is standard Python modules, the second is third-party installed Python modules, and the last is imports from the current module.
+- When defining new functions, there should be at most three positional arguments. Any further arguments should be protected by * and are keyword-only. If the arguments are split between positional and keyword, the division should happen such that the positional arguments are a logical group.
+
+## Comments
+
+- ALWAYS write code in a clear and consistent style with meaningful variable names, simple structure, and limited loop complexity. ALWAYS make code as self-documenting as possible.
+- NEVER include comments saying that you are modifying code based on a particular request from the user. Do not include the history of modifications or discussion in comments.
+- NEVER include comments that simply reiterate what the code already says.
+- ALWAYS include comments that explain in prose the rationale behind complicated or confusing code.
+- NEVER include comments about backwards compatibility unless explicitly requested to.
+- ALWAYS keep existing comments that are still relevant.
+
+## Lint and Types
+
+- ALWAYS include full and accurate types for arguments and return values for all functions and methods. Use `None` as a return value if a function does not return a value, including for `__init__` methods.
+- ALWAYS include `mypy` in the `requirements.txt` file.
+- ALWAYS run `mypy` on the complete code base (including tests) after code changes before returning the final result to the user. ALWAYS fix all type errors and warnings.
+- ALWAYS format code according to PEP8 recommendations. The maximum line length is 100 characters.
+- ALWAYS include `ruff` in the `requirements.txt` file.
+- ALWAYS run `ruff` on the complete code base (including tests) after code changes before returning the final result to the user. ALWAYS fix all lint errors and warnings.
+
+## Docstrings
+
+- ALWAYS include a docstring for ALL functions, methods, classes, and files.
+- ALWAYS follow PEP257 guidelines. ALWAYS format the docstring using the Google format. Use "Parameters:" instead of "Args:". ALWAYS update existing docstrings when code changes.
+- ALWAYS include return values, exceptions raised, and significant notes about the function as needed.
+- NEVER include mentions of backwards compatibility or user requests.
+- All docstrings must include as much detail as possible such that it would be possible to write a blackbox test based purely on the docstring and capture the important functionality (but not necessarily every possible error condition).
+- Wrap all docstrings to 90 characters.
+
+## Testing
+
+- ALWAYS use pytest and pytest plugins.
+- ALWAYS use pytest-cov for code coverage.
+- ALWAYS include type annotations for test functions.
+- ALWAYS write all tests before writing any code. Tests should be based on stated requirements. If tests can not be written based on requirements, ask for clarification. After tests have been written, run them to verify proper failure. Then write the code, rerun the tests, and fix any problems. Only once this is finished can you look at the actual code to improve the tests further.
+- ALWAYS aim for 80% code coverage, preferably more. It is OK to skip hard-to-hit cases or exceptions.
+- When checking code coverage, ALWAYS run the entire test suite, not just a subset.
+- When fixing bugs, NEVER randomly guess at the cause. ALWAYS use logic to determine the problem, think harder to solve the problem the first time. If caught in a loop trying to fix the bug too many times, back out and start over with a fresh viewpoint. When necessary, ask for help.
+- If a test fails or raises an exception, NEVER write a test that passes by ignoring the incorrect result or exception. If the code is wrong, or the result is inconsistent with the docstring, then the failing test should be left in place and a summary generated explaining why the test is failing.
+- NEVER write code whose sole purpose is to exercise code paths for increased coverage without also testing for correctness. All tests should have a clear pass/fail and should never simply ignore the results of exceptions.
+- ALWAYS test as much of a result as possible. In addition to testing for the correct type, always test for the correct value as well. Do not just check that a value exists, or is not None.
+- When writing multiple tests of a function, ALWAYS use different values so as to increase coverage. Include values that test unusual or edge conditions.
+- If a test changes a global variable, use a test fixture or a try/except block to reset the global back to its original variable when there is an error.
+- When testing for exceptions where a message in the exception is expected ALWAYS use `pytest.raises` as a context manager and then check the contents of the message.
+- NEVER include the line numbers for the original code in comments.
+- NEVER include lengthy descriptions of why particular tests are being performed or the thought process that lead to the test. Always condense comments into small one or two sentence chunks that summarize the information that would be useful for future maintainers.
+- NEVER include discusses of backwards compatibility or changes that were made.
+- When writing tests followed by writing code, ALWAYS ensure the test is checking for a precise return value, not a range or set of return values. If necessary, go back and modify the test after writing the code.
+- If two tests run essentially the same code but test different parts of the return value, combine them into a single test.
+- ALWAYS use assert to test a single check. Do not use "and" to test multiple things in a single assert.
+

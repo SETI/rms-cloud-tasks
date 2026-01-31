@@ -13,7 +13,7 @@ import signal
 import sys
 from tqdm import tqdm  # type: ignore
 from collections.abc import Iterable
-from typing import Any
+from typing import Any, Dict
 import yaml  # type: ignore
 
 from filecache import FCPath
@@ -32,6 +32,9 @@ from .queue_manager import QueueManager, create_queue
 # Use custom logging configuration
 configure_logging(level=logging.WARNING)
 logger = logging.getLogger(__name__)
+
+# Serializes SQLite writes from concurrent enqueue_task coroutines to avoid "database is locked".
+db_write_lock: asyncio.Lock = asyncio.Lock()
 
 
 def yield_tasks_from_file(
@@ -820,10 +823,14 @@ async def load_queue_common(
     semaphore = asyncio.Semaphore(max_concurrent_queue_operations)
     pending_tasks = set()
 
-    async def enqueue_task(task):
+    async def enqueue_task(task: Dict[str, Any]) -> None:
+        """Acquire semaphore, send the task via task_queue.send_task(task["task_id"],
+        task["data"]), and mark it enqueued with task_db.update_task_enqueued(
+        task["task_id"]). DB writes are serialized under db_write_lock."""
         async with semaphore:
             await task_queue.send_task(task["task_id"], task["data"])
-            task_db.update_task_enqueued(task["task_id"])
+            async with db_write_lock:
+                task_db.update_task_enqueued(task["task_id"])
 
     # For each task from yield_tasks_from_file we create an asyncio task (enqueue_task),
     # add it to pending_tasks, and when len(pending_tasks) reaches
@@ -1004,10 +1011,12 @@ async def run_cmd(args: argparse.Namespace, config: Config) -> None:
             # CONTINUE MODE: Resume from previous run
             logger.info(f"Continuing job '{provider_config.job_id}' from database '{db_file}'")
 
-            # Initialize database (must exist)
-            task_db = TaskDatabase(db_file)
+            if not Path(db_file).exists():
+                logger.info(f"Error: Database file '{db_file}' does not exist.")
+                logger.info("Run without --continue to create and load from a task file.")
+                sys.exit(1)
 
-            # Check if database exists and has tasks
+            task_db = TaskDatabase(db_file)
             total_tasks = task_db.get_total_tasks()
             if total_tasks == 0:
                 logger.info(f"Error: Database '{db_file}' has no tasks. Cannot continue.")
@@ -1327,7 +1336,7 @@ def log_task_stats(
                 exc_display = exception
             logger.info(f"    {count:6d}: {exc_display[:100]}")
 
-    if stats["time_stats"]["avg_time"]:
+    if stats["time_stats"]["avg_time"] is not None:
         logger.info("  Elapsed time statistics:")
         logger.info(
             f"    Range:  {stats['time_stats']['min_time']:.2f} to "

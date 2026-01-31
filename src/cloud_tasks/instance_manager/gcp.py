@@ -273,7 +273,11 @@ class GCPComputeInstanceManager(InstanceManager):
         return f"{self._JOB_ID_TAG_PREFIX}{job_id}"
 
     def _get_pricing_cache_path(self) -> str:
-        """Return path to the file-backed pricing cache (temp dir, keyed by project and region)."""
+        """Return path to the file-backed pricing cache (temp dir, keyed by project and region).
+
+        Returns:
+            str: Path to the file-backed pricing cache.
+        """
         safe_project = re.sub(r"[^\w\-]", "_", self._project_id or "")
         safe_region = re.sub(r"[^\w\-]", "_", self._region or "")
         return os.path.join(
@@ -282,7 +286,11 @@ class GCPComputeInstanceManager(InstanceManager):
         )
 
     def _load_pricing_cache_from_file(self) -> None:
-        """Load pricing cache from file if it exists and is not older than 24 hours."""
+        """Load pricing cache from file if it exists and is not older than 24 hours.
+
+        Returns:
+            None: Loads cache into memory if valid.
+        """
         with self._pricing_cache_lock:
             if self._pricing_cache_file_loaded:
                 return
@@ -310,7 +318,11 @@ class GCPComputeInstanceManager(InstanceManager):
             self._logger.debug(f"Could not load pricing cache from {path}: {e}")
 
     def _save_pricing_cache_to_file(self) -> None:
-        """Write current in-memory pricing cache to the file in the temp directory (atomic)."""
+        """Write current in-memory pricing cache to the file in the temp directory (atomic).
+
+        Returns:
+            None: Writes in-memory cache to temp file.
+        """
         path = self._get_pricing_cache_path()
         cache_dir = os.path.dirname(path)
         fd = None

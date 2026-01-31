@@ -40,8 +40,11 @@ def parse_utc(s: Optional[str]) -> Optional[datetime.datetime]:
     """
     if s is None or (isinstance(s, str) and not s.strip()):
         return None
+    # Normalize RFC3339/Zulu shorthand so fromisoformat can parse it.
     s = s.replace("Z", "+00:00")
-    dt = datetime.datetime.fromisoformat(s)
+    dt = datetime.datetime.fromisoformat(s)  # Parse the (now-ISO) string.
     if dt.tzinfo is None:
+        # Treat naive timestamps as UTC.
         dt = dt.replace(tzinfo=datetime.timezone.utc)
+    # Ensure a timezone-aware UTC datetime.
     return dt.astimezone(datetime.timezone.utc)

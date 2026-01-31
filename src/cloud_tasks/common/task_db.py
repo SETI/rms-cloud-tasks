@@ -186,17 +186,25 @@ class TaskDatabase:
             if event_type == "task_exited":
                 update_fields["exit_code"] = event.get("exit_code")
 
-        # Build UPDATE query dynamically
-        set_clause = ", ".join([f"{k} = ?" for k in update_fields.keys()])
-        values = list(update_fields.values()) + [task_id]
-
+        # Static allowed columns and fixed SQL to avoid S608 (no dynamic string assembly)
+        update_task_columns = [
+            "status",
+            "retry",
+            "completed_at",
+            "elapsed_time",
+            "hostname",
+            "result",
+            "exception",
+            "exit_code",
+        ]
         cursor.execute(
-            f"""
+            """
             UPDATE tasks
-            SET {set_clause}
+            SET status = ?, retry = ?, completed_at = ?, elapsed_time = ?,
+                hostname = ?, result = ?, exception = ?, exit_code = ?
             WHERE task_id = ?
             """,
-            values,
+            [update_fields.get(c) for c in update_task_columns] + [task_id],
         )
         self.conn.commit()
 

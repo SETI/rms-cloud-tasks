@@ -32,6 +32,7 @@ class InstanceOrchestrator:
     def __init__(
         self,
         config: Config,
+        *,
         dry_run: Optional[bool] = False,
         auto_terminate_on_empty: Optional[bool] = True,
         get_remaining_task_count: Optional[Callable[[], int]] = None,

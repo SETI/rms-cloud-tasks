@@ -2,23 +2,23 @@ Command Line Interface Reference
 ================================
 
 This page provides a comprehensive reference for the Cloud Tasks command-line interface,
-``cloud-tasks``. The general format of a command is:
+``cloud_tasks``. The general format of a command is:
 
 .. code-block:: none
 
-   cloud-tasks <command> <options>
+   cloud_tasks <command> <options>
 
 To get a list of available commands, run:
 
 .. code-block:: none
 
-   cloud-tasks --help
+   cloud_tasks --help
 
 To get a list of options for a specific command, run:
 
 .. code-block:: none
 
-   cloud-tasks <command> --help
+   cloud_tasks <command> --help
 
 Since many commands take similar options, we will start by listing the
 shared options and then reference them as needed.
@@ -221,7 +221,7 @@ provider.
 
 .. code-block:: none
 
-   cloud-tasks list_regions
+   cloud_tasks list_regions
      [Common options]
      [Provider-specific options]
      [Additional options]
@@ -241,7 +241,7 @@ Examples:
       .. code-block:: none
 
          XXX Update
-         $ cloud-tasks list_regions --provider aws --detail --zones --prefix us-west
+         $ cloud_tasks list_regions --provider aws --detail --zones --prefix us-west
          Found 2 regions (filtered by prefix: us-west)
 
          Region                    Description
@@ -258,7 +258,7 @@ Examples:
 
       .. code-block:: none
 
-         $ cloud-tasks list_regions --provider gcp --detail --zones --prefix us-west
+         $ cloud_tasks list_regions --provider gcp --detail --zones --prefix us-west
          Found 4 regions (filtered by prefix: us-west)
 
          Region: us-west1
@@ -295,7 +295,7 @@ List available VM images.
 
 .. code-block:: none
 
-   cloud-tasks list_images
+   cloud_tasks list_images
      [Common options]
      [Provider-specific options]
      [Additional options]
@@ -321,7 +321,7 @@ Examples:
       .. code-block:: none
 
          XXX Update
-         $ cloud-tasks list_images --provider aws --filter sapcal --detail --sort-by=-name --limit 2
+         $ cloud_tasks list_images --provider aws --filter sapcal --detail --sort-by=-name --limit 2
          Retrieving images...
          Found 2 filtered images for aws:
 
@@ -347,7 +347,7 @@ Examples:
 
       .. code-block:: none
 
-         $ cloud-tasks list_images --provider gcp --filter centos --detail --sort-by=-name --limit 2
+         $ cloud_tasks list_images --provider gcp --filter centos --detail --sort-by=-name --limit 2
          Retrieving images...
          Found 2 filtered images for GCP:
 
@@ -380,7 +380,7 @@ List available instance types with pricing.
 
 .. code-block:: none
 
-   cloud-tasks list_instance_types
+   cloud_tasks list_instance_types
      [Common options]
      [Provider-specific options]
      [Instance type selection options]
@@ -412,7 +412,7 @@ Examples:
       .. code-block:: none
 
          XXX Update
-         $ cloud-tasks list_instance_types --provider aws --region us-west-1 --instance-types "m4.*" --sort-by=-cpu,-mem --limit 5
+         $ cloud_tasks list_instance_types --provider aws --region us-west-1 --instance-types "m4.*" --sort-by=-cpu,-mem --limit 5
          Retrieving instance types...
          Retrieving pricing information...
 
@@ -428,7 +428,7 @@ Examples:
 
       .. code-block:: none
 
-         $ cloud-tasks list_instance_types --provider gcp --region us-central1 --instance-types "n.-.*" --sort-by=-cpu,-mem --limit 5
+         $ cloud_tasks list_instance_types --provider gcp --region us-central1 --instance-types "n.-.*" --sort-by=-cpu,-mem --limit 5
          Retrieving instance types...
          Retrieving pricing information...
 
@@ -475,7 +475,7 @@ SQLite database, draining pending events, and continuing to manage instances unt
 
 .. code-block:: none
 
-   cloud-tasks run
+   cloud_tasks run
      [Common options]
      [Provider-specific options]
      [Job-specific options]
@@ -543,26 +543,26 @@ Examples:
       .. code-block:: bash
 
          # Fresh run
-         cloud-tasks run --config myconfig.yml --task-file tasks.json
+         cloud_tasks run --config myconfig.yml --task-file tasks.json
 
          # Resume after crash
-         cloud-tasks run --config myconfig.yml --continue
+         cloud_tasks run --config myconfig.yml --continue
 
          # With event logging
-         cloud-tasks run --config myconfig.yml --task-file tasks.json --output-file events.json
+         cloud_tasks run --config myconfig.yml --task-file tasks.json --output-file events.json
 
    .. tab:: GCP
 
       .. code-block:: bash
 
          # Fresh run
-         cloud-tasks run --config myconfig.yml --task-file tasks.json
+         cloud_tasks run --config myconfig.yml --task-file tasks.json
 
          # Resume after crash
-         cloud-tasks run --config myconfig.yml --continue
+         cloud_tasks run --config myconfig.yml --continue
 
          # With custom database file
-         cloud-tasks run --config myconfig.yml --task-file tasks.json --db-file custom.db
+         cloud_tasks run --config myconfig.yml --task-file tasks.json --db-file custom.db
 
 
 .. _cli_monitor_event_queue:
@@ -577,7 +577,7 @@ this does not manage compute instances.
 
 .. code-block:: none
 
-   cloud-tasks monitor_event_queue
+   cloud_tasks monitor_event_queue
      [Common options]
      [Job-specific options]
      [Additional options]
@@ -600,7 +600,7 @@ testing or debugging) but still use the automated event monitoring and task trac
 
    .. code-block:: bash
 
-      cloud-tasks run --config config.yml --task-file tasks.json --dry-run
+      cloud_tasks run --config config.yml --task-file tasks.json --dry-run
 
 2. Start workers locally in separate terminals:
 
@@ -616,7 +616,7 @@ testing or debugging) but still use the automated event monitoring and task trac
 
    .. code-block:: bash
 
-      cloud-tasks monitor_event_queue --config config.yml
+      cloud_tasks monitor_event_queue --config config.yml
 
 **Behavior:**
 
@@ -641,26 +641,26 @@ Examples:
       .. code-block:: bash
 
          # Monitor with default settings
-         cloud-tasks monitor_event_queue --config config.yml
+         cloud_tasks monitor_event_queue --config config.yml
 
          # Monitor with output file
-         cloud-tasks monitor_event_queue --config config.yml --output-file events.jsonl
+         cloud_tasks monitor_event_queue --config config.yml --output-file events.jsonl
 
          # Monitor indefinitely (don't stop when tasks complete)
-         cloud-tasks monitor_event_queue --config config.yml --no-auto-complete
+         cloud_tasks monitor_event_queue --config config.yml --no-auto-complete
 
    .. tab:: GCP
 
       .. code-block:: bash
 
          # Monitor with default settings
-         cloud-tasks monitor_event_queue --config config.yml
+         cloud_tasks monitor_event_queue --config config.yml
 
          # Monitor with custom database
-         cloud-tasks monitor_event_queue --config config.yml --db-file my-job.db
+         cloud_tasks monitor_event_queue --config config.yml --db-file my-job.db
 
          # Monitor and print events to stdout
-         cloud-tasks monitor_event_queue --config config.yml --print-events
+         cloud_tasks monitor_event_queue --config config.yml --print-events
 
 
 .. _cli_status_cmd:
@@ -672,7 +672,7 @@ Check the status of a running job.
 
 .. code-block:: none
 
-   cloud-tasks status
+   cloud_tasks status
      [Common options]
      [Provider-specific options]
      [Job-specific options]
@@ -689,7 +689,7 @@ Examples:
 
       .. code-block:: none
 
-         $ cloud-tasks status --provider gcp --project-id my-project --job-id my-job --region us-central1
+         $ cloud_tasks status --provider gcp --project-id my-project --job-id my-job --region us-central1
          Checking job status for job 'my-job'
          Running instance summary:
          State       Instance Type             vCPUs  Zone             Count  Total Price
@@ -713,7 +713,7 @@ Stop a job and terminate its instances.
 
 .. code-block:: none
 
-   cloud-tasks stop
+   cloud_tasks stop
      [Common options]
      [Provider-specific options]
      [Job-specific options]
@@ -735,7 +735,7 @@ Examples:
 
       .. code-block:: none
 
-         $ cloud-tasks stop --provider gcp --project-id my-project --job-id my-job --region us-central1
+         $ cloud_tasks stop --provider gcp --project-id my-project --job-id my-job --region us-central1
          Stopping job 'my-job'...this could take a few minutes
          Job 'my-job' stopped
 
@@ -751,7 +751,7 @@ zone is specified, only instances in that zone are shown.
 
 .. code-block:: none
 
-   cloud-tasks list_running_instances
+   cloud_tasks list_running_instances
      [Common options]
      [Provider-specific options]
      [Additional options]
@@ -779,7 +779,7 @@ Examples:
 
       .. code-block:: none
 
-         $ cloud-tasks list_running_instances --provider gcp --project-id my-project --region us-central1 --all-instances --include-terminated
+         $ cloud_tasks list_running_instances --provider gcp --project-id my-project --region us-central1 --all-instances --include-terminated
          Listing all instances including ones not created by cloud tasks
 
          ┌────────┬────────────────────────────────────────┬───────────────┬────────────┬───────────────┬───────────────────────────────┐
@@ -821,7 +821,7 @@ statistics and queue depth only. No task file is read and no messages are enqueu
 
 .. code-block:: none
 
-   cloud-tasks load_queue
+   cloud_tasks load_queue
      [Common options]
      [Job-specific options]
      [Provider-specific options]
@@ -847,10 +847,10 @@ Examples:
 
       .. code-block:: none
 
-         $ cloud-tasks load_queue --provider aws --job-id my-job --task-file examples/parallel_addition/addition_tasks.json
+         $ cloud_tasks load_queue --provider aws --job-id my-job --task-file examples/parallel_addition/addition_tasks.json
          Loaded 10000 tasks. Queue depth (may be approximate): 10000
 
-         $ cloud-tasks load_queue --config myconfig.yml --continue
+         $ cloud_tasks load_queue --config myconfig.yml --continue
          Database: my-job.db (10000 tasks)
          Status: ...
 
@@ -858,10 +858,10 @@ Examples:
 
       .. code-block:: none
 
-         $ cloud-tasks load_queue --provider gcp --job-id my-job --project-id my-project --task-file examples/parallel_addition/addition_tasks.json
+         $ cloud_tasks load_queue --provider gcp --job-id my-job --project-id my-project --task-file examples/parallel_addition/addition_tasks.json
          Loaded 10000 tasks. Queue depth (may be approximate): 10000
 
-         $ cloud-tasks load_queue --config myconfig.yml --db-file my-job.db --continue
+         $ cloud_tasks load_queue --config myconfig.yml --db-file my-job.db --continue
          Database: my-job.db (10000 tasks)
          Status: ...
 
@@ -876,7 +876,7 @@ count of messages remaining in a queue.
 
 .. code-block:: none
 
-   cloud-tasks show_queue
+   cloud_tasks show_queue
      [Common options]
      [Job-specific options]
      [Provider-specific options]
@@ -894,7 +894,7 @@ Examples:
 
       .. code-block:: none
 
-         $ cloud-tasks show_queue --provider aws --job-id my-job --detail
+         $ cloud_tasks show_queue --provider aws --job-id my-job --detail
          Checking queue depth for 'my-job'...
          Current depth: 10000 message(s)
 
@@ -918,7 +918,7 @@ Examples:
 
       .. code-block:: none
 
-         $ cloud-tasks show_queue --provider gcp --job-id my-job --project-id my-project --detail
+         $ cloud_tasks show_queue --provider gcp --job-id my-job --project-id my-project --detail
          Checking queue depth for 'my-job'...
          Current depth: 10
 
@@ -949,7 +949,7 @@ new tasks.
 
 .. code-block:: none
 
-   cloud-tasks purge_queue
+   cloud_tasks purge_queue
      [Common options]
      [Job-specific options]
      [Provider-specific options]
@@ -970,7 +970,7 @@ Examples:
       .. code-block:: none
 
          XXX Update this
-         $ cloud-tasks purge_queue --provider aws --job-id my-job
+         $ cloud_tasks purge_queue --provider aws --job-id my-job
 
          WARNING: This will permanently delete all 10000+ messages from queue 'my-job' on 'AWS'.
          Type 'EMPTY my-job' to confirm: EMPTY my-job
@@ -981,7 +981,7 @@ Examples:
 
       .. code-block:: none
 
-         ❯ cloud-tasks purge_queue --provider gcp --job-id my-job --project-id my-project
+         ❯ cloud_tasks purge_queue --provider gcp --job-id my-job --project-id my-project
 
          WARNING: This will permanently delete all 10+ messages from queue 'my-job' on 'GCP'.
          Type 'EMPTY my-job' to confirm: EMPTY my-job
@@ -1000,7 +1000,7 @@ queues.
 
 .. code-block:: none
 
-   cloud-tasks purge_queue
+   cloud_tasks delete_queue
      [Common options]
      [Job-specific options]
      [Provider-specific options]
@@ -1020,7 +1020,7 @@ Examples:
 
       .. code-block:: none
 
-         $ cloud-tasks delete_queue --provider aws --job-id my-job
+         $ cloud_tasks delete_queue --provider aws --job-id my-job
 
          WARNING: This will permanently delete the queue 'my-job' from AWS.
          This operation cannot be undone and will remove all infrastructure.
@@ -1038,7 +1038,7 @@ Examples:
 
       .. code-block:: none
 
-         $ cloud-tasks delete_queue --provider gcp --job-id my-job --project-id my-project
+         $ cloud_tasks delete_queue --provider gcp --job-id my-job --project-id my-project
 
          WARNING: This will permanently delete the queue 'my-job' from GCP.
          This operation cannot be undone and will remove all infrastructure.
