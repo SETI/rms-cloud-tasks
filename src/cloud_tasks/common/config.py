@@ -223,6 +223,11 @@ class RunConfig(BaseModel, validate_assignment=True):
     retry_on_exception: Optional[bool] = None
     retry_on_timeout: Optional[bool] = None
 
+    #
+    # Database options
+    #
+    db_file: Optional[str] = None  # SQLite database file path
+
 
 class ProviderConfig(RunConfig, validate_assignment=True):
     """Config options valid for all cloud providers"""
@@ -314,7 +319,7 @@ class Config(BaseModel, validate_assignment=True):
                     val = getattr(self, attr_name)
                     if val is not None and val != cli_args[attr_name]:
                         LOGGER.warning(
-                            f"Overloading {attr_name}={val} with CLI={cli_args[attr_name]}"
+                            f"overriding {attr_name}={val} with CLI={cli_args[attr_name]}"
                         )
                     setattr(self, attr_name, cli_args[attr_name])
             if self.provider is not None:
@@ -326,7 +331,7 @@ class Config(BaseModel, validate_assignment=True):
                     val = getattr(self.run, attr_name)
                     if val is not None and val != cli_args[attr_name]:
                         LOGGER.warning(
-                            f"Overloading run.{attr_name}={val} with CLI={cli_args[attr_name]}"
+                            f"overriding run.{attr_name}={val} with CLI={cli_args[attr_name]}"
                         )
                     setattr(self.run, attr_name, cli_args[attr_name])
             if self.provider == "AWS" and self.aws is not None:
@@ -335,7 +340,7 @@ class Config(BaseModel, validate_assignment=True):
                         val = getattr(self.aws, attr_name)
                         if val is not None and val != cli_args[attr_name]:
                             LOGGER.warning(
-                                f"Overloading aws.{attr_name}={val} with CLI={cli_args[attr_name]}"
+                                f"overriding aws.{attr_name}={val} with CLI={cli_args[attr_name]}"
                             )
                         setattr(self.aws, attr_name, cli_args[attr_name])
             if self.provider == "GCP" and self.gcp is not None:
@@ -344,7 +349,7 @@ class Config(BaseModel, validate_assignment=True):
                         val = getattr(self.gcp, attr_name)
                         if val is not None and val != cli_args[attr_name]:
                             LOGGER.warning(
-                                f"Overloading gcp.{attr_name}={val} with CLI={cli_args[attr_name]}"
+                                f"overriding gcp.{attr_name}={val} with CLI={cli_args[attr_name]}"
                             )
                         setattr(self.gcp, attr_name, cli_args[attr_name])
             if self.provider == "AZURE" and self.azure is not None:
@@ -353,7 +358,7 @@ class Config(BaseModel, validate_assignment=True):
                         val = getattr(self.azure, attr_name)
                         if val is not None and val != cli_args[attr_name]:
                             LOGGER.warning(
-                                f"Overloading azure.{attr_name}={val} with "
+                                f"overriding azure.{attr_name}={val} with "
                                 f"CLI={cli_args[attr_name]}"
                             )
                         setattr(self.azure, attr_name, cli_args[attr_name])
@@ -430,7 +435,7 @@ class Config(BaseModel, validate_assignment=True):
         if self.run.cpus_per_task is None:
             self.run.cpus_per_task = 1
         if self.run.min_instances is None:
-            self.run.min_instances = 1
+            self.run.min_instances = 0
         if self.run.max_instances is None:
             self.run.max_instances = 10
         if self.run.max_total_price_per_hour is None:
@@ -449,6 +454,12 @@ class Config(BaseModel, validate_assignment=True):
             self.run.total_boot_disk_size = 10
         if self.run.boot_disk_base_size is None:
             self.run.boot_disk_base_size = 0
+
+        # Set default database file based on job_id
+        if self.run.db_file is None:
+            provider_config = self.get_provider_config()
+            if provider_config.job_id:
+                self.run.db_file = f"{provider_config.job_id}.db"
 
         # Fix case
         if self.run.architecture is not None:

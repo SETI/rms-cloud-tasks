@@ -1,0 +1,13 @@
+---
+alwaysApply: true
+---
+
+# Documentation
+
+- Write all documentation using Sphinx.
+- The documentation should include a detailed module index consisting of all modules that have been written or are planned to be written (placeholders).
+- After making any changes to the code or documentation, run Sphinx on the entire document and fix any warnings or errors.
+- Document the high-level architecture of the software, including class hierarchy, API, and interface contracts. Keep this document up-to-date at all times.
+- Document how the software is to be installed and run, both locally and in production. Keep this document up-to-date at all times.
+- All classes, methods, and functions must include descriptive docstrings.
+- Any code change must update relevant docstrings and the README.

@@ -6,7 +6,7 @@ import asyncio
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .instance_manager import InstanceManager
 from . import create_instance_manager
@@ -29,18 +29,33 @@ class InstanceOrchestrator:
 
     _DEFAULT_BOOT_DISK_SIZE_PER_CPU_GB = 10
 
-    def __init__(self, config: Config, dry_run: Optional[bool] = False):
+    def __init__(
+        self,
+        config: Config,
+        *,
+        dry_run: Optional[bool] = False,
+        auto_terminate_on_empty: Optional[bool] = True,
+        get_remaining_task_count: Optional[Callable[[], int]] = None,
+    ) -> None:
         """
         Initialize the instance orchestrator.
 
-        Args:
+        Parameters:
             config: Configuration object containing all settings.
+            dry_run: If True, don't actually create or terminate instances
+            auto_terminate_on_empty: If True, automatically terminate instances when queue
+                is empty for instance_termination_delay seconds. If False, instances will
+                continue running until stop() is called externally.
+            get_remaining_task_count: Optional callable that returns the number of remaining
+                tasks (tasks not in terminal state). If None, falls back to queue depth.
         """
         self._logger = logging.getLogger(__name__)
         self._logger.debug("Initializing InstanceOrchestrator")
 
         self._config = config
         self._dry_run = dry_run
+        self._auto_terminate_on_empty = auto_terminate_on_empty
+        self._get_remaining_task_count = get_remaining_task_count
 
         self._provider = self._config.provider
 
@@ -507,38 +522,65 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
 
         self._logger.info("Checking if scaling is needed...")
 
-        if self._dry_run:
-            queue_depth = 1
-        else:
-            queue_depth = await self._task_queue.get_queue_depth()
-            if queue_depth is None:
-                self._logger.error("Failed to get queue depth, assuming depth of 1")
-                queue_depth = 1
-            else:
-                self._logger.info(f"Current queue depth: {queue_depth}")
+        # queue depth doesn't work on GCP
+        # if self._dry_run:
+        #     queue_depth = 1
+        # else:
+        #     queue_depth = await self._task_queue.get_queue_depth()
+        #     if queue_depth is None:
+        #         self._logger.error("Failed to get queue depth, assuming depth of 1")
+        #         queue_depth = 1
+        #     else:
+        #         self._logger.info(f"Current queue depth: {queue_depth}")
 
-            # Check if queue is empty
-            if queue_depth == 0:
-                if self._empty_queue_since is None:
-                    self._empty_queue_since = float(time.time())
-                    self._logger.info("Queue is empty, starting termination timer")
-                else:
-                    empty_duration = float(time.time()) - self._empty_queue_since
-                    self._logger.info(f"Queue has been empty for {empty_duration:.1f} seconds")
-                    if empty_duration > self._instance_termination_delay:
-                        self._logger.info("TERMINATION TIMER EXPIRED - TERMINATING ALL INSTANCES")
-                        await self.terminate_all_instances()
-                        self._running = False
-                return
+        #     # Check if queue is empty (only auto-terminate if enabled)
+        #     if queue_depth == 0:
+        #         if self._auto_terminate_on_empty:
+        #             if self._empty_queue_since is None:
+        #                 self._empty_queue_since = float(time.time())
+        #                 self._logger.info("Queue is empty, starting termination timer")
+        #             else:
+        #                 empty_duration = float(time.time()) - self._empty_queue_since
+        #                 self._logger.info(f"Queue has been empty for {empty_duration:.1f} seconds")
+        #                 if empty_duration > self._instance_termination_delay:
+        #                     self._logger.info("TERMINATION TIMER EXPIRED - TERMINATING ALL INSTANCES")
+        #                     await self.terminate_all_instances()
+        #                     self._running = False
+        #             return
+        #         else:
+        #             # Don't auto-terminate, but log that queue is empty
+        #             if self._empty_queue_since is None:
+        #                 self._empty_queue_since = float(time.time())
+        #                 self._logger.info(
+        #                     "Queue is empty (auto-termination disabled, waiting for external stop)"
+        #                 )
+        #             return
 
         # Queue is not empty, reset timer
-        if self._empty_queue_since is not None:
-            self._logger.info("Queue is no longer empty, resetting termination timer")
-        self._empty_queue_since = None
+        # if self._empty_queue_since is not None:
+        #     self._logger.info("Queue is no longer empty, resetting termination timer")
+        # self._empty_queue_since = None
 
-        # Calculate desired number of instances based on queue depth and tasks per instance
+        # Get remaining task count (tasks not in terminal state)
+        if self._get_remaining_task_count is not None:
+            remaining_tasks = self._get_remaining_task_count()
+            self._logger.info(f"Current remaining tasks: {remaining_tasks}")
+        else:
+            # Fallback to queue depth if callback not provided
+            if self._dry_run:
+                remaining_tasks = 1
+            else:
+                queue_depth = await self._task_queue.get_queue_depth()
+                if queue_depth is None:
+                    self._logger.error("Failed to get queue depth, assuming depth of 1")
+                    remaining_tasks = 1
+                else:
+                    remaining_tasks = queue_depth
+                    self._logger.info(f"Current queue depth: {remaining_tasks}")
+
+        # Calculate desired number of instances based on remaining tasks and tasks per instance
         cpus_per_task = self._run_config.cpus_per_task or 1
-        desired_instances = int((queue_depth + cpus_per_task - 1) // cpus_per_task)
+        desired_instances = int((remaining_tasks + cpus_per_task - 1) // cpus_per_task)
         if self._min_instances is not None:
             desired_instances = max(desired_instances, self._min_instances)
         if self._max_instances is not None:
@@ -740,7 +782,7 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
         """
         Provision new instances for the job.
 
-        Args:
+        Parameters:
             count: Number of instances to provision
 
         Returns:

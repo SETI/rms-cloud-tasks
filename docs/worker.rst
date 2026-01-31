@@ -104,7 +104,7 @@ specified, will then be set from the environment variables. If neither is availa
 parameter will be set to ``None`` or the given default. *When a worker is run on a remote
 compute instance, the following subset of environment variables are set automatically
 based on information in the Cloud Tasks configuration file (or command line arguments
-given to ``manage_pool`` or ``run``), or from information derived from the instance type*:
+given to ``run``), or from information derived from the instance type*:
 
 .. code-block:: none
 
@@ -136,7 +136,7 @@ Task File
                         ``https://path/to/file``. If not specified, the task manager will pull
                         tasks from the cloud provider queue.
 
-If specified, the task file should be in the same format as read by the :ref:`cli_load_queue_cmd`
+If specified, the task file should be in the same format as read by the :ref:`cli_run_cmd`
 command.
 
 

@@ -178,53 +178,49 @@ This will change the output to something like this:
 Running the Tasks in the Cloud
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Loading the Queue
-+++++++++++++++++
+Running the Job with the ``run`` Command
+++++++++++++++++++++++++++++++++++++++++
 
-To run the tasks in the cloud, you need to load the tasks into a cloud-based queue. This
-is done by running the ``cloud_tasks`` command line program with the name of the cloud
-provider and a job ID. These can also be specified in a configuration file. For Google
-Cloud you also need to specify the project ID. For our sample addition task, we will get
-the job ID from a configuration file and specify the provider and project ID on the
-command line, since these are user-specific. The configuration file and tasks list are
-available in the ``rms-cloud-tasks`` repo:
+To run the tasks in the cloud, you need to load the tasks into a cloud-based
+queue and monitor the progress of the running tasks using an event queue. This
+is done by running the ``cloud_tasks run`` command with the name of the cloud
+provider and a job ID. These can also be specified in a configuration file. For
+Google Cloud you also need to specify the project ID.
+
+
+The recommended way to run the job is with the ``run`` command, which handles the
+complete workflow in a single command:
+
+- Deletes and recreates the task and event queues
+- Loads tasks into a local SQLite database and cloud queue
+- Chooses an optimal instance type based on given constraints
+- Creates a specified number of instances; each instance will run a specified startup script
+- Monitors the instances to make sure they continue to run, and starts new instances as necessary
+- Monitors task progress and updates the SQLite database
+- Terminates the instances and deletes queues when all tasks complete
+- Prints a comprehensive final report
+
+You will always need to specify the cloud provider and job ID in the
+configuration file or on the command line. For Google Cloud, you will also need
+to specify the project ID.
+
+For our sample addition task, we will get the job ID from a configuration file
+and specify the provider and project ID on the command line, since these are
+user-specific. The configuration file and tasks list are available in the
+``rms-cloud-tasks`` repo:
 
 .. code-block:: bash
 
     git clone https://github.com/SETI/rms-cloud-tasks
     cd rms-cloud-tasks
 
-Here is the command that loads the task queue:
-
-.. code-block:: bash
-
-    cloud_tasks load_queue --config examples/parallel_addition/config.yml --provider gcp --project-id <PROJECT_ID> --task-file examples/parallel_addition/addition_tasks.json
-
-You should replace the ``<PROJECT_ID>`` with a project defined for your account.
-
-This will create the queue, if it doesn't already exist, read the tasks from the given
-JSON file, and place them in the queue. If the queue already exists, the tasks will be
-added to those already there.
-
-Running Tasks
-+++++++++++++
-
-Running tasks consists of:
-
-- Choosing an optimal instance type based on given constraints
-- Creating a specified number of instances; each instance will run a specified startup script
-- Monitoring the instances to make sure they continue to run, and starting new instances as necessary
-- Terminating the instances when the job is complete
-
-These steps are performed automatically.
-
 For Google Cloud, the permissions granted to compute instances are determined by a
 :ref:`service account <gcp_service_account>`. This account can be specified in the configuration
 file (``service_account:``) or on the command line using ``--service-account``.
 
-Finally, the location of the output bucket needs to be specified in the startup script in
+The location of the output bucket needs to be specified in the startup script in
 the configuration file, since that is user-specific. Change this line in the file
-``examples/parallel_addition/config.yml`` before running ``manage_pool``:
+``examples/parallel_addition/config.yml``:
 
 .. code-block:: yaml
 
@@ -232,15 +228,16 @@ the configuration file, since that is user-specific. Change this line in the fil
 
 Be sure that the bucket exists and that the service account you provide has write access to it.
 
-Here is an example command that will find the cheapest compute instance in the specified region with
-exactly 8 CPUs and at least 2 GB memory per CPU and create 5 of them.
+Here is the command that will run the complete job, finding the cheapest compute instance in
+the specified region with exactly 8 CPUs and at least 2 GB memory per CPU and creating 5 of them:
 
 .. code-block:: bash
 
-    cloud_tasks manage_pool --config examples/parallel_addition/config.yml --provider gcp --project-id <PROJECT_ID> --service-account <SERVICE_ACCOUNT> --region us-central1 --min-cpu 8 --max-cpu 8 --min-memory-per-cpu 2 --max-instances 5 -v
+    cloud_tasks run --config examples/parallel_addition/config.yml --task-file examples/parallel_addition/addition_tasks.json --provider gcp --project-id <PROJECT_ID> --service-account <SERVICE_ACCOUNT> --region us-central1 --min-cpu 8 --max-cpu 8 --min-memory-per-cpu 2 --max-instances 5
 
-You should replace the ``<PROJECT_ID>`` with the same project used above and ``<SERVICE_ACCOUNT>``
-with the email address of the :ref:`service account <gcp_service_account>` you created.
+You should replace the ``<PROJECT_ID>`` with a project defined for your account and
+``<SERVICE_ACCOUNT>`` with the email address of the :ref:`service account <gcp_service_account>`
+you created.
 
 The result will be similar to this:
 
@@ -326,47 +323,23 @@ The result will be similar to this:
   2025-06-11 15:03:23.936 INFO -   Total running/starting:                               40 (weighted)            5        $1.34
   2025-06-11 15:03:23.936 INFO -
 
-.. note::
-  ``manage_pool`` uses INFO logging which is turned off by default. Be sure to specify `-v` to
-  see the output.
 
-Monitoring the Results
-++++++++++++++++++++++
+Monitoring and Completion
++++++++++++++++++++++++++
 
-By default, the task manager running on each instance will send events (task completed, task failed,
-unhandled exception occurred, etc.) to the event queue. The ``monitor_event_queue`` command can be
-used to read this queue and write the events to a file while also collecting statistics and
-comparing the list of completed tasks against the original task list. This command should be run
-in a separate terminal from the one running the ``manage_pool`` command. The ``manage_pool`` command
-needs to continue to run to keep track of the running instances and to start new ones as needed
-if existing instances are terminated. In addition, once the task queue is empty, ``manage_pool``
-will terminate all instances (see below).
+The ``run`` command automatically monitors task progress and displays periodic status updates.
+As tasks complete, the task manager running on each instance sends events (task completed, task
+failed, unhandled exception occurred, etc.) to the event queue. These events are automatically
+received, processed, and stored in a local SQLite database.
 
-.. code-block:: bash
-
-  cloud_tasks monitor_event_queue --config examples/parallel_addition/config.yml --project-id <PROJECT_ID> --output-file addition_events.log --task-file examples/parallel_addition/addition_tasks.json
-
-This will start a real-time monitor that will produce an output similar to this:
+Periodic status summaries will be displayed showing:
 
 .. code-block:: none
 
-  Reading tasks from "examples/parallel_addition/addition_tasks.json"
-  Reading previous events from "addition_events.log"
-  Monitoring event queue 'parallel-addition-job-events' on GCP...
-
   Summary:
-    10000 tasks have not been completed without retry
-
-  {"timestamp": "2025-06-11T22:05:05.119663", "hostname": "rmscr-parallel-addition-job-1uu0epqsfoncbznvp9yikh933", "event_type": "task_completed", "task_id": "addition-task-002057", "elapsed_time": 1.1852774620056152, "retry": false, "result": "gs://rms-nav-test-addition/addition-results/addition-task-002057.txt"}
-  {"timestamp": "2025-06-11T22:05:07.510640", "hostname": "rmscr-parallel-addition-job-1uu0epqsfoncbznvp9yikh933", "event_type": "task_completed", "task_id": "addition-task-002099", "elapsed_time": 2.007458209991455, "retry": false, "result": "gs://rms-nav-test-addition/addition-results/addition-task-002099.txt"}
-
-  [...]
-
-  Summary:
-    9900 tasks have not been completed without retry
-    Task event status:
-      task_completed      (retry=False):    100
-    Tasks completed: 100 in 276.28 seconds (2.76 seconds/task)
+    Total tasks: 10000
+      completed: 100
+      in_progress: 9900
     Elapsed time statistics:
       Range:  1.10 to 2.54 seconds
       Mean:   1.42 +/- 0.36 seconds
@@ -374,51 +347,48 @@ This will start a real-time monitor that will produce an output similar to this:
       90th %: 1.98 seconds
       95th %: 2.26 seconds
 
-Eventually once all tasks have been completed, the output will look like this:
+Once all tasks complete, the ``run`` command automatically terminates all instances, deletes
+the queues, and prints a comprehensive final report:
 
 .. code-block:: none
 
-  Summary:
-    0 tasks have not been completed with retry=False
-    21 tasks completed with retry=False more than once but shouldn't have
-    Task event status:
-      task_completed      (retry=False):  10000
-    Tasks completed: 10000 in 507.27 seconds (0.05 seconds/task)
-    Elapsed time statistics:
-      Range:  1.08 to 19.36 seconds
-      Mean:   1.34 +/- 0.85 seconds
-      Median: 1.19 seconds
-      90th %: 1.69 seconds
-      95th %: 1.99 seconds
-    Remaining tasks:
+  === All tasks complete ===
 
-The "21 tasks completed with retry=False more than once but shouldn't have" is due to the
-fact that the task queue will deliver each task at least once, but may deliver it more
-than once, to a worker process. In this case 21 out of 10,000 tasks were repeated and
-didn't need to be.
+  Job complete! Cleaning up...
+  Deleting queues...
 
-Terminating the Instances
-+++++++++++++++++++++++++
+  ============================================================
+  === JOB COMPLETE ===
+  ============================================================
 
-Once the task queue is empty, ``manage_pool`` will start a termination timer that
-allows any remaining tasks to finish, and then will terminate all instances.
+  Total tasks: 10000
+    Completed: 9985
+    Failed: 10
+    Timed_out: 5
 
-.. code-block:: none
+  Elapsed time: 8m 27s
+  Tasks/hour: 70987.6
 
-  2025-06-11 16:08:24.348 INFO - Current queue depth: 0
-  2025-06-11 16:08:24.348 INFO - Queue is empty, starting termination timer
-  2025-06-11 16:09:24.406 INFO - Checking if scaling is needed...
-  2025-06-11 16:09:25.097 INFO - Current queue depth: 0
-  2025-06-11 16:09:25.097 INFO - Queue has been empty for 60.7 seconds
-  2025-06-11 16:09:25.097 INFO - TERMINATION TIMER EXPIRED - TERMINATING ALL INSTANCES
-  2025-06-11 16:09:25.098 INFO - Terminating all instances
-  2025-06-11 16:09:28.449 INFO - Terminating instance: rmscr-parallel-addition-job-4jusrwvupyetlyvej11cszf32
-  2025-06-11 16:09:28.449 INFO - Terminating instance: rmscr-parallel-addition-job-730w4d0qfw20mt7qpskvfan4h
-  2025-06-11 16:09:28.450 INFO - Terminating instance: rmscr-parallel-addition-job-1uu0epqsfoncbznvp9yikh933
-  2025-06-11 16:09:28.451 INFO - Terminating instance: rmscr-parallel-addition-job-4ufccfcywtpdgrtg9jdm4s83f
-  2025-06-11 16:09:28.452 INFO - Terminating instance: rmscr-parallel-addition-job-aln9ha10xq4zexj59i085l0tx
-  2025-06-11 16:09:28.453 INFO - Job management complete
-  2025-06-11 16:09:28.453 INFO - Scaling loop cancelled
+  Task elapsed time statistics:
+    Range:  1.08 to 19.36 seconds
+    Mean:   1.34 +/- 0.85 seconds
+    Median: 1.19 seconds
+    90th %: 1.69 seconds
+    95th %: 1.99 seconds
+
+  Exceptions summary:
+       10: ValueError: invalid input
+
+  Spot terminations: 0 hosts
+
+  ============================================================
+
+If you want to save the raw events to a file in addition to the SQLite database, use the
+``--output-file`` option when running the ``run`` command:
+
+.. code-block:: bash
+
+  cloud_tasks run --config examples/parallel_addition/config.yml --task-file examples/parallel_addition/addition_tasks.json --output-file addition_events.log [other options...]
 
 
 Version 2: Addition with Exceptions and Timeouts

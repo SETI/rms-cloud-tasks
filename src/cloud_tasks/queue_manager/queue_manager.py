@@ -63,6 +63,14 @@ class QueueManager(ABC):
         """Retry a task."""
         pass  # pragma: no cover
 
+    async def ensure_queue_ready(self) -> None:
+        """
+        Ensure the queue (and topic for GCP) exists before concurrent operations.
+        Call this once before starting a multi-threaded or concurrent task enqueue loop.
+        No-op by default; GCP overrides to create topic and subscription.
+        """
+        pass  # pragma: no cover
+
     @abstractmethod
     async def get_queue_depth(self) -> int | None:
         """Get the current depth (number of messages) in the queue."""

@@ -7,7 +7,6 @@ It uses multiprocessing to achieve true parallelism across multiple CPU cores.
 
 import argparse
 import asyncio
-import datetime
 import json
 import json_stream
 import logging
@@ -27,6 +26,7 @@ import multiprocessing
 from filecache import FCPath
 
 from ..common.logging_config import configure_logging
+from ..common.time_utils import utc_now_iso
 from ..queue_manager import create_queue
 
 
@@ -813,7 +813,7 @@ class Worker:
         """Log an event to the event log."""
         # Reorder so these fields are first in the diction to make the display nicer
         new_event = {
-            "timestamp": datetime.datetime.now().isoformat(),
+            "timestamp": utc_now_iso(),
             "hostname": self._hostname,
             "event_type": event["event_type"],
             **event,

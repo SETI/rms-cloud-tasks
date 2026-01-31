@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import threading
 import time
 from typing import Any, Dict, Tuple, List
 
@@ -501,15 +502,35 @@ def mock_machine_types_client_n1_2_4(
 def deepcopy_gcp_instance_manager(
     gcp_instance_manager: GCPComputeInstanceManager,
 ) -> GCPComputeInstanceManager:
-    """Deepcopy a GCP instance manager."""
-    if hasattr(gcp_instance_manager, "_thread_local"):
-        old_thread = gcp_instance_manager._thread_local
+    """Deepcopy a GCPComputeInstanceManager for tests, working around non-serializable state.
+
+    GCPComputeInstanceManager holds _thread_local and _pricing_cache_lock, which
+    copy.deepcopy cannot serialize. This function temporarily clears those attributes
+    on the source instance, runs deepcopy, restores the source, and assigns the new
+    instance a fresh threading.Lock (and the source's _thread_local) so both instances
+    are usable.
+
+    Parameters:
+        gcp_instance_manager: The GCPComputeInstanceManager instance to deep copy.
+
+    Returns:
+        GCPComputeInstanceManager: A deep copy with _thread_local and
+        _pricing_cache_lock reinitialized appropriately.
+    """
+    old_thread = getattr(gcp_instance_manager, "_thread_local", None)
+    old_lock = getattr(gcp_instance_manager, "_pricing_cache_lock", None)
+    # Remove _thread_local and _pricing_cache_lock before deepcopy to avoid
+    # serialization errors; restore them on the source; give the new instance
+    # the source's _thread_local and a fresh threading.Lock.
+    try:
         gcp_instance_manager._thread_local = None
-        print(gcp_instance_manager._thread_local)
-    new_gcp_instance_manager = copy.deepcopy(gcp_instance_manager)
-    if hasattr(gcp_instance_manager, "_thread_local"):
+        gcp_instance_manager._pricing_cache_lock = None
+        new_gcp_instance_manager = copy.deepcopy(gcp_instance_manager)
+    finally:
         gcp_instance_manager._thread_local = old_thread
-        new_gcp_instance_manager._thread_local = old_thread
+        gcp_instance_manager._pricing_cache_lock = old_lock
+    new_gcp_instance_manager._thread_local = old_thread
+    new_gcp_instance_manager._pricing_cache_lock = threading.Lock()
     return new_gcp_instance_manager
 
 
@@ -548,11 +569,21 @@ async def gcp_instance_manager_n1_n2(
         ),
         patch("google.cloud.compute_v1.ImagesClient", return_value=MagicMock()),
         patch("google.cloud.billing.CloudCatalogClient", return_value=MagicMock()),
+        patch.object(
+            GCPComputeInstanceManager,
+            "_load_pricing_cache_from_file",
+            lambda self: None,
+        ),
+        patch.object(
+            GCPComputeInstanceManager,
+            "_save_pricing_cache_to_file",
+            lambda self: None,
+        ),
     ):
         manager = GCPComputeInstanceManager(gcp_config)
         end = time.time()
         print(f"Time taken to create GCPComputeInstanceManager: {end - start} seconds")
-        return manager
+        yield manager
 
 
 @pytest_asyncio.fixture
@@ -577,8 +608,18 @@ async def gcp_instance_manager_n1_2_4(
         ),
         patch("google.cloud.compute_v1.ImagesClient", return_value=MagicMock()),
         patch("google.cloud.billing.CloudCatalogClient", return_value=MagicMock()),
+        patch.object(
+            GCPComputeInstanceManager,
+            "_load_pricing_cache_from_file",
+            lambda self: None,
+        ),
+        patch.object(
+            GCPComputeInstanceManager,
+            "_save_pricing_cache_to_file",
+            lambda self: None,
+        ),
     ):
         manager = GCPComputeInstanceManager(gcp_config)
         end = time.time()
         print(f"Time taken to create GCPComputeInstanceManager: {end - start} seconds")
-        return manager
+        yield manager

@@ -180,10 +180,10 @@ in the configuration file (see :ref:`config_boot_options`).
 
 .. _cli_worker_and_manage_pool_options:
 
-Worker and Manage Pool Options
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Worker and Run Options
+~~~~~~~~~~~~~~~~~~~~~~
 
-These options are used to specify the worker and manage_pool processes. They override any
+These options are used to specify the worker and run process behavior. They override any
 options in the configuration file (see :ref:`config_worker_and_manage_pool_options`).
 
 --scaling-check-interval SECONDS       The interval to check for scaling opportunities
@@ -340,7 +340,7 @@ Examples:
          URL: N/A
 
 
-         To use a custom image with the 'run' or 'manage_pool' commands, use the --image parameter.
+         To use a custom image with the 'run' command, use the --image parameter.
          For AWS, specify the AMI ID: --image ami-12345678
 
    .. tab:: GCP
@@ -368,7 +368,7 @@ Examples:
          URL: https://www.googleapis.com/compute/v1/projects/centos-cloud/global/images/centos-stream-9-arm64-v20250513
 
 
-         To use a custom image with the 'run' or 'manage_pool' commands, use the --image parameter.
+         To use a custom image with the 'run' command, use the --image parameter.
          For GCP, specify the image family or full URI: --image ubuntu-2404-lts or --image https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-2404-lts-amd64-v20240416
 
 .. _cli_list_instance_types:
@@ -450,140 +450,28 @@ Job Management Commands
 -----------------------
 
 
-.. _cli_manage_pool_cmd:
-
-manage_pool
-~~~~~~~~~~~
-
-Manage a pool of compute instances, given various constraints. This will choose an optimal
-compute instance type based on the constraints, monitor the size of the instance pool
-that is running, and start new instances as needed. In general the maximum number of
-instances allowed that otherwise meet the constaints will be created. When an instance
-is terminated, either because of an hardware or software error, or because a spot instance
-was preempted, a new instance will be started to replace it.
-
-Only instances running in the given region, and, if specified, zone, are watched as part
-of the pool.
-
-If no zone is specified, the instances will be started in a random zones within the
-region; if a zone is specified, the instances will be started only in that zone.
-
-The ``manage_pool`` command will monitor all instances associated with the specified
-``job_id`` whether or not they were created by the same ``manage_pool`` command. In other words,
-it is possible to create some instances with ``manage_pool``, abort the program with Ctrl-C,
-run ``manage_pool`` again with different options, and have multiple types of instances
-running at the same time. ``manage_pool`` will handle this case correctly, keeping track of
-all instances running.
-
-.. note::
-
-   An image and startup script must be specified.
-
-.. code-block:: none
-
-   cloud_tasks manage_pool
-     [Common options]
-     [Provider-specific options]
-     [Job-specific options]
-     [Instance type selection options]
-     [Number of instances options]
-     [VM options]
-     [Boot options]
-     [Worker and Manage Pool options]
-     [Additional options]
-
-Additional options:
-
---dry-run           Do not actually load any tasks or create or delete any instances
-
-Examples:
-
-.. tabs::
-
-   .. tab:: AWS
-
-      TODO
-
-   .. tab:: GCP
-
-      .. code-block:: none
-
-         $ cloud_tasks manage_pool --provider gcp --project my-project --job-id my-job --max-cpu 2 --max-instances 5 --startup-script-file startup_script_file.sh --region us-central1 -v
-         2025-06-10 16:47:33.521 INFO - Loading configuration from None
-         2025-06-10 16:47:33.522 INFO - Starting pool management for job: my-job
-         2025-06-10 16:47:33.522 INFO - Provider configuration:
-         2025-06-10 16:47:33.522 INFO -   Provider: GCP
-         2025-06-10 16:47:33.522 INFO -   Region: us-central1
-         2025-06-10 16:47:33.522 INFO -   Zone: None
-         2025-06-10 16:47:33.522 INFO -   Job ID: my-job
-         2025-06-10 16:47:33.522 INFO -   Queue: my-job
-         2025-06-10 16:47:33.522 INFO - Instance type selection constraints:
-         2025-06-10 16:47:33.522 INFO -   Instance types: None
-         2025-06-10 16:47:33.522 INFO -   CPUs: None to 2
-         2025-06-10 16:47:33.522 INFO -   Memory: None to None GB
-         2025-06-10 16:47:33.522 INFO -   Memory per CPU: None to None GB
-         2025-06-10 16:47:33.522 INFO -   Boot disk types: None
-         2025-06-10 16:47:33.522 INFO -   Boot disk total size: 10.0 GB
-         2025-06-10 16:47:33.522 INFO -   Boot disk base size: 0.0 GB
-         2025-06-10 16:47:33.522 INFO -   Boot disk per CPU: None GB
-         2025-06-10 16:47:33.522 INFO -   Boot disk per task: None GB
-         2025-06-10 16:47:33.522 INFO -   Local SSD: None to None GB
-         2025-06-10 16:47:33.522 INFO -   Local SSD per CPU: None to None GB
-         2025-06-10 16:47:33.522 INFO -   Local SSD per task: None to None GB
-         2025-06-10 16:47:33.522 INFO - Number of instances constraints:
-         2025-06-10 16:47:33.522 INFO -   # Instances: 1 to 5
-         2025-06-10 16:47:33.522 INFO -   Total CPUs: None to None
-         2025-06-10 16:47:33.522 INFO -   CPUs per task: 1.0
-         2025-06-10 16:47:33.522 INFO -     Tasks per instance: None to None
-         2025-06-10 16:47:33.522 INFO -     Simultaneous tasks: None to None
-         2025-06-10 16:47:33.522 INFO -   Total price per hour: None to $10.00
-         2025-06-10 16:47:33.522 INFO -   Pricing: On-demand instances
-         2025-06-10 16:47:33.522 INFO - Miscellaneous:
-         2025-06-10 16:47:33.522 INFO -   Scaling check interval: 60 seconds
-         2025-06-10 16:47:33.522 INFO -   Instance termination delay: 60 seconds
-         2025-06-10 16:47:33.522 INFO -   Max runtime: 60 seconds
-         2025-06-10 16:47:33.522 INFO -   Max parallel instance creations: 10
-         2025-06-10 16:47:33.522 INFO -   Image: None
-         2025-06-10 16:47:33.522 INFO -   Startup script:
-         2025-06-10 16:47:33.522 INFO -     #!/bin/bash
-         2025-06-10 16:47:33.522 INFO -     echo "Hello, world"
-         2025-06-10 16:47:33.522 INFO - Starting orchestrator
-         2025-06-10 16:47:34.635 INFO - Using current default image: https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/ubuntu-2404-noble-amd64-v20250606
-         [...]
-         2025-06-10 16:47:45.421 INFO - || Selected instance type: e2-micro (pd-standard) in us-central1-* at $0.047098/hour
-         2025-06-10 16:47:45.421 INFO - ||   2 vCPUs, 1.0 GB RAM, no local SSD
-         2025-06-10 16:47:45.421 INFO - || Derived boot disk size: 10.0 GB
-         2025-06-10 16:47:45.421 INFO - || Derived number of tasks per instance: 2
-         2025-06-10 16:47:45.421 INFO - Checking if scaling is needed...
-         [...]
-         2025-06-10 16:47:48.700 INFO - No running instances found
-         2025-06-10 16:47:48.701 INFO - Starting 5 new instances for an incremental price of $0.24/hour
-         2025-06-10 16:48:16.376 INFO - Started on-demand instance 'rmscr-my-job-34j6cf59spi4w0ulb7xddbf6b' in zone 'us-central1-b'
-         2025-06-10 16:48:16.554 INFO - Started on-demand instance 'rmscr-my-job-7ino428u4uwl0x0fkbh9urpdn' in zone 'us-central1-b'
-         2025-06-10 16:48:16.729 INFO - Started on-demand instance 'rmscr-my-job-2qcrua9meajz72w9m7j7txykd' in zone 'us-central1-a'
-         2025-06-10 16:48:17.120 INFO - Started on-demand instance 'rmscr-my-job-aap2skl1iucx0h9x464amast8' in zone 'us-central1-c'
-         2025-06-10 16:48:17.487 INFO - Started on-demand instance 'rmscr-my-job-8o7zo0vbc87qjna05frcegq74' in zone 'us-central1-f'
-         2025-06-10 16:48:17.487 INFO - Successfully provisioned 5 of 5 requested instances
-         2025-06-10 16:49:17.543 INFO - Checking if scaling is needed...
-         2025-06-10 16:49:19.765 INFO - Running instance summary:
-         2025-06-10 16:49:19.765 INFO -   State       Instance Type             Boot Disk    vCPUs  Zone             Count  Total Price
-         2025-06-10 16:49:19.765 INFO -   ---------------------------------------------------------------------------------------------
-         2025-06-10 16:49:19.765 INFO -   running     e2-micro                  pd-standard      2  us-central1-c        1        $0.05
-         2025-06-10 16:49:19.765 INFO -   running     e2-micro                  pd-standard      2  us-central1-a        1        $0.05
-         2025-06-10 16:49:19.765 INFO -   running     e2-micro                  pd-standard      2  us-central1-f        1        $0.05
-         2025-06-10 16:49:19.765 INFO -   running     e2-micro                  pd-standard      2  us-central1-b        2        $0.09
-         2025-06-10 16:49:19.765 INFO -   ---------------------------------------------------------------------------------------------
-         2025-06-10 16:49:19.765 INFO -   Total running/starting:                               10 (weighted)            5        $0.24
-
-
 .. _cli_run_cmd:
 
 run
 ~~~
 
-This combines the functionality of ``load_queue`` and ``manage_pool``, allowing the task
-queue to be populated with tasks and the instance pool to be managed usnig a single
-command.
+The ``run`` command handles the complete task execution workflow in a single command.
+It automates: queue management, task loading, instance orchestration, event monitoring,
+and cleanup.
+
+During job execution, the status of each task is tracked in a SQLite database and reported
+to the console. The name of the database file is derived from the job ID or can be specified
+with the ``--db-file`` option. If the job run is interrupted, the database file is saved and
+job execution can be resumed by using the ``--continue`` option based on the contents of the
+database file.
+
+**Fresh Run Mode** (default): Deletes existing SQLite database and queues, creates new ones,
+loads tasks into the database and cloud queue, manages instances, monitors events, and
+automatically terminates instances and deletes queues when all tasks complete. If the existing
+queue has messages, the user will be prompted for confirmation unless ``--force`` is specified.
+
+**Continue Mode** (``--continue``): Resumes from a previous interrupted run by reading the
+SQLite database, draining pending events, and continuing to manage instances until completion.
 
 .. code-block:: none
 
@@ -600,12 +488,51 @@ command.
 
 Additional options:
 
---task-file TASK_FILE                 Path to task file (JSON or YAML)
+--task-file TASK_FILE                 Path to task file (JSON or YAML); required for fresh runs,
+                                      not used with --continue
 --start-task N                        Skip tasks until this task number (1-based)
 --limit N                             Maximum number of tasks to enqueue
 --max-concurrent-queue-operations N   Maximum concurrent tasks to enqueue (default: 100)
+--continue                            Resume from a previous interrupted run using the existing
+                                      SQLite database and cloud state
+--db-file DB_FILE                     Path to SQLite database file (default: {job_id}.db);
+                                      can also be set in configuration file under run.db_file
+--output-file OUTPUT_FILE             Optional file to write events to in JSON-lines format
+                                      in addition to the SQLite database
+--force, -f                           Force fresh run without confirmation even if queue has
+                                      existing messages
 --dry-run                             Do not actually load any tasks or create or delete any
                                       instances
+
+**SQLite Database**: The database file (default: ``{job_id}.db``) persistently tracks task
+status and events. It contains:
+
+- **tasks table**: task_id, task_data, status, retry flag, timestamps, hostname, results,
+  exceptions, exit codes
+- **events table**: Raw event log from workers
+
+**Task Completion**: A task is considered complete when it has any status with ``retry=False``.
+
+**Keyboard Interrupt (Ctrl+C)**: When interrupted, you are prompted:
+
+.. code-block:: none
+
+   Received interrupt.
+
+   Choose action:
+     [T] Terminate all instances and delete queues
+     [L] Leave instances running (can resume with --continue)
+     [C] Cancel and continue running
+
+   Enter choice (T/L/C):
+
+**Final Report**: Upon completion, a comprehensive report is printed with:
+
+- Task counts by status
+- Total elapsed time and throughput (tasks/hour)
+- Task execution time statistics (range, mean, median, 90th/95th percentile)
+- Exception summaries with counts
+- Spot termination tracking
 
 Examples:
 
@@ -613,11 +540,127 @@ Examples:
 
    .. tab:: AWS
 
-      TODO
+      .. code-block:: bash
+
+         # Fresh run
+         cloud_tasks run --config myconfig.yml --task-file tasks.json
+
+         # Resume after crash
+         cloud_tasks run --config myconfig.yml --continue
+
+         # With event logging
+         cloud_tasks run --config myconfig.yml --task-file tasks.json --output-file events.json
 
    .. tab:: GCP
 
-      TODO
+      .. code-block:: bash
+
+         # Fresh run
+         cloud_tasks run --config myconfig.yml --task-file tasks.json
+
+         # Resume after crash
+         cloud_tasks run --config myconfig.yml --continue
+
+         # With custom database file
+         cloud_tasks run --config myconfig.yml --task-file tasks.json --db-file custom.db
+
+
+.. _cli_monitor_event_queue:
+
+monitor_event_queue
+~~~~~~~~~~~~~~~~~~~
+
+Monitor the event queue and update the task database. This command is useful
+when you are running workers locally (not using cloud-managed compute instances)
+but still want automated event monitoring and SQLite-based task tracking. Note
+this does not manage compute instances.
+
+.. code-block:: none
+
+   cloud_tasks monitor_event_queue
+     [Common options]
+     [Job-specific options]
+     [Additional options]
+
+Additional options:
+
+--db-file DB_FILE                     Path to SQLite database file (default: {job_id}.db)
+--output-file OUTPUT_FILE             Optional file to write events to in JSON-lines format
+--print-events                        Print events to stdout as they are received
+--no-auto-complete                    Don't stop automatically when all tasks complete
+
+**Use Case:**
+
+This command is designed for scenarios where you want to run workers manually (e.g., for local
+testing or debugging) but still use the automated event monitoring and task tracking infrastructure.
+
+**Workflow:**
+
+1. Create queues and database (without starting cloud instances):
+
+   .. code-block:: bash
+
+      cloud_tasks run --config config.yml --task-file tasks.json --dry-run
+
+2. Start workers locally in separate terminals:
+
+   .. code-block:: bash
+
+      # Terminal 1
+      python your_worker.py --config config.yml
+
+      # Terminal 2
+      python your_worker.py --config config.yml
+
+3. Monitor progress in another terminal:
+
+   .. code-block:: bash
+
+      cloud_tasks monitor_event_queue --config config.yml
+
+**Behavior:**
+
+- Opens an existing SQLite database (created by ``run --dry-run`` or a previous run)
+- Monitors the event queue for task completion events from workers
+- Updates the database with task status, results, and statistics
+- Prints periodic status summaries to the console
+- Automatically stops when all tasks complete (unless ``--no-auto-complete`` is specified)
+- Optionally writes events to a JSON-lines output file for archival
+
+**Comparison with ``run`` command:**
+
+- ``run``: Creates and manages cloud instances + monitors events (full automation)
+- ``monitor_event_queue``: Only monitors events (for manual worker management)
+
+Examples:
+
+.. tabs::
+
+   .. tab:: AWS
+
+      .. code-block:: bash
+
+         # Monitor with default settings
+         cloud_tasks monitor_event_queue --config config.yml
+
+         # Monitor with output file
+         cloud_tasks monitor_event_queue --config config.yml --output-file events.jsonl
+
+         # Monitor indefinitely (don't stop when tasks complete)
+         cloud_tasks monitor_event_queue --config config.yml --no-auto-complete
+
+   .. tab:: GCP
+
+      .. code-block:: bash
+
+         # Monitor with default settings
+         cloud_tasks monitor_event_queue --config config.yml
+
+         # Monitor with custom database
+         cloud_tasks monitor_event_queue --config config.yml --db-file my-job.db
+
+         # Monitor and print events to stdout
+         cloud_tasks monitor_event_queue --config config.yml --print-events
 
 
 .. _cli_status_cmd:
@@ -646,7 +689,7 @@ Examples:
 
       .. code-block:: none
 
-         $ cloud_tasks status --provider gcp --project my-project --job-id my-job --region us-central1
+         $ cloud_tasks status --provider gcp --project-id my-project --job-id my-job --region us-central1
          Checking job status for job 'my-job'
          Running instance summary:
          State       Instance Type             vCPUs  Zone             Count  Total Price
@@ -692,7 +735,7 @@ Examples:
 
       .. code-block:: none
 
-         $ cloud_tasks stop --provider gcp --project my-project --job-id my-job --region us-central1
+         $ cloud_tasks stop --provider gcp --project-id my-project --job-id my-job --region us-central1
          Stopping job 'my-job'...this could take a few minutes
          Job 'my-job' stopped
 
@@ -736,7 +779,7 @@ Examples:
 
       .. code-block:: none
 
-         $ cloud_tasks list_running_instances --provider gcp --project my-project --region us-central1 --all-instances --include-terminated
+         $ cloud_tasks list_running_instances --provider gcp --project-id my-project --region us-central1 --all-instances --include-terminated
          Listing all instances including ones not created by cloud tasks
 
          ┌────────┬────────────────────────────────────────┬───────────────┬────────────┬───────────────┬───────────────────────────────┐
@@ -759,79 +802,22 @@ Queue Management Commands
 -------------------------
 
 
-.. _cli_monitor_event_queue:
-
-monitor_event_queue
-~~~~~~~~~~~~~~~~~~~
-
-Monitor the event queue and display and save events as they arrive. For safety, saving to a
-file is not optional and the `--output-file` option is required. New events will be appended
-to this file so be careful to delete any previous file if you want the list of events to start
-fresh.
-
-.. code-block:: none
-
-   cloud_tasks monitor_event_queue
-     [Common options]
-     [Provider-specific options]
-     [Additional options]
-
-Additional options:
-
---output-file FILE    File to write events to (will be opened in append mode) [required]
-
-Examples:
-
-.. tabs::
-
-   .. tab:: AWS
-
-      .. code-block:: none
-
-         XXX Update this
-         $ cloud_tasks monitor_event_queue --provider aws --job-id my-job --output-file events.json
-         Monitoring event queue 'my-job-events' on AWS...
-         {"event_type": "task_started", "task_id": "task-001", "timestamp": "2025-04-28T14:33:46.974Z"}
-         {"event_type": "task_completed", "task_id": "task-001", "timestamp": "2025-04-28T14:33:47.123Z"}
-
-   .. tab:: GCP
-
-      .. code-block:: none
-
-         $ cloud_tasks monitor_event_queue --provider gcp --job-id my-job --project my-project --task-file examples/parallel_addition/addition_tasks.json --output-file events.json
-         Reading tasks from "examples/parallel_addition/addition_tasks.json"
-         No previous events found...starting statistics from scratch
-         Monitoring event queue 'parallel-addition-job-events' on GCP...
-
-         Summary:
-         10000 tasks have not been completed without retry
-         [...]
-         {"timestamp": "2025-06-11T00:24:48.938470", "hostname": "rmscr-parallel-addition-job-ewxpucju5wxvzm3uscz829r2r", "event_type": "task_completed", "task_id": "addition-task-000004", "retry": false, "elapsed_time": 9.439203023910522, "result": "gs://rms-nav-test-addition/addition-results/addition-task-000004.txt"}
-
-         Summary:
-         9996 tasks have not been completed without retry
-         Task event status:
-            task_completed      (retry=False):      4
-            task_exception      (retry= True):      1
-            task_timed_out      (retry=False):      1
-         Task exceptions:
-                  1: File "/root/rms-cloud-tasks/src/cloud_tasks/worker/worker.py", line 1466, in _worker_process_main; retry, result = Worker._execute_task_isolated(; ...; ~~^~~; ZeroDivisionError: division by zero
-         Tasks completed: 4 in 18.41 seconds (4.60 seconds/task)
-         Elapsed time statistics:
-            Range:  3.97 to 10.31 seconds
-            Mean:   7.12 +/- 2.49 seconds
-            Median: 7.42 seconds
-            90th %: 9.88 seconds
-            95th %: 10.09 seconds
-
-
 .. _cli_load_queue_cmd:
 
 load_queue
 ~~~~~~~~~~
 
-Load tasks into a queue. If the queue already exists, the tasks will be added to the end
-of the queue.
+Load tasks into the local SQLite database and cloud task queue without starting any
+compute instances. This allows you to separate the task loading step from the
+:ref:`run <cli_run_cmd>` command (e.g. load once, then run with ``--continue`` to manage
+instances only).
+
+**Fresh load** (default): Deletes the existing SQLite database and cloud queues (after
+optional confirmation if the queue has messages), creates new queues, loads tasks from
+the task file into the database and enqueues them to the cloud task queue.
+
+**Continue mode** (``--continue``): Opens the existing SQLite database and prints task
+statistics and queue depth only. No task file is read and no messages are enqueued.
 
 .. code-block:: none
 
@@ -843,10 +829,15 @@ of the queue.
 
 Additional options:
 
---task-file TASK_FILE                 Path to task file (JSON or YAML)
+--task-file TASK_FILE                 Path to task file (JSON or YAML); required unless
+                                      --continue
 --start-task N                        Skip tasks until this task number (1-based)
 --limit N                             Maximum number of tasks to enqueue
---max-concurrent-queue-operations N   Maximum concurrent queue operations (default: 100)
+--max-concurrent-queue-operations N  Maximum concurrent queue operations (default: 100)
+--db-file DB_FILE                     Path to SQLite database file (default: {job_id}.db)
+--continue                            Open existing database and show status only (no load)
+--force, -f                           Force fresh load without confirmation even if queue
+                                      has existing messages
 
 Examples:
 
@@ -857,22 +848,22 @@ Examples:
       .. code-block:: none
 
          $ cloud_tasks load_queue --provider aws --job-id my-job --task-file examples/parallel_addition/addition_tasks.json
-         Creating task queue 'my-job' on AWS if necessary...
-         Populating task queue from examples/parallel_addition/addition_tasks.json...
-         Enqueueing tasks: 10000it [00:13, 735.74it/s]
-         Loaded 10000 task(s)
-         Tasks loaded successfully. Queue depth (may be approximate): 10000
+         Loaded 10000 tasks. Queue depth (may be approximate): 10000
+
+         $ cloud_tasks load_queue --config myconfig.yml --continue
+         Database: my-job.db (10000 tasks)
+         Status: ...
 
    .. tab:: GCP
 
       .. code-block:: none
 
-         $ cloud_tasks load_queue --provider gcp --job-id my-job --project my-project --task-file examples/parallel_addition/addition_tasks.json
-         Creating task queue 'my-job' on GCP if necessary...
-         Populating task queue from examples/parallel_addition/addition_tasks.json...
-         Enqueueing tasks: 10000it [00:07, 1414.18it/s]
-         Loaded 10000 task(s)
-         Tasks loaded successfully. Queue depth (may be approximate): 10
+         $ cloud_tasks load_queue --provider gcp --job-id my-job --project-id my-project --task-file examples/parallel_addition/addition_tasks.json
+         Loaded 10000 tasks. Queue depth (may be approximate): 10000
+
+         $ cloud_tasks load_queue --config myconfig.yml --db-file my-job.db --continue
+         Database: my-job.db (10000 tasks)
+         Status: ...
 
 
 .. _cli_show_queue_cmd:
@@ -927,7 +918,7 @@ Examples:
 
       .. code-block:: none
 
-         $ cloud_tasks show_queue --provider gcp --job-id my-job --project my-project --detail
+         $ cloud_tasks show_queue --provider gcp --job-id my-job --project-id my-project --detail
          Checking queue depth for 'my-job'...
          Current depth: 10
 
@@ -990,7 +981,7 @@ Examples:
 
       .. code-block:: none
 
-         ❯ cloud_tasks purge_queue --provider gcp --job-id my-job --project my-project
+         ❯ cloud_tasks purge_queue --provider gcp --job-id my-job --project-id my-project
 
          WARNING: This will permanently delete all 10+ messages from queue 'my-job' on 'GCP'.
          Type 'EMPTY my-job' to confirm: EMPTY my-job
@@ -1009,7 +1000,7 @@ queues.
 
 .. code-block:: none
 
-   cloud_tasks purge_queue
+   cloud_tasks delete_queue
      [Common options]
      [Job-specific options]
      [Provider-specific options]
@@ -1047,7 +1038,7 @@ Examples:
 
       .. code-block:: none
 
-         $ cloud_tasks delete_queue --provider gcp --job-id my-job --project my-project
+         $ cloud_tasks delete_queue --provider gcp --job-id my-job --project-id my-project
 
          WARNING: This will permanently delete the queue 'my-job' from GCP.
          This operation cannot be undone and will remove all infrastructure.
