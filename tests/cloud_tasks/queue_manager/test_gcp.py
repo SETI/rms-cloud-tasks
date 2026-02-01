@@ -1,5 +1,6 @@
 # Manually verified 4/29/2025
 
+import asyncio
 import json
 import logging
 import sys
@@ -7,7 +8,7 @@ import time
 import uuid
 import warnings
 from pathlib import Path
-from unittest.mock import ANY, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 from google.api_core import exceptions as gcp_exceptions
@@ -80,6 +81,23 @@ def gcp_config():
 def gcp_queue(mock_pubsub_client, gcp_config):
     """Fixture to provide a GCPPubSubQueue instance."""
     return GCPPubSubQueue(gcp_config)
+
+
+def test_gcp_init_no_config_no_queue_name():
+    """GCPPubSubQueue raises ValueError when both gcp_config and queue_name are missing."""
+    with pytest.raises(ValueError) as exc_info:
+        GCPPubSubQueue(None)
+    assert "gcp_config" in str(exc_info.value) or "queue_name" in str(exc_info.value)
+
+
+def test_gcp_init_queue_name_required():
+    """GCPPubSubQueue raises ValueError when gcp_config has no queue_name and queue_name not passed."""
+    config = MagicMock()
+    config.queue_name = None
+    config.exactly_once_queue = False
+    with pytest.raises(ValueError) as exc_info:
+        GCPPubSubQueue(config)
+    assert "queue" in str(exc_info.value).lower() or "name" in str(exc_info.value).lower()
 
 
 @pytest.mark.asyncio
@@ -180,6 +198,68 @@ async def test_acknowledge_task(gcp_queue, mock_pubsub_client):
             "ack_ids": ["test-ack-id"],
         }
     )
+
+
+@pytest.mark.asyncio
+async def test_send_message_quiet(gcp_queue, mock_pubsub_client):
+    """send_message with _quiet=True does not log debug (covers _quiet branch)."""
+    mock_publisher, mock_subscriber = mock_pubsub_client
+    future = MagicMock()
+    future.result.return_value = "msg-id"
+    mock_publisher.publish.return_value = future
+    await gcp_queue.send_message({"task_id": "t1", "data": {}}, _quiet=True)
+    mock_publisher.publish.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_receive_messages_exactly_once(mock_pubsub_client):
+    """receive_messages with exactly_once=True uses _receive_messages_exactly_once path."""
+    mock_publisher, mock_subscriber = mock_pubsub_client
+    config = MagicMock(
+        project_id="test-project",
+        queue_name="test-queue",
+        credentials_file=None,
+        exactly_once_queue=True,
+    )
+    queue = GCPPubSubQueue(config)
+    queue._topic_path = "projects/test-project/topics/test-queue-topic"
+    queue._subscription_path = "projects/test-project/subscriptions/test-queue-subscription"
+    queue._message_queue = asyncio.Queue()
+    queue._message_queue.put_nowait({
+        "message_id": "m1",
+        "data": {"task_id": "t1", "data": {"x": 1}},
+        "ack_id": "ack1",
+    })
+    with patch.object(queue, "_create_topic_and_subscription", new_callable=AsyncMock):
+        with patch.object(queue, "_start_streaming_pull"):
+            messages = await queue.receive_messages(max_count=2, acknowledge=True)
+    assert len(messages) == 1
+    assert messages[0]["message_id"] == "m1"
+    assert messages[0]["data"]["task_id"] == "t1"
+
+
+@pytest.mark.asyncio
+async def test_cancel_streaming_pull_exactly_once(mock_pubsub_client):
+    """_cancel_streaming_pull when exactly_once and future set cancels and clears future."""
+    mock_publisher, mock_subscriber = mock_pubsub_client
+    config = MagicMock(
+        project_id="test-project",
+        queue_name="test-queue",
+        credentials_file=None,
+        exactly_once_queue=True,
+    )
+    queue = GCPPubSubQueue(config)
+    mock_future = MagicMock()
+    mock_future.cancel.return_value = None
+    mock_future.result.side_effect = Exception("cancelled")
+    queue._streaming_pull_future = mock_future
+    with patch.object(asyncio, "get_event_loop") as mock_loop:
+        mock_loop.return_value.run_in_executor = AsyncMock(
+            side_effect=Exception("cancelled")
+        )
+        await queue._cancel_streaming_pull()
+    mock_future.cancel.assert_called_once()
+    assert queue._streaming_pull_future is None
 
 
 @pytest.mark.asyncio
@@ -388,8 +468,9 @@ async def test_delete_queue_partial_failure(gcp_queue, mock_pubsub_client):
     gcp_queue._topic_exists = True
 
     # Attempt to delete the queue
-    with pytest.raises(gcp_exceptions.PermissionDenied):
+    with pytest.raises(gcp_exceptions.PermissionDenied) as exc_info:
         await gcp_queue.delete_queue()
+    assert "permission" in str(exc_info.value).lower() or "denied" in str(exc_info.value).lower()
 
     # Verify subscription deletion was attempted
     mock_subscriber.delete_subscription.assert_called_with(
@@ -419,8 +500,9 @@ async def test_purge_queue_delete_error(gcp_queue, mock_pubsub_client):
 
     with patch("asyncio.sleep", side_effect=no_sleep):
         # Attempt to purge queue
-        with pytest.raises(gcp_exceptions.PermissionDenied):
+        with pytest.raises(gcp_exceptions.PermissionDenied) as exc_info:
             await gcp_queue.purge_queue()
+        assert "permission" in str(exc_info.value).lower() or "denied" in str(exc_info.value).lower()
 
     # Verify deletion was attempted
     mock_subscriber.delete_subscription.assert_called_with(
@@ -599,8 +681,9 @@ async def test_topic_initialization_error(mock_pubsub_client):
     mock_publisher, mock_subscriber = mock_pubsub_client
     mock_publisher.get_topic.side_effect = gcp_exceptions.PermissionDenied("Permission denied")
 
-    with pytest.raises(gcp_exceptions.PermissionDenied):
+    with pytest.raises(gcp_exceptions.PermissionDenied) as exc_info:
         GCPPubSubQueue(gcp_config=MagicMock(queue_name="test-queue"))
+    assert "permission" in str(exc_info.value).lower() or "denied" in str(exc_info.value).lower()
 
 
 @pytest.mark.asyncio
@@ -611,8 +694,9 @@ async def test_subscription_initialization_error(mock_pubsub_client):
         "Permission denied"
     )
 
-    with pytest.raises(gcp_exceptions.PermissionDenied):
+    with pytest.raises(gcp_exceptions.PermissionDenied) as exc_info:
         GCPPubSubQueue(gcp_config=MagicMock(queue_name="test-queue"))
+    assert "permission" in str(exc_info.value).lower() or "denied" in str(exc_info.value).lower()
 
 
 @pytest.mark.asyncio
@@ -622,8 +706,9 @@ async def test_topic_creation_error(gcp_queue, mock_pubsub_client):
     mock_publisher.create_topic.side_effect = gcp_exceptions.PermissionDenied("Permission denied")
     gcp_queue._topic_exists = False
 
-    with pytest.raises(gcp_exceptions.PermissionDenied):
+    with pytest.raises(gcp_exceptions.PermissionDenied) as exc_info:
         await gcp_queue.send_task("test-task", {"data": "test"})
+    assert "permission" in str(exc_info.value).lower() or "denied" in str(exc_info.value).lower()
 
 
 @pytest.mark.asyncio
@@ -635,8 +720,9 @@ async def test_subscription_creation_error(gcp_queue, mock_pubsub_client):
     )
     gcp_queue._subscription_exists = False
 
-    with pytest.raises(gcp_exceptions.PermissionDenied):
+    with pytest.raises(gcp_exceptions.PermissionDenied) as exc_info:
         await gcp_queue.receive_tasks()
+    assert "permission" in str(exc_info.value).lower() or "denied" in str(exc_info.value).lower()
 
 
 @pytest.mark.asyncio
@@ -647,8 +733,9 @@ async def test_send_task_publish_error(gcp_queue, mock_pubsub_client):
     future.result.side_effect = gcp_exceptions.DeadlineExceeded("Deadline exceeded")
     mock_publisher.publish.return_value = future
 
-    with pytest.raises(gcp_exceptions.DeadlineExceeded):
+    with pytest.raises(gcp_exceptions.DeadlineExceeded) as exc_info:
         await gcp_queue.send_task("test-task", {"data": "test"})
+    assert "deadline" in str(exc_info.value).lower()
 
 
 @pytest.mark.asyncio
@@ -657,8 +744,9 @@ async def test_receive_tasks_pull_error(gcp_queue, mock_pubsub_client):
     mock_publisher, mock_subscriber = mock_pubsub_client
     mock_subscriber.pull.side_effect = gcp_exceptions.DeadlineExceeded("Deadline exceeded")
 
-    with pytest.raises(gcp_exceptions.DeadlineExceeded):
+    with pytest.raises(gcp_exceptions.DeadlineExceeded) as exc_info:
         await gcp_queue.receive_tasks()
+    assert "deadline" in str(exc_info.value).lower()
 
 
 @pytest.mark.asyncio
@@ -667,8 +755,9 @@ async def test_acknowledge_task_error(gcp_queue, mock_pubsub_client):
     mock_publisher, mock_subscriber = mock_pubsub_client
     mock_subscriber.acknowledge.side_effect = gcp_exceptions.InvalidArgument("Invalid ack_id")
 
-    with pytest.raises(gcp_exceptions.InvalidArgument):
+    with pytest.raises(gcp_exceptions.InvalidArgument) as exc_info:
         await gcp_queue.acknowledge_task("invalid-ack-id")
+    assert "invalid" in str(exc_info.value).lower() or "ack" in str(exc_info.value).lower()
 
 
 @pytest.mark.asyncio
@@ -679,8 +768,9 @@ async def test_retry_task_error(gcp_queue, mock_pubsub_client):
         "Invalid ack_id"
     )
 
-    with pytest.raises(gcp_exceptions.InvalidArgument):
+    with pytest.raises(gcp_exceptions.InvalidArgument) as exc_info:
         await gcp_queue.retry_task("invalid-ack-id")
+    assert "invalid" in str(exc_info.value).lower() or "ack" in str(exc_info.value).lower()
 
 
 @pytest.mark.asyncio

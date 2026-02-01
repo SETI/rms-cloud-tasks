@@ -9,15 +9,6 @@ import pytest
 from cloud_tasks.worker.worker import Worker
 
 
-def _mock_worker_function(task_id, task_data, worker):
-    return False, "success"
-
-
-@pytest.fixture
-def mock_worker_function():
-    return _mock_worker_function
-
-
 # Visibility renewal tests
 @pytest.mark.asyncio
 async def test_visibility_renewal_worker_starts_for_cloud_queues(mock_worker_function):

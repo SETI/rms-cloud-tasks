@@ -1,8 +1,6 @@
 """Tests for the worker module."""
 
-import json
 import os
-import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -10,50 +8,6 @@ import pytest
 from filecache import FCPath
 
 from cloud_tasks.worker.worker import Worker
-
-
-@pytest.fixture
-def sample_task():
-    return {"task_id": "test-task-1", "data": {"key": "value"}, "ack_id": "test-ack-1"}
-
-
-def _mock_worker_function(task_id, task_data, worker):
-    return False, "success"
-
-
-@pytest.fixture
-def mock_worker_function():
-    return _mock_worker_function
-
-
-@pytest.fixture
-def local_task_file_json():
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-        json.dump(
-            [
-                {"task_id": "task1", "data": {"key": "value1"}},
-                {"task_id": "task2", "data": {"key": "value2"}},
-            ],
-            f,
-        )
-    yield f.name
-    os.unlink(f.name)
-
-
-@pytest.fixture
-def mock_task_factory():
-    """Create a mock task factory that yields tasks."""
-
-    def factory():
-        tasks = [
-            {"task_id": "factory-task-1", "data": {"key": "value1"}},
-            {"task_id": "factory-task-2", "data": {"key": "value2"}},
-            {"task_id": "factory-task-3", "data": {"key": "value3"}},
-        ]
-        yield from tasks
-
-    return factory
-
 
 # Task source argument tests
 

@@ -17,98 +17,50 @@ from cloud_tasks.common.config import (
     load_config,
 )
 
-
-# --- RunConfig validation tests ---
-def test_runconfig_min_max_instances():
-    RunConfig(min_instances=1, max_instances=2)
-    with pytest.raises(ValueError):
-        RunConfig(min_instances=3, max_instances=2)
-
-
-def test_runconfig_min_max_total_cpus():
-    RunConfig(min_total_cpus=1, max_total_cpus=2)
-    with pytest.raises(ValueError):
-        RunConfig(min_total_cpus=3, max_total_cpus=2)
-
-
-def test_runconfig_min_max_tasks_per_instance():
-    RunConfig(min_tasks_per_instance=1, max_tasks_per_instance=2)
-    with pytest.raises(ValueError):
-        RunConfig(min_tasks_per_instance=3, max_tasks_per_instance=2)
+# --- RunConfig validation tests (parametrized) ---
+_RUNCONFIG_MIN_MAX_CASES = [
+    ({"min_instances": 1, "max_instances": 2}, {"min_instances": 3, "max_instances": 2}, "min_instances must be less than max_instances"),
+    ({"min_total_cpus": 1, "max_total_cpus": 2}, {"min_total_cpus": 3, "max_total_cpus": 2}, "min_total_cpus must be less than max_total_cpus"),
+    ({"min_tasks_per_instance": 1, "max_tasks_per_instance": 2}, {"min_tasks_per_instance": 3, "max_tasks_per_instance": 2}, "min_tasks_per_instance must be less than max_tasks_per_instance"),
+    ({"min_simultaneous_tasks": 1, "max_simultaneous_tasks": 2}, {"min_simultaneous_tasks": 3, "max_simultaneous_tasks": 2}, "min_simultaneous_tasks must be less than max_simultaneous_tasks"),
+    ({"min_total_price_per_hour": 1, "max_total_price_per_hour": 2}, {"min_total_price_per_hour": 3, "max_total_price_per_hour": 2}, "min_total_price_per_hour must be less than max_total_price_per_hour"),
+    ({"min_cpu_rank": 1, "max_cpu_rank": 2}, {"min_cpu_rank": 3, "max_cpu_rank": 2}, "min_cpu_rank must be less than max_cpu_rank"),
+    ({"min_cpu": 1, "max_cpu": 2}, {"min_cpu": 3, "max_cpu": 2}, "min_cpu must be less than max_cpu"),
+    ({"min_total_memory": 1, "max_total_memory": 2}, {"min_total_memory": 3, "max_total_memory": 2}, "min_total_memory must be less than max_total_memory"),
+    ({"min_memory_per_cpu": 1, "max_memory_per_cpu": 2}, {"min_memory_per_cpu": 3, "max_memory_per_cpu": 2}, "min_memory_per_cpu must be less than max_memory_per_cpu"),
+    ({"min_memory_per_task": 1, "max_memory_per_task": 2}, {"min_memory_per_task": 3, "max_memory_per_task": 2}, "min_memory_per_task must be less than max_memory_per_task"),
+    ({"min_local_ssd": 1, "max_local_ssd": 2}, {"min_local_ssd": 3, "max_local_ssd": 2}, "min_local_ssd must be less than max_local_ssd"),
+    ({"min_local_ssd_per_cpu": 1, "max_local_ssd_per_cpu": 2}, {"min_local_ssd_per_cpu": 3, "max_local_ssd_per_cpu": 2}, "min_local_ssd_per_cpu must be less than max_local_ssd_per_cpu"),
+    ({"min_local_ssd_per_task": 1, "max_local_ssd_per_task": 2}, {"min_local_ssd_per_task": 3, "max_local_ssd_per_task": 2}, "min_local_ssd_per_task must be less than max_local_ssd_per_task"),
+]
 
 
-def test_runconfig_min_max_simultaneous_tasks():
-    RunConfig(min_simultaneous_tasks=1, max_simultaneous_tasks=2)
-    with pytest.raises(ValueError):
-        RunConfig(min_simultaneous_tasks=3, max_simultaneous_tasks=2)
+@pytest.mark.parametrize("valid_kwargs,invalid_kwargs,msg_substring", _RUNCONFIG_MIN_MAX_CASES)
+def test_runconfig_min_max_ordering(valid_kwargs, invalid_kwargs, msg_substring):
+    """RunConfig min/max pairs must have min <= max."""
+    RunConfig(**valid_kwargs)
+    with pytest.raises(ValueError) as exc_info:
+        RunConfig(**invalid_kwargs)
+    assert msg_substring in str(exc_info.value)
 
 
-def test_runconfig_min_max_total_price_per_hour():
-    RunConfig(min_total_price_per_hour=1, max_total_price_per_hour=2)
-    with pytest.raises(ValueError):
-        RunConfig(min_total_price_per_hour=3, max_total_price_per_hour=2)
-    with pytest.raises(ValueError):
-        RunConfig(max_total_price_per_hour=0)
+_RUNCONFIG_MAX_GT_ZERO_CASES = [
+    ({"max_total_price_per_hour": 0}, "max_total_price_per_hour must be greater than 0"),
+    ({"max_total_memory": 0}, "max_total_memory must be greater than 0"),
+    ({"max_memory_per_cpu": 0}, "max_memory_per_cpu must be greater than 0"),
+    ({"max_memory_per_task": 0}, "max_memory_per_task must be greater than 0"),
+    ({"max_local_ssd": 0}, "max_local_ssd must be greater than 0"),
+    ({"max_local_ssd_per_cpu": 0}, "max_local_ssd_per_cpu must be greater than 0"),
+    ({"max_local_ssd_per_task": 0}, "max_local_ssd_per_task must be greater than 0"),
+]
 
 
-def test_runconfig_min_max_cpu_rank():
-    RunConfig(min_cpu_rank=1, max_cpu_rank=2)
-    with pytest.raises(ValueError):
-        RunConfig(min_cpu_rank=3, max_cpu_rank=2)
-
-
-def test_runconfig_min_max_cpu():
-    RunConfig(min_cpu=1, max_cpu=2)
-    with pytest.raises(ValueError):
-        RunConfig(min_cpu=3, max_cpu=2)
-
-
-def test_runconfig_min_max_total_memory():
-    RunConfig(min_total_memory=1, max_total_memory=2)
-    with pytest.raises(ValueError):
-        RunConfig(min_total_memory=3, max_total_memory=2)
-    with pytest.raises(ValueError):
-        RunConfig(max_total_memory=0)
-
-
-def test_runconfig_min_max_memory_per_cpu():
-    RunConfig(min_memory_per_cpu=1, max_memory_per_cpu=2)
-    with pytest.raises(ValueError):
-        RunConfig(min_memory_per_cpu=3, max_memory_per_cpu=2)
-    with pytest.raises(ValueError):
-        RunConfig(max_memory_per_cpu=0)
-
-
-def test_runconfig_min_max_memory_per_task():
-    RunConfig(min_memory_per_task=1, max_memory_per_task=2)
-    with pytest.raises(ValueError):
-        RunConfig(min_memory_per_task=3, max_memory_per_task=2)
-    with pytest.raises(ValueError):
-        RunConfig(max_memory_per_task=0)
-
-
-def test_runconfig_min_max_local_ssd():
-    RunConfig(min_local_ssd=1, max_local_ssd=2)
-    with pytest.raises(ValueError):
-        RunConfig(min_local_ssd=3, max_local_ssd=2)
-    with pytest.raises(ValueError):
-        RunConfig(max_local_ssd=0)
-
-
-def test_runconfig_min_max_local_ssd_per_cpu():
-    RunConfig(min_local_ssd_per_cpu=1, max_local_ssd_per_cpu=2)
-    with pytest.raises(ValueError):
-        RunConfig(min_local_ssd_per_cpu=3, max_local_ssd_per_cpu=2)
-    with pytest.raises(ValueError):
-        RunConfig(max_local_ssd_per_cpu=0)
-
-
-def test_runconfig_min_max_local_ssd_per_task():
-    RunConfig(min_local_ssd_per_task=1, max_local_ssd_per_task=2)
-    with pytest.raises(ValueError):
-        RunConfig(min_local_ssd_per_task=3, max_local_ssd_per_task=2)
-    with pytest.raises(ValueError):
-        RunConfig(max_local_ssd_per_task=0)
+@pytest.mark.parametrize("invalid_kwargs,msg_substring", _RUNCONFIG_MAX_GT_ZERO_CASES)
+def test_runconfig_max_must_be_greater_than_zero(invalid_kwargs, msg_substring):
+    """RunConfig max fields that must be > 0 raise when set to 0."""
+    with pytest.raises(ValueError) as exc_info:
+        RunConfig(**invalid_kwargs)
+    assert msg_substring in str(exc_info.value)
 
 
 def test_runconfig_instance_types_list_or_str():

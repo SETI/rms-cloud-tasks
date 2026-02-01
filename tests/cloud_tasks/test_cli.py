@@ -1,15 +1,19 @@
 """Tests for the CLI: yield_tasks_from_file and run_argv subcommands."""
 
+import asyncio
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from cloud_tasks.cli import (
+    EventMonitor,
     build_parser,
     dump_tasks_by_status,
     log_task_stats,
     print_final_report,
     run_argv,
+    run_event_monitoring_loop,
     yield_tasks_from_file,
 )
 from cloud_tasks.common.task_db import TaskDatabase
@@ -103,6 +107,18 @@ def test_yield_tasks_from_file_limit_negative_returns_nothing(tmp_path):
     task_file.write_text('[{"task_id": "t1", "data": {}}]')
     out = list(yield_tasks_from_file(str(task_file), limit=-1))
     assert out == []
+
+
+def test_yield_tasks_from_file_yaml_with_start_task(tmp_path):
+    """YAML with start_task skips first item and yields remaining (hits YAML accumulation branch)."""
+    task_file = tmp_path / "tasks.yaml"
+    task_file.write_text(
+        "- task_id: t1\n  data: {x: 1}\n- task_id: t2\n  data: {x: 2}\n- task_id: t3\n  data: {x: 3}\n"
+    )
+    out = list(yield_tasks_from_file(str(task_file), start_task=1))
+    assert len(out) == 2
+    assert out[0]["task_id"] == "t2"
+    assert out[1]["task_id"] == "t3"
 
 
 # --- run_argv / build_parser tests ---
@@ -552,6 +568,54 @@ def test_run_argv_show_queue_detail_receipt_handle_aws(tmp_path, capsys):
     assert "Receipt Handle" in out or "..." in out
 
 
+def test_run_argv_show_queue_detail_lock_token_azure(tmp_path, capsys):
+    """show_queue --detail with message containing lock_token (Azure-style) and ack_id for retry."""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("provider: gcp\ngcp:\n  job_id: test-job\n  project_id: test-project\n")
+    mock_queue = AsyncMock()
+    mock_queue.get_queue_depth = AsyncMock(return_value=1)
+    mock_queue.receive_tasks = AsyncMock(
+        return_value=[
+            {
+                "ack_id": "a1",
+                "lock_token": "lock-" + "x" * 60,
+                "task_id": "t1",
+                "data": {"k": "v"},
+            }
+        ]
+    )
+    mock_queue.retry_task = AsyncMock()
+    with patch("cloud_tasks.cli.create_queue", new_callable=AsyncMock, return_value=mock_queue):
+        code = run_argv(
+            ["show_queue", "--config", str(config_path), "--provider", "gcp", "--detail"]
+        )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "Task ID" in out and "t1" in out
+    assert "Data:" in out
+
+
+def test_run_argv_show_queue_detail_data_not_dict(tmp_path, capsys):
+    """show_queue --detail with message data not a dict still prints (non-dict branch)."""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("provider: gcp\ngcp:\n  job_id: test-job\n  project_id: test-project\n")
+    mock_queue = AsyncMock()
+    mock_queue.get_queue_depth = AsyncMock(return_value=1)
+    mock_queue.receive_tasks = AsyncMock(
+        return_value=[
+            {"ack_id": "a1", "task_id": "t1", "data": "raw string"}
+        ]
+    )
+    mock_queue.retry_task = AsyncMock()
+    with patch("cloud_tasks.cli.create_queue", new_callable=AsyncMock, return_value=mock_queue):
+        code = run_argv(
+            ["show_queue", "--config", str(config_path), "--provider", "gcp", "--detail"]
+        )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "Data:" in out or "raw" in out
+
+
 # --- list_running_instances extra paths ---
 
 
@@ -991,3 +1055,207 @@ def test_print_final_report_smoke(tmp_path):
     task_db.insert_task("t1", {"x": 1})
     print_final_report(task_db)
     task_db.close()
+
+
+# --- EventMonitor and run_event_monitoring_loop unit tests ---
+
+
+@pytest.mark.asyncio
+async def test_event_monitor_process_events_batch_empty(tmp_path):
+    """EventMonitor.process_events_batch returns 0 when receive_messages returns empty."""
+    db_path = tmp_path / "events.db"
+    task_db = TaskDatabase(str(db_path))
+    mock_queue = AsyncMock()
+    mock_queue.receive_messages = AsyncMock(return_value=[])
+    monitor = EventMonitor(mock_queue, task_db, print_events=False, print_summary=False)
+    count = await monitor.process_events_batch()
+    task_db.close()
+    assert count == 0
+
+
+@pytest.mark.asyncio
+async def test_event_monitor_process_events_batch_with_messages(tmp_path, capsys):
+    """EventMonitor.process_events_batch processes dict and str payloads, writes file, prints."""
+    db_path = tmp_path / "events.db"
+    task_db = TaskDatabase(str(db_path))
+    task_db.insert_task("t1", {})
+    out_file = tmp_path / "events.txt"
+    mock_queue = AsyncMock()
+    mock_queue.receive_messages = AsyncMock(
+        return_value=[
+            {"data": {"task_id": "t1", "status": "completed"}},
+            {"data": '{"task_id":"t2","status":"done"}'},
+        ]
+    )
+    monitor = EventMonitor(
+        mock_queue,
+        task_db,
+        output_file_path=str(out_file),
+        print_events=True,
+        print_summary=False,
+    )
+    await monitor.start()
+    count = await monitor.process_events_batch()
+    monitor.close()
+    task_db.close()
+    assert count == 2
+    assert out_file.exists()
+    assert "completed" in out_file.read_text() or "done" in out_file.read_text()
+    out = capsys.readouterr().out
+    assert "completed" in out or "done" in out
+
+
+@pytest.mark.asyncio
+async def test_event_monitor_process_events_batch_json_error(tmp_path):
+    """EventMonitor.process_events_batch logs and skips on JSONDecodeError."""
+    db_path = tmp_path / "events.db"
+    task_db = TaskDatabase(str(db_path))
+    mock_queue = AsyncMock()
+    mock_queue.receive_messages = AsyncMock(
+        return_value=[{"data": "not valid json {"}]
+    )
+    monitor = EventMonitor(mock_queue, task_db, print_events=False, print_summary=False)
+    count = await monitor.process_events_batch()
+    task_db.close()
+    assert count == 1
+
+
+@pytest.mark.asyncio
+async def test_event_monitor_process_events_batch_exception(tmp_path):
+    """EventMonitor.process_events_batch logs on generic Exception in message processing."""
+    db_path = tmp_path / "events.db"
+    task_db = TaskDatabase(str(db_path))
+    mock_queue = AsyncMock()
+    mock_queue.receive_messages = AsyncMock(
+        return_value=[{"data": {"task_id": "t1"}}]
+    )
+    monitor = EventMonitor(mock_queue, task_db, print_events=False, print_summary=False)
+    with patch.object(monitor.task_db, "insert_event", side_effect=RuntimeError("db error")):
+        count = await monitor.process_events_batch()
+    task_db.close()
+    assert count == 1
+
+
+@pytest.mark.asyncio
+async def test_event_monitor_print_status_summary(tmp_path, caplog):
+    """EventMonitor.print_status_summary with force=True logs summary even when nothing changed."""
+    db_path = tmp_path / "events.db"
+    task_db = TaskDatabase(str(db_path))
+    task_db.insert_task("t1", {})
+    mock_queue = AsyncMock()
+    monitor = EventMonitor(mock_queue, task_db, print_events=False, print_summary=True)
+    monitor.something_changed = False
+    with caplog.at_level(logging.INFO):
+        monitor.print_status_summary(force=True)
+    task_db.close()
+    assert "Summary" in caplog.text or "Total tasks" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_event_monitor_start_open_file_raises(tmp_path):
+    """EventMonitor.start exits 1 when opening output file raises."""
+    db_path = tmp_path / "events.db"
+    task_db = TaskDatabase(str(db_path))
+    mock_queue = AsyncMock()
+    monitor = EventMonitor(
+        mock_queue,
+        task_db,
+        output_file_path="/nonexistent/invalid/path/events.txt",
+        print_events=False,
+        print_summary=False,
+    )
+    with patch("cloud_tasks.cli.open", side_effect=OSError("Permission denied")):
+        with patch("cloud_tasks.cli.sys.exit") as mock_exit:
+            await monitor.start()
+    mock_exit.assert_called_once_with(1)
+    task_db.close()
+
+
+@pytest.mark.asyncio
+async def test_event_monitor_close_with_file(tmp_path):
+    """EventMonitor.close closes output file when open."""
+    db_path = tmp_path / "events.db"
+    task_db = TaskDatabase(str(db_path))
+    out_file = tmp_path / "out.txt"
+    mock_queue = AsyncMock()
+    monitor = EventMonitor(
+        mock_queue,
+        task_db,
+        output_file_path=str(out_file),
+        print_events=False,
+        print_summary=False,
+    )
+    await monitor.start()
+    assert monitor.output_file is not None
+    monitor.close()
+    assert monitor.output_file.closed
+    task_db.close()
+
+
+@pytest.mark.asyncio
+async def test_run_event_monitoring_loop_stop_signal(tmp_path):
+    """run_event_monitoring_loop exits when stop_signal is set."""
+    db_path = tmp_path / "events.db"
+    task_db = TaskDatabase(str(db_path))
+    task_db.insert_task("t1", {})
+    mock_queue = AsyncMock()
+    mock_queue.receive_messages = AsyncMock(return_value=[])
+    monitor = EventMonitor(mock_queue, task_db, print_events=False, print_summary=False)
+    stop_signal = asyncio.Event()
+    stop_signal.set()
+    await run_event_monitoring_loop(
+        monitor, task_db, check_completion=False, stop_signal=stop_signal
+    )
+    task_db.close()
+
+
+@pytest.mark.asyncio
+async def test_run_event_monitoring_loop_check_completion(tmp_path):
+    """run_event_monitoring_loop exits when check_completion and all tasks complete."""
+    db_path = tmp_path / "events.db"
+    task_db = TaskDatabase(str(db_path))
+    task_db.insert_task("t1", {})
+    # First batch: one event that marks t1 completed; second batch: empty so loop checks completion
+    call_count = 0
+
+    async def receive_messages(*, max_count):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return [{"data": {"task_id": "t1", "event_type": "task_completed"}}]
+        return []
+
+    mock_queue = AsyncMock()
+    mock_queue.receive_messages = receive_messages
+    monitor = EventMonitor(mock_queue, task_db, print_events=False, print_summary=False)
+    await run_event_monitoring_loop(monitor, task_db, check_completion=True)
+    task_db.close()
+
+
+@pytest.mark.asyncio
+async def test_run_event_monitoring_loop_process_events_raises(tmp_path):
+    """run_event_monitoring_loop catches Exception from process_events_batch and continues."""
+    db_path = tmp_path / "events.db"
+    task_db = TaskDatabase(str(db_path))
+    task_db.insert_task("t1", {})
+    mock_queue = AsyncMock()
+    mock_queue.receive_messages = AsyncMock(return_value=[])
+    monitor = EventMonitor(mock_queue, task_db, print_events=False, print_summary=False)
+    stop_signal = asyncio.Event()
+    call_count = 0
+
+    async def process_events_that_raises():
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise RuntimeError("receive failed")
+        stop_signal.set()
+        return 0
+
+    monitor.process_events_batch = process_events_that_raises
+    with patch("cloud_tasks.cli.asyncio.sleep", new_callable=AsyncMock):
+        await run_event_monitoring_loop(
+            monitor, task_db, check_completion=False, stop_signal=stop_signal
+        )
+    task_db.close()
+    assert call_count >= 2
