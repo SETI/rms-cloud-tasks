@@ -88,5 +88,15 @@ plugins = "pydantic.mypy"
 follow_imports = "silent"
 
 [[tool.mypy.overrides]]
-module = ["json_stream.*", "google.cloud.pubsub_v1.*", "google.cloud"]
+module = [
+    "json_stream.*",
+    "google.cloud.pubsub_v1.*",
+    "google.cloud",
+    "botocore.*",
+]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disable_error_code = ["method-assign", "attr-defined"]
 ignore_missing_imports = true

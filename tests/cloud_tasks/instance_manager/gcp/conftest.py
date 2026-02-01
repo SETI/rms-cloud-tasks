@@ -2,6 +2,7 @@ import asyncio
 import copy
 import threading
 import time
+from collections.abc import AsyncGenerator
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -522,14 +523,14 @@ def deepcopy_gcp_instance_manager(
     # serialization errors; restore them on the source; give the new instance
     # the source's _thread_local and a fresh threading.Lock.
     try:
-        gcp_instance_manager._thread_local = None
-        gcp_instance_manager._pricing_cache_lock = None
+        gcp_instance_manager._thread_local = None  # type: ignore[assignment]
+        gcp_instance_manager._pricing_cache_lock = None  # type: ignore[assignment]
         new_gcp_instance_manager = copy.deepcopy(gcp_instance_manager)
     finally:
-        gcp_instance_manager._thread_local = old_thread
-        gcp_instance_manager._pricing_cache_lock = old_lock
-    new_gcp_instance_manager._thread_local = old_thread
-    new_gcp_instance_manager._pricing_cache_lock = threading.Lock()
+        gcp_instance_manager._thread_local = old_thread  # type: ignore[assignment]
+        gcp_instance_manager._pricing_cache_lock = old_lock  # type: ignore[assignment]
+    new_gcp_instance_manager._thread_local = old_thread  # type: ignore[assignment]
+    new_gcp_instance_manager._pricing_cache_lock = threading.Lock()  # type: ignore[assignment]
     return new_gcp_instance_manager
 
 
@@ -551,7 +552,7 @@ async def gcp_instance_manager_n1_n2(
     gcp_config: GCPConfig,
     mock_machine_types_client_n1_n2: MagicMock,
     mock_default_credentials: tuple[MagicMock, str],
-) -> GCPComputeInstanceManager:
+) -> AsyncGenerator[GCPComputeInstanceManager, None]:
     """Create a GCP instance manager with mocked dependencies."""
     start = time.time()
     with (
@@ -590,7 +591,7 @@ async def gcp_instance_manager_n1_2_4(
     gcp_config: GCPConfig,
     mock_machine_types_client_n1_2_4: MagicMock,
     mock_default_credentials: tuple[MagicMock, str],
-) -> GCPComputeInstanceManager:
+) -> AsyncGenerator[GCPComputeInstanceManager, None]:
     """Create a GCP instance manager with mocked dependencies."""
     start = time.time()
     with (

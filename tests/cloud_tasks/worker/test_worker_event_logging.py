@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import tempfile
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -200,7 +201,7 @@ async def test_event_logging_to_queue(mock_worker_function):
             assert mock_queue.send_message.call_count == 7
 
             # Get all sent messages (send_message accepts dict; queue may pass through as-is)
-            def _msg(call: object) -> dict:
+            def _msg(call: Any) -> dict:
                 arg = call.args[0]
                 return arg if isinstance(arg, dict) else json.loads(arg)
 

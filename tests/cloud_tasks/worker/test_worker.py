@@ -852,7 +852,6 @@ def test_worker_process_main(mock_worker_function):
         mock_exit.assert_called_once_with(0)
 
 
-@staticmethod
 def test_execute_task_isolated(mock_worker_function):
     task_id = "test-task"
     task_data = {"key": "value"}
@@ -862,7 +861,6 @@ def test_execute_task_isolated(mock_worker_function):
     assert result == "success"
 
 
-@staticmethod
 def test_execute_task_isolated_error():
     def error_func(task_id, task_data, worker):
         raise ValueError("Test error")

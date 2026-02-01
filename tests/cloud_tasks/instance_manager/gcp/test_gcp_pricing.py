@@ -508,7 +508,7 @@ async def test_get_instance_pricing_cache_hit(
             }
         }
     }
-    gcp_instance_manager_n1_n2._instance_pricing_cache[(machine_family, use_spot)] = cached_pricing
+    gcp_instance_manager_n1_n2._instance_pricing_cache[(machine_family, use_spot)] = cached_pricing  # type: ignore[assignment]
 
     # Act
     result = await gcp_instance_manager_n1_n2.get_instance_pricing(
