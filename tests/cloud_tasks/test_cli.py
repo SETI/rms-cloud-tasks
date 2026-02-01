@@ -602,9 +602,7 @@ def test_run_argv_show_queue_detail_data_not_dict(tmp_path, capsys):
     mock_queue = AsyncMock()
     mock_queue.get_queue_depth = AsyncMock(return_value=1)
     mock_queue.receive_tasks = AsyncMock(
-        return_value=[
-            {"ack_id": "a1", "task_id": "t1", "data": "raw string"}
-        ]
+        return_value=[{"ack_id": "a1", "task_id": "t1", "data": "raw string"}]
     )
     mock_queue.retry_task = AsyncMock()
     with patch("cloud_tasks.cli.create_queue", new_callable=AsyncMock, return_value=mock_queue):
@@ -1111,9 +1109,7 @@ async def test_event_monitor_process_events_batch_json_error(tmp_path):
     db_path = tmp_path / "events.db"
     task_db = TaskDatabase(str(db_path))
     mock_queue = AsyncMock()
-    mock_queue.receive_messages = AsyncMock(
-        return_value=[{"data": "not valid json {"}]
-    )
+    mock_queue.receive_messages = AsyncMock(return_value=[{"data": "not valid json {"}])
     monitor = EventMonitor(mock_queue, task_db, print_events=False, print_summary=False)
     count = await monitor.process_events_batch()
     task_db.close()
@@ -1126,9 +1122,7 @@ async def test_event_monitor_process_events_batch_exception(tmp_path):
     db_path = tmp_path / "events.db"
     task_db = TaskDatabase(str(db_path))
     mock_queue = AsyncMock()
-    mock_queue.receive_messages = AsyncMock(
-        return_value=[{"data": {"task_id": "t1"}}]
-    )
+    mock_queue.receive_messages = AsyncMock(return_value=[{"data": {"task_id": "t1"}}])
     monitor = EventMonitor(mock_queue, task_db, print_events=False, print_summary=False)
     with patch.object(monitor.task_db, "insert_event", side_effect=RuntimeError("db error")):
         count = await monitor.process_events_batch()

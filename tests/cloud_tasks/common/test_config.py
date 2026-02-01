@@ -19,19 +19,71 @@ from cloud_tasks.common.config import (
 
 # --- RunConfig validation tests (parametrized) ---
 _RUNCONFIG_MIN_MAX_CASES = [
-    ({"min_instances": 1, "max_instances": 2}, {"min_instances": 3, "max_instances": 2}, "min_instances must be less than max_instances"),
-    ({"min_total_cpus": 1, "max_total_cpus": 2}, {"min_total_cpus": 3, "max_total_cpus": 2}, "min_total_cpus must be less than max_total_cpus"),
-    ({"min_tasks_per_instance": 1, "max_tasks_per_instance": 2}, {"min_tasks_per_instance": 3, "max_tasks_per_instance": 2}, "min_tasks_per_instance must be less than max_tasks_per_instance"),
-    ({"min_simultaneous_tasks": 1, "max_simultaneous_tasks": 2}, {"min_simultaneous_tasks": 3, "max_simultaneous_tasks": 2}, "min_simultaneous_tasks must be less than max_simultaneous_tasks"),
-    ({"min_total_price_per_hour": 1, "max_total_price_per_hour": 2}, {"min_total_price_per_hour": 3, "max_total_price_per_hour": 2}, "min_total_price_per_hour must be less than max_total_price_per_hour"),
-    ({"min_cpu_rank": 1, "max_cpu_rank": 2}, {"min_cpu_rank": 3, "max_cpu_rank": 2}, "min_cpu_rank must be less than max_cpu_rank"),
-    ({"min_cpu": 1, "max_cpu": 2}, {"min_cpu": 3, "max_cpu": 2}, "min_cpu must be less than max_cpu"),
-    ({"min_total_memory": 1, "max_total_memory": 2}, {"min_total_memory": 3, "max_total_memory": 2}, "min_total_memory must be less than max_total_memory"),
-    ({"min_memory_per_cpu": 1, "max_memory_per_cpu": 2}, {"min_memory_per_cpu": 3, "max_memory_per_cpu": 2}, "min_memory_per_cpu must be less than max_memory_per_cpu"),
-    ({"min_memory_per_task": 1, "max_memory_per_task": 2}, {"min_memory_per_task": 3, "max_memory_per_task": 2}, "min_memory_per_task must be less than max_memory_per_task"),
-    ({"min_local_ssd": 1, "max_local_ssd": 2}, {"min_local_ssd": 3, "max_local_ssd": 2}, "min_local_ssd must be less than max_local_ssd"),
-    ({"min_local_ssd_per_cpu": 1, "max_local_ssd_per_cpu": 2}, {"min_local_ssd_per_cpu": 3, "max_local_ssd_per_cpu": 2}, "min_local_ssd_per_cpu must be less than max_local_ssd_per_cpu"),
-    ({"min_local_ssd_per_task": 1, "max_local_ssd_per_task": 2}, {"min_local_ssd_per_task": 3, "max_local_ssd_per_task": 2}, "min_local_ssd_per_task must be less than max_local_ssd_per_task"),
+    (
+        {"min_instances": 1, "max_instances": 2},
+        {"min_instances": 3, "max_instances": 2},
+        "min_instances must be less than max_instances",
+    ),
+    (
+        {"min_total_cpus": 1, "max_total_cpus": 2},
+        {"min_total_cpus": 3, "max_total_cpus": 2},
+        "min_total_cpus must be less than max_total_cpus",
+    ),
+    (
+        {"min_tasks_per_instance": 1, "max_tasks_per_instance": 2},
+        {"min_tasks_per_instance": 3, "max_tasks_per_instance": 2},
+        "min_tasks_per_instance must be less than max_tasks_per_instance",
+    ),
+    (
+        {"min_simultaneous_tasks": 1, "max_simultaneous_tasks": 2},
+        {"min_simultaneous_tasks": 3, "max_simultaneous_tasks": 2},
+        "min_simultaneous_tasks must be less than max_simultaneous_tasks",
+    ),
+    (
+        {"min_total_price_per_hour": 1, "max_total_price_per_hour": 2},
+        {"min_total_price_per_hour": 3, "max_total_price_per_hour": 2},
+        "min_total_price_per_hour must be less than max_total_price_per_hour",
+    ),
+    (
+        {"min_cpu_rank": 1, "max_cpu_rank": 2},
+        {"min_cpu_rank": 3, "max_cpu_rank": 2},
+        "min_cpu_rank must be less than max_cpu_rank",
+    ),
+    (
+        {"min_cpu": 1, "max_cpu": 2},
+        {"min_cpu": 3, "max_cpu": 2},
+        "min_cpu must be less than max_cpu",
+    ),
+    (
+        {"min_total_memory": 1, "max_total_memory": 2},
+        {"min_total_memory": 3, "max_total_memory": 2},
+        "min_total_memory must be less than max_total_memory",
+    ),
+    (
+        {"min_memory_per_cpu": 1, "max_memory_per_cpu": 2},
+        {"min_memory_per_cpu": 3, "max_memory_per_cpu": 2},
+        "min_memory_per_cpu must be less than max_memory_per_cpu",
+    ),
+    (
+        {"min_memory_per_task": 1, "max_memory_per_task": 2},
+        {"min_memory_per_task": 3, "max_memory_per_task": 2},
+        "min_memory_per_task must be less than max_memory_per_task",
+    ),
+    (
+        {"min_local_ssd": 1, "max_local_ssd": 2},
+        {"min_local_ssd": 3, "max_local_ssd": 2},
+        "min_local_ssd must be less than max_local_ssd",
+    ),
+    (
+        {"min_local_ssd_per_cpu": 1, "max_local_ssd_per_cpu": 2},
+        {"min_local_ssd_per_cpu": 3, "max_local_ssd_per_cpu": 2},
+        "min_local_ssd_per_cpu must be less than max_local_ssd_per_cpu",
+    ),
+    (
+        {"min_local_ssd_per_task": 1, "max_local_ssd_per_task": 2},
+        {"min_local_ssd_per_task": 3, "max_local_ssd_per_task": 2},
+        "min_local_ssd_per_task must be less than max_local_ssd_per_task",
+    ),
 ]
 
 
@@ -387,8 +439,9 @@ def test_config_update_run_config_from_provider_config(config_obj, provider):
             c.gcp.startup_script_file = "bar"
         case "AZURE":
             c.azure.startup_script_file = "bar"
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError) as exc_info:
         c.update_run_config_from_provider_config()
+    assert "startup script" in str(exc_info.value).lower() and "both" in str(exc_info.value).lower()
     # Test startup_script_file loads content
     c.run.startup_script = None
     c.run.startup_script_file = None
@@ -424,8 +477,9 @@ def test_update_run_config_from_provider_config_unsupported(config_obj):
 def test_config_validate_config(config_obj, provider):
     c = config_obj
     c.provider = None
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError) as exc_info:
         c.validate_config()
+    assert "Provider must be specified" in str(exc_info.value)
     with pytest.raises(pydantic.ValidationError):
         c.provider = "BAD"
     c.provider = provider
@@ -459,8 +513,11 @@ def test_config_get_provider_config(config_obj, provider):
     assert pc.queue_name == "jid"
     # Test missing provider_name
     c.provider = None
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError) as exc_info:
         c.get_provider_config()
+    assert "Provider" in str(exc_info.value) and (
+        "not provided" in str(exc_info.value) or "detected" in str(exc_info.value)
+    )
     # Test unsupported provider
     with pytest.raises(pydantic.ValidationError):
         c.provider = "FOO"
@@ -569,8 +626,9 @@ def test_load_config_file_invalid_yaml(tmp_path):
     with open(file_path, "w") as f:
         f.write("- just\n- a\n- list\n")
     with patch.object(config_mod, "FCPath", lambda *a, **kw: file_path):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError) as exc_info:
             load_config(str(file_path))
+        assert "dictionary" in str(exc_info.value).lower() or "YAML" in str(exc_info.value)
 
 
 def test_load_config_no_file():

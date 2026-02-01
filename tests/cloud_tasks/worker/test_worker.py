@@ -1,7 +1,6 @@
 """Tests for the worker module."""
 
 import asyncio
-import json
 import logging
 import multiprocessing
 import os
@@ -14,62 +13,9 @@ from queue import Empty
 from unittest.mock import ANY, AsyncMock, MagicMock, call, patch
 
 import pytest
-import yaml
 from filecache import FCPath
 
 from cloud_tasks.worker.worker import LocalTaskQueue, Worker
-
-
-@pytest.fixture
-def mock_queue():
-    queue = AsyncMock()
-    queue.receive_tasks = AsyncMock()
-    queue.acknowledge_task = AsyncMock()
-    queue.retry_task = AsyncMock()
-    return queue
-
-
-@pytest.fixture
-def sample_task():
-    return {"task_id": "test-task-1", "data": {"key": "value"}, "ack_id": "test-ack-1"}
-
-
-def _mock_worker_function(task_id, task_data, worker):
-    return False, "success"
-
-
-@pytest.fixture
-def mock_worker_function():
-    return _mock_worker_function
-
-
-# Local tasks tests
-@pytest.fixture
-def local_task_file_json():
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-        json.dump(
-            [
-                {"task_id": "task1", "data": {"key": "value1"}},
-                {"task_id": "task2", "data": {"key": "value2"}},
-            ],
-            f,
-        )
-    yield f.name
-    os.unlink(f.name)
-
-
-@pytest.fixture
-def local_task_file_yaml():
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
-        yaml.dump(
-            [
-                {"task_id": "task3", "data": {"key": "value3"}},
-                {"task_id": "task4", "data": {"key": "value4"}},
-            ],
-            f,
-        )
-    yield f.name
-    os.unlink(f.name)
 
 
 @pytest.mark.asyncio
@@ -132,82 +78,6 @@ async def test_local_queue_receive_all_tasks(local_task_file_json):
 
 
 # Work __init__ tests
-
-
-@pytest.fixture
-def worker(mock_worker_function):
-    os.environ["RMS_CLOUD_TASKS_PROVIDER"] = "AWS"
-    os.environ["RMS_CLOUD_TASKS_JOB_ID"] = "test-job"
-    with patch("sys.argv", ["worker.py"]):
-        return Worker(mock_worker_function)
-
-
-@pytest.fixture
-def env_setup_teardown(monkeypatch):
-    # Setup: Store original environment variables
-    original_env = os.environ.copy()
-    monkeypatch.setenv("RMS_CLOUD_TASKS_PROVIDER", "AWS")
-    monkeypatch.setenv("RMS_CLOUD_TASKS_JOB_ID", "test-job")
-    monkeypatch.setenv("RMS_CLOUD_TASKS_EVENT_LOG_TO_QUEUE", "true")
-    monkeypatch.setenv("RMS_CLOUD_TASKS_INSTANCE_TYPE", "t2.micro")
-    monkeypatch.setenv("RMS_CLOUD_TASKS_INSTANCE_NUM_VCPUS", "2")
-    monkeypatch.setenv("RMS_CLOUD_TASKS_INSTANCE_MEM_GB", "4")
-    monkeypatch.setenv("RMS_CLOUD_TASKS_INSTANCE_SSD_GB", "100")
-    monkeypatch.setenv("RMS_CLOUD_TASKS_INSTANCE_BOOT_DISK_GB", "20")
-    monkeypatch.setenv("RMS_CLOUD_TASKS_INSTANCE_IS_SPOT", "true")
-    monkeypatch.setenv("RMS_CLOUD_TASKS_INSTANCE_PRICE", "0.1")
-    monkeypatch.setenv("RMS_CLOUD_TASKS_NUM_TASKS_PER_INSTANCE", "4")
-    monkeypatch.setenv("RMS_CLOUD_TASKS_MAX_RUNTIME", "3600")
-    monkeypatch.setenv("RMS_CLOUD_TASKS_RETRY_ON_TIMEOUT", "true")
-    monkeypatch.setenv("RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION", "true")
-    monkeypatch.setenv("RMS_CLOUD_TASKS_RETRY_ON_EXIT", "true")
-    monkeypatch.setenv("RMS_CLOUD_TASKS_SHUTDOWN_GRACE_PERIOD", "300")
-    monkeypatch.setenv("RMS_CLOUD_TASKS_TO_SKIP", "5")
-    monkeypatch.setenv("RMS_CLOUD_TASKS_MAX_NUM_TASKS", "10")
-    monkeypatch.setenv("RMS_CLOUD_TASKS_SIMULATE_SPOT_TERMINATION_AFTER", "32")
-    monkeypatch.setenv("RMS_CLOUD_TASKS_SIMULATE_SPOT_TERMINATION_DELAY", "33")
-    monkeypatch.setenv("RMS_CLOUD_TASKS_RETRY_ON_EXIT", "true")
-    monkeypatch.setenv("RMS_CLOUD_TASKS_EXACTLY_ONCE_QUEUE", "true")
-    # Provide the modified environment
-    yield
-
-    # Teardown: Restore original environment variables
-    os.environ.clear()
-    os.environ.update(original_env)
-
-
-@pytest.fixture
-def env_setup_teardown_false(monkeypatch):
-    # Setup: Store original environment variables
-    original_env = os.environ.copy()
-    monkeypatch.setenv("RMS_CLOUD_TASKS_PROVIDER", "AWS")
-    monkeypatch.setenv("RMS_CLOUD_TASKS_JOB_ID", "test-job")
-    monkeypatch.setenv("RMS_CLOUD_TASKS_EVENT_LOG_TO_QUEUE", "False")
-    monkeypatch.setenv("RMS_CLOUD_TASKS_INSTANCE_TYPE", "t2.micro")
-    monkeypatch.setenv("RMS_CLOUD_TASKS_INSTANCE_NUM_VCPUS", "2")
-    monkeypatch.setenv("RMS_CLOUD_TASKS_INSTANCE_MEM_GB", "4")
-    monkeypatch.setenv("RMS_CLOUD_TASKS_INSTANCE_SSD_GB", "100")
-    monkeypatch.setenv("RMS_CLOUD_TASKS_INSTANCE_BOOT_DISK_GB", "20")
-    monkeypatch.setenv("RMS_CLOUD_TASKS_INSTANCE_IS_SPOT", "false")
-    monkeypatch.setenv("RMS_CLOUD_TASKS_INSTANCE_PRICE", "0.1")
-    monkeypatch.setenv("RMS_CLOUD_TASKS_NUM_TASKS_PER_INSTANCE", "4")
-    monkeypatch.setenv("RMS_CLOUD_TASKS_MAX_RUNTIME", "3600")
-    monkeypatch.setenv("RMS_CLOUD_TASKS_RETRY_ON_TIMEOUT", "false")
-    monkeypatch.setenv("RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION", "false")
-    monkeypatch.setenv("RMS_CLOUD_TASKS_RETRY_ON_EXIT", "false")
-    monkeypatch.setenv("RMS_CLOUD_TASKS_SHUTDOWN_GRACE_PERIOD", "300")
-    monkeypatch.setenv("RMS_CLOUD_TASKS_TO_SKIP", "5")
-    monkeypatch.setenv("RMS_CLOUD_TASKS_MAX_NUM_TASKS", "10")
-    monkeypatch.setenv("RMS_CLOUD_TASKS_SIMULATE_SPOT_TERMINATION_AFTER", "32")
-    monkeypatch.setenv("RMS_CLOUD_TASKS_SIMULATE_SPOT_TERMINATION_DELAY", "33")
-    monkeypatch.setenv("RMS_CLOUD_TASKS_RETRY_ON_EXIT", "false")
-    monkeypatch.setenv("RMS_CLOUD_TASKS_EXACTLY_ONCE_QUEUE", "false")
-    # Provide the modified environment
-    yield
-
-    # Teardown: Restore original environment variables
-    os.environ.clear()
-    os.environ.update(original_env)
 
 
 def test_init_with_env_vars(mock_worker_function, env_setup_teardown):
@@ -868,7 +738,8 @@ def test_execute_task_isolated_error():
     task_id = "test-task"
     task_data = {"key": "value"}
     worker = MagicMock()
-    pytest.raises(ValueError, Worker._execute_task_isolated, task_id, task_data, worker, error_func)
+    with pytest.raises(ValueError, match="Test error"):
+        Worker._execute_task_isolated(task_id, task_data, worker, error_func)
 
 
 def test_exit_if_no_job_id_and_no_tasks(mock_worker_function, caplog):
@@ -1710,32 +1581,6 @@ async def test_tasks_to_skip_and_limit(mock_worker_function):
             # Verify queue interactions (at least 5 calls: 2 skips + 3 dispatches)
             assert mock_queue.receive_tasks.call_count >= 5
             # Tasks are either acked or retried when completed/exited (counts verified above)
-
-
-@pytest.fixture
-def mock_task_factory():
-    """Create a mock task factory that yields tasks."""
-
-    def factory():
-        tasks = [
-            {"task_id": "factory-task-1", "data": {"key": "value1"}},
-            {"task_id": "factory-task-2", "data": {"key": "value2"}},
-            {"task_id": "factory-task-3", "data": {"key": "value3"}},
-        ]
-        yield from tasks
-
-    return factory
-
-
-@pytest.fixture
-def mock_task_factory_empty():
-    """Create a mock task factory that yields no tasks."""
-
-    def factory():
-        return
-        yield  # This line is never reached
-
-    return factory
 
 
 @pytest.mark.asyncio

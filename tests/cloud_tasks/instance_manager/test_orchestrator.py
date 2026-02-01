@@ -123,9 +123,7 @@ def test_orchestrator_init_missing_run_config(mock_config):
 @pytest.mark.asyncio
 async def test_get_job_instances_list_raises(orchestrator):
     """get_job_instances returns error tuple when list_job_instances raises."""
-    with patch.object(
-        orchestrator, "_initialize_pricing_info", new_callable=AsyncMock
-    ):
+    with patch.object(orchestrator, "_initialize_pricing_info", new_callable=AsyncMock):
         orchestrator._instance_manager.list_running_instances = AsyncMock(
             side_effect=RuntimeError("api error")
         )
@@ -139,9 +137,7 @@ async def test_get_job_instances_list_raises(orchestrator):
 @pytest.mark.asyncio
 async def test_get_job_instances_empty_running(orchestrator):
     """get_job_instances returns zero counts and 'No running instances' when list is empty."""
-    with patch.object(
-        orchestrator, "_initialize_pricing_info", new_callable=AsyncMock
-    ):
+    with patch.object(orchestrator, "_initialize_pricing_info", new_callable=AsyncMock):
         orchestrator._instance_manager.list_running_instances = AsyncMock(return_value=[])
         num_running, running_cpus, running_price, summary = await orchestrator.get_job_instances()
     assert num_running == 0
