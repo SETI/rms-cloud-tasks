@@ -4,7 +4,15 @@ Custom logging configuration with proper microsecond support.
 
 import datetime
 import logging
-from typing import override
+import sys
+
+if sys.version_info >= (3, 12):
+    from typing import override
+else:
+
+    def override(func):
+        """No-op decorator on Python < 3.12 (typing.override added in 3.12)."""
+        return func
 
 
 class MicrosecondFormatter(logging.Formatter):
