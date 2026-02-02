@@ -62,7 +62,7 @@ The script and docs build use `SPHINXOPTS="-W"` so Sphinx treats warnings as err
 
 Copy this checklist and track progress:
 
-```
+```text
 Check Progress:
 - [ ] Ruff check (src, tests, examples)
 - [ ] Ruff format --check
