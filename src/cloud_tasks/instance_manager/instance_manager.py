@@ -3,7 +3,7 @@ from typing import Any
 
 from ..common.config import ProviderConfig
 
-# Type aliases for get_instance_pricing return structure (instance_type -> zone -> boot_disk_type -> price_info)
+# Type aliases for get_instance_pricing return structure (instance_type -> region -> zone -> pricing_info)
 PricingInfo = dict[str, float | str | None]
 ZonePricing = dict[str, PricingInfo | None]
 RegionPricing = dict[str, ZonePricing]
@@ -260,29 +260,22 @@ class InstanceManager(ABC):
         """
         Get the hourly price for one or more specific instance types.
 
-        Args:
+        Parameters:
             instance_types: A dictionary mapping instance type to a dictionary of instance type
                 specifications as returned by get_available_instance_types().
-            use_spot: Whether to use spot pricing
-            boot_disk_constraints: Dictionary of constraints used to determine the boot disk type and
-                size. These are from the same config as the instance type constraints but are not
-                used to filter instances.
+            use_spot: Whether to use spot pricing.
+            boot_disk_constraints: Dictionary of constraints used to determine the boot disk type
+                and size. These are from the same config as the instance type constraints but are
+                not used to filter instances.
 
         Returns:
-            A dictionary mapping instance type to a dictionary of hourly price in USD::
-                "cpu_price": Total price of CPU in USD/hour
-                "per_cpu_price": Price of CPU in USD/vCPU/hour
-                "mem_price": Total price of RAM in USD/hour
-                "mem_per_gb_price": Price of RAM in USD/GB/hour
-                "boot_disk_price": Total price of boot disk in USD/hour
-                "boot_disk_per_gb_price": Price of boot disk in USD/GB/hour
-                "local_ssd_price": Total price of local SSD in USD/hour
-                "local_ssd_per_gb_price": Price of local SSD in USD/GB/hour
-                "total_price": Total price of instance in USD/hour
-                "total_price_per_cpu": Total price of instance in USD/vCPU/hour
-                "zone": availability zone
-            Plus the original instance type info keyed by availability zone. If any price is not
-            available, it is set to None.
+            InstancePricingResult: A mapping of instance_type -> region -> zone -> PricingInfo.
+            Each instance_type maps to regions; each region maps to zones; each zone maps to a
+            PricingInfo dict with keys such as "cpu_price", "per_cpu_price", "mem_price",
+            "mem_per_gb_price", "boot_disk_price", "boot_disk_per_gb_price", "local_ssd_price",
+            "local_ssd_per_gb_price", "total_price", "total_price_per_cpu", "zone" (and possibly
+            instance type info). All numeric values are in USD per hour (or per GB/hour where
+            applicable). If any price is not available, it is set to None.
         """
         pass  # pragma: no cover
 

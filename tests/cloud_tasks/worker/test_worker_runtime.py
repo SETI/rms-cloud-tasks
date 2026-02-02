@@ -866,9 +866,8 @@ async def test_handle_results_process_exit_retry_on_exit(mock_worker_function):
             }
 
             async def fake_sleep(*a: Any, **kw: Any) -> None:
-                """Stop worker and return None to break sleep loop (mocks asyncio.sleep)."""
+                """Stop worker to break sleep loop (mocks asyncio.sleep)."""
                 worker._running = False
-                return None
 
             with patch("asyncio.sleep") as mock_sleep:
                 mock_sleep.side_effect = fake_sleep
@@ -1320,7 +1319,7 @@ def test_worker_process_main_with_unhandled_exception() -> None:
 
     def bad_worker_function(
         task_id: str, task_data: dict[str, Any], worker_data: WorkerData
-    ) -> tuple[bool, str]:
+    ) -> NoReturn:
         """Raise to simulate worker function failure."""
         raise ValueError("Worker function error")
 

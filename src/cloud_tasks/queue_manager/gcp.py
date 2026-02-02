@@ -97,6 +97,17 @@ class GCPPubSubQueue(QueueManager):
             self._visibility_timeout = min(visibility_timeout, self._MAXIMUM_VISIBILITY_TIMEOUT)
 
         def _validate_project_id(candidate: str | None) -> str:
+            """Validate and normalize a project_id candidate.
+
+            Parameters:
+                candidate: Raw project_id (e.g. from kwargs or gcp_config). May be None.
+
+            Returns:
+                Non-empty stripped string suitable for self._project_id.
+
+            Raises:
+                ValueError: If candidate is None or blank (same message as missing project_id).
+            """
             if candidate is None:
                 raise ValueError(
                     "project_id is required and must be non-empty (pass via gcp_config or kwargs)"
@@ -113,7 +124,9 @@ class GCPPubSubQueue(QueueManager):
         elif gcp_config and gcp_config.project_id is not None:
             self._project_id = _validate_project_id(gcp_config.project_id)
         else:
-            _validate_project_id(None)
+            raise ValueError(
+                "project_id is required and must be non-empty (pass via gcp_config or kwargs)"
+            )
 
         self._logger.info(
             f'Initializing GCP Pub/Sub queue "{self._queue_name}" with project ID '

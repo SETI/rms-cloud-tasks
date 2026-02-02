@@ -167,10 +167,11 @@ async def test_factory_queue_receive_tasks_max_count_larger_than_available(mock_
 async def test_factory_queue_acknowledge_task(mock_task_factory) -> None:
     """LocalTaskQueue.acknowledge_task with factory is a no-op."""
     queue = LocalTaskQueue(mock_task_factory)
-    tasks_before = await queue.receive_tasks(max_count=10)
-    task_ids_before = {t["task_id"] for t in tasks_before}
+    tasks_snapshot = await queue.receive_tasks(max_count=10)
+    task_ids_snapshot = {t["task_id"] for t in tasks_snapshot}
+    # acknowledge_task is only checked for not raising; snapshot verifies factory output.
     await queue.acknowledge_task("test-ack-1")
-    assert task_ids_before == {"factory-task-1", "factory-task-2", "factory-task-3"}
+    assert task_ids_snapshot == {"factory-task-1", "factory-task-2", "factory-task-3"}
 
 
 @pytest.mark.asyncio

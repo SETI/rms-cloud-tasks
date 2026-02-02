@@ -1,5 +1,6 @@
 """Tests for cloud_tasks.cli: run_argv, build_parser, dump_tasks_by_status, log_task_stats, print_final_report."""
 
+import re
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -133,7 +134,9 @@ def test_run_argv_status_success(tmp_path: Path, capsys: pytest.CaptureFixture[s
     assert code == 0
     out = capsys.readouterr().out
     assert "2 instances" in out or "instances" in out.lower()
-    assert "10" in out or "queue depth: 10" in out.lower()
+    assert re.search(r"queue\s+depth\s*:\s*10", out, re.IGNORECASE), (
+        f"Expected 'Queue depth: 10' (or similar) in output, got: {out!r}"
+    )
 
 
 def test_run_argv_list_regions_success(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

@@ -7,7 +7,7 @@ import datetime
 import json
 import logging
 import re
-from typing import Any, cast
+from typing import Any, TypeAlias, cast
 
 import boto3  # type: ignore
 from botocore.exceptions import ClientError  # type: ignore
@@ -32,7 +32,7 @@ class AWSEC2InstanceManager(InstanceManager):
     _DEFAULT_REGION = "us-west-1"
     # The pricing API is only available in us-east-1, eu-central-1, and ap-south-1
     _PRICING_REGION = "us-east-1"
-    _PricingRet = dict[str, dict[str, dict[str, dict[str, float | str | None] | None]]]
+    _PricingRet: TypeAlias = dict[str, dict[str, dict[str, dict[str, float | str | None] | None]]]
 
     def _empty_pricing_entry(
         self, boot_disk_type: str

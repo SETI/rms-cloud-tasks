@@ -23,7 +23,13 @@ from .instance_manager import InstanceManager
 
 
 class PriceInfo(TypedDict, total=False):
-    """Per-instance price info (e.g. total_price, per_cpu_price). Keys may be absent or None."""
+    """Per-instance price info. All numeric fields are in USD per hour unless noted.
+
+    total_price is the total instance price (USD/hour). per_cpu_price is the price per vCPU
+    (USD/hour); cpu_price is the total CPU component (per_cpu_price * cpu_count). mem_price,
+    boot_disk_price, and local_ssd_price are component costs in USD/hour. Keys may be absent
+    or None when data is unavailable.
+    """
 
     total_price: float | None
     per_cpu_price: float | None

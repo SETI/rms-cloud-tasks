@@ -41,6 +41,9 @@ _LOGGING_LIBRARIES = [
 def _save_logging_state() -> LoggingState:
     """Save root logger and library logger state for later restore.
 
+    Preserves root logger level, root handlers (and their formatter/level), and
+    logger-specific levels for _LOGGING_LIBRARIES.
+
     Returns:
         LoggingState with keys: root_level (int), root_handlers (list of
         logging.Handler), lib_levels (mapping from _LOGGING_LIBRARIES names to int).
@@ -54,7 +57,12 @@ def _save_logging_state() -> LoggingState:
 
 
 def _restore_logging_state(state: LoggingState) -> None:
-    """Restore root and library logger state from a previous _save_logging_state()."""
+    """Restore root and library logger state from a previous _save_logging_state().
+
+    Restores root level, replaces root handlers with the saved list, and sets
+    logger-specific levels for _LOGGING_LIBRARIES. Used by preserve_logging_state
+    so each test gets a clean restore (function-scoped).
+    """
     root = logging.getLogger()
     root.setLevel(state["root_level"])
     for handler in list(root.handlers):
@@ -93,14 +101,16 @@ def test_microsecond_formatter() -> None:
 
 @pytest.fixture
 def preserve_logging_state() -> Generator[None, None, None]:
-    """Save logging state before test and restore it after.
+    """Save root logging state before the test and restore it after.
 
-    _save_logging_state/_restore_logging_state preserve and restore: root logger level
-    and handlers; handler formatter/level (via the handler list); logger-specific levels
-    for third-party libraries (_LOGGING_LIBRARIES); propagation flags are not explicitly
-    saved (handlers are replaced). Yields control to the test and restores state after.
-    Return type: Generator[None, None, None]. Intended for function scope so each test
-    gets a clean restore.
+    Yields:
+        None. While the test runs, logging state is unchanged; after the test,
+        _restore_logging_state restores the root logger level and handlers (and
+        handler formatter/level), and logger-specific levels for _LOGGING_LIBRARIES.
+        Propagation flags are not explicitly saved; handlers are replaced on restore.
+    Notes:
+        Function-scoped so each test gets a clean restore. Uses _save_logging_state
+        and _restore_logging_state to preserve and restore the saved state.
     """
     state = _save_logging_state()
     yield

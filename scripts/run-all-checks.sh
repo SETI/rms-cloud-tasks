@@ -58,6 +58,10 @@ docs_pid=""
 
 # Grace period (seconds) to wait for process to exit after SIGTERM before SIGKILL
 CLEANUP_GRACE_PERIOD=${CLEANUP_GRACE_PERIOD:-5}
+if ! echo "$CLEANUP_GRACE_PERIOD" | grep -qE '^[0-9]+$'; then
+    echo "Error: CLEANUP_GRACE_PERIOD must be a non-negative integer (got: $CLEANUP_GRACE_PERIOD)" >&2
+    exit 1
+fi
 
 _cleanup() {
     _wait_or_kill() {
