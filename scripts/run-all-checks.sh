@@ -15,6 +15,9 @@
 #   -d, --docs       Run only documentation build (Sphinx)
 #   -h, --help       Show this help message
 #
+# Environment:
+#   VENV or VENV_PATH  Path to virtualenv (default: $PROJECT_ROOT/venv)
+#
 # Code checks (run from project root with venv activated):
 #   - ruff check (src, tests, examples)
 #   - ruff format --check (src, tests, examples)
@@ -45,7 +48,14 @@ SCOPE_SPECIFIED=false
 # Get script directory and project root
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-VENV="$PROJECT_ROOT/venv"
+# Virtualenv path: set VENV or VENV_PATH to override default project venv
+if [ -n "${VENV:-}" ]; then
+    VENV="${VENV}"
+elif [ -n "${VENV_PATH:-}" ]; then
+    VENV="${VENV_PATH}"
+else
+    VENV="$PROJECT_ROOT/venv"
+fi
 
 # Track failures
 FAILED_CHECKS=()
@@ -184,7 +194,7 @@ run_code_checks() {
     cd "$PROJECT_ROOT"
 
     if [ ! -f "$VENV/bin/activate" ]; then
-        print_error "Virtual environment not found at venv/"
+        print_error "Virtual environment not found at $VENV"
         [ -n "$status_file" ] && echo "Code - Virtual environment not found" >> "$status_file"
         return 1
     fi
@@ -265,7 +275,7 @@ run_docs_build() {
     cd "$PROJECT_ROOT"
 
     if [ ! -f "$VENV/bin/activate" ]; then
-        print_error "Virtual environment not found at venv/"
+        print_error "Virtual environment not found at $VENV"
         [ -n "$status_file" ] && echo "Documentation - Virtual environment not found" >> "$status_file"
         return 1
     fi

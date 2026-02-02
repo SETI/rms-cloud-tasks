@@ -59,9 +59,19 @@ def _save_logging_state() -> LoggingState:
 def _restore_logging_state(state: LoggingState) -> None:
     """Restore root and library logger state from a previous _save_logging_state().
 
-    Restores root level, replaces root handlers with the saved list, and sets
-    logger-specific levels for _LOGGING_LIBRARIES. Used by preserve_logging_state
-    so each test gets a clean restore (function-scoped).
+    Restores root level, root handlers, and per-library levels for
+    _LOGGING_LIBRARIES. Used by preserve_logging_state and _save_logging_state.
+
+    Parameters:
+        state: LoggingState with keys "root_level" (int), "root_handlers" (list of
+            logging.Handler), "lib_levels" (dict mapping _LOGGING_LIBRARIES names
+            to int).
+
+    Returns:
+        None.
+
+    Raises:
+        KeyError: If a required key is missing from state.
     """
     root = logging.getLogger()
     root.setLevel(state["root_level"])

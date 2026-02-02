@@ -509,7 +509,15 @@ class EventMonitor:
             try:
 
                 def _open_file(p: str, mode: str) -> Any:
-                    """Open a file at the given path with the given mode (e.g. 'a')."""
+                    """Open a file at the given path with the given mode.
+
+                    Parameters:
+                        p: File path to open.
+                        mode: Open mode (e.g. 'a' for append, 'r' for read).
+
+                    Returns:
+                        The opened file object (e.g. from open(p, mode)).
+                    """
                     return open(p, mode)
 
                 self.output_file = await asyncio.to_thread(  # type: ignore[arg-type, func-returns-value]

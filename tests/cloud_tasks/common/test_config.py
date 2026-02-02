@@ -116,7 +116,18 @@ _RUNCONFIG_MAX_GT_ZERO_CASES = [
 def test_runconfig_max_must_be_greater_than_zero(
     invalid_kwargs: dict[str, Any], msg_substring: str
 ) -> None:
-    """RunConfig max fields that must be > 0 raise when set to 0."""
+    """RunConfig max fields <= 0 raise ValueError with expected message.
+
+    Parameters:
+        invalid_kwargs: Keyword args for RunConfig that set a max field to 0.
+        msg_substring: Expected substring in the raised ValueError message.
+
+    Returns:
+        None.
+
+    Raises:
+        AssertionError: If RunConfig does not raise ValueError or message differs.
+    """
     with pytest.raises(ValueError) as exc_info:
         RunConfig(**invalid_kwargs)
     assert msg_substring in str(exc_info.value)

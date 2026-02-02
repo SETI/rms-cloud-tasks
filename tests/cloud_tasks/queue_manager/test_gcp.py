@@ -88,7 +88,7 @@ def test_gcp_init_no_config_no_queue_name() -> None:
     """GCPPubSubQueue raises ValueError when both gcp_config and queue_name are missing."""
     with pytest.raises(ValueError) as exc_info:
         GCPPubSubQueue(None)
-    assert "gcp_config" in str(exc_info.value) or "queue_name" in str(exc_info.value)
+    assert "either gcp_config or queue_name must be provided" in str(exc_info.value).lower()
 
 
 def test_gcp_init_queue_name_required() -> None:
@@ -98,7 +98,7 @@ def test_gcp_init_queue_name_required() -> None:
     config.exactly_once_queue = False
     with pytest.raises(ValueError) as exc_info:
         GCPPubSubQueue(config)
-    assert "queue" in str(exc_info.value).lower() or "name" in str(exc_info.value).lower()
+    assert "queue name is required" in str(exc_info.value).lower()
 
 
 @pytest.mark.asyncio

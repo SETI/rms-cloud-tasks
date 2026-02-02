@@ -153,7 +153,8 @@ class AWSSQSQueue(QueueManager):
             Exceptions from the SQS client (e.g., client-specific errors).
             RuntimeError or ValueError may be raised if the queue or input is invalid.
         """
-        self._logger.debug(f'Sending message to queue "{self._queue_name}"')
+        if not _quiet:
+            self._logger.debug(f'Sending message to queue "{self._queue_name}"')
 
         self._create_queue()
         sqs = self._get_sqs()
@@ -172,7 +173,8 @@ class AWSSQSQueue(QueueManager):
             # Run the blocking SQS operation in a thread pool
             await loop.run_in_executor(None, _do_send)
 
-            self._logger.debug(f"Published message to queue {self._queue_name}")
+            if not _quiet:
+                self._logger.debug(f"Published message to queue {self._queue_name}")
         except Exception as e:
             self._logger.exception("Failed to send message to AWS SQS queue: %s", e)
             raise

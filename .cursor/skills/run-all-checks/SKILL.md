@@ -44,7 +44,7 @@ python -m ruff check src tests examples
 python -m ruff format --check src tests examples
 
 # Type check (mypy)
-python -m mypy src tests
+python -m mypy src tests examples
 
 # Tests (pytest)
 python -m pytest tests -q
@@ -66,7 +66,7 @@ Copy this checklist and track progress:
 Check Progress:
 - [ ] Ruff check (src, tests, examples)
 - [ ] Ruff format --check
-- [ ] Mypy (src, tests)
+- [ ] Mypy (src, tests, examples)
 - [ ] Pytest (tests)
 - [ ] Docs build without warnings
 - [ ] All errors fixed
@@ -87,7 +87,7 @@ Check Progress:
 source venv/bin/activate
 python -m ruff check src tests examples && \
 python -m ruff format --check src tests examples && \
-python -m mypy src tests && \
+python -m mypy src tests examples && \
 python -m pytest tests -q && \
 (cd docs && make clean && make html SPHINXOPTS="-W")
 ```
@@ -176,6 +176,6 @@ All checks pass when:
 
 - `ruff check src tests examples` → "All checks passed!"
 - `ruff format --check src tests examples` → "All files formatted"
-- `mypy src tests` → "Success: no issues found"
+- `mypy src tests examples` → "Success: no issues found"
 - `pytest tests -q` → All tests pass
 - `make html SPHINXOPTS="-W"` (in docs/) → Build completes with exit 0 (no errors or warnings)

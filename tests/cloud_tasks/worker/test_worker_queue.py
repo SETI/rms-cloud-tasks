@@ -5,6 +5,7 @@ import os
 import sys
 import tempfile
 from collections.abc import Generator
+from typing import NoReturn
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -175,7 +176,7 @@ async def test_factory_queue_acknowledge_task(mock_task_factory) -> None:
 
 
 @pytest.mark.asyncio
-async def test_factory_queue_retry_task(mock_task_factory):
+async def test_factory_queue_retry_task(mock_task_factory) -> None:
     """LocalTaskQueue.retry_task with factory is a no-op."""
     queue = LocalTaskQueue(mock_task_factory)
     await queue.retry_task("test-ack-1")
@@ -202,10 +203,11 @@ async def test_worker_start_with_factory_task_queue(
 
 
 @pytest.mark.asyncio
-async def test_worker_start_with_factory_task_queue_error(mock_worker_function, caplog):
+async def test_worker_start_with_factory_task_queue_error(mock_worker_function, caplog) -> None:
     """Worker.start with bad factory exits with code 1."""
 
-    def bad_factory():
+    def bad_factory() -> NoReturn:
+        """Simulate a task queue factory that fails by raising ValueError."""
         raise ValueError("Bad factory")
 
     with patch("sys.argv", ["worker.py"]):

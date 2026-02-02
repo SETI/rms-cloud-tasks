@@ -4,7 +4,8 @@ from typing import Any
 from ..common.config import ProviderConfig
 
 # Type aliases for get_instance_pricing return structure (instance_type -> region -> zone -> pricing_info)
-PricingInfo = dict[str, float | str | None]
+# PricingInfo may contain mixed metadata (prices, strings, etc.) so values are Any.
+PricingInfo = dict[str, Any]
 ZonePricing = dict[str, PricingInfo | None]
 RegionPricing = dict[str, ZonePricing]
 InstancePricingResult = dict[str, RegionPricing]

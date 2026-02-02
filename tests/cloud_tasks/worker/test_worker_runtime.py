@@ -831,10 +831,8 @@ async def test_check_termination_loop_with_simulated_delay(mock_worker_function)
 
             # Verify logging (assert on patched logger)
             info_calls = [str(c) for c in mock_logger.info.call_args_list]
-            assert any(
-                "Simulated spot termination delay complete" in c and "killing all processes" in c
-                for c in info_calls
-            )
+            assert any("Simulated spot termination delay complete" in c for c in info_calls)
+            assert any("killing all processes" in c for c in info_calls)
 
 
 @pytest.mark.asyncio
@@ -1010,7 +1008,8 @@ async def test_tasks_to_skip_and_limit(mock_worker_function):
                 "Expected at least 3 tasks handled (completed or exited)"
             )
             if worker._num_tasks_exited == 0:
-                assert worker._num_tasks_not_retried == 3 and worker._num_tasks_retried == 0
+                assert worker._num_tasks_not_retried == 3
+                assert worker._num_tasks_retried == 0
             else:
                 assert worker._num_tasks_exited == 3  # Mock procs treated as exited prematurely
 

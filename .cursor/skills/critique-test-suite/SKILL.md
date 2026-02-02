@@ -123,7 +123,7 @@ Apply these criteria when reviewing each test file and each test case.
 - **Assertion messages:** Assertions should use clear messages where it helps (e.g. `assert x == y, f"Expected {x} to equal {y}"`); note assertions that would be hard to debug on failure.
 - **Single responsibility:** Each test should verify one behavior; note tests that assert unrelated things or have multiple "acts."
 - **Arrange-Act-Assert:** Tests should follow AAA pattern clearly; note tests with interleaved setup and assertions.
-- **No logic in tests:** Tests should not contain conditionals (`if`/`else`/`elif`), Python ternary expressions (`x if condition else y`), other branching (e.g. `match`/`case`, available in Python 3.10+; Python has no built-in `switch`/`case`), loops, or complex logic; note tests that do and suggest splitting or parameterizing.
+- **No logic in tests:** Tests should not contain conditionals (`if`/`else`/`elif`), Python ternary expressions (`x if condition else y`), other branching (e.g. `match`/`case`, which provides pattern matching and was added in Python 3.10; Python historically lacked a traditional switch/case—use `match`/`case` where appropriate), loops, or complex logic; note tests that do and suggest splitting or parameterizing.
 
 ### 17. Code coverage
 

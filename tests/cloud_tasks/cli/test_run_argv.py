@@ -1,5 +1,6 @@
 """Tests for cloud_tasks.cli: run_argv, build_parser, dump_tasks_by_status, log_task_stats, print_final_report."""
 
+import logging
 import re
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1014,19 +1015,29 @@ def test_dump_tasks_by_status_writes_files(tmp_path: Path) -> None:
     assert "t2" in pending_content
 
 
-def test_log_task_stats_smoke(tmp_path: Path) -> None:
-    """log_task_stats runs without error."""
+def test_log_task_stats_smoke(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """log_task_stats runs without error and logs expected output."""
     db_path = tmp_path / "test.db"
     task_db = TaskDatabase(str(db_path))
     task_db.insert_task("t1", {"x": 1})
+    caplog.set_level(logging.INFO)
+    caplog.clear()
     log_task_stats(task_db, header="Test summary:", include_remaining_ids=True)
     task_db.close()
+    assert "Test summary:" in caplog.text
+    assert "t1" in caplog.text or "Remaining" in caplog.text
+    assert len(caplog.records) >= 1
 
 
-def test_print_final_report_smoke(tmp_path: Path) -> None:
-    """print_final_report runs without error."""
+def test_print_final_report_smoke(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    """print_final_report runs without error and logs expected output."""
     db_path = tmp_path / "test.db"
     task_db = TaskDatabase(str(db_path))
     task_db.insert_task("t1", {"x": 1})
+    caplog.set_level(logging.INFO)
+    caplog.clear()
     print_final_report(task_db)
     task_db.close()
+    assert "JOB COMPLETE" in caplog.text or "Total tasks:" in caplog.text
+    assert "t1" in caplog.text or "Total tasks:" in caplog.text
+    assert len(caplog.records) >= 1

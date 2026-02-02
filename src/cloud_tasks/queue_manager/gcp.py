@@ -75,13 +75,17 @@ class GCPPubSubQueue(QueueManager):
 
         self._message_queue: asyncio.Queue[dict[str, Any]] | None = None
 
-        if queue_name is not None:
-            self._queue_name: str = queue_name
-        else:
-            qn = gcp_config.queue_name if gcp_config else None
-            if qn is None:
-                raise ValueError("Queue name is required")
-            self._queue_name = qn
+        raw_queue_name: str | None = (
+            queue_name
+            if queue_name is not None
+            else (gcp_config.queue_name if gcp_config else None)
+        )
+        if raw_queue_name is None:
+            raise ValueError("Queue name is required")
+        trimmed = str(raw_queue_name).strip()
+        if not trimmed:
+            raise ValueError("Queue name is required")
+        self._queue_name = trimmed
 
         if exactly_once is not None:
             self._exactly_once: bool = exactly_once
