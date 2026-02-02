@@ -9,4 +9,6 @@ def test_cloud_provider_is_abstract() -> None:
     """CloudProvider cannot be instantiated (abstract class)."""
     with pytest.raises(TypeError) as exc_info:
         CloudProvider()  # type: ignore[abstract]
-    assert "abstract" in str(exc_info.value).lower() or "instantiate" in str(exc_info.value).lower()
+    msg = str(exc_info.value).lower()
+    assert "abstract" in msg
+    assert "instantiate" in msg

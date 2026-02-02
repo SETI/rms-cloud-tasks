@@ -1,6 +1,6 @@
 # Core dependencies
 aiohttp
-asyncio
+typing_extensions>=4.4.0
 click
 json-stream
 numpy

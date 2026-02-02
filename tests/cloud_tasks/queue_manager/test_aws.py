@@ -1,3 +1,5 @@
+"""Tests for cloud_tasks.queue_manager.aws: AWSSQSQueue and AWS queue operations."""
+
 # Manually verified 4/29/2025
 
 import sys

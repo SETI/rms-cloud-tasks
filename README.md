@@ -157,6 +157,49 @@ To start automatic creation and management of a compute instance pool:
 cloud_tasks manage_pool --provider gcp --config myconfig.yaml
 ```
 
+# Local Development
+
+## Setup
+
+From the project root:
+
+1. Clone the repository (if you have not already).
+2. Create and activate a virtual environment:
+   ```sh
+   python -m venv venv
+   source venv/bin/activate   # On Windows: venv\Scripts\activate
+   ```
+3. Install the package in editable/development mode and dependencies:
+   ```sh
+   pip install -e .
+   pip install -r requirements.txt
+   ```
+   For development tooling (ruff, mypy, pytest, Sphinx), the same `requirements.txt`
+   includes them; no separate requirements-dev.txt is needed.
+
+## Running Checks
+
+From the project root (with the virtual environment activated), run all checks with:
+
+```sh
+./scripts/run-all-checks.sh
+```
+
+**Execution modes:** `-p` / `--parallel` (default) runs code checks and docs build in parallel; `-s` / `--sequential` runs them one after the other. Use `-c` / `--code` to run only code checks (ruff, mypy, pytest), or `-d` / `--docs` to run only the Sphinx documentation build.
+
+**Code checks:** ruff (check and format), mypy, and pytest. **Docs:** Sphinx.
+
+**Prerequisites:** Activate the project venv and ensure ruff, mypy, pytest, and Sphinx are installed (e.g. `pip install -r requirements.txt`).
+
+Example usage:
+
+```sh
+./scripts/run-all-checks.sh              # parallel: code + docs
+./scripts/run-all-checks.sh -s          # sequential
+./scripts/run-all-checks.sh -c           # code only (ruff, mypy, pytest)
+./scripts/run-all-checks.sh -d           # docs only (Sphinx)
+```
+
 # Contributing
 
 Information on contributing to this package can be found in the

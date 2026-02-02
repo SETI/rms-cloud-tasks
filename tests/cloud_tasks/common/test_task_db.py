@@ -200,7 +200,7 @@ def test_close_prevents_further_use(tmp_path: Path) -> None:
     """close() closes connection; subsequent use raises."""
     db = TaskDatabase(str(tmp_path / "test.db"))
     db.close()
-    with pytest.raises(AssertionError) as exc_info:
+    with pytest.raises(RuntimeError) as exc_info:
         db.get_total_tasks()
     assert "closed" in str(exc_info.value).lower()
 
@@ -211,6 +211,6 @@ def test_context_manager_closes_on_exit(tmp_path: Path) -> None:
     with TaskDatabase(str(db_path)) as db:
         db.insert_task("t1", {})
         assert db.get_total_tasks() == 1
-    with pytest.raises(AssertionError) as exc_info:
+    with pytest.raises(RuntimeError) as exc_info:
         db.get_total_tasks()
     assert "closed" in str(exc_info.value).lower()

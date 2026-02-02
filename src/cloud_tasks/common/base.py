@@ -11,7 +11,15 @@ class CloudProvider(ABC):
 
     @abstractmethod
     async def initialize(self, config: dict[str, Any]) -> None:
-        """Initialize the cloud provider with configuration."""
+        """
+        Initialize the cloud provider with configuration.
+
+        Parameters:
+            config: Provider configuration options (e.g. credentials, region).
+
+        Returns:
+            None.
+        """
         pass
 
     @abstractmethod

@@ -1,7 +1,7 @@
 """Unit tests for the GCP Compute Engine instance manager."""
 
 import copy
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -508,7 +508,9 @@ async def test_get_instance_pricing_cache_hit(
             }
         }
     }
-    gcp_instance_manager_n1_n2._instance_pricing_cache[(machine_family, use_spot)] = cached_pricing  # type: ignore[assignment]
+    gcp_instance_manager_n1_n2._instance_pricing_cache[(machine_family, use_spot)] = cast(
+        dict[str, dict[str, dict[str, float | str | None]]], cached_pricing
+    )
 
     # Act
     result = await gcp_instance_manager_n1_n2.get_instance_pricing(

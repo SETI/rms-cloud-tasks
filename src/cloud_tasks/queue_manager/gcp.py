@@ -62,7 +62,13 @@ class GCPPubSubQueue(QueueManager):
             exactly_once: If True, messages are guaranteed to be delivered exactly once to any
                 recipient. If False, messages will be delivered at least once, but could be
                 delivered multiple times. If None, use the value in the configuration.
-            **kwargs: Additional configuration parameters
+            **kwargs: Additional configuration parameters. project_id (str) may be passed here
+                as the GCP project identifier; otherwise it is taken from gcp_config.project_id.
+                project_id is required and must be a non-empty string.
+
+        Raises:
+            ValueError: If project_id is not provided or is an empty string (whether via
+                gcp_config.project_id or kwargs["project_id"]).
         """
         if gcp_config is None and queue_name is None:
             raise ValueError("Either gcp_config or queue_name must be provided")
@@ -90,10 +96,19 @@ class GCPPubSubQueue(QueueManager):
         else:
             self._visibility_timeout = min(visibility_timeout, self._MAXIMUM_VISIBILITY_TIMEOUT)
 
-        if "project_id" in kwargs and kwargs["project_id"] is not None:
-            self._project_id = kwargs["project_id"]
+        if "project_id" in kwargs:
+            pid = kwargs["project_id"]
+            if not pid or not str(pid).strip():
+                raise ValueError(
+                    "project_id is required and must be non-empty (pass via gcp_config or kwargs)"
+                )
+            self._project_id = pid
+        elif gcp_config and gcp_config.project_id and str(gcp_config.project_id).strip():
+            self._project_id = gcp_config.project_id
         else:
-            self._project_id = gcp_config.project_id if gcp_config is not None else ""
+            raise ValueError(
+                "project_id is required and must be non-empty (pass via gcp_config or kwargs)"
+            )
 
         self._logger.info(
             f'Initializing GCP Pub/Sub queue "{self._queue_name}" with project ID '
@@ -306,7 +321,8 @@ class GCPPubSubQueue(QueueManager):
                     # on it.
                     "ack_id": message,
                 }
-                assert self._message_queue is not None
+                if self._message_queue is None:
+                    raise RuntimeError("GCP queue message queue is not initialized")
                 self._message_queue.put_nowait(message_dict)
 
             except Exception as e:
@@ -363,7 +379,8 @@ class GCPPubSubQueue(QueueManager):
         loop = asyncio.get_event_loop()
         message_id = await loop.run_in_executor(None, future.result, 30)
 
-        self._logger.debug(f'Published message "{message_id}" on queue "{self._queue_name}"')
+        if not _quiet:
+            self._logger.debug(f'Published message "{message_id}" on queue "{self._queue_name}"')
 
     async def send_task(self, task_id: str, task_data: dict[str, Any]) -> None:
         """
@@ -699,7 +716,8 @@ class GCPPubSubQueue(QueueManager):
 
         if self._exactly_once:
             # Get the current size of the message queue that we have already received
-            assert self._message_queue is not None
+            if self._message_queue is None:
+                raise RuntimeError("GCP queue message queue is not initialized")
             queue_size = self._message_queue.qsize()
         else:
             queue_size = 0

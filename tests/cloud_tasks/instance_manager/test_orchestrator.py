@@ -1,7 +1,7 @@
 """Unit tests for the InstanceOrchestrator."""
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 
@@ -96,7 +96,7 @@ def orchestrator(mock_config):
     yield orchestrator
 
 
-def test_orchestrator_init_missing_job_id(mock_config):
+def test_orchestrator_init_missing_job_id(mock_config: Mock) -> None:
     """InstanceOrchestrator.__init__ raises ValueError when provider_config.job_id is missing."""
     mock_config.get_provider_config.return_value.job_id = None
     with pytest.raises(ValueError) as exc_info:
@@ -104,7 +104,7 @@ def test_orchestrator_init_missing_job_id(mock_config):
     assert "job_id" in str(exc_info.value).lower()
 
 
-def test_orchestrator_init_missing_queue_name(mock_config):
+def test_orchestrator_init_missing_queue_name(mock_config: Mock) -> None:
     """InstanceOrchestrator.__init__ raises ValueError when provider_config.queue_name is missing."""
     mock_config.get_provider_config.return_value.queue_name = None
     with pytest.raises(ValueError) as exc_info:
@@ -112,7 +112,7 @@ def test_orchestrator_init_missing_queue_name(mock_config):
     assert "queue_name" in str(exc_info.value).lower() or "queue" in str(exc_info.value).lower()
 
 
-def test_orchestrator_init_missing_run_config(mock_config):
+def test_orchestrator_init_missing_run_config(mock_config: Mock) -> None:
     """InstanceOrchestrator.__init__ raises ValueError when config.run is missing."""
     mock_config.run = None
     with pytest.raises(ValueError) as exc_info:
@@ -121,8 +121,9 @@ def test_orchestrator_init_missing_run_config(mock_config):
 
 
 @pytest.mark.asyncio
-async def test_get_job_instances_list_raises(orchestrator):
+async def test_get_job_instances_list_raises(orchestrator: InstanceOrchestrator) -> None:
     """get_job_instances returns error tuple when list_job_instances raises."""
+    assert orchestrator._instance_manager is not None
     with patch.object(orchestrator, "_initialize_pricing_info", new_callable=AsyncMock):
         orchestrator._instance_manager.list_running_instances = AsyncMock(
             side_effect=RuntimeError("api error")
@@ -131,19 +132,20 @@ async def test_get_job_instances_list_raises(orchestrator):
     assert num_running == 0
     assert running_cpus == 0
     assert running_price == 0.0
-    assert "Error" in summary or "error" in summary.lower()
+    assert "error" in summary.lower()
 
 
 @pytest.mark.asyncio
-async def test_get_job_instances_empty_running(orchestrator):
+async def test_get_job_instances_empty_running(orchestrator: InstanceOrchestrator) -> None:
     """get_job_instances returns zero counts and 'No running instances' when list is empty."""
+    assert orchestrator._instance_manager is not None
     with patch.object(orchestrator, "_initialize_pricing_info", new_callable=AsyncMock):
         orchestrator._instance_manager.list_running_instances = AsyncMock(return_value=[])
         num_running, running_cpus, running_price, summary = await orchestrator.get_job_instances()
     assert num_running == 0
     assert running_cpus == 0
     assert running_price == 0.0
-    assert "No running" in summary or "no running" in summary.lower()
+    assert "no running" in summary.lower()
 
 
 @pytest.mark.asyncio

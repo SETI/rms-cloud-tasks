@@ -36,7 +36,7 @@ Apply these criteria when reviewing each test file and each test case.
 - **Naming:** Test names should follow a consistent style (e.g. `test_<behavior>_<condition>_<expected>` or `test_<function>_<when>_<result>`).
 - **Structure:** Similar modules (e.g. queue_manager AWS vs GCP) should have similar test structure (init, send, receive, ack, error handling).
 - **Fixtures:** Same concepts (e.g. "mock queue", "config", "tmp_path") should be reused via fixtures; avoid duplicating setup logic across files.
-- **Assertion style:** Prefer one logical assertion per concept; group related assertions consistently. Per project rules, use a single check per assert (no `and` in asserts).
+- **Assertion style:** Prefer one logical assertion per concept; group related assertions consistently. Per project rules, use a single check per assert (no `and` in asserts) (this improves test failure clarity and aligns with project testing standards).
 
 ### 4. Completeness
 
@@ -53,7 +53,7 @@ Apply these criteria when reviewing each test file and each test case.
 ### 6. Parallel execution and isolation
 
 - **Isolation:** Tests must not depend on global state, shared mutable objects, or execution order. Note any use of module/class-level mutable state or singletons.
-- **GCP instance_manager:** The GCP conftest uses module-scope fixtures and deepcopy with special handling for `_thread_local` and `_pricing_cache_lock`. Note whether tests that mutate fixture-derived instances could leak state or cause order dependence.
+- **GCP instance_manager:** When reviewing `conftest` and `instance_manager` code, first verify that symbols such as `_thread_local` and `_pricing_cache_lock` exist in the repository before reporting on them. Note whether tests that mutate fixture-derived instances could leak state (e.g., thread-local storage or shared locks); use these as signposts to locate relevant code but do not assert their presence as facts.
 - **Resources:** Note any shared files, temp paths, or external service assumptions that could cause flakiness under `pytest -n auto` (if used).
 
 ### 7. Mocking and dependency isolation
@@ -74,7 +74,7 @@ Apply these criteria when reviewing each test file and each test case.
 
 - **`@pytest.mark.parametrize`:** Similar test cases (e.g. multiple invalid configs, multiple providers) should be parameterized instead of copy-pasted; note repeated test bodies that differ only in input.
 - **Boundary values:** For numeric config (min/max instances, CPUs, memory), test min, max, and off-by-one; note missing boundary tests.
-- **Fixtures with params:** The root conftest uses `@pytest.fixture(params=["aws", "gcp", "azure"])` for provider; note other places where parametrized fixtures would reduce duplication.
+- **Fixtures with params:** The root conftest uses `@pytest.fixture(params=["aws", "gcp", "azure"])` for provider; note other places where parameterized fixtures would reduce duplication.
 
 ### 10. Async and concurrency testing
 
@@ -207,12 +207,54 @@ Produce a single markdown report with the following structure. Do **not** edit a
 
 ## Prompt for an AI agent to fix tests
 
-[Copy a self-contained prompt that an AI can use to apply the above fixes. Include:
-- The report sections as context.
-- **Coverage:** Run coverage using the entire test suite; ensure at least 80% for code under test and cover almost all non-exception lines.
-- **Exception messages:** When testing exceptions with defined messages, assert on message contents (e.g. `pytest.raises(...) as exc_info` and `str(exc_info.value)`), not only that the exception was raised.
-- Instruction to fix tests according to the report without changing production code.
-- Instruction to preserve existing passing behavior and only add/change assertions and test structure.]
+This section is a **reusable prompt template** to be filled with the report output. Use the placeholders below; include either the full report or a summarized version as specified.
+
+**Template (fill placeholders):**
+
+```
+Apply the following test-suite fixes. Use the critique report as context.
+
+<REPORT_SUMMARY>
+Paste the full report or a concise summary (sections 1–17) here.
+</REPORT_SUMMARY>
+
+<FAILURES>
+List specific failures, file names, test names, and line references from the report.
+</FAILURES>
+
+<FILES_TO_EDIT>
+List the test/conftest files to modify (paths under tests/).
+</FILES_TO_EDIT>
+
+Constraints:
+- **Coverage:** Run the full test suite for coverage; require ≥80% for code under test; cover almost all non-exception lines.
+- **Exception messages:** For tests that expect exceptions with defined messages, use `pytest.raises(...) as exc_info` and assert message content: `assert "expected substring" in str(exc_info.value)` (or equivalent). Do not only assert that an exception was raised.
+- **Production code:** Do not modify production code. Fix only tests and conftest files.
+- **Behavior:** Preserve existing passing behavior; only add or change assertions and test structure as indicated by the report.
+```
+
+**Example filled prompt:**
+
+```
+Apply the following test-suite fixes.
+
+<REPORT_SUMMARY>
+[Section 2] test_config.py: missing failure-path tests for invalid provider.
+[Section 4] test_worker_init.py: no test for num_simultaneous_tasks boundary.
+[Section 8] test_config.py: exception tests do not assert message content.
+</REPORT_SUMMARY>
+
+<FAILURES>
+- tests/cloud_tasks/common/test_config.py: add tests for invalid provider; in test_runconfig_raises_*, use exc_info and assert str(exc_info.value).
+- tests/cloud_tasks/worker/test_worker_init.py: add parameterized test for num_simultaneous_tasks at min/max.
+</FAILURES>
+
+<FILES_TO_EDIT>
+tests/cloud_tasks/common/test_config.py
+tests/cloud_tasks/worker/test_worker_init.py
+</FILES_TO_EDIT>
+
+Constraints: Run full test suite for coverage (≥80%). Use pytest.raises(...) as exc_info and assert str(exc_info.value) for exception message checks. Do not modify production code. Preserve existing passing behavior.
 ```
 
 ## Execution steps

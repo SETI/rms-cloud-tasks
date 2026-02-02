@@ -4,15 +4,11 @@ Custom logging configuration with proper microsecond support.
 
 import datetime
 import logging
-import sys
 
-if sys.version_info >= (3, 12):
+try:
     from typing import override
-else:
-
-    def override(func):
-        """No-op decorator on Python < 3.12 (typing.override added in 3.12)."""
-        return func
+except ImportError:
+    from typing_extensions import override
 
 
 class MicrosecondFormatter(logging.Formatter):
@@ -26,7 +22,25 @@ class MicrosecondFormatter(logging.Formatter):
         self, record: logging.LogRecord, datefmt: str | None = None
     ) -> str:
         """
-        Override the standard formatTime to correctly handle microseconds.
+        Format the record's timestamp; supports microseconds in datefmt.
+
+        When datefmt is None, the default format "%Y-%m-%d %H:%M:%S" is used
+        (no fractional seconds). When datefmt contains ".%f", the formatted
+        microseconds are truncated to the first 3 digits (millisecond precision),
+        and any characters in the format string after ".%f" are ignored/discarded
+        in the output.
+
+        Parameters:
+            record: The log record (logging.LogRecord) whose timestamp to format.
+            datefmt: Optional strftime-style format string. If None, defaults to
+                "%Y-%m-%d %H:%M:%S". If it contains ".%f", output uses millisecond
+                precision and suffix characters after ".%f" are not included.
+
+        Returns:
+            str: The formatted timestamp. Example: datefmt None yields
+            "2025-02-01 12:34:56"; datefmt "%Y-%m-%d %H:%M:%S.%f" yields
+            "2025-02-01 12:34:56.123"; datefmt "%Y-%m-%d %H:%M:%S.%fZ" yields
+            "2025-02-01 12:34:56.123" (suffix "Z" discarded).
         """
         ct = datetime.datetime.fromtimestamp(record.created)
         if datefmt is None:

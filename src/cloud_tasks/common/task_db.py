@@ -87,8 +87,17 @@ class TaskDatabase:
         logger.debug(f"Initialized task database at {self.db_file}")
 
     def _get_conn(self) -> sqlite3.Connection:
-        """Return the database connection; raises if closed."""
-        assert self.conn is not None, "database is closed"
+        """
+        Return the database connection.
+
+        Returns:
+            sqlite3.Connection: The active database connection.
+
+        Raises:
+            RuntimeError: If self.conn is None (the database connection is closed).
+        """
+        if self.conn is None:
+            raise RuntimeError("database connection is closed")
         return self.conn
 
     def insert_task(self, task_id: str, task_data: dict[str, Any], status: str = "pending") -> None:

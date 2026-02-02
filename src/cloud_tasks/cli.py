@@ -509,9 +509,10 @@ class EventMonitor:
             try:
 
                 def _open_file(p: str, mode: str) -> Any:
+                    """Open a file at the given path with the given mode (e.g. 'a')."""
                     return open(p, mode)
 
-                self.output_file = await asyncio.to_thread(  # type: ignore[func-returns-value]
+                self.output_file = await asyncio.to_thread(  # type: ignore[arg-type, func-returns-value]
                     _open_file, path, "a"
                 )
                 logger.info(f'Writing events to "{path}"')
@@ -1441,14 +1442,11 @@ async def status_cmd(args: argparse.Namespace, config: Config) -> None:
         ) = await orchestrator.get_job_instances()
         print(job_status)
 
-        if orchestrator._task_queue is None:
-            print("Task queue not initialized.")
+        queue_depth = await orchestrator.get_queue_depth()
+        if queue_depth is None:
+            print("Task queue not initialized or failed to get queue depth.")
         else:
-            queue_depth = await orchestrator._task_queue.get_queue_depth()
-            if queue_depth is None:
-                print("Failed to get queue depth for task queue.")
-            else:
-                print(f"Current queue depth: {queue_depth}")
+            print(f"Current queue depth: {queue_depth}")
 
     except Exception as e:
         logger.error(f"Error checking job status: {e}", exc_info=True)
@@ -1981,7 +1979,8 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
         if args.detail:
             header1 += ["Processor", "Perf", "Description"]
             header2 += ["", "Rank", ""]
-        left_fields += [f"Field {field_num}", f"Field {field_num + 2}"]
+            left_fields += [f"Field {field_num}", f"Field {field_num + 2}"]
+            field_num += 3
 
         rows = []
         for price_data in pricing_data_list:

@@ -529,7 +529,7 @@ def deepcopy_gcp_instance_manager(
     finally:
         gcp_instance_manager._thread_local = old_thread  # type: ignore[assignment]
         gcp_instance_manager._pricing_cache_lock = old_lock  # type: ignore[assignment]
-    new_gcp_instance_manager._thread_local = old_thread  # type: ignore[assignment]
+    new_gcp_instance_manager._thread_local = threading.local()  # type: ignore[assignment]
     new_gcp_instance_manager._pricing_cache_lock = threading.Lock()  # type: ignore[assignment]
     return new_gcp_instance_manager
 

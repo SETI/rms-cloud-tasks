@@ -1,3 +1,10 @@
+"""
+Queue management abstractions and base interface.
+
+Defines the QueueManager ABC and utilities used with ProviderConfig for
+provider-specific task queues (AWS, GCP, Azure).
+"""
+
 from abc import ABC, abstractmethod
 from typing import Any
 
@@ -16,7 +23,26 @@ class QueueManager(ABC):
         exactly_once: bool = False,
         **kwargs: Any,
     ) -> None:
-        """Initialize the task queue with configuration."""
+        """
+        Initialize the task queue with configuration.
+
+        Parameters:
+            config: Provider configuration (ProviderConfig or None). When None, subclasses
+                may use provider defaults or raise if required settings are missing.
+            queue_name: Optional queue name override; behavior is provider-specific.
+            visibility_timeout: How long (in seconds) a message is hidden after receipt
+                before it becomes visible again if not completed. Default and min/max
+                are provider-specific (e.g. GCP enforces a maximum).
+            exactly_once: If True, use exactly-once delivery semantics where supported;
+                otherwise at-least-once delivery. Default False. Some providers require
+                specific configuration or do not support exactly-once and may fall back
+                to at-least-once.
+            **kwargs: Provider-specific options (e.g. region, retry_policy, max_inflight,
+                ack_deadline, project_id for GCP). Subclasses document supported keys.
+
+        Returns:
+            None.
+        """
         pass  # pragma: no cover
 
     @abstractmethod

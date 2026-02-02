@@ -142,7 +142,7 @@ class AWSSQSQueue(QueueManager):
 
         try:
             # Get the event loop
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
 
             def _do_send() -> Any:
                 return sqs.send_message(
@@ -176,7 +176,7 @@ class AWSSQSQueue(QueueManager):
 
         try:
             # Get the event loop
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
 
             def _do_send_task() -> Any:
                 return sqs.send_message(
@@ -222,7 +222,10 @@ class AWSSQSQueue(QueueManager):
 
         try:
             # Get the event loop
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
+
+            def _delete_one(r: str) -> Any:
+                return sqs.delete_message(QueueUrl=queue_url, ReceiptHandle=r)
 
             # Run the blocking receive operation in a thread pool
             response = await loop.run_in_executor(
@@ -247,12 +250,8 @@ class AWSSQSQueue(QueueManager):
                         }
                     )
 
-                    # Delete the message immediately (default arg captures receipt per iteration)
+                    # Delete the message immediately
                     receipt = message["ReceiptHandle"]
-
-                    def _delete_one(r: str) -> Any:
-                        return sqs.delete_message(QueueUrl=queue_url, ReceiptHandle=r)
-
                     await loop.run_in_executor(None, _delete_one, receipt)
 
             self._logger.debug(f"Received and deleted {len(messages)} messages from SQS queue")
@@ -293,7 +292,7 @@ class AWSSQSQueue(QueueManager):
             max_count = min(max_count, 10)
 
             # Get the event loop
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
 
             # Run the blocking receive operation in a thread pool
             response = await loop.run_in_executor(
@@ -326,7 +325,16 @@ class AWSSQSQueue(QueueManager):
             raise
 
     async def acknowledge_message(self, message_handle: Any) -> None:
-        """Acknowledge a message and remove it from the queue (alias for acknowledge_task)."""
+        """Acknowledge a message and remove it from the queue (alias for acknowledge_task).
+
+        Parameters:
+            message_handle: Receipt handle from receive_tasks/receive_messages; passed
+                to acknowledge_task.
+
+        Raises:
+            Exception: Exceptions from acknowledge_task are propagated (e.g. QueueError,
+                ValueError, or boto3 client errors).
+        """
         await self.acknowledge_task(message_handle)
 
     async def acknowledge_task(self, task_handle: Any) -> None:
@@ -346,7 +354,7 @@ class AWSSQSQueue(QueueManager):
 
         try:
             # Get the event loop
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
 
             # Run the blocking delete operation in a thread pool
             await loop.run_in_executor(
@@ -359,7 +367,14 @@ class AWSSQSQueue(QueueManager):
             raise
 
     async def retry_message(self, message_handle: Any) -> None:
-        """Retry a message (alias for retry_task)."""
+        """Retry a message (alias for retry_task).
+
+        Parameters:
+            message_handle: Receipt handle from receive_tasks; passed to retry_task.
+
+        Raises:
+            Exception: Exceptions from retry_task are propagated.
+        """
         await self.retry_task(message_handle)
 
     async def retry_task(self, task_handle: Any) -> None:
@@ -379,7 +394,7 @@ class AWSSQSQueue(QueueManager):
 
         try:
             # Get the event loop
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
 
             # Run the blocking visibility change operation in a thread pool
             await loop.run_in_executor(
@@ -408,7 +423,7 @@ class AWSSQSQueue(QueueManager):
 
         try:
             # Get the event loop
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
 
             # Run the blocking get attributes operation in a thread pool
             response = await loop.run_in_executor(
@@ -435,7 +450,7 @@ class AWSSQSQueue(QueueManager):
 
         try:
             # Get the event loop
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
 
             # Run the blocking purge operation in a thread pool
             await loop.run_in_executor(None, lambda: sqs.purge_queue(QueueUrl=queue_url))
@@ -460,7 +475,7 @@ class AWSSQSQueue(QueueManager):
 
         try:
             # Get the event loop
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
 
             # Run the blocking delete operation in a thread pool
             await loop.run_in_executor(None, lambda: sqs.delete_queue(QueueUrl=queue_url))
@@ -510,7 +525,7 @@ class AWSSQSQueue(QueueManager):
         queue_url = self._get_queue_url()
 
         # Get the event loop
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
 
         # Run the blocking visibility change operation in a thread pool
         await loop.run_in_executor(

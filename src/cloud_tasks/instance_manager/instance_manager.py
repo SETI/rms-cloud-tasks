@@ -402,5 +402,15 @@ class InstanceManager(ABC):
 
     @abstractmethod
     async def get_available_regions(self, prefix: str | None = None) -> dict[str, Any]:
-        """Get all available regions and their attributes."""
+        """Get all available regions and their attributes.
+
+        Parameters:
+            prefix: Optional filter; if given, return only regions whose name or
+                identifier starts with this string. None means no filtering.
+
+        Returns:
+            dict[str, Any]: Mapping of region identifiers (or names) to their
+            attribute dicts (e.g. availability, zones, metadata). Value types
+            depend on the provider.
+        """
         pass  # pragma: no cover

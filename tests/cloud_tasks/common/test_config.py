@@ -88,7 +88,9 @@ _RUNCONFIG_MIN_MAX_CASES = [
 
 
 @pytest.mark.parametrize("valid_kwargs,invalid_kwargs,msg_substring", _RUNCONFIG_MIN_MAX_CASES)
-def test_runconfig_min_max_ordering(valid_kwargs, invalid_kwargs, msg_substring):
+def test_runconfig_min_max_ordering(
+    valid_kwargs: dict, invalid_kwargs: dict, msg_substring: str
+) -> None:
     """RunConfig min/max pairs must have min <= max."""
     RunConfig(**valid_kwargs)
     with pytest.raises(ValueError) as exc_info:
@@ -108,7 +110,7 @@ _RUNCONFIG_MAX_GT_ZERO_CASES = [
 
 
 @pytest.mark.parametrize("invalid_kwargs,msg_substring", _RUNCONFIG_MAX_GT_ZERO_CASES)
-def test_runconfig_max_must_be_greater_than_zero(invalid_kwargs, msg_substring):
+def test_runconfig_max_must_be_greater_than_zero(invalid_kwargs: dict, msg_substring: str) -> None:
     """RunConfig max fields that must be > 0 raise when set to 0."""
     with pytest.raises(ValueError) as exc_info:
         RunConfig(**invalid_kwargs)
@@ -441,7 +443,8 @@ def test_config_update_run_config_from_provider_config(config_obj, provider):
             c.azure.startup_script_file = "bar"
     with pytest.raises(ValueError) as exc_info:
         c.update_run_config_from_provider_config()
-    assert "startup script" in str(exc_info.value).lower() and "both" in str(exc_info.value).lower()
+    assert "startup script" in str(exc_info.value).lower()
+    assert "both" in str(exc_info.value).lower()
     # Test startup_script_file loads content
     c.run.startup_script = None
     c.run.startup_script_file = None
@@ -515,9 +518,8 @@ def test_config_get_provider_config(config_obj, provider):
     c.provider = None
     with pytest.raises(ValueError) as exc_info:
         c.get_provider_config()
-    assert "Provider" in str(exc_info.value) and (
-        "not provided" in str(exc_info.value) or "detected" in str(exc_info.value)
-    )
+    msg = str(exc_info.value)
+    assert "not provided" in msg or "Provider" in msg
     # Test unsupported provider
     with pytest.raises(pydantic.ValidationError):
         c.provider = "FOO"
@@ -628,7 +630,11 @@ def test_load_config_file_invalid_yaml(tmp_path):
     with patch.object(config_mod, "FCPath", lambda *a, **kw: file_path):
         with pytest.raises(ValueError) as exc_info:
             load_config(str(file_path))
-        assert "dictionary" in str(exc_info.value).lower() or "YAML" in str(exc_info.value)
+        err_msg = str(exc_info.value).lower()
+        assert "dictionary" in err_msg or "yaml" in err_msg, (
+            f"Expected exception to mention 'dictionary' or 'YAML'; file_path={file_path!r}; "
+            f"actual: {exc_info.value!r}"
+        )
 
 
 def test_load_config_no_file():

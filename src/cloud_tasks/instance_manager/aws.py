@@ -33,6 +33,10 @@ class AWSEC2InstanceManager(InstanceManager):
     # The pricing API is only available in us-east-1, eu-central-1, and ap-south-1
     _PRICING_REGION = "us-east-1"
 
+    def _empty_pricing_entry(self, boot_disk_type: str) -> dict[str, dict[str, None]]:
+        """Return a sentinel entry for missing pricing (boot_disk_type -> None)."""
+        return {f"{self._region}*": {boot_disk_type: None}}
+
     # Map of instance statuses to standardized statuses
     STATUS_MAP = {
         "pending": "starting",
@@ -540,7 +544,7 @@ class AWSEC2InstanceManager(InstanceManager):
                         # We're missing pricing data for a huge chunk, so just give up
                         self._logger.error("No pricing data found - aborting")
                         for inst_name in instance_types:
-                            ret[inst_name] = {f"{self._region}*": {boot_disk_type: {}}}
+                            ret[inst_name] = self._empty_pricing_entry(boot_disk_type)
                         return ret
                     for price_item in response["PriceList"]:
                         price_data = json.loads(price_item)
@@ -558,7 +562,7 @@ class AWSEC2InstanceManager(InstanceManager):
                 price_data = pricing_dict.get(inst_name)
                 if price_data is None:
                     self._logger.warning(f"Could not find pricing data for {inst_name}")
-                    ret[inst_name] = {f"{self._region}*": {}}
+                    ret[inst_name] = self._empty_pricing_entry(boot_disk_type)
                     continue
                 attributes = price_data.get("product", {}).get("attributes", {})
                 if attributes is None:
@@ -607,7 +611,7 @@ class AWSEC2InstanceManager(InstanceManager):
                         break
                 if inst_name not in ret:
                     self._logger.warning(f"Could not find pricing data for {inst_name}")
-                    ret[inst_name] = {f"{self._region}*": {}}
+                    ret[inst_name] = self._empty_pricing_entry(boot_disk_type)
 
         return ret
 
@@ -1001,18 +1005,33 @@ class AWSEC2InstanceManager(InstanceManager):
         return amis[0]["ImageId"]
 
     async def get_default_image(self) -> str | None:
-        """Get the latest Ubuntu 24.04 LTS AMI ID for the current region."""
+        """Get the latest Ubuntu 24.04 LTS AMI ID for the current region.
+
+        Returns:
+            str | None: The AMI ID string for the latest Ubuntu 24.04 LTS in the
+            current region, or None if no AMI is found or _get_default_ami raises
+            ValueError (e.g. no matching AMI in the region). Blackbox tests can
+            rely on None when the helper _get_default_ami raises.
+        """
         try:
             return await self._get_default_ami()
         except ValueError:
             return None
 
     async def get_image_from_family(self, family_name: str) -> str | None:
-        """Get the latest AMI ID matching the given family/name pattern."""
+        """Get the latest AMI ID whose name starts with the given family prefix.
+
+        Parameters:
+            family_name: Prefix for the image name (e.g. "ubuntu/images/hvm-ssd/ubuntu-noble-24.04").
+
+        Returns:
+            str | None: The ImageId of the most recent available AMI whose name
+            starts with family_name, or None if none found or on client error.
+        """
         try:
             response = self._ec2_client.describe_images(
                 Filters=[
-                    {"Name": "name", "Values": [f"*{family_name}*"]},
+                    {"Name": "name", "Values": [f"{family_name}*"]},
                     {"Name": "state", "Values": ["available"]},
                 ]
             )

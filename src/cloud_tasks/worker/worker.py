@@ -60,7 +60,8 @@ def _parse_args(
         "[overrides $RMS_CLOUD_TASKS_PROVIDER]",
     )
     parser.add_argument(
-        "--project-id", help="Project ID (required for GCP) [overrides $RMS_CLOUD_TASKS_PROJECT_ID]"
+        "--project-id",
+        help="Project ID (required for GCP) [overrides $RMS_CLOUD_TASKS_PROJECT_ID]",
     )
     parser.add_argument(
         "--task-file",
@@ -378,8 +379,9 @@ class WorkerData:
     """Class containing properties that can be safely inherited by child processes."""
 
     def __init__(self) -> None:
-        # Initialize all attributes to None
-
+        """
+        Initialize WorkerData; all attributes are set to None or defaults.
+        """
         #: argparse.Namespace containing the command line arguments, including any additional
         #: arguments specified by the user
         self.args: argparse.Namespace | None = None
@@ -434,7 +436,7 @@ class Worker:
         self,
         user_worker_function: Callable[[str, dict[str, Any], WorkerData], tuple[bool, str]],
         *,
-        task_source: str | Path | FCPath | Callable[[], Iterable[dict[str, Any]]] | None = None,
+        task_source: (str | Path | FCPath | Callable[[], Iterable[dict[str, Any]]] | None) = None,
         args: Sequence[str] | None = None,
         argparser: argparse.ArgumentParser | None = None,
     ):
@@ -618,7 +620,7 @@ class Worker:
         if self._data.num_cpus is None:
             env_val = os.getenv("RMS_CLOUD_TASKS_INSTANCE_NUM_VCPUS")
             self._data.num_cpus = int(env_val) if env_val is not None else None
-        elif isinstance(self._data.num_cpus, str):
+        else:
             self._data.num_cpus = int(self._data.num_cpus)
         logger.info(f"  Num CPUs: {self._data.num_cpus}")
 
@@ -941,6 +943,8 @@ class Worker:
                 logger.debug("Starting task scheduler for factory task queue")
 
             try:
+                # self._task_source is truthy here; it can only be str | Path | FCPath | Callable.
+                # We convert str|Path to FCPath and leave FCPath or Callable unchanged.
                 src = self._task_source
                 local_src: FCPath | Callable[[], Iterable[dict[str, Any]]] = (
                     src if (isinstance(src, FCPath) or callable(src)) else FCPath(src)
@@ -1285,7 +1289,8 @@ class Worker:
             if self._data.provider == "AWS":
                 # AWS spot termination check
                 response = requests.get(
-                    "http://169.254.169.254/latest/meta-data/spot/instance-action", timeout=2
+                    "http://169.254.169.254/latest/meta-data/spot/instance-action",
+                    timeout=2,
                 )
                 return response.status_code == 200
 

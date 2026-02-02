@@ -18,7 +18,7 @@
 # Code checks (run from project root with venv activated):
 #   - ruff check (src, tests, examples)
 #   - ruff format --check (src, tests, examples)
-#   - mypy (src, tests)
+#   - mypy (src, tests, examples)
 #   - pytest (tests)
 #
 # Exit codes:
@@ -53,7 +53,25 @@ EXIT_CODE=0
 
 # Create temp directory for parallel output
 TEMP_DIR=$(mktemp -d)
-trap 'rm -rf "$TEMP_DIR"' EXIT
+code_pid=""
+docs_pid=""
+
+_cleanup() {
+    if [ -n "${code_pid}" ]; then
+        kill -TERM "$code_pid" 2>/dev/null || true
+        wait "$code_pid" 2>/dev/null || true
+        kill -KILL "$code_pid" 2>/dev/null || true
+        code_pid=""
+    fi
+    if [ -n "${docs_pid}" ]; then
+        kill -TERM "$docs_pid" 2>/dev/null || true
+        wait "$docs_pid" 2>/dev/null || true
+        kill -KILL "$docs_pid" 2>/dev/null || true
+        docs_pid=""
+    fi
+    rm -rf "$TEMP_DIR"
+}
+trap _cleanup EXIT SIGINT SIGTERM
 
 # Print functions
 print_header() {
@@ -180,7 +198,7 @@ run_code_checks() {
 
     # Mypy
     print_info "Running mypy..."
-    if python -m mypy src tests; then
+    if python -m mypy src tests examples; then
         print_success "Mypy passed"
     else
         print_error "Mypy failed"

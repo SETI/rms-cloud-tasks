@@ -20,6 +20,7 @@ dependencies = [
   "rms-filecache",
   "shortuuid",
   "tqdm",
+  "typing_extensions>=4.4.0",
   "boto3",
   "google-cloud-billing",
   "google-cloud-compute",

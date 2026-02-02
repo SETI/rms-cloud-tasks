@@ -523,8 +523,6 @@ class GCPComputeInstanceManager(InstanceManager):
             if self._instance_matches_constraints(instance_info, constraints):
                 instance_types[machine_type.name] = instance_info
 
-                instance_types[machine_type.name] = instance_info
-
         return instance_types
 
     async def _get_billing_compute_skus(self) -> list[billing.Sku]:
@@ -1360,7 +1358,17 @@ class GCPComputeInstanceManager(InstanceManager):
                 for boot_disk_type, price_info in price_in_zone.items():
                     # Filter out the boot disk types that were not selected by the constraints
                     avail_types = price_info.get("available_boot_disk_types")
-                    if not isinstance(avail_types, list) or boot_disk_type not in avail_types:
+                    if not isinstance(avail_types, list):
+                        self._logger.debug(
+                            "available_boot_disk_types is not a list: type=%s value=%s "
+                            "machine_type=%s zone=%s",
+                            type(avail_types).__name__,
+                            avail_types,
+                            machine_type,
+                            zone,
+                        )
+                        continue
+                    if boot_disk_type not in avail_types:
                         continue
                     zone_pricing_data[(machine_type, zone, boot_disk_type)] = price_info
 
@@ -1806,11 +1814,13 @@ class GCPComputeInstanceManager(InstanceManager):
                 "pd-extreme": "pd-extreme",
                 "hyperdisk-balanced": "hd-balanced",
             }
-            instance_info["boot_disk_type"] = disk_type_map.get(
-                boot_disk_type if boot_disk_type is not None else ""
-            )
-            if instance_info["boot_disk_type"] is None:
-                self._logger.warning(f"Unknown boot disk type: {boot_disk_type}")
+            if boot_disk_type is None:
+                self._logger.warning("Missing boot disk type")
+                instance_info["boot_disk_type"] = None
+            else:
+                instance_info["boot_disk_type"] = disk_type_map.get(boot_disk_type)
+                if instance_info["boot_disk_type"] is None:
+                    self._logger.warning(f"Unknown boot disk type: {boot_disk_type}")
             instance_info["boot_disk_iops"] = boot_disk_iops
             instance_info["boot_disk_throughput"] = boot_disk_throughput
 

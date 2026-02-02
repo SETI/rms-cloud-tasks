@@ -29,6 +29,8 @@ class InstanceOrchestrator:
     """
 
     _DEFAULT_BOOT_DISK_SIZE_PER_CPU_GB = 10
+    _DEFAULT_SCALING_CHECK_INTERVAL = 60.0
+    _DEFAULT_BOOT_DISK_TYPE = "pd-balanced"
 
     def __init__(
         self,
@@ -114,7 +116,9 @@ class InstanceOrchestrator:
         # Set check interval for scaling loop
         scaling_interval = self._run_config.scaling_check_interval
         self._scaling_check_interval: float = (
-            float(scaling_interval) if scaling_interval is not None else 60.0
+            float(scaling_interval)
+            if scaling_interval is not None
+            else self._DEFAULT_SCALING_CHECK_INTERVAL
         )
 
         # Maximum number of instances to create in parallel
@@ -233,9 +237,12 @@ class InstanceOrchestrator:
 export RMS_CLOUD_TASKS_PROJECT_ID={project_id}
 """
 
-        assert self._optimal_instance_info is not None
-        assert self._optimal_instance_boot_disk_size is not None
-        assert self._optimal_instance_num_tasks is not None
+        if self._optimal_instance_info is None:
+            raise RuntimeError("_optimal_instance_info is not set")
+        if self._optimal_instance_boot_disk_size is None:
+            raise RuntimeError("_optimal_instance_boot_disk_size is not set")
+        if self._optimal_instance_num_tasks is None:
+            raise RuntimeError("_optimal_instance_num_tasks is not set")
         oii = self._optimal_instance_info
         supplement = f"""\
 export RMS_CLOUD_TASKS_PROVIDER={self._provider}
@@ -290,7 +297,8 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
 
     async def _initialize_pricing_info(self) -> None:
         """Initialize the pricing information."""
-        assert self._instance_manager is not None
+        if self._instance_manager is None:
+            raise RuntimeError("Orchestrator instance manager is not initialized")
         if self._all_instance_info is None:
             # No constraints on the instance types - we want all of them so that we can analyze
             # any running instances that may already exist.
@@ -381,7 +389,20 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
         boot_disk_size = optimal_instance_info["boot_disk_gb"]
 
         vcpu_val = optimal_instance_info.get("vcpu")
-        vcpu = int(vcpu_val) if vcpu_val is not None else 0
+        if vcpu_val is None:
+            self._logger.error(
+                "optimal_instance_info has no vcpu; cannot derive boot disk or tasks",
+                extra={"optimal_instance_info": optimal_instance_info},
+            )
+            raise ValueError("optimal instance info missing vcpu")
+        vcpu = int(vcpu_val)
+        if vcpu <= 0:
+            self._logger.error(
+                f"optimal_instance_info vcpu must be positive, got {vcpu_val}",
+                extra={"optimal_instance_info": optimal_instance_info},
+            )
+            raise ValueError("optimal instance info vcpu must be positive")
+
         if boot_disk_size is None:
             self._logger.warning(
                 "No boot disk size constraints provided; using default of "
@@ -436,7 +457,33 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
             self._logger.info("Scaling loop cancelled")
             raise  # Re-raise to properly handle cancellation
 
+    def _get_default_boot_disk_type(self) -> str:
+        """
+        Return default boot disk type from run config.
+
+        Returns:
+            str: The first entry if boot_disk_types is a non-empty list; the string
+            itself if boot_disk_types is a string; otherwise _DEFAULT_BOOT_DISK_TYPE.
+        """
+        boot_disk_types_cfg = self._run_config.boot_disk_types
+        if isinstance(boot_disk_types_cfg, list) and len(boot_disk_types_cfg) > 0:
+            return boot_disk_types_cfg[0]
+        if isinstance(boot_disk_types_cfg, str):
+            return boot_disk_types_cfg
+        return self._DEFAULT_BOOT_DISK_TYPE
+
     async def get_job_instances(self) -> tuple[int, int, float, str]:
+        """
+        Return job instance counts and pricing summary; may call _initialize_pricing_info.
+
+        Returns:
+            Tuple of (total_instances, running_instances, price_per_instance,
+            currency_or_pricing_source). The fourth element is a human-readable
+            summary string when pricing is unavailable.
+
+        Side effects:
+            Calls _initialize_pricing_info() to ensure pricing data is loaded.
+        """
         await self._initialize_pricing_info()
 
         try:
@@ -449,12 +496,7 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
         # Count the number of instances of each type and running status
         # Also count by "state" and "zone" fields
         running_instances_by_type = {}
-        boot_disk_types_cfg = self._run_config.boot_disk_types
-        default_boot_disk = (
-            boot_disk_types_cfg[0]
-            if isinstance(boot_disk_types_cfg, list) and len(boot_disk_types_cfg) > 0
-            else (boot_disk_types_cfg if isinstance(boot_disk_types_cfg, str) else "pd-balanced")
-        )
+        default_boot_disk = self._get_default_boot_disk_type()
         for instance in running_instances:
             boot_disk_type = instance["boot_disk_type"]
             if boot_disk_type is None:
@@ -476,8 +518,10 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
             summary = "No running instances found"
             return num_running, running_cpus, running_price, summary
 
-        assert self._all_instance_info is not None
-        assert self._pricing_info is not None
+        if self._all_instance_info is None:
+            raise RuntimeError("_all_instance_info is not set")
+        if self._pricing_info is None:
+            raise RuntimeError("_pricing_info is not set")
         summary = ""
         summary += "Running instance summary:\n"
         summary += "  State       Instance Type             Boot Disk    vCPUs  Zone             Count  Total Price\n"
@@ -519,6 +563,18 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
         summary += f"(weighted)        {num_running:>5}  {running_price_str:>11}\n"
 
         return num_running, running_cpus, running_price, summary
+
+    async def get_queue_depth(self) -> int | None:
+        """
+        Return the current task queue depth, or None if the queue is not initialized.
+
+        Returns:
+            Number of messages in the task queue, or None if the queue is not set
+            or get_queue_depth on the queue returns None.
+        """
+        if self._task_queue is None:
+            return None
+        return await self._task_queue.get_queue_depth()
 
     async def _check_scaling(self) -> None:
         """Check if we need to scale up based on number of running instances.
@@ -592,7 +648,8 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
             if self._dry_run:
                 remaining_tasks = 1
             else:
-                assert self._task_queue is not None
+                if self._task_queue is None:
+                    raise RuntimeError("task queue not initialized")
                 queue_depth = await self._task_queue.get_queue_depth()
                 if queue_depth is None:
                     self._logger.error("Failed to get queue depth, assuming depth of 1")
@@ -627,7 +684,8 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
 
         # Derive the number of tasks per instance from the constraints and the number of vCPUs
         # in the optimal instance
-        assert self._optimal_instance_num_tasks is not None
+        if self._optimal_instance_num_tasks is None:
+            raise RuntimeError("optimal instance num tasks not set")
         cpus_per_task = self._run_config.cpus_per_task or 1
         tasks_per_instance = self._optimal_instance_num_tasks
         tasks_running = int(running_cpus // cpus_per_task)
@@ -686,6 +744,12 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
         else:
             available_price = None
 
+        if self._optimal_instance_info is None:
+            self._logger.error("_optimal_instance_info is not set; cannot compute instances to add")
+            raise RuntimeError("_optimal_instance_info is not set")
+        oii = self._optimal_instance_info
+        opt_vcpu = int(oii["vcpu"]) if oii.get("vcpu") is not None else 0
+        opt_price = float(oii["total_price"]) if oii.get("total_price") is not None else 0.0
         self._logger.debug(
             "Available instances "
             f"{'N/A' if available_instances is None else available_instances}, "
@@ -695,10 +759,6 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
 
         # Find the minimum of the three budgets - this gives us the maximum number of instances
         # we can start
-        assert self._optimal_instance_info is not None
-        oii = self._optimal_instance_info
-        opt_vcpu = int(oii["vcpu"]) if oii.get("vcpu") is not None else 0
-        opt_price = float(oii["total_price"]) if oii.get("total_price") is not None else 0.0
         instances_to_add = available_instances
         if available_cpus is not None and opt_vcpu > 0:
             new_instances_to_add = int(available_cpus // opt_vcpu)
