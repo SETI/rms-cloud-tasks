@@ -208,7 +208,7 @@ async def test_worker_start_with_factory_task_queue_error(mock_worker_function, 
                 with patch("asyncio.create_task", side_effect=lambda x: x):
                     try:
                         await worker.start()
-                    except (asyncio.CancelledError, Exception):
+                    except asyncio.CancelledError:
                         pass
                     await worker._cleanup_tasks()
             mock_exit.assert_called_once_with(1)

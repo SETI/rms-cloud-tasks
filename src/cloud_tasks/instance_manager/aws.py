@@ -480,10 +480,9 @@ class AWSEC2InstanceManager(InstanceManager):
                 inst_type = price["InstanceType"]
                 if inst_type not in ret:
                     ret[inst_type] = {}
+                if zone not in ret[inst_type]:
+                    ret[inst_type][zone] = {}
                 zone_prices = ret[inst_type][zone]
-                if zone_prices is None:
-                    zone_prices = {}
-                    ret[inst_type][zone] = zone_prices
                 cpu_price = float(price["SpotPrice"])
                 vcpus = instance_types[inst_type]["vcpu"]
                 zone_prices[boot_disk_type] = cast(
@@ -651,24 +650,22 @@ class AWSEC2InstanceManager(InstanceManager):
         boot_disk_throughput: int | None = None,
         zone: str | None = None,
     ) -> tuple[str, str]:
-        """
-        Start a new EC2 instance.
+        """Start a new EC2 instance.
 
-        Args:
-            instance_type: EC2 instance type (e.g., 't3.micro')
-            startup_script: User data script to run at instance startup
-            job_id: Job ID for the instance
-            use_spot: Whether to use spot instances (cheaper but can be terminated)
-            image_uri: Custom AMI ID or name to use
-            boot_disk_type: Boot disk type (unused for AWS)
-            boot_disk_size: Boot disk size in GB
-            boot_disk_iops: Boot disk IOPS (unused for AWS)
-            boot_disk_throughput: Boot disk throughput (unused for AWS)
-            zone: Availability zone (optional)
+        Parameters:
+            instance_type: EC2 instance type (e.g., 't3.micro').
+            startup_script: User data script to run at instance startup.
+            job_id: Job ID for the instance.
+            use_spot: Whether to use spot instances (cheaper but can be terminated).
+            image_uri: Custom AMI ID or name to use.
+            boot_disk_type: Boot disk type (unused for AWS).
+            boot_disk_size: Boot disk size in GB.
+            boot_disk_iops: Boot disk IOPS (unused for AWS).
+            boot_disk_throughput: Boot disk throughput (unused for AWS).
+            zone: Availability zone (optional).
 
         Returns:
-            A tuple containing the ID of the started instance and the zone it was started
-            in
+            tuple[str, str]: The started instance ID and the zone it was started in.
         """
         self._logger.info(
             f"Creating {'spot' if use_spot else 'on-demand'} instance of type {instance_type}"

@@ -496,13 +496,12 @@ def test_worker_init_with_verbose_logging(mock_worker_function) -> None:
             mock_logger.setLevel.assert_called_once_with(logging.DEBUG)
 
 
-def test_worker_init_event_log_to_queue_without_provider(mock_worker_function):
-    """Test Worker initialization with --event-log-to-queue but no provider."""
+def test_worker_init_event_log_to_queue_without_provider(mock_worker_function: Any) -> None:
+    """Test Worker initialization with --event-log-to-queue but no provider exits."""
     with patch("sys.argv", ["worker.py", "--event-log-to-queue"]):
         with patch.dict(os.environ, {}, clear=True):
-            with patch("sys.exit") as mock_exit:
+            with pytest.raises(SystemExit):
                 Worker(mock_worker_function)
-                assert mock_exit.call_count >= 1
 
 
 def test_worker_init_simulate_spot_termination_without_delay(mock_worker_function, caplog):

@@ -1,4 +1,11 @@
-"""Tests for cloud_tasks.cli.EventMonitor and run_event_monitoring_loop."""
+"""Tests for cloud_tasks.cli.EventMonitor and run_event_monitoring_loop.
+
+This module exercises EventMonitor.process_events_batch, start, close,
+print_status_summary, and run_event_monitoring_loop. Common fixtures used:
+tmp_path (Path): Temporary filesystem path for DB and output files.
+capsys (pytest.CaptureFixture[str]): Captured stdout/stderr.
+caplog (pytest.LogCaptureFixture): Captured log records.
+"""
 
 import asyncio
 import logging
@@ -13,7 +20,14 @@ from cloud_tasks.common.task_db import TaskDatabase
 
 @pytest.mark.asyncio
 async def test_event_monitor_process_events_batch_empty(tmp_path: Path) -> None:
-    """EventMonitor.process_events_batch returns 0 when receive_messages returns empty."""
+    """EventMonitor.process_events_batch returns 0 when receive_messages returns empty.
+
+    Parameters:
+        tmp_path: Pytest fixture; temporary directory for the task DB.
+
+    Returns:
+        None. Asserts count == 0.
+    """
     db_path = tmp_path / "events.db"
     task_db = TaskDatabase(str(db_path))
     mock_queue = AsyncMock()
@@ -28,7 +42,15 @@ async def test_event_monitor_process_events_batch_empty(tmp_path: Path) -> None:
 async def test_event_monitor_process_events_batch_with_messages(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """EventMonitor.process_events_batch processes dict and str payloads, writes file, prints."""
+    """EventMonitor.process_events_batch processes dict and str payloads, writes file, prints.
+
+    Parameters:
+        tmp_path: Pytest fixture; temporary directory for DB and output file.
+        capsys: Pytest fixture; captured stdout/stderr.
+
+    Returns:
+        None. Asserts count 2, file content, and stdout contain expected strings.
+    """
     db_path = tmp_path / "events.db"
     task_db = TaskDatabase(str(db_path))
     task_db.insert_task("t1", {})
@@ -65,7 +87,15 @@ async def test_event_monitor_process_events_batch_with_messages(
 async def test_event_monitor_process_events_batch_json_error(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """EventMonitor.process_events_batch logs and skips on JSONDecodeError."""
+    """EventMonitor.process_events_batch logs and skips on JSONDecodeError.
+
+    Parameters:
+        tmp_path: Pytest fixture; temporary directory for the task DB.
+        caplog: Pytest fixture; captured log records.
+
+    Returns:
+        None. Asserts count 1 and error log message.
+    """
     db_path = tmp_path / "events.db"
     task_db = TaskDatabase(str(db_path))
     mock_queue = AsyncMock()
@@ -82,7 +112,15 @@ async def test_event_monitor_process_events_batch_json_error(
 async def test_event_monitor_process_events_batch_exception(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """EventMonitor.process_events_batch logs on generic Exception in message processing."""
+    """EventMonitor.process_events_batch logs on generic Exception in message processing.
+
+    Parameters:
+        tmp_path: Pytest fixture; temporary directory for the task DB.
+        caplog: Pytest fixture; captured log records.
+
+    Returns:
+        None. Asserts count 1 and log contains 'db error'.
+    """
     db_path = tmp_path / "events.db"
     task_db = TaskDatabase(str(db_path))
     mock_queue = AsyncMock()
@@ -100,7 +138,15 @@ async def test_event_monitor_process_events_batch_exception(
 async def test_event_monitor_print_status_summary(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """EventMonitor.print_status_summary with force=True logs summary even when nothing changed."""
+    """EventMonitor.print_status_summary with force=True logs summary when nothing changed.
+
+    Parameters:
+        tmp_path: Pytest fixture; temporary directory for the task DB.
+        caplog: Pytest fixture; captured log records.
+
+    Returns:
+        None. Asserts log contains Summary and Total tasks.
+    """
     db_path = tmp_path / "events.db"
     task_db = TaskDatabase(str(db_path))
     task_db.insert_task("t1", {})
@@ -116,7 +162,14 @@ async def test_event_monitor_print_status_summary(
 
 @pytest.mark.asyncio
 async def test_event_monitor_start_open_file_raises(tmp_path: Path) -> None:
-    """EventMonitor.start exits 1 when opening output file raises."""
+    """EventMonitor.start calls sys.exit(1) when opening output file raises.
+
+    Parameters:
+        tmp_path: Pytest fixture; temporary directory for the task DB.
+
+    Returns:
+        None. Asserts sys.exit(1) was called.
+    """
     db_path = tmp_path / "events.db"
     task_db = TaskDatabase(str(db_path))
     mock_queue = AsyncMock()
@@ -136,7 +189,14 @@ async def test_event_monitor_start_open_file_raises(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_event_monitor_close_with_file(tmp_path: Path) -> None:
-    """EventMonitor.close closes output file when open."""
+    """EventMonitor.close closes the output file when open.
+
+    Parameters:
+        tmp_path: Pytest fixture; temporary directory for DB and output file.
+
+    Returns:
+        None. Asserts output_file is closed after close().
+    """
     db_path = tmp_path / "events.db"
     task_db = TaskDatabase(str(db_path))
     out_file = tmp_path / "out.txt"
@@ -157,7 +217,14 @@ async def test_event_monitor_close_with_file(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_run_event_monitoring_loop_stop_signal(tmp_path: Path) -> None:
-    """run_event_monitoring_loop exits when stop_signal is set."""
+    """run_event_monitoring_loop exits when stop_signal is set.
+
+    Parameters:
+        tmp_path: Pytest fixture; temporary directory for the task DB.
+
+    Returns:
+        None. Asserts receive_messages call count is at most 1.
+    """
     db_path = tmp_path / "events.db"
     task_db = TaskDatabase(str(db_path))
     task_db.insert_task("t1", {})
@@ -175,7 +242,14 @@ async def test_run_event_monitoring_loop_stop_signal(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_run_event_monitoring_loop_check_completion(tmp_path: Path) -> None:
-    """run_event_monitoring_loop exits when check_completion and all tasks complete."""
+    """run_event_monitoring_loop exits when check_completion and all tasks complete.
+
+    Parameters:
+        tmp_path: Pytest fixture; temporary directory for the task DB.
+
+    Returns:
+        None. Asserts task t1 is in completed status.
+    """
     db_path = tmp_path / "events.db"
     task_db = TaskDatabase(str(db_path))
     task_db.insert_task("t1", {})
@@ -199,7 +273,14 @@ async def test_run_event_monitoring_loop_check_completion(tmp_path: Path) -> Non
 
 @pytest.mark.asyncio
 async def test_run_event_monitoring_loop_process_events_raises(tmp_path: Path) -> None:
-    """run_event_monitoring_loop catches Exception from process_events_batch and continues."""
+    """run_event_monitoring_loop catches Exception from process_events_batch and continues.
+
+    Parameters:
+        tmp_path: Pytest fixture; temporary directory for the task DB.
+
+    Returns:
+        None. Asserts process_events_batch was called at least twice.
+    """
     db_path = tmp_path / "events.db"
     task_db = TaskDatabase(str(db_path))
     task_db.insert_task("t1", {})

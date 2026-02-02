@@ -830,9 +830,23 @@ async def load_queue_common(
     pending_tasks = set()
 
     async def enqueue_task(task: dict[str, Any]) -> None:
-        """Acquire semaphore, send the task via task_queue.send_task(task["task_id"],
-        task["data"]), and mark it enqueued with task_db.update_task_enqueued(
-        task["task_id"]). DB writes are serialized under db_write_lock."""
+        """Enqueue one task to the cloud queue and mark it enqueued in the DB.
+
+        Acquires the semaphore, calls task_queue.send_task with the task payload,
+        then marks the task enqueued via task_db.update_task_enqueued. DB writes
+        are serialized under db_write_lock.
+
+        Parameters:
+            task: dict[str, Any] with keys "task_id" (str) and "data" (payload).
+                Passed to send_task and update_task_enqueued.
+
+        Returns:
+            None.
+
+        Notes:
+            Semaphore limits concurrent enqueue operations. DB updates run under
+            db_write_lock so only one writer runs at a time.
+        """
         async with semaphore:
             await task_queue.send_task(task["task_id"], task["data"])
             async with db_write_lock:
