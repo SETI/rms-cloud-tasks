@@ -11,7 +11,16 @@ from cloud_tasks.worker.worker import Worker
 
 
 def _extract_queue_message(call: Any) -> dict[str, Any]:
-    """Extract the first positional arg from a mock call as a dict; parse JSON if string."""
+    """Extract the first positional arg from a mock call as a dict; parse JSON if string.
+
+    Parameters:
+        call: Mock call (e.g. from call_args_list); the first positional argument
+            is the message (dict or JSON string).
+
+    Returns:
+        dict[str, Any]: The message as a dict; parsed from JSON if the argument
+            was a string.
+    """
     arg = call.args[0]
     return arg if isinstance(arg, dict) else json.loads(arg)
 

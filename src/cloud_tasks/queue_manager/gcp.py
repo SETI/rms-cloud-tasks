@@ -97,14 +97,19 @@ class GCPPubSubQueue(QueueManager):
             self._visibility_timeout = min(visibility_timeout, self._MAXIMUM_VISIBILITY_TIMEOUT)
 
         if "project_id" in kwargs:
-            pid = kwargs["project_id"]
-            if not pid or not str(pid).strip():
+            pid = str(kwargs["project_id"]).strip()
+            if not pid:
                 raise ValueError(
                     "project_id is required and must be non-empty (pass via gcp_config or kwargs)"
                 )
             self._project_id = pid
-        elif gcp_config and gcp_config.project_id and str(gcp_config.project_id).strip():
-            self._project_id = gcp_config.project_id
+        elif gcp_config and gcp_config.project_id is not None:
+            pid = str(gcp_config.project_id).strip()
+            if not pid:
+                raise ValueError(
+                    "project_id is required and must be non-empty (pass via gcp_config or kwargs)"
+                )
+            self._project_id = pid
         else:
             raise ValueError(
                 "project_id is required and must be non-empty (pass via gcp_config or kwargs)"

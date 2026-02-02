@@ -67,14 +67,24 @@ async def test_local_queue_receive_tasks_yaml(local_task_file_yaml: str) -> None
 async def test_local_queue_acknowledge_task(local_task_file_json: str) -> None:
     """LocalTaskQueue.acknowledge_task is a no-op (does not raise)."""
     queue = LocalTaskQueue(FCPath(local_task_file_json))
+    tasks_first = await queue.receive_tasks(max_count=5)
     await queue.acknowledge_task("test-ack-1")
+    # Recreate queue and receive again; acknowledge is no-op so file unchanged
+    queue2 = LocalTaskQueue(FCPath(local_task_file_json))
+    tasks_after = await queue2.receive_tasks(max_count=5)
+    assert len(tasks_after) == len(tasks_first)
 
 
 @pytest.mark.asyncio
 async def test_local_queue_retry_task(local_task_file_json: str) -> None:
     """LocalTaskQueue.retry_task is a no-op (does not raise)."""
     queue = LocalTaskQueue(FCPath(local_task_file_json))
+    tasks_first = await queue.receive_tasks(max_count=5)
     await queue.retry_task("test-ack-1")
+    # Recreate queue and receive again; retry is no-op so file unchanged
+    queue2 = LocalTaskQueue(FCPath(local_task_file_json))
+    tasks_after = await queue2.receive_tasks(max_count=5)
+    assert len(tasks_after) == len(tasks_first)
 
 
 @pytest.mark.asyncio

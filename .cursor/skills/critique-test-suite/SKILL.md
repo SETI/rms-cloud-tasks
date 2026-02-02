@@ -211,7 +211,8 @@ This section is a **reusable prompt template** to be filled with the report outp
 
 **Template (fill placeholders):**
 
-```
+```text
+
 Apply the following test-suite fixes. Use the critique report as context.
 
 <REPORT_SUMMARY>
@@ -231,11 +232,13 @@ Constraints:
 - **Exception messages:** For tests that expect exceptions with defined messages, use `pytest.raises(...) as exc_info` and assert message content: `assert "expected substring" in str(exc_info.value)` (or equivalent). Do not only assert that an exception was raised.
 - **Production code:** Do not modify production code. Fix only tests and conftest files.
 - **Behavior:** Preserve existing passing behavior; only add or change assertions and test structure as indicated by the report.
+
 ```
 
 **Example filled prompt:**
 
-```
+```text
+
 Apply the following test-suite fixes.
 
 <REPORT_SUMMARY>
@@ -255,6 +258,7 @@ tests/cloud_tasks/worker/test_worker_init.py
 </FILES_TO_EDIT>
 
 Constraints: Run full test suite for coverage (≥80%). Use pytest.raises(...) as exc_info and assert str(exc_info.value) for exception message checks. Do not modify production code. Preserve existing passing behavior.
+
 ```
 
 ## Execution steps

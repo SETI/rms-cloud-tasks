@@ -13,7 +13,7 @@ import json
 import os
 import sys
 import tempfile
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Generator, Iterable
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -106,7 +106,9 @@ def mock_task_factory_empty() -> Callable[[], Iterable[dict[str, Any]]]:
 
 
 @pytest.fixture
-def worker(mock_worker_function: Callable[..., tuple[bool, str]], monkeypatch: pytest.MonkeyPatch):
+def worker(
+    mock_worker_function: Callable[..., tuple[bool, str]], monkeypatch: pytest.MonkeyPatch
+) -> Generator[Worker, None, None]:
     """Worker instance with provider and job-id from env; sys.argv patched for test scope."""
     monkeypatch.setenv("RMS_CLOUD_TASKS_PROVIDER", "AWS")
     monkeypatch.setenv("RMS_CLOUD_TASKS_JOB_ID", "test-job")

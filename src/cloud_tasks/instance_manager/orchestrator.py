@@ -31,6 +31,8 @@ class InstanceOrchestrator:
     _DEFAULT_BOOT_DISK_SIZE_PER_CPU_GB = 10
     _DEFAULT_SCALING_CHECK_INTERVAL = 60.0
     _DEFAULT_BOOT_DISK_TYPE = "pd-balanced"
+    # Sentinel for max_allowed_instances when --max-instances is not set (no limit).
+    _MAX_ALLOWED_INSTANCES_SENTINEL = 999999
 
     def __init__(
         self,
@@ -473,13 +475,14 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
         return self._DEFAULT_BOOT_DISK_TYPE
 
     async def get_job_instances(self) -> tuple[int, int, float, str]:
-        """
-        Return job instance counts and pricing summary; may call _initialize_pricing_info.
+        """Return job instance counts and pricing summary.
 
         Returns:
-            Tuple of (total_instances, running_instances, price_per_instance,
-            currency_or_pricing_source). The fourth element is a human-readable
-            summary string when pricing is unavailable.
+            tuple[int, int, float, str]: (num_running, running_cpus, running_price,
+            summary). num_running is the number of running instances;
+            running_cpus is the total vCPUs in use; running_price is the total
+            (or per-instance) price as returned by pricing; summary is a
+            human-readable pricing/source summary string.
 
         Side effects:
             Calls _initialize_pricing_info() to ensure pricing data is loaded.
@@ -685,7 +688,9 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
 
         # Find the maximum number of instances allowed by looking at
         # --max-instances and --max-simultaneous-tasks with --cpus-per-task
-        max_allowed_instances = max_instances if max_instances is not None else 999999
+        max_allowed_instances = (
+            max_instances if max_instances is not None else self._MAX_ALLOWED_INSTANCES_SENTINEL
+        )
         self._logger.debug(f"Initial constraint: max allowed instances: {max_allowed_instances}")
 
         # Derive the number of tasks per instance from the constraints and the number of vCPUs

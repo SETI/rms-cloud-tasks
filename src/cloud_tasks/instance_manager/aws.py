@@ -36,7 +36,16 @@ class AWSEC2InstanceManager(InstanceManager):
     def _empty_pricing_entry(
         self, boot_disk_type: str
     ) -> dict[str, dict[str, dict[str, float | str | None] | None]]:
-        """Return a sentinel entry for missing pricing (zone -> boot_disk_type -> None)."""
+        """Return a sentinel pricing entry when price data is missing.
+
+        Parameters:
+            boot_disk_type: Boot disk type key (e.g. "gp3") for the entry.
+
+        Returns:
+            dict[str, dict[str, dict[str, float | str | None] | None]]: Sentinel
+            entry mapping f"{self._region}*" to a dict with boot_disk_type -> None,
+            so callers can detect missing pricing without KeyError.
+        """
         return {f"{self._region}*": {boot_disk_type: None}}
 
     _PricingRet = dict[str, dict[str, dict[str, dict[str, float | str | None] | None]]]

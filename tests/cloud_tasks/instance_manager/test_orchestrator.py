@@ -192,21 +192,8 @@ async def test_provision_instances_parallel(orchestrator):
     # Verify that the instance manager's start_instance was called the correct number of times
     assert orchestrator._instance_manager.start_instance.call_count == instance_count
 
-    # Calculate time metrics
-    # First instance start time
-    first_start = min(start_times) if start_times else 0
-    # Last instance start time
-    last_start = max(start_times) if start_times else 0
-
-    # If execution was sequential, time between first and last start would be (count-1) * delay
-    sequential_time = 0.2 * (instance_count - 1)
-    actual_time = last_start - first_start
-
-    # In parallel execution, the time between first and last start should be less
-    # We check against 0.8 * sequential time to allow for some test timing variability
-    assert actual_time < 0.8 * sequential_time, (
-        f"Expected parallel execution to be faster than sequential (actual: {actual_time}, sequential: {sequential_time})"
-    )
+    # Assert parallelism: more than one start was in flight at once
+    assert max_concurrent_starts > 1, "Expected parallel starts (max_concurrent_starts > 1)"
 
 
 @pytest.mark.asyncio

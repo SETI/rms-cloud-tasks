@@ -5,6 +5,7 @@ import multiprocessing
 import os
 import types
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -161,7 +162,8 @@ def test_worker_init_with_task_source_string_logging(mock_worker_function, local
     with patch("sys.argv", ["worker.py"]), patch("cloud_tasks.worker.worker.logger") as mock_logger:
         _ = Worker(mock_worker_function, task_source=local_task_file_json)
         info_calls = [str(c) for c in mock_logger.info.call_args_list]
-        assert any("Using local tasks file" in c and local_task_file_json in c for c in info_calls)
+        assert any("Using local tasks file" in c for c in info_calls)
+        assert any(local_task_file_json in c for c in info_calls)
 
 
 def test_worker_init_with_task_source_factory_logging(mock_worker_function, mock_task_factory):
@@ -175,7 +177,7 @@ def test_worker_init_with_task_source_factory_logging(mock_worker_function, mock
 # Worker __init__ from env/args and validation
 
 
-def test_init_with_env_vars(mock_worker_function, env_setup_teardown):
+def test_init_with_env_vars(mock_worker_function: Any, env_setup_teardown: Any) -> None:
     """Test Worker initialization from environment variables (truthy values)."""
     with patch("sys.argv", ["worker.py"]):
         worker = Worker(mock_worker_function)
@@ -204,7 +206,7 @@ def test_init_with_env_vars(mock_worker_function, env_setup_teardown):
         assert worker._data.exactly_once_queue is True
 
 
-def test_init_with_env_vars_false(mock_worker_function, env_setup_teardown_false):
+def test_init_with_env_vars_false(mock_worker_function: Any, env_setup_teardown_false: Any) -> None:
     """Test Worker initialization from environment variables (falsy values)."""
     with patch("sys.argv", ["worker.py"]):
         worker = Worker(mock_worker_function)

@@ -1,5 +1,6 @@
 # Manually verified 5/7/2025
 
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pydantic
@@ -110,7 +111,9 @@ _RUNCONFIG_MAX_GT_ZERO_CASES = [
 
 
 @pytest.mark.parametrize("invalid_kwargs,msg_substring", _RUNCONFIG_MAX_GT_ZERO_CASES)
-def test_runconfig_max_must_be_greater_than_zero(invalid_kwargs: dict, msg_substring: str) -> None:
+def test_runconfig_max_must_be_greater_than_zero(
+    invalid_kwargs: dict[str, Any], msg_substring: str
+) -> None:
     """RunConfig max fields that must be > 0 raise when set to 0."""
     with pytest.raises(ValueError) as exc_info:
         RunConfig(**invalid_kwargs)
@@ -631,10 +634,7 @@ def test_load_config_file_invalid_yaml(tmp_path):
         with pytest.raises(ValueError) as exc_info:
             load_config(str(file_path))
         err_msg = str(exc_info.value).lower()
-        assert "dictionary" in err_msg or "yaml" in err_msg, (
-            f"Expected exception to mention 'dictionary' or 'YAML'; file_path={file_path!r}; "
-            f"actual: {exc_info.value!r}"
-        )
+        assert "dictionary" in err_msg or "yaml" in err_msg
 
 
 def test_load_config_no_file():

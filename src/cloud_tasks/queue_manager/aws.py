@@ -86,12 +86,14 @@ class AWSSQSQueue(QueueManager):
 
     def _get_sqs(self) -> Any:
         """Return the SQS client; raises if not initialized."""
-        assert self._sqs is not None, "SQS client not initialized"
+        if self._sqs is None:
+            raise RuntimeError("SQS client not initialized")
         return self._sqs
 
     def _get_queue_url(self) -> str:
         """Return the queue URL; raises if not set."""
-        assert self._queue_url is not None, "Queue URL not set"
+        if self._queue_url is None:
+            raise RuntimeError("Queue URL not set")
         return self._queue_url
 
     def _create_queue(self) -> None:

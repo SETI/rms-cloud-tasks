@@ -16,7 +16,14 @@ from cloud_tasks.common.task_db import TaskDatabase
 
 
 def test_build_parser_returns_parser() -> None:
-    """build_parser returns an ArgumentParser with subparsers."""
+    """build_parser returns an ArgumentParser with subparsers and expected options.
+
+    Parameters:
+        None.
+
+    Returns:
+        None. Asserts parser is not None and parses show_queue with config/provider.
+    """
     parser = build_parser()
     assert parser is not None
     args = parser.parse_args(["show_queue", "--config", "/nonexistent", "--provider", "gcp"])
@@ -26,19 +33,40 @@ def test_build_parser_returns_parser() -> None:
 
 
 def test_run_argv_help_exits_zero(capsys: pytest.CaptureFixture[str]) -> None:
-    """--help returns 0 (run_argv catches SystemExit from argparse)."""
+    """run_argv with --help exits with code 0.
+
+    Parameters:
+        capsys: Pytest fixture capturing stdout/stderr.
+
+    Returns:
+        None. Asserts exit code is 0.
+    """
     code = run_argv(["--help"])
     assert code == 0
 
 
 def test_run_argv_no_args_exits_nonzero(capsys: pytest.CaptureFixture[str]) -> None:
-    """No arguments causes parse error; run_argv catches SystemExit and returns code."""
+    """run_argv with no arguments returns non-zero (parse error).
+
+    Parameters:
+        capsys: Pytest fixture capturing stdout/stderr.
+
+    Returns:
+        None. Asserts exit code is 2.
+    """
     code = run_argv([])
     assert code == 2
 
 
 def test_run_argv_invalid_config_exits_one(tmp_path: Path) -> None:
-    """Invalid or missing config file causes exit code 1."""
+    """run_argv with invalid or missing config file returns exit code 1.
+
+    Parameters:
+        tmp_path: Pytest fixture providing a temporary directory.
+
+    Returns:
+        None. Asserts exit code is 1 when config file is missing.
+    """
     config_path = tmp_path / "config.yaml"
     config_path.write_text("provider: gcp\ngcp:\n  job_id: test-job\n  project_id: test-project\n")
     # Missing --config with a subcommand that requires it: use invalid path so load fails
@@ -49,7 +77,15 @@ def test_run_argv_invalid_config_exits_one(tmp_path: Path) -> None:
 
 
 def test_run_argv_show_queue_success(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    """show_queue with mocked create_queue returns 0 and prints queue depth."""
+    """show_queue with mocked create_queue returns 0 and prints queue depth.
+
+    Parameters:
+        tmp_path: Pytest fixture providing a temporary directory.
+        capsys: Pytest fixture capturing stdout/stderr.
+
+    Returns:
+        None. Asserts exit code 0 and output contains queue depth (42) and 'queue'.
+    """
     config_path = tmp_path / "config.yaml"
     config_path.write_text("provider: gcp\ngcp:\n  job_id: test-job\n  project_id: test-project\n")
     mock_queue = AsyncMock()

@@ -7,7 +7,7 @@ import sys
 import time
 from collections.abc import Iterable
 from queue import Empty
-from typing import Any
+from typing import Any, NoReturn
 from unittest.mock import ANY, AsyncMock, MagicMock, call, patch
 
 import pytest
@@ -28,7 +28,8 @@ async def test_start_with_local_tasks(mock_worker_function, local_task_file_json
 
 
 @pytest.mark.asyncio
-async def test_start_with_cloud_queue(mock_worker_function, mock_queue):
+async def test_start_with_cloud_queue(mock_worker_function: Any, mock_queue: Any) -> None:
+    """Worker started with cloud queue calls create_queue and cleans up on CancelledError."""
     with patch(
         "sys.argv",
         ["worker.py", "--provider", "AWS", "--job-id", "test-job", "--no-event-log-to-queue"],
@@ -144,7 +145,7 @@ async def test_check_termination_notice_azure(worker):
     assert await worker._check_termination_notice() is False
 
 
-def exception_worker_function(task_id: str, task_data: dict, worker: Worker) -> None:
+def exception_worker_function(task_id: str, task_data: dict[str, Any], worker: Worker) -> NoReturn:
     """Test worker that raises ValueError (used to exercise exception handling paths)."""
     raise ValueError("Test exception")
 
@@ -552,23 +553,22 @@ async def test_monitor_process_runtimes(mock_worker_function, retry_on_timeout):
                 mock_queue.retry_task.assert_called_once_with("ack1")
                 mock_queue.acknowledge_task.assert_not_called()
                 info_calls = [str(c) for c in mock_logger.info.call_args_list]
-                assert any("Worker #123" in c and "task-1 will be retried" in c for c in info_calls)
+                assert any("Worker #123" in c for c in info_calls)
+                assert any("task-1 will be retried" in c for c in info_calls)
             else:
                 mock_queue.acknowledge_task.assert_called_once_with("ack1")
                 mock_queue.retry_task.assert_not_called()
                 info_calls = [str(c) for c in mock_logger.info.call_args_list]
-                assert any(
-                    "Worker #123" in c and "task-1 will not be retried" in c for c in info_calls
-                )
+                assert any("Worker #123" in c for c in info_calls)
+                assert any("task-1 will not be retried" in c for c in info_calls)
 
             # Verify no new process was created to replace it
             assert len(worker._processes) == 0
 
             # Verify warning logging (exceeded max runtime)
             warning_calls = [str(c) for c in mock_logger.warning.call_args_list]
-            assert any(
-                "Worker #123" in c and "task-1 exceeded max runtime" in c for c in warning_calls
-            )
+            assert any("Worker #123" in c for c in warning_calls)
+            assert any("task-1 exceeded max runtime" in c for c in warning_calls)
 
 
 @pytest.mark.asyncio

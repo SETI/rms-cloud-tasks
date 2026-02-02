@@ -2435,7 +2435,14 @@ def add_instance_args(parser: argparse.ArgumentParser) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Build and return the argument parser. Used by main() and run_argv() for testing."""
+    """Build and return the CLI argument parser.
+
+    Parameters:
+        None.
+
+    Returns:
+        argparse.ArgumentParser: Parser with all CLI subcommands and options.
+    """
     parser = argparse.ArgumentParser(description="Multi-Cloud Task Processing System")
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
     subparsers.required = True
@@ -2740,7 +2747,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def run_argv(argv: list[str] | None = None) -> int:
-    """Run CLI with given argv. Returns exit code. Used for testing."""
+    """Run the CLI with the given argv and return the process exit code.
+
+    Parameters:
+        argv: Command-line argument list (defaults to sys.argv when None). Used
+            for testing or programmatic invocation.
+
+    Returns:
+        int: Exit code (0 on success; non-zero on failure or sys.exit).
+    """
     try:
         parser = build_parser()
         args = parser.parse_args(argv)
@@ -2790,7 +2805,14 @@ def run_argv(argv: list[str] | None = None) -> int:
 
 
 def main() -> None:
-    """Main entry point for the CLI."""
+    """Entry point for the CLI; parses sys.argv and exits with the command result.
+
+    Parameters:
+        None.
+
+    Returns:
+        None. Calls sys.exit() with the exit code from run_argv().
+    """
     sys.exit(run_argv())
 
 

@@ -3,6 +3,7 @@
 # Manually verified 4/29/2025
 
 from collections.abc import Generator
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -58,7 +59,7 @@ async def test_create_queue_aws_with_config(mock_aws_queue: MagicMock) -> None:
 
 
 @pytest.mark.asyncio
-async def test_create_queue_gcp_with_config(mock_gcp_queue) -> None:
+async def test_create_queue_gcp_with_config(mock_gcp_queue: Any) -> None:
     """Test creating a GCP queue with config."""
     gcp_config = GCPConfig(
         project_id="test-project", queue_name="test-queue", credentials_file=None
