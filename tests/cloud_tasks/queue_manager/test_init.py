@@ -2,6 +2,7 @@
 
 # Manually verified 4/29/2025
 
+from collections.abc import Generator
 from unittest.mock import MagicMock, patch
 
 import pytest

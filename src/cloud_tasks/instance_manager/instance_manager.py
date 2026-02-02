@@ -250,7 +250,7 @@ class InstanceManager(ABC):
         *,
         use_spot: bool = False,
         boot_disk_constraints: dict[str, Any] | None = None,
-    ) -> dict[str, dict[str, dict[str, dict[str, float | str | None]]]]:
+    ) -> dict[str, dict[str, dict[str, dict[str, float | str | None] | None]]]:
         """
         Get the hourly price for one or more specific instance types.
 

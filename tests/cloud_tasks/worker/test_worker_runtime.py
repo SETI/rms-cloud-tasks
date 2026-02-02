@@ -5,8 +5,9 @@ import logging
 import signal
 import sys
 import time
+from collections.abc import Iterable
 from queue import Empty
-from typing import Any, Iterable, List, Optional, Tuple
+from typing import Any
 from unittest.mock import ANY, AsyncMock, MagicMock, call, patch
 
 import pytest
@@ -15,9 +16,7 @@ from cloud_tasks.worker.worker import Worker
 
 
 @pytest.mark.asyncio
-async def test_start_with_local_tasks(
-    mock_worker_function, local_task_file_json: str
-) -> None:
+async def test_start_with_local_tasks(mock_worker_function, local_task_file_json: str) -> None:
     """Worker started with local task file shuts down and cleans up when _wait_for_shutdown completes."""
     with patch("sys.argv", ["worker.py", "--task-file", local_task_file_json]):
         worker = Worker(mock_worker_function)
@@ -145,9 +144,7 @@ async def test_check_termination_notice_azure(worker):
     assert await worker._check_termination_notice() is False
 
 
-def exception_worker_function(
-    task_id: str, task_data: dict, worker: Worker
-) -> None:
+def exception_worker_function(task_id: str, task_data: dict, worker: Worker) -> None:
     """Test worker that raises ValueError (used to exercise exception handling paths)."""
     raise ValueError("Test exception")
 
@@ -584,7 +581,7 @@ async def test_monitor_process_runtimes_no_termination(mock_worker_function, cap
 
             worker = Worker(mock_worker_function)
             worker._running = True
-            worker._data.max_runtime = 0.2
+            worker._data.max_runtime = 1
 
             # Create a mock process that will exceed max runtime
             mock_process = MagicMock()
@@ -596,10 +593,10 @@ async def test_monitor_process_runtimes_no_termination(mock_worker_function, cap
                 123: {
                     "worker_id": 123,
                     "process": mock_process,
-                    "start_time": time.time() - 0.2,
+                    "start_time": time.time() - 1.0,
                     "task": {"task_id": "task-1", "ack_id": "ack1"},
                 }
-            }  # 0.2 seconds runtime
+            }  # 1 second runtime
 
             # Mock task queue for retry_task call
             mock_queue = AsyncMock()
@@ -629,8 +626,7 @@ async def test_monitor_process_runtimes_no_termination(mock_worker_function, cap
 
             # Verify logging
             assert (
-                "Worker #123 (PID 123), task task-1 exceeded max runtime of 0.2 seconds"
-                in caplog.text
+                "Worker #123 (PID 123), task task-1 exceeded max runtime of 1 second" in caplog.text
             )
 
 
@@ -905,16 +901,16 @@ class _MockResultQueue:
 
     def __init__(
         self,
-        results: Optional[Iterable[Tuple[int, bool, Any]]] = None,
+        results: Iterable[tuple[int, bool, Any]] | None = None,
     ) -> None:
-        self.results: List[Tuple[int, bool, Any]] = list(
+        self.results: list[tuple[int, bool, Any]] = list(
             results or [(0, False, "ok"), (1, False, "ok"), (2, False, "ok")]
         )
 
     def empty(self) -> bool:
         return len(self.results) == 0
 
-    def get_nowait(self) -> Tuple[int, bool, Any]:
+    def get_nowait(self) -> tuple[int, bool, Any]:
         if not self.results:
             raise Empty()
         return self.results.pop(0)

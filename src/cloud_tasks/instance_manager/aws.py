@@ -33,9 +33,13 @@ class AWSEC2InstanceManager(InstanceManager):
     # The pricing API is only available in us-east-1, eu-central-1, and ap-south-1
     _PRICING_REGION = "us-east-1"
 
-    def _empty_pricing_entry(self, boot_disk_type: str) -> dict[str, dict[str, None]]:
-        """Return a sentinel entry for missing pricing (boot_disk_type -> None)."""
+    def _empty_pricing_entry(
+        self, boot_disk_type: str
+    ) -> dict[str, dict[str, dict[str, float | str | None] | None]]:
+        """Return a sentinel entry for missing pricing (zone -> boot_disk_type -> None)."""
         return {f"{self._region}*": {boot_disk_type: None}}
+
+    _PricingRet = dict[str, dict[str, dict[str, dict[str, float | str | None] | None]]]
 
     # Map of instance statuses to standardized statuses
     STATUS_MAP = {
@@ -394,7 +398,7 @@ class AWSEC2InstanceManager(InstanceManager):
         *,
         use_spot: bool = False,
         boot_disk_constraints: dict[str, Any] | None = None,
-    ) -> dict[str, dict[str, dict[str, dict[str, float | str | None]]]]:
+    ) -> _PricingRet:
         """
         Get the hourly price for one or more specific instance types.
 
@@ -430,7 +434,7 @@ class AWSEC2InstanceManager(InstanceManager):
         )
         self._logger.debug(f"Boot disk constraints: {boot_disk_constraints}")
 
-        ret: dict[str, dict[str, dict[str, dict[str, float | str | None]]]] = {}
+        ret: AWSEC2InstanceManager._PricingRet = {}
 
         if len(instance_types) == 0:
             self._logger.warning("No instance types provided")
@@ -467,24 +471,29 @@ class AWSEC2InstanceManager(InstanceManager):
                 inst_type = price["InstanceType"]
                 if inst_type not in ret:
                     ret[inst_type] = {}
-                if zone not in ret[inst_type]:
-                    ret[inst_type][zone] = {}
+                zone_prices = ret[inst_type][zone]
+                if zone_prices is None:
+                    zone_prices = {}
+                    ret[inst_type][zone] = zone_prices
                 cpu_price = float(price["SpotPrice"])
                 vcpus = instance_types[inst_type]["vcpu"]
-                ret[inst_type][zone][boot_disk_type] = {
-                    "cpu_price": round(cpu_price, 6),  # CPU price (combined CPU and memory)
-                    "per_cpu_price": round(cpu_price / vcpus, 6),  # Per-CPU price
-                    "mem_price": 0.0,  # Memory price (we don't have this)
-                    "mem_per_gb_price": 0.0,  # Per-GB price (we don't have this)
-                    "local_ssd_price": 0.0,  # Local SSD price (we don't have this)
-                    "local_ssd_per_gb_price": 0.0,  # Local SSD per-GB price (we don't have this)
-                    "boot_disk_price": 0.0,  # TODO
-                    "boot_disk_per_gb_price": 0.0,  # TODO
-                    "total_price": round(float(price["SpotPrice"]), 6),  # Total price
-                    "total_price_per_cpu": round(float(price["SpotPrice"]) / vcpus, 6),
-                    "zone": price["AvailabilityZone"],
-                    **instance_types[price["InstanceType"]],
-                }
+                zone_prices[boot_disk_type] = cast(
+                    dict[str, float | str | None],
+                    {
+                        "cpu_price": round(cpu_price, 6),  # CPU price (combined CPU and memory)
+                        "per_cpu_price": round(cpu_price / vcpus, 6),  # Per-CPU price
+                        "mem_price": 0.0,  # Memory price (we don't have this)
+                        "mem_per_gb_price": 0.0,  # Per-GB price (we don't have this)
+                        "local_ssd_price": 0.0,  # Local SSD price (we don't have this)
+                        "local_ssd_per_gb_price": 0.0,  # Local SSD per-GB price (we don't have this)
+                        "boot_disk_price": 0.0,  # TODO
+                        "boot_disk_per_gb_price": 0.0,  # TODO
+                        "total_price": round(float(price["SpotPrice"]), 6),  # Total price
+                        "total_price_per_cpu": round(float(price["SpotPrice"]) / vcpus, 6),
+                        "zone": price["AvailabilityZone"],
+                        **instance_types[price["InstanceType"]],
+                    },
+                )
                 self._logger.debug(
                     f'Price for spot instance type: "{price["InstanceType"]}" in '
                     f'zone "{price["AvailabilityZone"]}" is ${float(price["SpotPrice"]):.4f}/hour'
@@ -584,28 +593,32 @@ class AWSEC2InstanceManager(InstanceManager):
                                 f"Found on-demand price for {inst_name}: ${price:.4f}/hour"
                             )
                             zone_key = f"{self._region}*"
-                            ret[inst_name] = {
+                            entry: dict[str, dict[str, dict[str, float | str | None] | None]] = {
                                 zone_key: {
-                                    boot_disk_type: {
-                                        "cpu_price": round(price, 6),
-                                        "per_cpu_price": round(
-                                            price / float(attributes["vcpu"]), 6
-                                        ),
-                                        "mem_price": 0.0,
-                                        "mem_per_gb_price": 0.0,
-                                        "local_ssd_price": 0.0,
-                                        "local_ssd_per_gb_price": 0.0,
-                                        "boot_disk_price": 0.0,
-                                        "boot_disk_per_gb_price": 0.0,
-                                        "total_price": round(price, 6),
-                                        "total_price_per_cpu": round(
-                                            price / float(attributes["vcpu"]), 6
-                                        ),
-                                        "zone": zone_key,
-                                        **inst_info,
-                                    }
+                                    boot_disk_type: cast(
+                                        dict[str, float | str | None],
+                                        {
+                                            "cpu_price": round(price, 6),
+                                            "per_cpu_price": round(
+                                                price / float(attributes["vcpu"]), 6
+                                            ),
+                                            "mem_price": 0.0,
+                                            "mem_per_gb_price": 0.0,
+                                            "local_ssd_price": 0.0,
+                                            "local_ssd_per_gb_price": 0.0,
+                                            "boot_disk_price": 0.0,
+                                            "boot_disk_per_gb_price": 0.0,
+                                            "total_price": round(price, 6),
+                                            "total_price_per_cpu": round(
+                                                price / float(attributes["vcpu"]), 6
+                                            ),
+                                            "zone": zone_key,
+                                            **inst_info,
+                                        },
+                                    )
                                 }
                             }
+                            ret[inst_name] = entry
                             break
                     if inst_name in ret:
                         break

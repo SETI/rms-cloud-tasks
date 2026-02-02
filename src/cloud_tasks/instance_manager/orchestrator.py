@@ -96,7 +96,7 @@ class InstanceOrchestrator:
         self._image_uri: str | None = None
         self._all_instance_info: dict[str, dict[str, Any]] | None = None
         self._pricing_info: (
-            dict[str, dict[str, dict[str, dict[str, float | str | None]]]] | None
+            dict[str, dict[str, dict[str, dict[str, float | str | None] | None]]] | None
         ) = None
 
         # Empty queue tracking for scale-down
@@ -533,12 +533,18 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
             instance = self._all_instance_info[type_]
             cpus = int(instance["vcpu"]) if instance.get("vcpu") is not None else 0
             try:
-                price_val = self._pricing_info[type_][zone][boot_disk_type]["total_price"]
+                price_info = self._pricing_info[type_][zone][boot_disk_type]
+                if price_info is None:
+                    raise KeyError("No price info")
+                price_val = price_info["total_price"]
                 price = (float(price_val) if price_val is not None else 0) * count
             except KeyError:
                 wildcard_zone = zone[:-1] + "*"
                 try:
-                    pv = self._pricing_info[type_][wildcard_zone][boot_disk_type]["total_price"]
+                    price_info = self._pricing_info[type_][wildcard_zone][boot_disk_type]
+                    if price_info is None:
+                        raise KeyError("No price info")
+                    pv = price_info["total_price"]
                     price = (float(pv) if pv is not None else 0) * count
                 except KeyError:
                     self._logger.warning(

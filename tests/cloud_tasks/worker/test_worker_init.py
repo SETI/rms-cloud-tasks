@@ -45,7 +45,7 @@ _DEFAULT_ARGS = {
 
 def default_args_namespace(**overrides: object) -> types.SimpleNamespace:
     """Build a SimpleNamespace from default args with optional overrides for Worker tests."""
-    d = dict(_DEFAULT_ARGS)
+    d: dict[str, object] = dict(_DEFAULT_ARGS)
     d.update(overrides)
     return types.SimpleNamespace(**d)
 

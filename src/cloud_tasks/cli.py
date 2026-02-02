@@ -1741,12 +1741,16 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
             instances, use_spot=args.use_spot, boot_disk_constraints=constraints
         )
 
-        pricing_data_list = []
+        pricing_data_list: list[dict[str, float | str | None]] = []
         for zone_prices in pricing_data.values():
             if zone_prices is None:
                 continue
             for zone_price in zone_prices.values():
+                if zone_price is None:
+                    continue
                 for boot_disk_price in zone_price.values():
+                    if boot_disk_price is None:
+                        continue
                     pricing_data_list.append(boot_disk_price)
 
         # Apply custom sorting if specified

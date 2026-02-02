@@ -75,7 +75,7 @@ async def test_event_monitor_process_events_batch_json_error(
         count = await monitor.process_events_batch()
     task_db.close()
     assert count == 1
-    assert any("JSON" in rec.message or "json" in rec.message for rec in caplog.records)
+    assert any("decoding" in rec.message or "Expecting" in rec.message for rec in caplog.records)
 
 
 @pytest.mark.asyncio

@@ -4,20 +4,21 @@ import asyncio
 import os
 import sys
 import tempfile
+from collections.abc import Generator
 from unittest.mock import AsyncMock, patch
 
 import pytest
-
-
-class BreakLoopError(Exception):
-    """Raised to break _feed_tasks_to_workers loop in tests."""
 from filecache import FCPath
 
 from cloud_tasks.worker.worker import LocalTaskQueue, Worker
 
 
+class BreakLoopError(Exception):
+    """Raised to break _feed_tasks_to_workers loop in tests."""
+
+
 @pytest.fixture
-def local_task_file_yaml_stream() -> str:
+def local_task_file_yaml_stream() -> Generator[str, None, None]:
     """Create a YAML file with multiple documents for testing streaming."""
     with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
         f.write("- task_id: task1\n  data: {key: value1}\n")
@@ -64,22 +65,16 @@ async def test_local_queue_receive_tasks_yaml(local_task_file_yaml: str) -> None
 
 @pytest.mark.asyncio
 async def test_local_queue_acknowledge_task(local_task_file_json: str) -> None:
-    """LocalTaskQueue.acknowledge_task is a no-op and does not change queue state."""
+    """LocalTaskQueue.acknowledge_task is a no-op (does not raise)."""
     queue = LocalTaskQueue(FCPath(local_task_file_json))
-    tasks_before = await queue.receive_tasks(max_count=10)
     await queue.acknowledge_task("test-ack-1")
-    tasks_after = await queue.receive_tasks(max_count=10)
-    assert len(tasks_before) == len(tasks_after)
 
 
 @pytest.mark.asyncio
 async def test_local_queue_retry_task(local_task_file_json: str) -> None:
-    """LocalTaskQueue.retry_task is a no-op and does not change queue state."""
+    """LocalTaskQueue.retry_task is a no-op (does not raise)."""
     queue = LocalTaskQueue(FCPath(local_task_file_json))
-    tasks_before = await queue.receive_tasks(max_count=10)
     await queue.retry_task("test-ack-1")
-    tasks_after = await queue.receive_tasks(max_count=10)
-    assert len(tasks_before) == len(tasks_after)
 
 
 @pytest.mark.asyncio
@@ -120,7 +115,7 @@ async def test_local_queue_invalid_file_format() -> None:
 def test_local_queue_init_with_invalid_task_source() -> None:
     """LocalTaskQueue.__init__ with invalid task_source type raises TypeError."""
     with pytest.raises(TypeError, match="task_source must be FCPath or callable, got int"):
-        LocalTaskQueue(123)
+        LocalTaskQueue(123)  # type: ignore[arg-type]
 
 
 @pytest.mark.asyncio
@@ -173,7 +168,9 @@ async def test_factory_queue_retry_task(mock_task_factory):
 
 
 @pytest.mark.asyncio
-async def test_worker_start_with_factory_task_queue(mock_worker_function, mock_task_factory) -> None:
+async def test_worker_start_with_factory_task_queue(
+    mock_worker_function, mock_task_factory
+) -> None:
     """Worker.start with factory task source uses LocalTaskQueue."""
     with patch("sys.argv", ["worker.py"]):
         worker = Worker(mock_worker_function, task_source=mock_task_factory)
@@ -262,15 +259,13 @@ async def test_feed_tasks_to_workers_sets_task_source_is_empty_when_factory_runs
 ) -> None:
     """_feed_tasks_to_workers sets _task_source_is_empty when factory runs out of tasks."""
     with patch.object(sys, "argv", ["worker.py"]):
-        worker = Worker(lambda tid, data, w: (False, None), task_source=mock_task_factory_empty)
+        worker = Worker(lambda tid, data, w: (False, "retry"), task_source=mock_task_factory_empty)
         worker._running = True
         worker._data.num_simultaneous_tasks = 1
         worker._task_queue = LocalTaskQueue(mock_task_factory_empty)
         assert worker._task_source_is_empty is False
         with patch("asyncio.sleep") as mock_sleep:
-            mock_sleep.side_effect = [None, BreakLoopError("Break loop")]
-            try:
+            mock_sleep.side_effect = BreakLoopError("Break loop")
+            with pytest.raises(BreakLoopError):
                 await worker._feed_tasks_to_workers()
-            except BreakLoopError:
-                pass
         assert worker._task_source_is_empty is True

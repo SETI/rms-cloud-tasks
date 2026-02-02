@@ -651,7 +651,7 @@ class GCPComputeInstanceManager(InstanceManager):
         *,
         use_spot: bool = False,
         boot_disk_constraints: dict[str, Any] | None = None,
-    ) -> dict[str, dict[str, dict[str, dict[str, float | str | None]]]]:
+    ) -> dict[str, dict[str, dict[str, dict[str, float | str | None] | None]]]:
         """
         Get the hourly price for one or more specific instance types.
 
@@ -701,7 +701,7 @@ class GCPComputeInstanceManager(InstanceManager):
 
         if len(instance_types) == 0:
             self._logger.debug("No instance types provided")
-            return ret
+            return cast(dict[str, dict[str, dict[str, dict[str, float | str | None] | None]]], ret)
 
         # Lookup pricing for each instance type
         for machine_type, machine_info in instance_types.items():
@@ -1267,7 +1267,7 @@ class GCPComputeInstanceManager(InstanceManager):
         if cache_modified:
             self._save_pricing_cache_to_file()
 
-        return ret
+        return cast(dict[str, dict[str, dict[str, dict[str, float | str | None] | None]]], ret)
 
     async def get_optimal_instance_type(
         self, constraints: dict[str, Any] | None = None
@@ -1356,6 +1356,8 @@ class GCPComputeInstanceManager(InstanceManager):
                     )
                     continue
                 for boot_disk_type, price_info in price_in_zone.items():
+                    if price_info is None:
+                        continue
                     # Filter out the boot disk types that were not selected by the constraints
                     avail_types = price_info.get("available_boot_disk_types")
                     if not isinstance(avail_types, list):

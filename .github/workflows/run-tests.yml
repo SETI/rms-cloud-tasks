@@ -39,7 +39,7 @@ jobs:
 
       - name: Mypy
         run: |
-          mypy src
+          mypy src tests examples
 
   test:
     name: Test cloud_tasks

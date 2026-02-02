@@ -22,6 +22,9 @@ from .conftest import (
     deepcopy_gcp_instance_manager,
 )
 
+# Type for a single price-info dict from get_instance_pricing (innermost dict; can be None in API).
+_PriceInfo = dict[str, float | str | None]
+
 
 @pytest.mark.asyncio
 async def test_get_billing_compute_skus_first_call(
@@ -280,7 +283,10 @@ async def test_get_instance_pricing_basic(
     assert result is not None
     assert "n1-standard-2" in result
     print(result)
-    pricing = result["n1-standard-2"][f"{gcp_instance_manager_n1_n2._region}-*"]["pd-standard"]
+    pricing = cast(
+        _PriceInfo,
+        result["n1-standard-2"][f"{gcp_instance_manager_n1_n2._region}-*"]["pd-standard"],
+    )
 
     # Verify all pricing fields
     assert pricing["cpu_price"] == N1_2_CPU_PRICE * 2
@@ -351,7 +357,10 @@ async def test_get_instance_pricing_with_local_ssd(
     # Assert
     assert result is not None
     assert "n2-standard-4-lssd" in result
-    pricing = result["n2-standard-4-lssd"][f"{gcp_instance_manager_n1_n2._region}-*"]["pd-balanced"]
+    pricing = cast(
+        _PriceInfo,
+        result["n2-standard-4-lssd"][f"{gcp_instance_manager_n1_n2._region}-*"]["pd-balanced"],
+    )
 
     # Verify all pricing fields
     assert pricing["cpu_price"] == N2_CPU_PRICE * 4
@@ -428,7 +437,10 @@ async def test_get_instance_pricing_spot_instance(
     # Assert
     assert result is not None
     assert "n1-standard-2" in result
-    pricing = result["n1-standard-2"][f"{gcp_instance_manager_n1_n2._region}-*"]["pd-standard"]
+    pricing = cast(
+        _PriceInfo,
+        result["n1-standard-2"][f"{gcp_instance_manager_n1_n2._region}-*"]["pd-standard"],
+    )
 
     # Verify all pricing fields
     assert pricing["cpu_price"] == N1_PREEMPTIBLE_CPU_PRICE * 2
@@ -520,7 +532,10 @@ async def test_get_instance_pricing_cache_hit(
     # Assert
     assert result is not None
     assert "n1-standard-2" in result
-    pricing = result["n1-standard-2"][f"{gcp_instance_manager_n1_n2._region}-*"]["pd-standard"]
+    pricing = cast(
+        _PriceInfo,
+        result["n1-standard-2"][f"{gcp_instance_manager_n1_n2._region}-*"]["pd-standard"],
+    )
 
     # Verify all cached pricing fields
     assert pricing["cpu_price"] == N1_2_CPU_PRICE * 2
@@ -748,10 +763,14 @@ async def test_get_instance_pricing_multiple_skus_for_cpu(
         for record in caplog.records
     )
 
-    pricing_n1 = result["n1-standard-2"][f"{gcp_instance_manager_n1_n2._region}-*"]["pd-standard"]
-    pricing_n2 = result["n2-standard-4-lssd"][f"{gcp_instance_manager_n1_n2._region}-*"][
-        "pd-balanced"
-    ]
+    pricing_n1 = cast(
+        _PriceInfo,
+        result["n1-standard-2"][f"{gcp_instance_manager_n1_n2._region}-*"]["pd-standard"],
+    )
+    pricing_n2 = cast(
+        _PriceInfo,
+        result["n2-standard-4-lssd"][f"{gcp_instance_manager_n1_n2._region}-*"]["pd-balanced"],
+    )
     assert pricing_n1["total_price"] == pytest.approx(
         N1_2_CPU_PRICE * 2 + N1_2_RAM_PRICE * 7.5 + PD_STANDARD_PRICE * 10, rel=1e-6
     )
@@ -782,10 +801,14 @@ async def test_get_instance_pricing_multiple_skus_for_cpu(
         for record in caplog.records
     )
 
-    pricing_n1 = result["n1-standard-2"][f"{gcp_instance_manager_n1_n2._region}-*"]["pd-standard"]
-    pricing_n2 = result["n2-standard-4-lssd"][f"{gcp_instance_manager_n1_n2._region}-*"][
-        "pd-balanced"
-    ]
+    pricing_n1 = cast(
+        _PriceInfo,
+        result["n1-standard-2"][f"{gcp_instance_manager_n1_n2._region}-*"]["pd-standard"],
+    )
+    pricing_n2 = cast(
+        _PriceInfo,
+        result["n2-standard-4-lssd"][f"{gcp_instance_manager_n1_n2._region}-*"]["pd-balanced"],
+    )
     assert pricing_n1["total_price"] == pytest.approx(
         N1_2_CPU_PRICE * 2 + N1_2_RAM_PRICE * 7.5 + PD_STANDARD_PRICE * 10, rel=1e-6
     )
@@ -841,10 +864,14 @@ async def test_get_instance_pricing_multiple_skus_for_ram(
         for record in caplog.records
     )
 
-    pricing_n1 = result["n1-standard-2"][f"{gcp_instance_manager_n1_n2._region}-*"]["pd-standard"]
-    pricing_n2 = result["n2-standard-4-lssd"][f"{gcp_instance_manager_n1_n2._region}-*"][
-        "pd-balanced"
-    ]
+    pricing_n1 = cast(
+        _PriceInfo,
+        result["n1-standard-2"][f"{gcp_instance_manager_n1_n2._region}-*"]["pd-standard"],
+    )
+    pricing_n2 = cast(
+        _PriceInfo,
+        result["n2-standard-4-lssd"][f"{gcp_instance_manager_n1_n2._region}-*"]["pd-balanced"],
+    )
     assert pricing_n1["total_price"] == pytest.approx(
         N1_2_CPU_PRICE * 2 + N1_2_RAM_PRICE * 7.5 + PD_STANDARD_PRICE * 10, rel=1e-6
     )
@@ -875,10 +902,14 @@ async def test_get_instance_pricing_multiple_skus_for_ram(
         for record in caplog.records
     )
 
-    pricing_n1 = result["n1-standard-2"][f"{gcp_instance_manager_n1_n2._region}-*"]["pd-standard"]
-    pricing_n2 = result["n2-standard-4-lssd"][f"{gcp_instance_manager_n1_n2._region}-*"][
-        "pd-balanced"
-    ]
+    pricing_n1 = cast(
+        _PriceInfo,
+        result["n1-standard-2"][f"{gcp_instance_manager_n1_n2._region}-*"]["pd-standard"],
+    )
+    pricing_n2 = cast(
+        _PriceInfo,
+        result["n2-standard-4-lssd"][f"{gcp_instance_manager_n1_n2._region}-*"]["pd-balanced"],
+    )
     assert pricing_n1["total_price"] == pytest.approx(
         N1_2_CPU_PRICE * 2 + N1_2_RAM_PRICE * 7.5 + PD_STANDARD_PRICE * 10, rel=1e-6
     )
@@ -938,10 +969,14 @@ async def test_get_instance_pricing_multiple_skus_for_ssd(
         for record in caplog.records
     )
 
-    pricing_n1 = result["n1-standard-2"][f"{gcp_instance_manager_n1_n2._region}-*"]["pd-standard"]
-    pricing_n2 = result["n2-standard-4-lssd"][f"{gcp_instance_manager_n1_n2._region}-*"][
-        "pd-balanced"
-    ]
+    pricing_n1 = cast(
+        _PriceInfo,
+        result["n1-standard-2"][f"{gcp_instance_manager_n1_n2._region}-*"]["pd-standard"],
+    )
+    pricing_n2 = cast(
+        _PriceInfo,
+        result["n2-standard-4-lssd"][f"{gcp_instance_manager_n1_n2._region}-*"]["pd-balanced"],
+    )
     assert pricing_n1["total_price"] == pytest.approx(
         N1_2_CPU_PRICE * 2 + N1_2_RAM_PRICE * 7.5 + PD_STANDARD_PRICE * 10, rel=1e-6
     )
@@ -973,10 +1008,14 @@ async def test_get_instance_pricing_multiple_skus_for_ssd(
         for record in caplog.records
     )
 
-    pricing_n1 = result["n1-standard-2"][f"{gcp_instance_manager_n1_n2._region}-*"]["pd-standard"]
-    pricing_n2 = result["n2-standard-4-lssd"][f"{gcp_instance_manager_n1_n2._region}-*"][
-        "pd-balanced"
-    ]
+    pricing_n1 = cast(
+        _PriceInfo,
+        result["n1-standard-2"][f"{gcp_instance_manager_n1_n2._region}-*"]["pd-standard"],
+    )
+    pricing_n2 = cast(
+        _PriceInfo,
+        result["n2-standard-4-lssd"][f"{gcp_instance_manager_n1_n2._region}-*"]["pd-balanced"],
+    )
     assert pricing_n1["total_price"] == pytest.approx(
         N1_2_CPU_PRICE * 2 + N1_2_RAM_PRICE * 7.5 + PD_STANDARD_PRICE * 10, rel=1e-6
     )
@@ -1162,13 +1201,19 @@ async def test_get_instance_pricing_preemptible_mismatch(
     result = await gcp_instance_manager_n1_n2.get_instance_pricing(
         {"n1-standard-2": mock_instance_types_n1_n2["n1-standard-2"]}, use_spot=False
     )
-    pricing = result["n1-standard-2"][f"{gcp_instance_manager_n1_n2._region}-*"]["pd-standard"]
+    pricing = cast(
+        _PriceInfo,
+        result["n1-standard-2"][f"{gcp_instance_manager_n1_n2._region}-*"]["pd-standard"],
+    )
     assert pricing["cpu_price"] == N1_2_CPU_PRICE * 2
 
     result = await gcp_instance_manager_n1_n2.get_instance_pricing(
         {"n1-standard-2": mock_instance_types_n1_n2["n1-standard-2"]}, use_spot=True
     )
-    pricing = result["n1-standard-2"][f"{gcp_instance_manager_n1_n2._region}-*"]["pd-standard"]
+    pricing = cast(
+        _PriceInfo,
+        result["n1-standard-2"][f"{gcp_instance_manager_n1_n2._region}-*"]["pd-standard"],
+    )
     assert pricing["cpu_price"] == N1_PREEMPTIBLE_CPU_PRICE * 2
 
 
