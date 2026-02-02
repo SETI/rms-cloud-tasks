@@ -81,17 +81,31 @@ class AWSSQSQueue(QueueManager):
                     raise
 
         except Exception as e:
-            self._logger.error(f"Failed to initialize AWS SQS queue: {str(e)}")
+            self._logger.exception("Failed to initialize AWS SQS queue: %s", e)
             raise
 
     def _get_sqs(self) -> Any:
-        """Return the SQS client; raises if not initialized."""
+        """Return the initialized SQS client.
+
+        Returns:
+            The initialized SQS client (type Any).
+
+        Raises:
+            RuntimeError: If SQS client is not initialized (message: "SQS client not initialized").
+        """
         if self._sqs is None:
             raise RuntimeError("SQS client not initialized")
         return self._sqs
 
     def _get_queue_url(self) -> str:
-        """Return the queue URL; raises if not set."""
+        """Return the queue URL.
+
+        Returns:
+            str: The queue URL.
+
+        Raises:
+            RuntimeError: If queue URL is not set (message: "Queue URL not set").
+        """
         if self._queue_url is None:
             raise RuntimeError("Queue URL not set")
         return self._queue_url
@@ -129,12 +143,15 @@ class AWSSQSQueue(QueueManager):
                 raise
 
     async def send_message(self, message: dict[str, Any], _quiet: bool = False) -> None:
-        """
-        Send a message to the SQS queue.
+        """Send a message to the SQS queue.
 
-        Args:
-            message: Message to be sent
-            _quiet: If True, suppress logging (for base class compatibility)
+        Parameters:
+            message: Message to send (dict with keys/values serialized to JSON).
+            _quiet: If True, suppress logging (for base-class compatibility).
+
+        Raises:
+            Exceptions from the SQS client (e.g., client-specific errors).
+            RuntimeError or ValueError may be raised if the queue or input is invalid.
         """
         self._logger.debug(f'Sending message to queue "{self._queue_name}"')
 
@@ -157,7 +174,7 @@ class AWSSQSQueue(QueueManager):
 
             self._logger.debug(f"Published message to queue {self._queue_name}")
         except Exception as e:
-            self._logger.error(f"Failed to send message to AWS SQS queue: {str(e)}")
+            self._logger.exception("Failed to send message to AWS SQS queue: %s", e)
             raise
 
     async def send_task(self, task_id: str, task_data: dict[str, Any]) -> None:
@@ -192,7 +209,7 @@ class AWSSQSQueue(QueueManager):
 
             self._logger.debug(f"Published message for task {task_id}")
         except Exception as e:
-            self._logger.error(f"Failed to send task to AWS SQS queue: {str(e)}")
+            self._logger.exception("Failed to send task to AWS SQS queue: %s", e)
             raise
 
     async def receive_messages(
@@ -259,7 +276,7 @@ class AWSSQSQueue(QueueManager):
             self._logger.debug(f"Received and deleted {len(messages)} messages from SQS queue")
             return messages
         except Exception as e:
-            self._logger.error(f"Error receiving messages: {str(e)}")
+            self._logger.exception("Error receiving messages: %s", e)
             raise
 
     async def receive_tasks(
@@ -323,7 +340,7 @@ class AWSSQSQueue(QueueManager):
             self._logger.debug(f"Received {len(tasks)} tasks from SQS queue")
             return tasks
         except Exception as e:
-            self._logger.error(f"Error receiving tasks: {str(e)}")
+            self._logger.exception("Error receiving tasks: %s", e)
             raise
 
     async def acknowledge_message(self, message_handle: Any) -> None:
@@ -333,9 +350,12 @@ class AWSSQSQueue(QueueManager):
             message_handle: Receipt handle from receive_tasks/receive_messages; passed
                 to acknowledge_task.
 
+        Returns:
+            None.
+
         Raises:
-            Exception: Exceptions from acknowledge_task are propagated (e.g. QueueError,
-                ValueError, or boto3 client errors).
+            Exceptions propagated from acknowledge_task (e.g. botocore.exceptions.ClientError
+                from the boto3 SQS client).
         """
         await self.acknowledge_task(message_handle)
 
@@ -365,7 +385,7 @@ class AWSSQSQueue(QueueManager):
             )
             self._logger.debug(f"Completed task with ack_id: {task_handle}")
         except Exception as e:
-            self._logger.error(f"Error completing task: {str(e)}")
+            self._logger.exception("Error completing task: %s", e)
             raise
 
     async def retry_message(self, message_handle: Any) -> None:
@@ -374,8 +394,12 @@ class AWSSQSQueue(QueueManager):
         Parameters:
             message_handle: Receipt handle from receive_tasks; passed to retry_task.
 
+        Returns:
+            None.
+
         Raises:
-            Exception: Exceptions from retry_task are propagated.
+            Exceptions propagated from retry_task (e.g. botocore.exceptions.ClientError
+                from the boto3 SQS client).
         """
         await self.retry_task(message_handle)
 
@@ -407,7 +431,7 @@ class AWSSQSQueue(QueueManager):
             )
             self._logger.debug(f"Failed task with ack_id: {task_handle}")
         except Exception as e:
-            self._logger.error(f"Error failing task: {str(e)}")
+            self._logger.exception("Error failing task: %s", e)
             raise
 
     async def get_queue_depth(self) -> int:
@@ -439,7 +463,7 @@ class AWSSQSQueue(QueueManager):
             self._logger.debug(f"Queue depth estimated at {message_count}+ messages")
             return message_count
         except Exception as e:
-            self._logger.error(f"Error getting queue depth: {str(e)}")
+            self._logger.exception("Error getting queue depth: %s", e)
             raise
 
     async def purge_queue(self) -> None:
@@ -458,7 +482,7 @@ class AWSSQSQueue(QueueManager):
             await loop.run_in_executor(None, lambda: sqs.purge_queue(QueueUrl=queue_url))
             self._logger.debug(f"Purged queue {self._queue_name}")
         except Exception as e:
-            self._logger.error(f"Error purging queue: {str(e)}")
+            self._logger.exception("Error purging queue: %s", e)
             raise
 
     async def delete_queue(self) -> None:
@@ -490,10 +514,10 @@ class AWSSQSQueue(QueueManager):
                 self._queue_exists = False
                 self._queue_url = None
                 return
-            self._logger.error(f"Error deleting queue: {str(e)}")
+            self._logger.exception("Error deleting queue: %s", e)
             raise
         except Exception as e:
-            self._logger.error(f"Error deleting queue: {str(e)}")
+            self._logger.exception("Error deleting queue: %s", e)
             raise
 
     def get_max_visibility_timeout(self) -> int:

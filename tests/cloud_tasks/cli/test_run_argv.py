@@ -32,11 +32,8 @@ def test_build_parser_returns_parser() -> None:
     assert args.func is not None
 
 
-def test_run_argv_help_exits_zero(capsys: pytest.CaptureFixture[str]) -> None:
+def test_run_argv_help_exits_zero() -> None:
     """run_argv with --help exits with code 0.
-
-    Parameters:
-        capsys: Pytest fixture capturing stdout/stderr.
 
     Returns:
         None. Asserts exit code is 0.
@@ -45,11 +42,8 @@ def test_run_argv_help_exits_zero(capsys: pytest.CaptureFixture[str]) -> None:
     assert code == 0
 
 
-def test_run_argv_no_args_exits_nonzero(capsys: pytest.CaptureFixture[str]) -> None:
+def test_run_argv_no_args_exits_nonzero() -> None:
     """run_argv with no arguments returns non-zero (parse error).
-
-    Parameters:
-        capsys: Pytest fixture capturing stdout/stderr.
 
     Returns:
         None. Asserts exit code is 2.
@@ -131,8 +125,7 @@ def test_run_argv_status_success(tmp_path: Path, capsys: pytest.CaptureFixture[s
     mock_orch.get_job_instances = AsyncMock(
         return_value=(2, 4, 0.5, "2 instances, 4 vCPUs, $0.50/hr")
     )
-    mock_orch._task_queue = AsyncMock()
-    mock_orch._task_queue.get_queue_depth = AsyncMock(return_value=10)
+    mock_orch.get_queue_depth = AsyncMock(return_value=10)
 
     with patch("cloud_tasks.cli.InstanceOrchestrator", return_value=mock_orch):
         mock_orch.initialize = AsyncMock()
@@ -140,7 +133,7 @@ def test_run_argv_status_success(tmp_path: Path, capsys: pytest.CaptureFixture[s
     assert code == 0
     out = capsys.readouterr().out
     assert "2 instances" in out or "instances" in out.lower()
-    assert "queue" in out.lower() or "depth" in out.lower()
+    assert "10" in out or "queue depth: 10" in out.lower()
 
 
 def test_run_argv_list_regions_success(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -182,7 +175,8 @@ def test_run_argv_list_images_success(tmp_path: Path, capsys: pytest.CaptureFixt
         code = run_argv(["list_images", "--config", str(config_path), "--provider", "gcp"])
     assert code == 0
     out = capsys.readouterr().out
-    assert any(val in out for val in ["img-1", "debian"]) or "image" in out.lower()
+    assert "img-1" in out
+    assert "debian" in out
 
 
 def test_run_argv_list_instance_types_success(

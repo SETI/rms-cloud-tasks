@@ -93,7 +93,15 @@ def test_microsecond_formatter() -> None:
 
 @pytest.fixture
 def preserve_logging_state() -> Generator[None, None, None]:
-    """Save logging state before test and restore it after."""
+    """Save logging state before test and restore it after.
+
+    _save_logging_state/_restore_logging_state preserve and restore: root logger level
+    and handlers; handler formatter/level (via the handler list); logger-specific levels
+    for third-party libraries (_LOGGING_LIBRARIES); propagation flags are not explicitly
+    saved (handlers are replaced). Yields control to the test and restores state after.
+    Return type: Generator[None, None, None]. Intended for function scope so each test
+    gets a clean restore.
+    """
     state = _save_logging_state()
     yield
     _restore_logging_state(state)

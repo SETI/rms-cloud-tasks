@@ -96,24 +96,24 @@ class GCPPubSubQueue(QueueManager):
         else:
             self._visibility_timeout = min(visibility_timeout, self._MAXIMUM_VISIBILITY_TIMEOUT)
 
+        def _validate_project_id(candidate: str | None) -> str:
+            if candidate is None:
+                raise ValueError(
+                    "project_id is required and must be non-empty (pass via gcp_config or kwargs)"
+                )
+            pid = str(candidate).strip()
+            if not pid:
+                raise ValueError(
+                    "project_id is required and must be non-empty (pass via gcp_config or kwargs)"
+                )
+            return pid
+
         if "project_id" in kwargs:
-            pid = str(kwargs["project_id"]).strip()
-            if not pid:
-                raise ValueError(
-                    "project_id is required and must be non-empty (pass via gcp_config or kwargs)"
-                )
-            self._project_id = pid
+            self._project_id = _validate_project_id(kwargs["project_id"])
         elif gcp_config and gcp_config.project_id is not None:
-            pid = str(gcp_config.project_id).strip()
-            if not pid:
-                raise ValueError(
-                    "project_id is required and must be non-empty (pass via gcp_config or kwargs)"
-                )
-            self._project_id = pid
+            self._project_id = _validate_project_id(gcp_config.project_id)
         else:
-            raise ValueError(
-                "project_id is required and must be non-empty (pass via gcp_config or kwargs)"
-            )
+            _validate_project_id(None)
 
         self._logger.info(
             f'Initializing GCP Pub/Sub queue "{self._queue_name}" with project ID '
@@ -410,7 +410,8 @@ class GCPPubSubQueue(QueueManager):
 
         # Messages arrive asynchronously through the pull thread, so we just need to return
         # messages that we already have.
-        assert self._message_queue is not None
+        if self._message_queue is None:
+            raise RuntimeError("GCP queue message queue is not initialized")
         messages: list[dict[str, Any]] = []
         while len(messages) < max_count:
             try:

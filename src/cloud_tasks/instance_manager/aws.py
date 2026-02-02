@@ -32,6 +32,7 @@ class AWSEC2InstanceManager(InstanceManager):
     _DEFAULT_REGION = "us-west-1"
     # The pricing API is only available in us-east-1, eu-central-1, and ap-south-1
     _PRICING_REGION = "us-east-1"
+    _PricingRet = dict[str, dict[str, dict[str, dict[str, float | str | None] | None]]]
 
     def _empty_pricing_entry(
         self, boot_disk_type: str
@@ -47,8 +48,6 @@ class AWSEC2InstanceManager(InstanceManager):
             so callers can detect missing pricing without KeyError.
         """
         return {f"{self._region}*": {boot_disk_type: None}}
-
-    _PricingRet = dict[str, dict[str, dict[str, dict[str, float | str | None] | None]]]
 
     # Map of instance statuses to standardized statuses
     STATUS_MAP = {

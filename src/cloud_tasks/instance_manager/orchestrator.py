@@ -7,7 +7,7 @@ import logging
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any
+from typing import Any, TypedDict, cast
 
 from ..common.config import Config
 from ..queue_manager import QueueManager, create_queue
@@ -20,6 +20,18 @@ from .instance_manager import InstanceManager
 # - Environment variables set in startup script
 # - Startup script is required
 # - Image is required (set default?)
+
+
+class PriceInfo(TypedDict, total=False):
+    """Per-instance price info (e.g. total_price, per_cpu_price). Keys may be absent or None."""
+
+    total_price: float | None
+    per_cpu_price: float | None
+    cpu_price: float | None
+    mem_price: float | None
+    boot_disk_price: float | None
+    local_ssd_price: float | None
+    zone: str | None
 
 
 class InstanceOrchestrator:
@@ -97,9 +109,7 @@ class InstanceOrchestrator:
         self._optimal_instance_num_tasks: int | None = None
         self._image_uri: str | None = None
         self._all_instance_info: dict[str, dict[str, Any]] | None = None
-        self._pricing_info: (
-            dict[str, dict[str, dict[str, dict[str, float | str | None] | None]]] | None
-        ) = None
+        self._pricing_info: dict[str, dict[str, dict[str, PriceInfo | None]]] | None = None
 
         # Empty queue tracking for scale-down
         self._empty_queue_since = None
@@ -315,10 +325,13 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
                 "boot_disk_throughput": self._run_config.boot_disk_throughput,
             }
             use_spot = self._run_config.use_spot if self._run_config.use_spot is not None else False
-            self._pricing_info = await self._instance_manager.get_instance_pricing(
+            result = await self._instance_manager.get_instance_pricing(
                 self._all_instance_info,
                 use_spot=use_spot,
                 boot_disk_constraints=boot_disk_constraints,
+            )
+            self._pricing_info = cast(
+                dict[str, dict[str, dict[str, PriceInfo | None]]] | None, result
             )
 
     async def start(self) -> None:
@@ -501,9 +514,7 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
         running_instances_by_type = {}
         default_boot_disk = self._get_default_boot_disk_type()
         for instance in running_instances:
-            boot_disk_type = instance["boot_disk_type"]
-            if boot_disk_type is None:
-                boot_disk_type = default_boot_disk
+            boot_disk_type = instance.get("boot_disk_type", default_boot_disk)
             key = (
                 instance["type"],
                 boot_disk_type,

@@ -624,9 +624,7 @@ async def test_delete_queue_subscription_error_handling(gcp_queue, mock_pubsub_c
         # Attempt to delete queue
         with pytest.raises(type(error)) as exc_info:
             await gcp_queue.delete_queue()
-        assert str(error).lower() in str(exc_info.value).lower() or type(error).__name__ in str(
-            exc_info.value
-        )
+        assert str(error).lower() in str(exc_info.value).lower()
 
         # Verify deletion was attempted
         mock_subscriber.delete_subscription.assert_called_once_with(

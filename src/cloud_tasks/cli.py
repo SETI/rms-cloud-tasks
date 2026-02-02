@@ -2451,9 +2451,6 @@ def add_instance_args(parser: argparse.ArgumentParser) -> None:
 def build_parser() -> argparse.ArgumentParser:
     """Build and return the CLI argument parser.
 
-    Parameters:
-        None.
-
     Returns:
         argparse.ArgumentParser: Parser with all CLI subcommands and options.
     """

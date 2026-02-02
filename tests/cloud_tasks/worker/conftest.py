@@ -136,7 +136,12 @@ _COMMON_ENV_VARS: list[tuple[str, str]] = [
 
 
 def _apply_env_vars(monkeypatch: pytest.MonkeyPatch, overrides: dict[str, str]) -> None:
-    """Set common env vars and overrides via monkeypatch."""
+    """Set common env vars and overrides via monkeypatch.
+
+    Parameters:
+        monkeypatch: Pytest MonkeyPatch used to set environment variables.
+        overrides: Dict of env var names to values to apply (merged with _COMMON_ENV_VARS).
+    """
     for key, value in _COMMON_ENV_VARS:
         monkeypatch.setenv(key, value)
     for key, value in overrides.items():

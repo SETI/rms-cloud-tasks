@@ -3,6 +3,12 @@ from typing import Any
 
 from ..common.config import ProviderConfig
 
+# Type aliases for get_instance_pricing return structure (instance_type -> zone -> boot_disk_type -> price_info)
+PricingInfo = dict[str, float | str | None]
+ZonePricing = dict[str, PricingInfo | None]
+RegionPricing = dict[str, ZonePricing]
+InstancePricingResult = dict[str, RegionPricing]
+
 
 class InstanceManager(ABC):
     """Base interface for instance management operations."""
@@ -250,7 +256,7 @@ class InstanceManager(ABC):
         *,
         use_spot: bool = False,
         boot_disk_constraints: dict[str, Any] | None = None,
-    ) -> dict[str, dict[str, dict[str, dict[str, float | str | None] | None]]]:
+    ) -> InstancePricingResult:
         """
         Get the hourly price for one or more specific instance types.
 

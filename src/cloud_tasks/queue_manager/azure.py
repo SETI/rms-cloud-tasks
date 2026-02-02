@@ -95,7 +95,13 @@ class AzureServiceBusQueue(QueueManager):
             raise
 
     def _ensure_initialized(self) -> None:
-        """Ensure client and queue name are set; raise RuntimeError if not."""
+        """Ensure client and queue name are set; raise RuntimeError if not.
+
+        Raises:
+            RuntimeError: If Azure Service Bus queue is not initialized (message:
+                "Azure Service Bus queue is not initialized") when
+                self._service_bus_client or self._queue_name is None.
+        """
         if self._service_bus_client is None or self._queue_name is None:
             raise RuntimeError("Azure Service Bus queue is not initialized")
 

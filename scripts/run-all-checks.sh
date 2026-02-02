@@ -56,17 +56,31 @@ TEMP_DIR=$(mktemp -d)
 code_pid=""
 docs_pid=""
 
+# Grace period (seconds) to wait for process to exit after SIGTERM before SIGKILL
+CLEANUP_GRACE_PERIOD=${CLEANUP_GRACE_PERIOD:-5}
+
 _cleanup() {
+    _wait_or_kill() {
+        local pid=$1
+        [ -z "$pid" ] && return
+        kill -TERM "$pid" 2>/dev/null || true
+        local waited=0
+        while [ "$waited" -lt "$CLEANUP_GRACE_PERIOD" ]; do
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 1
+            waited=$((waited + 1))
+        done
+        if kill -0 "$pid" 2>/dev/null; then
+            kill -KILL "$pid" 2>/dev/null || true
+        fi
+        wait "$pid" 2>/dev/null || true
+    }
     if [ -n "${code_pid}" ]; then
-        kill -TERM "$code_pid" 2>/dev/null || true
-        wait "$code_pid" 2>/dev/null || true
-        kill -KILL "$code_pid" 2>/dev/null || true
+        _wait_or_kill "$code_pid"
         code_pid=""
     fi
     if [ -n "${docs_pid}" ]; then
-        kill -TERM "$docs_pid" 2>/dev/null || true
-        wait "$docs_pid" 2>/dev/null || true
-        kill -KILL "$docs_pid" 2>/dev/null || true
+        _wait_or_kill "$docs_pid"
         docs_pid=""
     fi
     rm -rf "$TEMP_DIR"

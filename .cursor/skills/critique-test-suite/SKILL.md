@@ -53,7 +53,7 @@ Apply these criteria when reviewing each test file and each test case.
 ### 6. Parallel execution and isolation
 
 - **Isolation:** Tests must not depend on global state, shared mutable objects, or execution order. Note any use of module/class-level mutable state or singletons.
-- **GCP instance_manager:** When reviewing `conftest` and `instance_manager` code, first verify that symbols such as `_thread_local` and `_pricing_cache_lock` exist in the repository before reporting on them. Note whether tests that mutate fixture-derived instances could leak state (e.g., thread-local storage or shared locks); use these as signposts to locate relevant code but do not assert their presence as facts.
+- **GCP instance_manager:** First check whether symbols such as `_thread_local` and `_pricing_cache_lock` actually exist in the repo before referencing them. Treat those symbols only as potential signposts for areas that might leak state (e.g., thread-local storage or shared locks), not as facts about the codebase. When reviewing files such as `conftest` and `instance_manager`, (1) search for those symbols and document findings if present; (2) if not found, report that they were not observed rather than implying they must exist. Also check tests that mutate fixture-derived instances for possible state leaks.
 - **Resources:** Note any shared files, temp paths, or external service assumptions that could cause flakiness under `pytest -n auto` (if used).
 
 ### 7. Mocking and dependency isolation
@@ -123,7 +123,7 @@ Apply these criteria when reviewing each test file and each test case.
 - **Assertion messages:** Assertions should use clear messages where it helps (e.g. `assert x == y, f"Expected {x} to equal {y}"`); note assertions that would be hard to debug on failure.
 - **Single responsibility:** Each test should verify one behavior; note tests that assert unrelated things or have multiple "acts."
 - **Arrange-Act-Assert:** Tests should follow AAA pattern clearly; note tests with interleaved setup and assertions.
-- **No logic in tests:** Tests should not contain conditionals (`if`), loops, or complex logic; note tests that do and suggest splitting or parameterizing.
+- **No logic in tests:** Tests should not contain conditionals (`if`/`else`/`elif`), ternary operators (`?:`), other branching constructs (e.g. `switch`/`case`), loops, or complex logic; note tests that do and suggest splitting or parameterizing.
 
 ### 17. Code coverage
 

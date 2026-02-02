@@ -1,3 +1,5 @@
+"""Unit tests for configuration parsing and validation (Pydantic/YAML)."""
+
 # Manually verified 5/7/2025
 
 from typing import Any
@@ -634,7 +636,7 @@ def test_load_config_file_invalid_yaml(tmp_path):
         with pytest.raises(ValueError) as exc_info:
             load_config(str(file_path))
         err_msg = str(exc_info.value).lower()
-        assert "dictionary" in err_msg or "yaml" in err_msg
+        assert "dictionary" in err_msg
 
 
 def test_load_config_no_file():

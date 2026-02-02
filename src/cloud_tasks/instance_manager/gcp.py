@@ -1361,7 +1361,7 @@ class GCPComputeInstanceManager(InstanceManager):
                     # Filter out the boot disk types that were not selected by the constraints
                     avail_types = price_info.get("available_boot_disk_types")
                     if not isinstance(avail_types, list):
-                        self._logger.debug(
+                        self._logger.warning(
                             "available_boot_disk_types is not a list: type=%s value=%s "
                             "machine_type=%s zone=%s",
                             type(avail_types).__name__,

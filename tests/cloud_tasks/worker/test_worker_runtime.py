@@ -12,7 +12,7 @@ from unittest.mock import ANY, AsyncMock, MagicMock, call, patch
 
 import pytest
 
-from cloud_tasks.worker.worker import Worker
+from cloud_tasks.worker.worker import Worker, WorkerData
 
 
 @pytest.mark.asyncio
@@ -40,7 +40,11 @@ async def test_start_with_cloud_queue(mock_worker_function: Any, mock_queue: Any
         ) as mock_create_queue:
             with patch.object(worker, "_wait_for_shutdown") as mock_wait:
                 mock_wait.side_effect = asyncio.CancelledError()
-                with patch("asyncio.create_task", side_effect=lambda x: x):
+                loop = asyncio.get_running_loop()
+                with patch(
+                    "asyncio.create_task",
+                    side_effect=lambda coro: loop.create_task(coro),
+                ):
                     with pytest.raises(asyncio.CancelledError):
                         await worker.start()
                 await worker._cleanup_tasks()
@@ -297,9 +301,10 @@ async def test_wait_for_shutdown_graceful(mock_worker_function: Any) -> None:
         worker._data.shutdown_grace_period = 5  # Longer grace period for testing
 
         # Create a task to set shutdown event and simulate process completion
-        async def trigger_shutdown():
+        async def trigger_shutdown() -> None:
             await asyncio.sleep(0.1)
-            worker._data.shutdown_event.set()
+            if worker._data.shutdown_event is not None:
+                worker._data.shutdown_event.set()
             # Simulate processes completing their tasks immediately
             worker._processes = {}
             # Simulate processes being done
@@ -340,7 +345,8 @@ async def test_wait_for_shutdown_force_terminate(mock_worker_function: Any) -> N
         async def trigger_shutdown() -> None:
             """Set shutdown event and keep processes so _wait_for_shutdown force-terminates."""
             await asyncio.sleep(0.1)
-            worker._data.shutdown_event.set()
+            if worker._data.shutdown_event is not None:
+                worker._data.shutdown_event.set()
             # Keep active tasks count high to force termination
             worker._processes = {
                 1: {"process": mock_process1, "task": "task1"},
@@ -376,7 +382,8 @@ async def test_wait_for_shutdown_no_processes(mock_worker_function: Any) -> None
         worker._processes = {}
 
         # Set shutdown event
-        worker._data.shutdown_event.set()
+        if worker._data.shutdown_event is not None:
+            worker._data.shutdown_event.set()
 
         # Call _wait_for_shutdown
         await worker._wait_for_shutdown()
@@ -423,7 +430,8 @@ async def test_create_single_task_process(mock_worker_function: Any) -> None:
             async def trigger_shutdown() -> None:
                 """Set shutdown event and stop running so _feed_tasks_to_workers exits."""
                 await asyncio.sleep(0.1)
-                worker._data.shutdown_event.set()
+                if worker._data.shutdown_event is not None:
+                    worker._data.shutdown_event.set()
                 worker._running = False
 
             # Start the shutdown task
@@ -857,10 +865,10 @@ async def test_handle_results_process_exit_retry_on_exit(mock_worker_function):
                 }
             }
 
-            async def fake_sleep(*a: Any, **kw: Any) -> list[Any]:
-                """Stop worker and return empty list to break sleep loop."""
+            async def fake_sleep(*a: Any, **kw: Any) -> None:
+                """Stop worker and return None to break sleep loop (mocks asyncio.sleep)."""
                 worker._running = False
-                return []
+                return None
 
             with patch("asyncio.sleep") as mock_sleep:
                 mock_sleep.side_effect = fake_sleep
@@ -1043,7 +1051,11 @@ async def test_start_with_event_log_file_error(mock_worker_function, caplog):
                 worker = Worker(mock_worker_function)
                 with patch.object(worker, "_wait_for_shutdown") as mock_wait:
                     mock_wait.side_effect = asyncio.CancelledError()
-                    with patch("asyncio.create_task", side_effect=lambda x: x):
+                    loop = asyncio.get_running_loop()
+                    with patch(
+                        "asyncio.create_task",
+                        side_effect=lambda coro: loop.create_task(coro),
+                    ):
                         try:
                             await worker.start()
                         except asyncio.CancelledError:
@@ -1068,7 +1080,11 @@ async def test_start_with_event_log_queue_error(mock_worker_function, caplog):
                 worker = Worker(mock_worker_function)
                 with patch.object(worker, "_wait_for_shutdown") as mock_wait:
                     mock_wait.side_effect = asyncio.CancelledError()
-                    with patch("asyncio.create_task", side_effect=lambda x: x):
+                    loop = asyncio.get_running_loop()
+                    with patch(
+                        "asyncio.create_task",
+                        side_effect=lambda coro: loop.create_task(coro),
+                    ):
                         try:
                             await worker.start()
                         except asyncio.CancelledError:
@@ -1084,7 +1100,7 @@ async def test_start_with_local_task_queue_error(mock_worker_function, caplog):
     """Test start() with local task queue error."""
     with patch("sys.argv", ["worker.py"]):
 
-        def bad_factory() -> None:
+        def bad_factory() -> NoReturn:
             """Raise to simulate task source failure."""
             raise ValueError("Bad factory")
 
@@ -1092,7 +1108,11 @@ async def test_start_with_local_task_queue_error(mock_worker_function, caplog):
             worker = Worker(mock_worker_function, task_source=bad_factory)
             with patch.object(worker, "_wait_for_shutdown") as mock_wait:
                 mock_wait.side_effect = asyncio.CancelledError()
-                with patch("asyncio.create_task", side_effect=lambda x: x):
+                loop = asyncio.get_running_loop()
+                with patch(
+                    "asyncio.create_task",
+                    side_effect=lambda coro: loop.create_task(coro),
+                ):
                     with pytest.raises(asyncio.CancelledError):
                         await worker.start()
                 await worker._cleanup_tasks()
@@ -1112,7 +1132,11 @@ async def test_start_with_cloud_queue_error(mock_worker_function, caplog):
                 worker = Worker(mock_worker_function)
                 with patch.object(worker, "_wait_for_shutdown") as mock_wait:
                     mock_wait.side_effect = asyncio.CancelledError()
-                    with patch("asyncio.create_task", side_effect=lambda x: x):
+                    loop = asyncio.get_running_loop()
+                    with patch(
+                        "asyncio.create_task",
+                        side_effect=lambda coro: loop.create_task(coro),
+                    ):
                         with pytest.raises(asyncio.CancelledError):
                             await worker.start()
                     await worker._cleanup_tasks()
@@ -1295,8 +1319,8 @@ def test_worker_process_main_with_unhandled_exception() -> None:
     """Test _worker_process_main with unhandled exception."""
 
     def bad_worker_function(
-        task_id: str, task_data: dict[str, Any], worker: Any
-    ) -> None:
+        task_id: str, task_data: dict[str, Any], worker_data: WorkerData
+    ) -> tuple[bool, str]:
         """Raise to simulate worker function failure."""
         raise ValueError("Worker function error")
 

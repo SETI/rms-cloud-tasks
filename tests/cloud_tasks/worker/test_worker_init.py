@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from filecache import FCPath
 
-from cloud_tasks.worker.worker import Worker
+from cloud_tasks.worker.worker import Worker, WorkerData
 
 _DEFAULT_ARGS = {
     "provider": "AWS",
@@ -45,7 +45,16 @@ _DEFAULT_ARGS = {
 
 
 def default_args_namespace(**overrides: object) -> types.SimpleNamespace:
-    """Build a SimpleNamespace from default args with optional overrides for Worker tests."""
+    """Build a SimpleNamespace from default args with optional overrides for Worker tests.
+
+    Parameters:
+        **overrides: Variadic keyword overrides (object); merged with the base mapping
+            _DEFAULT_ARGS to produce the namespace.
+
+    Returns:
+        types.SimpleNamespace built from the merged dict; used to supply default
+            Worker args in tests.
+    """
     d: dict[str, object] = dict(_DEFAULT_ARGS)
     d.update(overrides)
     return types.SimpleNamespace(**d)
@@ -235,7 +244,7 @@ def test_init_with_env_vars_false(mock_worker_function: Any, env_setup_teardown_
         assert worker._data.exactly_once_queue is False
 
 
-def test_init_with_args_true(mock_worker_function, env_setup_teardown):
+def test_init_with_args_true(mock_worker_function: Any, env_setup_teardown: Any) -> None:
     """Test Worker initialization with command-line args overriding env (no-* flags)."""
     args = [
         "worker.py",
@@ -304,7 +313,7 @@ def test_init_with_args_true(mock_worker_function, env_setup_teardown):
         assert worker._data.retry_on_exception is False
 
 
-def test_init_with_args(mock_worker_function, env_setup_teardown_false):
+def test_init_with_args(mock_worker_function: Any, env_setup_teardown_false: Any) -> None:
     """Test Worker initialization with command-line args (truthy flags)."""
     args = [
         "worker.py",
@@ -500,8 +509,9 @@ def test_worker_init_event_log_to_queue_without_provider(mock_worker_function: A
     """Test Worker initialization with --event-log-to-queue but no provider exits."""
     with patch("sys.argv", ["worker.py", "--event-log-to-queue"]):
         with patch.dict(os.environ, {}, clear=True):
-            with pytest.raises(SystemExit):
+            with pytest.raises(SystemExit) as exc_info:
                 Worker(mock_worker_function)
+            assert exc_info.value.code == 1
 
 
 def test_worker_init_simulate_spot_termination_without_delay(mock_worker_function, caplog):
@@ -514,10 +524,8 @@ def test_worker_init_simulate_spot_termination_without_delay(mock_worker_functio
             assert "Simulating spot termination after but no delay specified" in caplog.text
 
 
-def test_worker_data_properties():
+def test_worker_data_properties() -> None:
     """Test WorkerData properties."""
-    from cloud_tasks.worker.worker import WorkerData
-
     data = WorkerData()
     data.termination_event = multiprocessing.Event()
     data.shutdown_event = multiprocessing.Event()

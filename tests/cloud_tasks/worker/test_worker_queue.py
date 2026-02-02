@@ -167,7 +167,10 @@ async def test_factory_queue_receive_tasks_max_count_larger_than_available(mock_
 async def test_factory_queue_acknowledge_task(mock_task_factory) -> None:
     """LocalTaskQueue.acknowledge_task with factory is a no-op."""
     queue = LocalTaskQueue(mock_task_factory)
+    tasks_before = await queue.receive_tasks(max_count=10)
+    task_ids_before = {t["task_id"] for t in tasks_before}
     await queue.acknowledge_task("test-ack-1")
+    assert task_ids_before == {"factory-task-1", "factory-task-2", "factory-task-3"}
 
 
 @pytest.mark.asyncio
@@ -186,7 +189,11 @@ async def test_worker_start_with_factory_task_queue(
         worker = Worker(mock_worker_function, task_source=mock_task_factory)
         with patch.object(worker, "_wait_for_shutdown") as mock_wait:
             mock_wait.side_effect = asyncio.CancelledError()
-            with patch("asyncio.create_task", side_effect=lambda x: x):
+            loop = asyncio.get_running_loop()
+            with patch(
+                "asyncio.create_task",
+                side_effect=lambda coro: loop.create_task(coro),
+            ):
                 with pytest.raises(asyncio.CancelledError):
                     await worker.start()
             await worker._cleanup_tasks()
@@ -205,7 +212,11 @@ async def test_worker_start_with_factory_task_queue_error(mock_worker_function, 
             worker = Worker(mock_worker_function, task_source=bad_factory)
             with patch.object(worker, "_wait_for_shutdown") as mock_wait:
                 mock_wait.side_effect = asyncio.CancelledError()
-                with patch("asyncio.create_task", side_effect=lambda x: x):
+                loop = asyncio.get_running_loop()
+                with patch(
+                    "asyncio.create_task",
+                    side_effect=lambda coro: loop.create_task(coro),
+                ):
                     try:
                         await worker.start()
                     except asyncio.CancelledError:
@@ -240,9 +251,8 @@ async def test_queue_acknowledge_task_with_logging_error(
         task = {"task_id": "test-task", "ack_id": "test-ack"}
         await worker._queue_acknowledge_task_with_logging(task)
         mock_queue.acknowledge_task.assert_called_once_with("test-ack")
-        assert "Queue error" in caplog.text or any(
-            rec.levelname == "ERROR" for rec in caplog.records
-        )
+        assert "Queue error" in caplog.text
+        assert any(rec.levelname == "ERROR" for rec in caplog.records)
 
 
 @pytest.mark.asyncio
@@ -258,9 +268,8 @@ async def test_queue_retry_task_with_logging_error(
         task = {"task_id": "test-task", "ack_id": "test-ack"}
         await worker._queue_retry_task_with_logging(task)
         mock_queue.retry_task.assert_called_once_with("test-ack")
-        assert "Queue error" in caplog.text or any(
-            rec.levelname == "ERROR" for rec in caplog.records
-        )
+        assert "Queue error" in caplog.text
+        assert any(rec.levelname == "ERROR" for rec in caplog.records)
 
 
 @pytest.mark.asyncio
