@@ -128,7 +128,15 @@ def test_run_argv_show_queue_detail_success(
 
 
 def test_run_argv_status_success(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    """status with mocked InstanceOrchestrator returns 0."""
+    """status with mocked InstanceOrchestrator returns 0.
+
+    Parameters:
+        tmp_path: Path – temporary directory fixture.
+        capsys: pytest.CaptureFixture[str] – captures stdout/stderr.
+
+    Returns:
+        None.
+    """
     config_path = tmp_path / "config.yaml"
     config_path.write_text("provider: gcp\ngcp:\n  job_id: test-job\n  project_id: test-project\n")
     mock_orch = AsyncMock()

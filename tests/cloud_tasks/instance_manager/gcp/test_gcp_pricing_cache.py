@@ -31,7 +31,14 @@ def _make_manager_with_cache_helpers(gcp_config: GCPConfig) -> GCPComputeInstanc
 
 
 def test_get_pricing_cache_path_contains_project_and_region(tmp_path: Path) -> None:
-    """_get_pricing_cache_path returns path under temp dir with sanitized project and region."""
+    """_get_pricing_cache_path returns path under temp dir with sanitized project and region.
+
+    Parameters:
+        tmp_path: Path – temporary directory fixture.
+
+    Returns:
+        None.
+    """
     config = GCPConfig(
         project_id="my-project",
         region="us-central1",
@@ -58,7 +65,14 @@ def test_get_pricing_cache_path_contains_project_and_region(tmp_path: Path) -> N
 
 
 def test_save_pricing_cache_to_file_writes_json(tmp_path: Path) -> None:
-    """_save_pricing_cache_to_file writes in-memory cache to file atomically."""
+    """_save_pricing_cache_to_file writes in-memory cache to file atomically.
+
+    Parameters:
+        tmp_path: Path – temporary directory fixture.
+
+    Returns:
+        None.
+    """
     config = GCPConfig(
         project_id="p",
         region="r",
@@ -84,7 +98,14 @@ def test_save_pricing_cache_to_file_writes_json(tmp_path: Path) -> None:
 
 
 def test_load_pricing_cache_from_file_loads_valid_cache(tmp_path: Path) -> None:
-    """_load_pricing_cache_from_file loads cache when file exists and is fresh."""
+    """_load_pricing_cache_from_file loads cache when file exists and is fresh.
+
+    Parameters:
+        tmp_path: Path – temporary directory fixture.
+
+    Returns:
+        None.
+    """
     config = GCPConfig(
         project_id="p",
         region="r",
@@ -109,7 +130,14 @@ def test_load_pricing_cache_from_file_loads_valid_cache(tmp_path: Path) -> None:
 
 
 def test_load_pricing_cache_from_file_skips_when_file_missing(tmp_path: Path) -> None:
-    """_load_pricing_cache_from_file does nothing when cache file does not exist."""
+    """_load_pricing_cache_from_file does nothing when cache file does not exist.
+
+    Parameters:
+        tmp_path: Path – temporary directory fixture.
+
+    Returns:
+        None.
+    """
     config = GCPConfig(
         project_id="nonexistent",
         region="nowhere",
@@ -126,7 +154,14 @@ def test_load_pricing_cache_from_file_skips_when_file_missing(tmp_path: Path) ->
 
 
 def test_load_pricing_cache_from_file_skips_when_already_loaded(tmp_path: Path) -> None:
-    """_load_pricing_cache_from_file returns without reading if already loaded."""
+    """_load_pricing_cache_from_file returns without reading if already loaded.
+
+    Parameters:
+        tmp_path: Path – temporary directory fixture.
+
+    Returns:
+        None.
+    """
     config = GCPConfig(
         project_id="p",
         region="r",
@@ -150,7 +185,14 @@ def test_load_pricing_cache_from_file_skips_when_already_loaded(tmp_path: Path) 
 
 
 def test_load_pricing_cache_from_file_skips_old_file(tmp_path: Path) -> None:
-    """_load_pricing_cache_from_file does not load cache older than 24 hours."""
+    """_load_pricing_cache_from_file does not load cache older than 24 hours.
+
+    Parameters:
+        tmp_path: Path – temporary directory fixture.
+
+    Returns:
+        None.
+    """
     import datetime
     from datetime import timezone
 
@@ -176,7 +218,14 @@ def test_load_pricing_cache_from_file_skips_old_file(tmp_path: Path) -> None:
 
 
 def test_load_pricing_cache_from_file_skips_invalid_key_format(tmp_path: Path) -> None:
-    """_load_pricing_cache_from_file skips entries without '|' (key must have family|use_spot)."""
+    """_load_pricing_cache_from_file skips entries without '|' (key must have family|use_spot).
+
+    Parameters:
+        tmp_path: Path – temporary directory fixture.
+
+    Returns:
+        None.
+    """
     config = GCPConfig(
         project_id="p",
         region="r",
@@ -204,7 +253,14 @@ def test_load_pricing_cache_from_file_skips_invalid_key_format(tmp_path: Path) -
 
 
 def test_save_and_load_pricing_cache_roundtrip(tmp_path: Path) -> None:
-    """_save_pricing_cache_to_file and _load_pricing_cache_from_file roundtrip."""
+    """_save_pricing_cache_to_file and _load_pricing_cache_from_file roundtrip.
+
+    Parameters:
+        tmp_path: Path – temporary directory fixture.
+
+    Returns:
+        None.
+    """
     config = GCPConfig(
         project_id="round",
         region="trip",

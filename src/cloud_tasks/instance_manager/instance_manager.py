@@ -84,8 +84,10 @@ class InstanceManager(ABC):
 
         Parameters:
             instance_info: Dict mapping instance attribute names to values.
-                Required keys include "state", "vcpu", "mem_gb", "local_ssd_gb",
-                "architecture", "cpu_rank", "supports_spot".
+                Required keys used by the implementation: "vcpu", "mem_gb",
+                "local_ssd_gb", "architecture", "cpu_rank", "supports_spot".
+                Constraint-derived values use cpus_per_task, min_cpu, max_cpu
+                (from constraints) for comparisons.
             constraints: Optional dict defining expected key->value pairs or
                 min/max predicates. None means match all instances.
 
@@ -210,17 +212,27 @@ class InstanceManager(ABC):
     ) -> float:
         """Compute boot disk size in GB from instance and constraint settings.
 
+        Missing constraint keys boot_disk_base_size, boot_disk_per_cpu, and
+        boot_disk_per_task are treated as 0. total_boot_disk_size (minimum
+        floor) defaults to 10 GB if missing. cpus_per_task defaults to 1.
+        Formula: boot_disk_from_cpus = boot_disk_base_size + boot_disk_per_cpu
+        * num_cpus; boot_disk_from_tasks = boot_disk_base_size +
+        boot_disk_per_task * tasks_per_instance. The returned size is
+        max(total_boot_disk_size, boot_disk_from_cpus, boot_disk_from_tasks),
+        so the effective minimum is 10 GB. No exception is raised for missing
+        keys.
+
         Parameters:
-            instance_info: dict[str, Any] – instance attributes; keys such as
-                vcpu are used if needed for per-cpu or per-task sizing.
+            instance_info: dict[str, Any] – instance attributes; "vcpu" is
+                used for per-cpu/per-task sizing.
             boot_disk_constraints: dict[str, Any] – keys read: boot_disk_base_size
                 (numeric, default 0), boot_disk_per_cpu (numeric, default 0),
-                boot_disk_per_task (numeric, default 0). Optional multipliers
-                and defaults are applied when keys are missing.
+                boot_disk_per_task (numeric, default 0), total_boot_disk_size
+                (numeric, default 10), cpus_per_task (int, default 1).
 
         Returns:
-            float: Computed boot disk size in gigabytes. No exception is raised
-            for missing keys; missing values are treated as 0.
+            float: Computed boot disk size in gigabytes (minimum 10 GB). No
+            exception is raised for missing keys.
         """
         boot_disk_base_size = boot_disk_constraints.get("boot_disk_base_size")
         if boot_disk_base_size is None:
@@ -413,10 +425,10 @@ class InstanceManager(ABC):
             include_non_job: If True, include instances not tied to any job.
 
         Returns:
-            list[dict[str, Any]]: Each dict has at least: instance_id (str),
-            status (str), tags (list[str]), created_at (str or datetime).
-            Optional key job_id (str | None). Additional provider-specific
-            metadata keys may be present.
+            list[dict[str, Any]]: Each dict has at least: id (str), state (str),
+            tags (list[str]), creation_time (str | datetime), zone (str), type
+            (str). Optional key job_id (str | None). Additional provider-specific
+            metadata keys (e.g. boot_disk_type, private_ip) may be present.
 
         Raises:
             Provider-specific exceptions on API or credential errors.

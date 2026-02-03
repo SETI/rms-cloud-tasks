@@ -13,7 +13,14 @@ from .conftest import deepcopy_gcp_instance_manager
 def test_get_boot_disk_info_no_disks(
     gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
 ) -> None:
-    """_get_boot_disk_info returns all None when instance has no disks."""
+    """_get_boot_disk_info returns all None when instance has no disks.
+
+    Parameters:
+        gcp_instance_manager_n1_n2: GCPComputeInstanceManager fixture.
+
+    Returns:
+        None.
+    """
     gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
     gcp_instance_manager_n1_n2._disks_client = MagicMock()
     mock_instance = MagicMock()
@@ -29,7 +36,14 @@ def test_get_boot_disk_info_no_disks(
 def test_get_boot_disk_info_no_boot_disk(
     gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
 ) -> None:
-    """_get_boot_disk_info returns all None when no disk has boot=True."""
+    """_get_boot_disk_info returns all None when no disk has boot=True.
+
+    Parameters:
+        gcp_instance_manager_n1_n2: GCPComputeInstanceManager fixture.
+
+    Returns:
+        None.
+    """
     gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
     gcp_instance_manager_n1_n2._disks_client = MagicMock()
     mock_instance = MagicMock()
@@ -48,7 +62,14 @@ def test_get_boot_disk_info_no_boot_disk(
 def test_get_boot_disk_info_returns_type_size_iops_throughput(
     gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
 ) -> None:
-    """_get_boot_disk_info returns disk type, size, IOPS, throughput from disk resource."""
+    """_get_boot_disk_info returns disk type, size, IOPS, throughput from disk resource.
+
+    Parameters:
+        gcp_instance_manager_n1_n2: GCPComputeInstanceManager fixture.
+
+    Returns:
+        None.
+    """
     gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
     mock_disks_client = MagicMock()
     mock_instance = MagicMock()
@@ -79,7 +100,14 @@ def test_get_boot_disk_info_returns_type_size_iops_throughput(
 def test_get_boot_disk_info_pd_standard_no_iops_throughput(
     gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
 ) -> None:
-    """_get_boot_disk_info handles disk without provisioned_iops/throughput (e.g. pd-standard)."""
+    """_get_boot_disk_info handles disk without provisioned_iops/throughput (e.g. pd-standard).
+
+    Parameters:
+        gcp_instance_manager_n1_n2: GCPComputeInstanceManager fixture.
+
+    Returns:
+        None.
+    """
     gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
     mock_disks_client = MagicMock()
     mock_instance = MagicMock()
@@ -110,7 +138,14 @@ def test_get_boot_disk_info_pd_standard_no_iops_throughput(
 def test_get_boot_disk_info_uses_first_boot_disk_when_multiple_disks(
     gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
 ) -> None:
-    """_get_boot_disk_info uses the first disk with boot=True when multiple disks are attached."""
+    """_get_boot_disk_info uses the first disk with boot=True when multiple disks are attached.
+
+    Parameters:
+        gcp_instance_manager_n1_n2: GCPComputeInstanceManager fixture.
+
+    Returns:
+        None.
+    """
     gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
     mock_disks_client = MagicMock()
     mock_instance = MagicMock()
@@ -146,7 +181,14 @@ def test_get_boot_disk_info_uses_first_boot_disk_when_multiple_disks(
 def test_get_boot_disk_info_propagates_disks_client_error(
     gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
 ) -> None:
-    """_get_boot_disk_info propagates exceptions from _disks_client.get."""
+    """_get_boot_disk_info propagates exceptions from _disks_client.get.
+
+    Parameters:
+        gcp_instance_manager_n1_n2: GCPComputeInstanceManager fixture.
+
+    Returns:
+        None.
+    """
     gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
     mock_disks_client = MagicMock()
     mock_disks_client.get.side_effect = NotFound("disk not found")
