@@ -39,6 +39,21 @@ def test_update_task_enqueued(tmp_path: Path) -> None:
     db.close()
 
 
+def test_get_task_counts_in_queue_original(tmp_path: Path) -> None:
+    """get_task_counts includes in_queue_original for enqueued tasks."""
+    db = TaskDatabase(str(tmp_path / "test.db"))
+    db.insert_task("t1", {})
+    db.insert_task("t2", {})
+    db.update_task_enqueued("t1")
+    counts = db.get_task_counts()
+    assert counts["in_queue_original"] == 1
+    assert counts["pending"] == 1
+    tasks = db.get_tasks_by_status("in_queue_original")
+    assert len(tasks) == 1
+    assert tasks[0]["task_id"] == "t1"
+    db.close()
+
+
 def test_update_task_from_event_no_task_id(tmp_path: Path) -> None:
     """update_task_from_event with no task_id returns without updating."""
     db = TaskDatabase(str(tmp_path / "test.db"))
@@ -96,7 +111,7 @@ def test_update_task_from_event_task_exception_no_retry(tmp_path: Path) -> None:
 
 
 def test_update_task_from_event_task_timed_out(tmp_path: Path) -> None:
-    """update_task_from_event task_timed_out sets timed_out or timed_out_with_retry."""
+    """update_task_from_event task_timed_out with retry=False sets timed_out."""
     db = TaskDatabase(str(tmp_path / "test.db"))
     db.insert_task("t1", {})
     db.update_task_from_event({"event_type": "task_timed_out", "task_id": "t1", "retry": False})
@@ -105,8 +120,21 @@ def test_update_task_from_event_task_timed_out(tmp_path: Path) -> None:
     db.close()
 
 
+def test_update_task_from_event_task_timed_out_with_retry(tmp_path: Path) -> None:
+    """update_task_from_event task_timed_out with retry=True sets timed_out_with_retry."""
+    db = TaskDatabase(str(tmp_path / "test.db"))
+    db.insert_task("t1", {})
+    db.update_task_from_event({"event_type": "task_timed_out", "task_id": "t1", "retry": True})
+    counts = db.get_task_counts()
+    assert counts["timed_out_with_retry"] == 1
+    tasks = db.get_tasks_by_status("timed_out_with_retry")
+    assert len(tasks) == 1
+    assert tasks[0]["task_id"] == "t1"
+    db.close()
+
+
 def test_update_task_from_event_task_exited(tmp_path: Path) -> None:
-    """update_task_from_event task_exited sets exited_without_status."""
+    """update_task_from_event task_exited with retry=False sets exited_without_status."""
     db = TaskDatabase(str(tmp_path / "test.db"))
     db.insert_task("t1", {})
     db.update_task_from_event(
@@ -115,6 +143,22 @@ def test_update_task_from_event_task_exited(tmp_path: Path) -> None:
     tasks = db.get_tasks_by_status("exited_without_status")
     assert len(tasks) == 1
     assert tasks[0].get("exit_code") == 1
+    db.close()
+
+
+def test_update_task_from_event_task_exited_with_retry(tmp_path: Path) -> None:
+    """update_task_from_event task_exited with retry=True sets exited_without_status_with_retry."""
+    db = TaskDatabase(str(tmp_path / "test.db"))
+    db.insert_task("t1", {})
+    db.update_task_from_event(
+        {"event_type": "task_exited", "task_id": "t1", "retry": True, "exit_code": 2}
+    )
+    counts = db.get_task_counts()
+    assert counts["exited_without_status_with_retry"] == 1
+    tasks = db.get_tasks_by_status("exited_without_status_with_retry")
+    assert len(tasks) == 1
+    assert tasks[0]["task_id"] == "t1"
+    assert tasks[0].get("exit_code") == 2
     db.close()
 
 

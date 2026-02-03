@@ -304,7 +304,8 @@ class Config(BaseModel, validate_assignment=True):
         """
         if self.provider is not None:
             self.provider = cast(
-                Literal["aws", "gcp", "azure", "AWS", "GCP", "AZURE"], self.provider.upper()
+                Literal["aws", "gcp", "azure", "AWS", "GCP", "AZURE"],
+                self.provider.upper(),
             )
 
         # Override loaded file and/or defaults with command line arguments
@@ -326,7 +327,8 @@ class Config(BaseModel, validate_assignment=True):
                     setattr(self, attr_name, cli_args[attr_name])
             if self.provider is not None:
                 self.provider = cast(
-                    Literal["aws", "gcp", "azure", "AWS", "GCP", "AZURE"], self.provider.upper()
+                    Literal["aws", "gcp", "azure", "AWS", "GCP", "AZURE"],
+                    self.provider.upper(),
                 )
             for attr_name in vars(self.run):
                 if attr_name in cli_args and cli_args[attr_name] is not None:
@@ -465,7 +467,8 @@ class Config(BaseModel, validate_assignment=True):
         # Fix case
         if self.run.architecture is not None:
             self.run.architecture = cast(
-                Literal["x86_64", "arm64", "X86_64", "ARM64"], self.run.architecture.upper()
+                Literal["x86_64", "arm64", "X86_64", "ARM64"],
+                self.run.architecture.upper(),
             )
         if self.run.cpu_family is not None:
             self.run.cpu_family = self.run.cpu_family.upper()
@@ -507,7 +510,8 @@ class Config(BaseModel, validate_assignment=True):
             case _:
                 raise ValueError(f"Unsupported provider: {provider_name}")
 
-        if provider_config is None:
+        if provider_config is None:  # pragma: no cover
+            # This should not be possible
             raise ValueError(f"Provider configuration not found for {provider_name}")
 
         if provider_config.queue_name is None:
@@ -559,7 +563,8 @@ def load_config(config_file: str | None = None) -> Config:
 
     if config.provider is not None:
         config.provider = cast(
-            Literal["aws", "gcp", "azure", "AWS", "GCP", "AZURE"], config.provider.upper()
+            Literal["aws", "gcp", "azure", "AWS", "GCP", "AZURE"],
+            config.provider.upper(),
         )
 
     # If the startup script filename is provided in the config file, then any relative paths

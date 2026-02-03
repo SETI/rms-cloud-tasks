@@ -1,6 +1,7 @@
 """Tests for the worker module."""
 
 import asyncio
+import logging
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -664,3 +665,272 @@ async def test_visibility_renewal_worker_multiple_tasks_different_renewal_times(
                 assert mock_queue.extend_message_visibility.call_count == 1
                 call_args = mock_queue.extend_message_visibility.call_args
                 assert call_args[0][0] == "ack1"  # Only ack1 was renewed
+
+
+# Direct tests for _visibility_renewal_worker (no patch of the method itself)
+@pytest.mark.asyncio
+async def test_direct_visibility_renewal_worker_returns_when_no_max_visibility(
+    mock_worker_function, caplog
+) -> None:
+    """Real _visibility_renewal_worker returns immediately when queue has no max visibility."""
+    with patch("sys.argv", ["worker.py", "--provider", "AWS", "--job-id", "test-job"]):
+        with patch("cloud_tasks.worker.worker.create_queue") as mock_create_queue:
+            mock_queue = MagicMock()
+            mock_queue.get_max_visibility_timeout.return_value = None
+            mock_queue.extend_message_visibility = AsyncMock()
+            mock_create_queue.return_value = mock_queue
+
+            worker = Worker(mock_worker_function)
+            worker._running = True
+            worker._task_queue = mock_queue
+
+            caplog.set_level(logging.INFO)
+            caplog.clear()
+            await worker._visibility_renewal_worker()
+
+            assert "No max visibility timeout found" in caplog.text
+            mock_queue.extend_message_visibility.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_direct_visibility_renewal_worker_renews_when_due(mock_worker_function) -> None:
+    """Real _visibility_renewal_worker calls extend_message_visibility when process is due."""
+    t0 = 10000.0
+    # Extra leading value for any time.time() used by logging; then t0 and t0+15 for the loop
+    times = [0.0, t0, t0 + 15]
+
+    with patch("sys.argv", ["worker.py", "--provider", "AWS", "--job-id", "test-job"]):
+        with patch("cloud_tasks.worker.worker.create_queue") as mock_create_queue:
+            mock_queue = MagicMock()
+            mock_queue.get_max_visibility_timeout.return_value = 100
+            mock_queue.extend_message_visibility = AsyncMock()
+            mock_create_queue.return_value = mock_queue
+
+            worker = Worker(mock_worker_function)
+            worker._running = True
+            worker._task_queue = mock_queue
+            worker._data.max_runtime = 3600
+            mock_process = MagicMock()
+            mock_process.is_alive.return_value = True
+            mock_process.pid = 1
+            worker._processes = {
+                1: {
+                    "worker_id": 1,
+                    "process": mock_process,
+                    "start_time": t0 + 10,
+                    "last_renewal_time": t0 - 60,
+                    "task": {"task_id": "t1", "ack_id": "ack1"},
+                }
+            }
+
+            async def stop_after_first_sleep(sec: float) -> None:
+                worker._running = False
+
+            with patch("time.time", side_effect=lambda: times.pop(0) if times else t0 + 20):
+                with patch("asyncio.sleep", side_effect=stop_after_first_sleep):
+                    await worker._visibility_renewal_worker()
+
+            mock_queue.extend_message_visibility.assert_called_once()
+            call_args = mock_queue.extend_message_visibility.call_args[0]
+            assert call_args[0] == "ack1"
+            # time_left + 10: current_time may be t0 or t0+15 depending on time.time() order
+            expected = (
+                int(3600 - (t0 + 15 - (t0 + 10))) + 10,
+                int(3600 - (t0 - (t0 + 10))) + 10,
+            )
+            assert call_args[1] in expected, f"expected one of {expected}, got {call_args[1]}"
+
+
+@pytest.mark.asyncio
+async def test_direct_visibility_renewal_worker_skips_when_time_left_zero(
+    mock_worker_function,
+) -> None:
+    """Real _visibility_renewal_worker skips renewal when time_left <= 0."""
+    t0 = 20000.0
+    times = [t0, t0 + 15]
+
+    with patch("sys.argv", ["worker.py", "--provider", "AWS", "--job-id", "test-job"]):
+        with patch("cloud_tasks.worker.worker.create_queue") as mock_create_queue:
+            mock_queue = MagicMock()
+            mock_queue.get_max_visibility_timeout.return_value = 100
+            mock_queue.extend_message_visibility = AsyncMock()
+            mock_create_queue.return_value = mock_queue
+
+            worker = Worker(mock_worker_function)
+            worker._running = True
+            worker._task_queue = mock_queue
+            worker._data.max_runtime = 20
+            mock_process = MagicMock()
+            mock_process.is_alive.return_value = True
+            mock_process.pid = 1
+            worker._processes = {
+                1: {
+                    "worker_id": 1,
+                    "process": mock_process,
+                    "start_time": t0 - 30,
+                    "last_renewal_time": t0 - 60,
+                    "task": {"task_id": "t1", "ack_id": "ack1"},
+                }
+            }
+
+            async def stop_after_first_sleep(sec: float) -> None:
+                worker._running = False
+
+            with patch("time.time", side_effect=lambda: times.pop(0) if times else t0 + 20):
+                with patch("asyncio.sleep", side_effect=stop_after_first_sleep):
+                    await worker._visibility_renewal_worker()
+
+            mock_queue.extend_message_visibility.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_direct_visibility_renewal_worker_skips_dead_process(
+    mock_worker_function,
+) -> None:
+    """Real _visibility_renewal_worker does not renew when process is not alive."""
+    t0 = 30000.0
+    times = [t0, t0 + 15]
+
+    with patch("sys.argv", ["worker.py", "--provider", "AWS", "--job-id", "test-job"]):
+        with patch("cloud_tasks.worker.worker.create_queue") as mock_create_queue:
+            mock_queue = MagicMock()
+            mock_queue.get_max_visibility_timeout.return_value = 100
+            mock_queue.extend_message_visibility = AsyncMock()
+            mock_create_queue.return_value = mock_queue
+
+            worker = Worker(mock_worker_function)
+            worker._running = True
+            worker._task_queue = mock_queue
+            worker._data.max_runtime = 3600
+            mock_process = MagicMock()
+            mock_process.is_alive.return_value = False
+            mock_process.pid = 1
+            worker._processes = {
+                1: {
+                    "worker_id": 1,
+                    "process": mock_process,
+                    "start_time": t0 - 10,
+                    "last_renewal_time": t0 - 60,
+                    "task": {"task_id": "t1", "ack_id": "ack1"},
+                }
+            }
+
+            async def stop_after_first_sleep(sec: float) -> None:
+                worker._running = False
+
+            with patch("time.time", side_effect=lambda: times.pop(0) if times else t0 + 20):
+                with patch("asyncio.sleep", side_effect=stop_after_first_sleep):
+                    await worker._visibility_renewal_worker()
+
+            mock_queue.extend_message_visibility.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_direct_visibility_renewal_worker_handles_extend_exception(
+    mock_worker_function, caplog
+) -> None:
+    """Real _visibility_renewal_worker logs warning and continues when extend_message_visibility raises."""
+    t0 = 40000.0
+    times = [t0, t0 + 15]
+
+    with patch("sys.argv", ["worker.py", "--provider", "AWS", "--job-id", "test-job"]):
+        with patch("cloud_tasks.worker.worker.create_queue") as mock_create_queue:
+            mock_queue = MagicMock()
+            mock_queue.get_max_visibility_timeout.return_value = 100
+            mock_queue.extend_message_visibility = AsyncMock(side_effect=Exception("Queue error"))
+            mock_create_queue.return_value = mock_queue
+
+            worker = Worker(mock_worker_function)
+            worker._running = True
+            worker._task_queue = mock_queue
+            worker._data.max_runtime = 3600
+            mock_process = MagicMock()
+            mock_process.is_alive.return_value = True
+            mock_process.pid = 1
+            worker._processes = {
+                1: {
+                    "worker_id": 1,
+                    "process": mock_process,
+                    "start_time": t0 + 10,
+                    "last_renewal_time": t0 - 60,
+                    "task": {"task_id": "t1", "ack_id": "ack1"},
+                }
+            }
+
+            async def stop_after_first_sleep(sec: float) -> None:
+                worker._running = False
+
+            caplog.set_level(logging.WARNING)
+            caplog.clear()
+            with patch("time.time", side_effect=lambda: times.pop(0) if times else t0 + 20):
+                with patch("asyncio.sleep", side_effect=stop_after_first_sleep):
+                    await worker._visibility_renewal_worker()
+
+            assert "Failed to renew visibility timeout" in caplog.text
+            assert "Queue error" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_direct_visibility_renewal_worker_outer_exception(
+    mock_worker_function, caplog
+) -> None:
+    """Real _visibility_renewal_worker logs and continues when an exception occurs in the loop."""
+    t0 = 50000.0
+    times = [0.0, t0, t0 + 15]
+
+    with patch("sys.argv", ["worker.py", "--provider", "AWS", "--job-id", "test-job"]):
+        with patch("cloud_tasks.worker.worker.create_queue") as mock_create_queue:
+            mock_queue = MagicMock()
+            mock_queue.get_max_visibility_timeout.return_value = 100
+            mock_queue.extend_message_visibility = AsyncMock()
+            mock_create_queue.return_value = mock_queue
+
+            worker = Worker(mock_worker_function)
+            worker._running = True
+            worker._task_queue = mock_queue
+
+            class BadProcessesDict:
+                """Dict-like that raises when .items() is called."""
+
+                def items(self) -> None:
+                    raise RuntimeError("Injected failure")
+
+            worker._processes = BadProcessesDict()  # type: ignore[assignment]
+
+            async def sleep_then_stop(sec: float) -> None:
+                worker._running = False
+
+            caplog.set_level(logging.ERROR)
+            caplog.clear()
+            with patch("time.time", side_effect=lambda: times.pop(0) if times else t0 + 20):
+                with patch("asyncio.sleep", side_effect=sleep_then_stop):
+                    await worker._visibility_renewal_worker()
+
+            assert "Error in visibility renewal worker" in caplog.text
+            assert "Injected failure" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_direct_visibility_renewal_worker_interval_not_reached_then_exits(
+    mock_worker_function,
+) -> None:
+    """Real _visibility_renewal_worker does one sleep when interval not reached then exits."""
+    with patch("sys.argv", ["worker.py", "--provider", "AWS", "--job-id", "test-job"]):
+        with patch("cloud_tasks.worker.worker.create_queue") as mock_create_queue:
+            mock_queue = MagicMock()
+            mock_queue.get_max_visibility_timeout.return_value = 100
+            mock_queue.extend_message_visibility = AsyncMock()
+            mock_create_queue.return_value = mock_queue
+
+            worker = Worker(mock_worker_function)
+            worker._running = True
+            worker._task_queue = mock_queue
+            worker._processes = {}
+
+            async def stop_after_first_sleep(sec: float) -> None:
+                worker._running = False
+
+            with patch("asyncio.sleep", side_effect=stop_after_first_sleep):
+                await worker._visibility_renewal_worker()
+
+            mock_queue.extend_message_visibility.assert_not_called()

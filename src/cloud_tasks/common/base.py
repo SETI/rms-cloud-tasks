@@ -20,9 +20,9 @@ class CloudProvider(ABC):
         Returns:
             None.
         """
-        pass
+        pass  # pragma: no cover
 
     @abstractmethod
     async def validate_credentials(self) -> bool:
         """Validate that the provided credentials are valid."""
-        pass
+        pass  # pragma: no cover

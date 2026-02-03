@@ -9,5 +9,4 @@ omit =
     src/cloud_tasks/queue_manager/aws.py
 
 [report]
-fail_under = 75
-
+fail_under = 80

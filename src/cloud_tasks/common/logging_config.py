@@ -7,7 +7,7 @@ import logging
 
 try:
     from typing import override
-except ImportError:
+except ImportError:  # pragma: no cover
     from typing_extensions import override
 
 
