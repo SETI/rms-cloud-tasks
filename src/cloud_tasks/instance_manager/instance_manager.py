@@ -73,7 +73,31 @@ class InstanceManager(ABC):
     def _instance_matches_constraints(
         self, instance_info: dict[str, Any], constraints: dict[str, Any] | None = None
     ) -> bool:
-        """Check if an instance matches the constraints."""
+        """Check whether instance_info satisfies all provided constraints.
+
+        Matching uses exact equality for scalar constraints (e.g. architecture)
+        and numeric comparisons for min/max constraints. instance_info must
+        contain keys such as "vcpu", "mem_gb", "local_ssd_gb", "architecture",
+        "cpu_rank", "supports_spot". constraints may define optional keys
+        (cpus_per_task, min_cpu, max_cpu, architecture, use_spot, etc.); missing
+        keys in constraints are treated as "no constraint" (any value matches).
+
+        Parameters:
+            instance_info: Dict mapping instance attribute names to values.
+                Required keys include "state", "vcpu", "mem_gb", "local_ssd_gb",
+                "architecture", "cpu_rank", "supports_spot".
+            constraints: Optional dict defining expected key->value pairs or
+                min/max predicates. None means match all instances.
+
+        Returns:
+            True if instance_info satisfies all constraints; False otherwise.
+            If constraints is None, returns True.
+
+        Raises:
+            TypeError: If instance_info or constraints have wrong types (e.g.
+                non-dict). KeyError may be raised if instance_info is missing
+                required keys used in the implementation.
+        """
         if constraints is None:
             return True
 
@@ -184,7 +208,20 @@ class InstanceManager(ABC):
     def _get_boot_disk_size(
         self, instance_info: dict[str, Any], boot_disk_constraints: dict[str, Any]
     ) -> float:
-        """Get the boot disk size for an instance."""
+        """Compute boot disk size in GB from instance and constraint settings.
+
+        Parameters:
+            instance_info: dict[str, Any] – instance attributes; keys such as
+                vcpu are used if needed for per-cpu or per-task sizing.
+            boot_disk_constraints: dict[str, Any] – keys read: boot_disk_base_size
+                (numeric, default 0), boot_disk_per_cpu (numeric, default 0),
+                boot_disk_per_task (numeric, default 0). Optional multipliers
+                and defaults are applied when keys are missing.
+
+        Returns:
+            float: Computed boot disk size in gigabytes. No exception is raised
+            for missing keys; missing values are treated as 0.
+        """
         boot_disk_base_size = boot_disk_constraints.get("boot_disk_base_size")
         if boot_disk_base_size is None:
             boot_disk_base_size = 0
@@ -363,7 +400,27 @@ class InstanceManager(ABC):
     async def list_running_instances(
         self, job_id: str | None = None, include_non_job: bool = False
     ) -> list[dict[str, Any]]:
-        """List currently running instances, optionally filtered by tags."""
+        """List currently running instances, optionally filtered by job.
+
+        "Running" means instances that are in a runnable state (e.g. RUNNING
+        or equivalent provider status). Filtering: if job_id is set, only
+        instances associated with that job are included unless include_non_job
+        is True, in which case instances not tied to any job may also be
+        included. Ordering of the list is implementation-defined.
+
+        Parameters:
+            job_id: Optional str used to filter instances by associated job.
+            include_non_job: If True, include instances not tied to any job.
+
+        Returns:
+            list[dict[str, Any]]: Each dict has at least: instance_id (str),
+            status (str), tags (list[str]), created_at (str or datetime).
+            Optional key job_id (str | None). Additional provider-specific
+            metadata keys may be present.
+
+        Raises:
+            Provider-specific exceptions on API or credential errors.
+        """
         pass  # pragma: no cover
 
     @abstractmethod

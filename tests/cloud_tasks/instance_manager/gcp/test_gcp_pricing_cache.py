@@ -8,6 +8,9 @@ from unittest.mock import MagicMock, patch
 from cloud_tasks.common.config import GCPConfig
 from cloud_tasks.instance_manager.gcp import GCPComputeInstanceManager
 
+# Cache is considered stale after this many seconds (24 hours); tests use older mtime to skip load.
+CACHE_MAX_AGE_SECONDS = 24 * 3600
+
 
 def _make_manager_with_cache_helpers(gcp_config: GCPConfig) -> GCPComputeInstanceManager:
     """Create GCPComputeInstanceManager with mocked clients; cache helpers are real."""
@@ -163,8 +166,7 @@ def test_load_pricing_cache_from_file_skips_old_file(tmp_path: Path) -> None:
     cache_path = os.path.join(str(tmp_path), "cloud_tasks_gcp_pricing_p_r.json")
     with open(cache_path, "w") as f:
         json.dump({"old|False": "data"}, f)
-    # Set mtime to 25 hours ago
-    past = datetime.datetime.now(timezone.utc).timestamp() - (25 * 3600)
+    past = datetime.datetime.now(timezone.utc).timestamp() - (CACHE_MAX_AGE_SECONDS + 3600)
     os.utime(cache_path, (past, past))
 
     with patch("tempfile.gettempdir", return_value=str(tmp_path)):

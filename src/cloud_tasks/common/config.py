@@ -265,7 +265,7 @@ class GCPConfig(ProviderConfig, validate_assignment=True):
 
 
 class AzureConfig(ProviderConfig, validate_assignment=True):
-    """Config options specific to Azure."""
+    """Config options specific to Azure"""
 
     model_config = ConfigDict(extra="forbid")
 

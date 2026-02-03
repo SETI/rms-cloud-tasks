@@ -1498,8 +1498,7 @@ async def stop_cmd(args: argparse.Namespace, config: Config) -> None:
         if args.purge_queue:
             queue_name_to_purge = orchestrator.queue_name  # Get queue_name from orchestrator
             logger.info(f"Purging queue {queue_name_to_purge}")
-            if orchestrator._task_queue is not None:
-                await orchestrator._task_queue.purge_queue()
+            await orchestrator.purge_queue()
 
         print(f"Job '{job_id_to_stop}' stopped")
 

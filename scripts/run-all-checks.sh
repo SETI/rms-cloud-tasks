@@ -49,13 +49,7 @@ SCOPE_SPECIFIED=false
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # Virtualenv path: set VENV or VENV_PATH to override default project venv
-if [ -n "${VENV:-}" ]; then
-    VENV="${VENV}"
-elif [ -n "${VENV_PATH:-}" ]; then
-    VENV="${VENV_PATH}"
-else
-    VENV="$PROJECT_ROOT/venv"
-fi
+VENV="${VENV:-${VENV_PATH:-$PROJECT_ROOT/venv}}"
 
 # Track failures
 FAILED_CHECKS=()

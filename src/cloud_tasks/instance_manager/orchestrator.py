@@ -602,6 +602,17 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
             return None
         return await self._task_queue.get_queue_depth()
 
+    async def purge_queue(self) -> None:
+        """
+        Purge all messages from the task queue.
+
+        If the internal task queue is not initialized (_task_queue is None), this
+        is a no-op. Otherwise delegates to the queue's purge_queue().
+        """
+        if self._task_queue is None:
+            return
+        await self._task_queue.purge_queue()
+
     async def _check_scaling(self) -> None:
         """Check if we need to scale up based on number of running instances.
 
