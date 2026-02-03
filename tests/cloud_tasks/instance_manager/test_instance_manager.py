@@ -1,12 +1,17 @@
+"""Tests for cloud_tasks.instance_manager: InstanceManager and provider factory."""
+
 import pytest
-from src.cloud_tasks.instance_manager.instance_manager import InstanceManager
-from src.cloud_tasks.common.config import ProviderConfig
+
+from cloud_tasks.common.config import ProviderConfig
+from cloud_tasks.instance_manager.instance_manager import InstanceManager
 
 
 class TestInstanceManager:
+    """Validates InstanceManager constraint matching and factory behavior."""
+
     @pytest.fixture
-    def base_instance_info(self):
-        """Base instance info fixture with typical values"""
+    def base_instance_info(self) -> dict:
+        """Base instance info fixture with typical values."""
         return {
             "vcpu": 4,
             "mem_gb": 16,  # 4GB per CPU
@@ -16,8 +21,8 @@ class TestInstanceManager:
         }
 
     @pytest.fixture
-    def instance_manager(self):
-        """Create a concrete instance manager for testing"""
+    def instance_manager(self) -> InstanceManager:
+        """Create a concrete instance manager for testing."""
 
         class ConcreteInstanceManager(InstanceManager):
             async def get_available_instance_types(self, constraints=None):
@@ -53,9 +58,9 @@ class TestInstanceManager:
         return ConcreteInstanceManager(ProviderConfig())
 
     def test_instance_matches_constraints_no_constraints(
-        self, instance_manager, base_instance_info
-    ):
-        """Test with no constraints"""
+        self, instance_manager: InstanceManager, base_instance_info: dict
+    ) -> None:
+        """Test with no constraints."""
         # Empty dict constraints
         assert instance_manager._instance_matches_constraints(base_instance_info, {})
         # None constraints should be treated the same as empty dict
@@ -63,8 +68,10 @@ class TestInstanceManager:
         # Explicit None constraints
         assert instance_manager._instance_matches_constraints(base_instance_info, constraints=None)
 
-    def test_instance_matches_constraints_architecture(self, instance_manager, base_instance_info):
-        """Test architecture matching"""
+    def test_instance_matches_constraints_architecture(
+        self, instance_manager: InstanceManager, base_instance_info: dict
+    ) -> None:
+        """Test architecture matching."""
         # Matching architecture
         assert instance_manager._instance_matches_constraints(
             base_instance_info, {"architecture": "X86_64"}
@@ -103,10 +110,12 @@ class TestInstanceManager:
         """Test tasks per instance constraints affecting CPU limits"""
         # Test min_tasks_per_instance affecting min_cpu
         assert not instance_manager._instance_matches_constraints(
-            base_instance_info, {"cpus_per_task": 2, "min_tasks_per_instance": 3}  # Requires 6 CPUs
+            base_instance_info,
+            {"cpus_per_task": 2, "min_tasks_per_instance": 3},  # Requires 6 CPUs
         )
         assert instance_manager._instance_matches_constraints(
-            base_instance_info, {"cpus_per_task": 1, "min_tasks_per_instance": 2}  # Requires 2 CPUs
+            base_instance_info,
+            {"cpus_per_task": 1, "min_tasks_per_instance": 2},  # Requires 2 CPUs
         )
 
         # Test max_tasks_per_instance affecting max_cpu

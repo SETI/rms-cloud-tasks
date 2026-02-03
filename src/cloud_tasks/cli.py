@@ -5,20 +5,20 @@ Command-line interface for the multi-cloud task processing system.
 import argparse
 import asyncio
 import json
-import json_stream
 import logging
 import os
-from pathlib import Path
 import signal
 import sys
-from tqdm import tqdm  # type: ignore
 from collections.abc import Iterable
-from typing import Any, Dict
-import yaml  # type: ignore
+from pathlib import Path
+from typing import Any, cast
 
+import json_stream
+import pydantic
+import yaml  # type: ignore
 from filecache import FCPath
 from prettytable import PrettyTable, TableStyle
-import pydantic
+from tqdm import tqdm  # type: ignore
 
 from .common.config import Config, load_config
 from .common.logging_config import configure_logging
@@ -27,7 +27,6 @@ from .common.time_utils import parse_utc, utc_now
 from .instance_manager import create_instance_manager
 from .instance_manager.orchestrator import InstanceOrchestrator
 from .queue_manager import QueueManager, create_queue
-
 
 # Use custom logging configuration
 configure_logging(level=logging.WARNING)
@@ -397,7 +396,7 @@ async def list_running_instances_cmd(args: argparse.Namespace, config: Config) -
                 instances.sort(key=lambda x: x.get("id", ""))
 
             instance_count = 0
-            state_counts = {}
+            state_counts: dict[str, int] = {}
 
             if args.detail:
                 for instance in instances:
@@ -506,14 +505,29 @@ class EventMonitor:
     async def start(self) -> None:
         """Start monitoring events."""
         if self.output_file_path:
+            path = self.output_file_path
             try:
-                self.output_file = await asyncio.to_thread(open, self.output_file_path, "a")
-                logger.info(f'Writing events to "{self.output_file_path}"')
-            except Exception as e:
-                logger.fatal(
-                    f'Error opening events file "{self.output_file_path}": {e}', exc_info=True
+
+                def _open_file(p: str, mode: str) -> Any:
+                    """Open a file at the given path with the given mode.
+
+                    Parameters:
+                        p: File path to open.
+                        mode: Open mode (e.g. 'a' for append, 'r' for read).
+
+                    Returns:
+                        The opened file object (e.g. from open(p, mode)).
+                    """
+                    return open(p, mode)
+
+                self.output_file = await asyncio.to_thread(  # type: ignore[arg-type, func-returns-value]
+                    _open_file, path, "a"
                 )
+                logger.info(f'Writing events to "{path}"')
+            except Exception as e:
+                logger.fatal(f'Error opening events file "{path}": {e}', exc_info=True)
                 sys.exit(1)
+        return
 
     async def process_events_batch(self) -> int:
         """
@@ -823,10 +837,24 @@ async def load_queue_common(
     semaphore = asyncio.Semaphore(max_concurrent_queue_operations)
     pending_tasks = set()
 
-    async def enqueue_task(task: Dict[str, Any]) -> None:
-        """Acquire semaphore, send the task via task_queue.send_task(task["task_id"],
-        task["data"]), and mark it enqueued with task_db.update_task_enqueued(
-        task["task_id"]). DB writes are serialized under db_write_lock."""
+    async def enqueue_task(task: dict[str, Any]) -> None:
+        """Enqueue one task to the cloud queue and mark it enqueued in the DB.
+
+        Acquires the semaphore, calls task_queue.send_task with the task payload,
+        then marks the task enqueued via task_db.update_task_enqueued. DB writes
+        are serialized under db_write_lock.
+
+        Parameters:
+            task: dict[str, Any] with keys "task_id" (str) and "data" (payload).
+                Passed to send_task and update_task_enqueued.
+
+        Returns:
+            None.
+
+        Notes:
+            Semaphore limits concurrent enqueue operations. DB updates run under
+            db_write_lock so only one writer runs at a time.
+        """
         async with semaphore:
             await task_queue.send_task(task["task_id"], task["data"])
             async with db_write_lock:
@@ -1155,7 +1183,9 @@ async def run_cmd(args: argparse.Namespace, config: Config) -> None:
             try:
                 await asyncio.gather(orchestrator_task, event_monitor_task, return_exceptions=True)
             except Exception as e:
-                logger.debug("Error during orchestrator/event-monitor cleanup: %s", e, exc_info=True)
+                logger.debug(
+                    "Error during orchestrator/event-monitor cleanup: %s", e, exc_info=True
+                )
 
             # Prompt user for action (force valid input)
             choice = None
@@ -1217,7 +1247,10 @@ async def run_cmd(args: argparse.Namespace, config: Config) -> None:
                         print("Please enter y or n.")
                 if dump_choice in ("y", "yes"):
                     base_path = provider_config.job_id
-                    dump_tasks_by_status(task_db, base_path)
+                    if base_path is None:
+                        logger.error("job_id is required for dump_tasks_by_status")
+                    else:
+                        dump_tasks_by_status(task_db, base_path)
         finally:
             # Restore original signal handler
             signal.signal(signal.SIGINT, old_handler)
@@ -1423,14 +1456,17 @@ async def status_cmd(args: argparse.Namespace, config: Config) -> None:
         orchestrator = InstanceOrchestrator(config=config)
         await orchestrator.initialize()
 
-        num_running, running_cpus, running_price, job_status = (
-            await orchestrator.get_job_instances()
-        )
+        (
+            num_running,
+            running_cpus,
+            running_price,
+            job_status,
+        ) = await orchestrator.get_job_instances()
         print(job_status)
 
-        queue_depth = await orchestrator._task_queue.get_queue_depth()
+        queue_depth = await orchestrator.get_queue_depth()
         if queue_depth is None:
-            print("Failed to get queue depth for task queue.")
+            print("Task queue not initialized or failed to get queue depth.")
         else:
             print(f"Current queue depth: {queue_depth}")
 
@@ -1462,8 +1498,7 @@ async def stop_cmd(args: argparse.Namespace, config: Config) -> None:
         if args.purge_queue:
             queue_name_to_purge = orchestrator.queue_name  # Get queue_name from orchestrator
             logger.info(f"Purging queue {queue_name_to_purge}")
-            # Ensure task_queue is available before purging
-            await orchestrator.task_queue.purge_queue()
+            await orchestrator.purge_queue()
 
         print(f"Job '{job_id_to_stop}' stopped")
 
@@ -1572,8 +1607,7 @@ async def list_images_cmd(args: argparse.Namespace, config: Config) -> None:
 
         # Display results
         print(
-            f"Found {len(images)} {'filtered ' if args.filter else ''}images for "
-            f"{args.provider}:"
+            f"Found {len(images)} {'filtered ' if args.filter else ''}images for {args.provider}:"
         )
         print()
 
@@ -1665,7 +1699,7 @@ async def list_images_cmd(args: argparse.Namespace, config: Config) -> None:
                         )
                         # TODO Update for --detail
 
-        print("\nTo use a custom image with the 'run' command, use the " "--image parameter.")
+        print("\nTo use a custom image with the 'run' command, use the --image parameter.")
         if args.provider == "AWS":
             print("For AWS, specify the AMI ID: --image ami-12345678")
         elif args.provider == "GCP":
@@ -1728,12 +1762,16 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
             instances, use_spot=args.use_spot, boot_disk_constraints=constraints
         )
 
-        pricing_data_list = []
+        pricing_data_list: list[dict[str, float | str | None]] = []
         for zone_prices in pricing_data.values():
             if zone_prices is None:
                 continue
             for zone_price in zone_prices.values():
+                if zone_price is None:
+                    continue
                 for boot_disk_price in zone_price.values():
+                    if boot_disk_price is None:
+                        continue
                     pricing_data_list.append(boot_disk_price)
 
         # Apply custom sorting if specified
@@ -1850,13 +1888,30 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
                     if field_name is None:
                         print(f"Invalid sort field: {sort_field}")
                         sys.exit(1)
-                    pricing_data_list.sort(key=lambda x: x[field_name], reverse=descending)
+                    pricing_data_list.sort(
+                        key=lambda x: cast(float, x.get(field_name) or 0),
+                        reverse=descending,
+                    )
             else:
                 # Default sort if no fields specified
-                pricing_data_list.sort(key=lambda x: (x["vcpu"], x["mem_gb"], x["name"], x["zone"]))
+                pricing_data_list.sort(
+                    key=lambda x: (
+                        cast(int, x.get("vcpu") or 0),
+                        cast(float, x.get("mem_gb") or 0),
+                        str(x.get("name") or ""),
+                        str(x.get("zone") or ""),
+                    ),
+                )
         else:
             # Default sort by vCPU, then memory if no sort-by specified
-            pricing_data_list.sort(key=lambda x: (x["vcpu"], x["mem_gb"], x["name"], x["zone"]))
+            pricing_data_list.sort(
+                key=lambda x: (
+                    cast(int, x.get("vcpu") or 0),
+                    cast(float, x.get("mem_gb") or 0),
+                    str(x.get("name") or ""),
+                    str(x.get("zone") or ""),
+                ),
+            )
 
         # Limit results if specified - applied after sorting
         if args.limit and len(pricing_data_list) > args.limit:
@@ -1865,10 +1920,16 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
         # Display results with pricing if available
         print()
 
-        has_lssd = any(price_data["local_ssd_gb"] > 0 for price_data in pricing_data_list)
-        has_iops = any(price_data["boot_disk_iops_price"] > 0 for price_data in pricing_data_list)
+        has_lssd = any(
+            cast(float, price_data.get("local_ssd_gb") or 0) > 0 for price_data in pricing_data_list
+        )
+        has_iops = any(
+            cast(float, price_data.get("boot_disk_iops_price") or 0) > 0
+            for price_data in pricing_data_list
+        )
         has_throughput = any(
-            price_data["boot_disk_throughput_price"] > 0 for price_data in pricing_data_list
+            cast(float, price_data.get("boot_disk_throughput_price") or 0) > 0
+            for price_data in pricing_data_list
         )
 
         # All of this complexity is because 1) prettytable doesn't support multi-line headers and
@@ -1882,7 +1943,7 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
             "",
             "(GB)",
         ]
-        left_fields += [f"Field {field_num}", f"Field {field_num+1}"]
+        left_fields += [f"Field {field_num}", f"Field {field_num + 1}"]
         field_num += 4
 
         if has_lssd:
@@ -1898,7 +1959,7 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
             "(GB)",
             "Disk Type",
         ]
-        left_fields += [f"Field {field_num+1}"]
+        left_fields += [f"Field {field_num + 1}"]
         field_num += 2
 
         if args.detail:
@@ -1943,30 +2004,46 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
         if args.detail:
             header1 += ["Processor", "Perf", "Description"]
             header2 += ["", "Rank", ""]
-        left_fields += [f"Field {field_num}", f"Field {field_num+2}"]
+            left_fields += [f"Field {field_num}", f"Field {field_num + 2}"]
+            field_num += 3
 
         rows = []
         for price_data in pricing_data_list:
-            vcpu_str = f"{price_data['vcpu']:d}"
-            mem_gb_str = f"{price_data['mem_gb']:.2f}"
-            local_ssd_gb_str = f"{price_data['local_ssd_gb']:.2f}"
-            boot_disk_gb_str = f"{price_data['boot_disk_gb']:.2f}"
-            cpu_price_str = f"${price_data['per_cpu_price']:.5f}"
-            mem_price_str = f"${price_data['mem_per_gb_price']:.5f}"
-            total_price_str = f"${price_data['total_price']:.4f}"
-            total_price_per_cpu_str = f"${price_data['total_price_per_cpu']:.5f}"
-            local_ssd_price_str = f"${price_data['local_ssd_per_gb_price']:.6f}"
-            boot_disk_price_str = f"${price_data['boot_disk_per_gb_price']:.6f}"
-            boot_disk_iops_price_str = f"${price_data['boot_disk_iops_price']:.5f}"
-            boot_disk_throughput_price_str = f"${price_data['boot_disk_throughput_price']:.6f}"
-            cpu_rank_str = f"{price_data['cpu_rank']:d}"
+            vcpu_str = f"{cast(int, price_data.get('vcpu') or 0):d}"
+            mem_gb_str = f"{cast(float, price_data.get('mem_gb') or 0):.2f}"
+            local_ssd_gb_str = f"{cast(float, price_data.get('local_ssd_gb') or 0):.2f}"
+            boot_disk_gb_str = f"{cast(float, price_data.get('boot_disk_gb') or 0):.2f}"
+            cpu_price_str = f"${cast(float, price_data.get('per_cpu_price') or 0):.5f}"
+            mem_price_str = f"${cast(float, price_data.get('mem_per_gb_price') or 0):.5f}"
+            total_price_str = f"${cast(float, price_data.get('total_price') or 0):.4f}"
+            total_price_per_cpu_str = (
+                f"${cast(float, price_data.get('total_price_per_cpu') or 0):.5f}"
+            )
+            local_ssd_price_str = (
+                f"${cast(float, price_data.get('local_ssd_per_gb_price') or 0):.6f}"
+            )
+            boot_disk_price_str = (
+                f"${cast(float, price_data.get('boot_disk_per_gb_price') or 0):.6f}"
+            )
+            boot_disk_iops_price_str = (
+                f"${cast(float, price_data.get('boot_disk_iops_price') or 0):.5f}"
+            )
+            boot_disk_throughput_price_str = (
+                f"${cast(float, price_data.get('boot_disk_throughput_price') or 0):.6f}"
+            )
+            cpu_rank_str = f"{cast(int, price_data.get('cpu_rank') or 0):d}"
 
-            row = [price_data["name"], price_data["architecture"], vcpu_str, mem_gb_str]
+            row = [
+                str(price_data.get("name") or ""),
+                str(price_data.get("architecture") or ""),
+                vcpu_str,
+                mem_gb_str,
+            ]
             if has_lssd:
                 row += [local_ssd_gb_str]
             row += [
                 boot_disk_gb_str,
-                price_data["boot_disk_type"],
+                str(price_data.get("boot_disk_type") or ""),
             ]
             if args.detail:
                 row += [cpu_price_str, mem_price_str]
@@ -1980,9 +2057,13 @@ async def list_instance_types_cmd(args: argparse.Namespace, config: Config) -> N
             row += [total_price_str]
             if args.detail:
                 row += [total_price_per_cpu_str]
-            row += [price_data["zone"]]
+            row += [str(price_data.get("zone") or "")]
             if args.detail:
-                row += [price_data["cpu_family"], cpu_rank_str, price_data["description"]]
+                row += [
+                    str(price_data.get("cpu_family") or ""),
+                    cpu_rank_str,
+                    str(price_data.get("description") or ""),
+                ]
             rows.append(row)
 
         table = PrettyTable()
@@ -2374,8 +2455,12 @@ def add_instance_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def main():
-    """Main entry point for the CLI."""
+def build_parser() -> argparse.ArgumentParser:
+    """Build and return the CLI argument parser.
+
+    Returns:
+        argparse.ArgumentParser: Parser with all CLI subcommands and options.
+    """
     parser = argparse.ArgumentParser(description="Multi-Cloud Task Processing System")
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
     subparsers.required = True
@@ -2676,56 +2761,77 @@ def main():
     )
     list_instance_types_parser.set_defaults(func=list_instance_types_cmd)
 
-    # -------------- #
-    # MAIN EXECUTION #
-    # -------------- #
+    return parser
 
-    # Parse arguments
-    args = parser.parse_args()
 
-    if hasattr(args, "instance_types") and args.instance_types:
-        new_instance_types = []
-        for str1 in args.instance_types:
-            for str2 in str1.split(","):
-                for str3 in str2.split(" "):
-                    if str3.strip():
-                        new_instance_types.append(str3.strip())
-        args.instance_types = new_instance_types
+def run_argv(argv: list[str] | None = None) -> int:
+    """Run the CLI with the given argv and return the process exit code.
 
-    # Set up logging level based on verbosity
-    # Force at least INFO when using run command so progress is visible
-    if getattr(args, "func", None) is run_cmd and hasattr(args, "verbose") and args.verbose < 1:
-        args.verbose = 1
-    if hasattr(args, "verbose"):
-        if args.verbose == 0:
-            logging.getLogger().setLevel(logging.WARNING)
-        elif args.verbose == 1:
-            logging.getLogger().setLevel(logging.INFO)
-        elif args.verbose > 1:
-            logging.getLogger().setLevel(logging.DEBUG)
+    Parameters:
+        argv: Command-line argument list (defaults to sys.argv when None). Used
+            for testing or programmatic invocation.
 
-    # Load configuration
-    logger.info(f"Loading configuration from {args.config}")
+    Returns:
+        int: Exit code (0 on success; non-zero on failure or sys.exit).
+    """
     try:
-        config = load_config(args.config)
-        config.overload_from_cli(vars(args))
-        config.update_run_config_from_provider_config()
-        config.validate_config()
-    except (pydantic.ValidationError, ValueError) as e:
-        logger.fatal(f"Invalid configuration: {e}")
-        print(f"Invalid configuration: {e}")
-        sys.exit(1)
+        parser = build_parser()
+        args = parser.parse_args(argv)
 
-    # Run the appropriate command
-    try:
+        if hasattr(args, "instance_types") and args.instance_types:
+            new_instance_types = []
+            for str1 in args.instance_types:
+                for str2 in str1.split(","):
+                    for str3 in str2.split(" "):
+                        if str3.strip():
+                            new_instance_types.append(str3.strip())
+            args.instance_types = new_instance_types
+
+        # Set up logging level based on verbosity
+        # Force at least INFO when using run command so progress is visible
+        if getattr(args, "func", None) is run_cmd and hasattr(args, "verbose") and args.verbose < 1:
+            args.verbose = 1
+        if hasattr(args, "verbose"):
+            if args.verbose == 0:
+                logging.getLogger().setLevel(logging.WARNING)
+            elif args.verbose == 1:
+                logging.getLogger().setLevel(logging.INFO)
+            elif args.verbose > 1:
+                logging.getLogger().setLevel(logging.DEBUG)
+
+        # Load configuration
+        logger.info(f"Loading configuration from {args.config}")
+        try:
+            config = load_config(args.config)
+            config.overload_from_cli(vars(args))
+            config.update_run_config_from_provider_config()
+            config.validate_config()
+        except (FileNotFoundError, pydantic.ValidationError, ValueError) as e:
+            logger.fatal(f"Invalid configuration: {e}")
+            print(f"Invalid configuration: {e}")
+            sys.exit(1)
+
+        # Run the appropriate command
         asyncio.run(args.func(args, config))
+        return 0
+    except SystemExit as e:
+        code: int = e.code if isinstance(e.code, int) else 1
+        return code
     except KeyboardInterrupt:
-        # KeyboardInterrupt should be handled within the command itself
-        # If it propagates here, it means the command didn't handle it
         print("\n\nOperation interrupted by user.")
-        sys.exit(130)  # Standard exit code for SIGINT
+        return 130
 
-    sys.exit(0)
+
+def main() -> None:
+    """Entry point for the CLI; parses sys.argv and exits with the command result.
+
+    Parameters:
+        None.
+
+    Returns:
+        None. Calls sys.exit() with the exit code from run_argv().
+    """
+    sys.exit(run_argv())
 
 
 if __name__ == "__main__":

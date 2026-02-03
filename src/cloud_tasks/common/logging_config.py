@@ -2,8 +2,13 @@
 Custom logging configuration with proper microsecond support.
 """
 
-import logging
 import datetime
+import logging
+
+try:
+    from typing import override
+except ImportError:  # pragma: no cover
+    from typing_extensions import override
 
 
 class MicrosecondFormatter(logging.Formatter):
@@ -12,11 +17,34 @@ class MicrosecondFormatter(logging.Formatter):
     The standard logging.Formatter doesn't properly support %f in datefmt.
     """
 
-    def formatTime(self, record, datefmt):
+    @override
+    def formatTime(  # noqa: N802
+        self, record: logging.LogRecord, datefmt: str | None = None
+    ) -> str:
         """
-        Override the standard formatTime to correctly handle microseconds.
+        Format the record's timestamp; supports microseconds in datefmt.
+
+        When datefmt is None, the default format "%Y-%m-%d %H:%M:%S" is used
+        (no fractional seconds). When datefmt contains ".%f", the formatted
+        microseconds are truncated to the first 3 digits (millisecond precision),
+        and any characters in the format string after ".%f" are ignored/discarded
+        in the output.
+
+        Parameters:
+            record: The log record (logging.LogRecord) whose timestamp to format.
+            datefmt: Optional strftime-style format string. If None, defaults to
+                "%Y-%m-%d %H:%M:%S". If it contains ".%f", output uses millisecond
+                precision and suffix characters after ".%f" are not included.
+
+        Returns:
+            str: The formatted timestamp. Example: datefmt None yields
+            "2025-02-01 12:34:56"; datefmt "%Y-%m-%d %H:%M:%S.%f" yields
+            "2025-02-01 12:34:56.123"; datefmt "%Y-%m-%d %H:%M:%S.%fZ" yields
+            "2025-02-01 12:34:56.123" (suffix "Z" discarded).
         """
         ct = datetime.datetime.fromtimestamp(record.created)
+        if datefmt is None:
+            datefmt = "%Y-%m-%d %H:%M:%S"
         s = ct.strftime(datefmt)
         # Always truncate to 3 digits (millisecond precision) even when datefmt is provided
         if ".%f" in datefmt:
@@ -30,13 +58,19 @@ class MicrosecondFormatter(logging.Formatter):
         return s
 
 
-def configure_logging(level=logging.INFO, libraries_level=logging.CRITICAL):
+def configure_logging(
+    level: int = logging.INFO,
+    libraries_level: int = logging.CRITICAL,
+) -> logging.Logger:
     """
     Configure logging with proper microsecond support.
 
-    Args:
-        level: Logging level to use (default: INFO)
-        libraries_level: Logging level for libraries (default: CRITICAL)
+    Parameters:
+        level: Logging level to use (default: INFO).
+        libraries_level: Logging level for libraries (default: CRITICAL).
+
+    Returns:
+        The root logger.
     """
 
     logging.getLogger("asyncio").setLevel(libraries_level)

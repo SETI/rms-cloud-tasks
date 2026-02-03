@@ -4,9 +4,9 @@ Configuration handling for the multi-cloud task processing system.
 
 import logging
 import os
-from typing import Annotated, Any, Dict, Optional, List, Literal, cast
-import yaml
+from typing import Annotated, Any, Literal, cast
 
+import yaml
 from filecache import FCPath
 from pydantic import (
     BaseModel,
@@ -31,8 +31,8 @@ class RunConfig(BaseModel, validate_assignment=True):
     # Constraints on number of instances
     #
 
-    min_instances: Optional[NonNegativeInt] = None
-    max_instances: Optional[PositiveInt] = None
+    min_instances: NonNegativeInt | None = None
+    max_instances: PositiveInt | None = None
 
     @model_validator(mode="after")
     def validate_min_max_instances(self) -> "RunConfig":
@@ -41,8 +41,8 @@ class RunConfig(BaseModel, validate_assignment=True):
                 raise ValueError("min_instances must be less than max_instances")
         return self
 
-    min_total_cpus: Optional[NonNegativeInt] = None
-    max_total_cpus: Optional[PositiveInt] = None
+    min_total_cpus: NonNegativeInt | None = None
+    max_total_cpus: PositiveInt | None = None
 
     @model_validator(mode="after")
     def validate_min_max_total_cpus(self) -> "RunConfig":
@@ -51,9 +51,9 @@ class RunConfig(BaseModel, validate_assignment=True):
                 raise ValueError("min_total_cpus must be less than max_total_cpus")
         return self
 
-    cpus_per_task: Optional[NonNegativeFloat] = None
-    min_tasks_per_instance: Optional[PositiveInt] = None
-    max_tasks_per_instance: Optional[PositiveInt] = None
+    cpus_per_task: NonNegativeFloat | None = None
+    min_tasks_per_instance: PositiveInt | None = None
+    max_tasks_per_instance: PositiveInt | None = None
 
     @model_validator(mode="after")
     def validate_min_max_tasks_per_instance(self) -> "RunConfig":
@@ -62,8 +62,8 @@ class RunConfig(BaseModel, validate_assignment=True):
                 raise ValueError("min_tasks_per_instance must be less than max_tasks_per_instance")
         return self
 
-    min_simultaneous_tasks: Optional[PositiveInt] = None
-    max_simultaneous_tasks: Optional[PositiveInt] = None
+    min_simultaneous_tasks: PositiveInt | None = None
+    max_simultaneous_tasks: PositiveInt | None = None
 
     @model_validator(mode="after")
     def validate_min_max_simultaneous_tasks(self) -> "RunConfig":
@@ -72,8 +72,8 @@ class RunConfig(BaseModel, validate_assignment=True):
                 raise ValueError("min_simultaneous_tasks must be less than max_simultaneous_tasks")
         return self
 
-    min_total_price_per_hour: Optional[NonNegativeFloat] = None
-    max_total_price_per_hour: Optional[NonNegativeFloat] = None
+    min_total_price_per_hour: NonNegativeFloat | None = None
+    max_total_price_per_hour: NonNegativeFloat | None = None
 
     @model_validator(mode="after")
     def validate_min_max_total_price_per_hour(self) -> "RunConfig":
@@ -91,11 +91,11 @@ class RunConfig(BaseModel, validate_assignment=True):
     #
 
     # Memory and disk are in GB
-    architecture: Optional[Literal["x86_64", "arm64", "X86_64", "ARM64"]] = None
-    cpu_family: Optional[Annotated[str, Field(min_length=1)]] = None
+    architecture: Literal["x86_64", "arm64", "X86_64", "ARM64"] | None = None
+    cpu_family: Annotated[str, Field(min_length=1)] | None = None
 
-    min_cpu_rank: Optional[NonNegativeInt] = None
-    max_cpu_rank: Optional[NonNegativeInt] = None
+    min_cpu_rank: NonNegativeInt | None = None
+    max_cpu_rank: NonNegativeInt | None = None
 
     @model_validator(mode="after")
     def validate_min_max_cpu_rank(self) -> "RunConfig":
@@ -104,8 +104,8 @@ class RunConfig(BaseModel, validate_assignment=True):
                 raise ValueError("min_cpu_rank must be less than max_cpu_rank")
         return self
 
-    min_cpu: Optional[NonNegativeInt] = None
-    max_cpu: Optional[PositiveInt] = None
+    min_cpu: NonNegativeInt | None = None
+    max_cpu: PositiveInt | None = None
 
     @model_validator(mode="after")
     def validate_min_max_cpu(self) -> "RunConfig":
@@ -114,8 +114,8 @@ class RunConfig(BaseModel, validate_assignment=True):
                 raise ValueError("min_cpu must be less than max_cpu")
         return self
 
-    min_total_memory: Optional[NonNegativeFloat] = None
-    max_total_memory: Optional[NonNegativeFloat] = None
+    min_total_memory: NonNegativeFloat | None = None
+    max_total_memory: NonNegativeFloat | None = None
 
     @model_validator(mode="after")
     def validate_min_max_total_memory(self) -> "RunConfig":
@@ -126,8 +126,8 @@ class RunConfig(BaseModel, validate_assignment=True):
             raise ValueError("max_total_memory must be greater than 0")
         return self
 
-    min_memory_per_cpu: Optional[NonNegativeFloat] = None
-    max_memory_per_cpu: Optional[NonNegativeFloat] = None
+    min_memory_per_cpu: NonNegativeFloat | None = None
+    max_memory_per_cpu: NonNegativeFloat | None = None
 
     @model_validator(mode="after")
     def validate_min_max_memory_per_cpu(self) -> "RunConfig":
@@ -138,8 +138,8 @@ class RunConfig(BaseModel, validate_assignment=True):
             raise ValueError("max_memory_per_cpu must be greater than 0")
         return self
 
-    min_memory_per_task: Optional[NonNegativeFloat] = None
-    max_memory_per_task: Optional[NonNegativeFloat] = None
+    min_memory_per_task: NonNegativeFloat | None = None
+    max_memory_per_task: NonNegativeFloat | None = None
 
     @model_validator(mode="after")
     def validate_min_max_memory_per_task(self) -> "RunConfig":
@@ -150,8 +150,8 @@ class RunConfig(BaseModel, validate_assignment=True):
             raise ValueError("max_memory_per_task must be greater than 0")
         return self
 
-    min_local_ssd: Optional[NonNegativeFloat] = None
-    max_local_ssd: Optional[NonNegativeFloat] = None
+    min_local_ssd: NonNegativeFloat | None = None
+    max_local_ssd: NonNegativeFloat | None = None
 
     @model_validator(mode="after")
     def validate_min_max_local_ssd(self) -> "RunConfig":
@@ -162,9 +162,9 @@ class RunConfig(BaseModel, validate_assignment=True):
             raise ValueError("max_local_ssd must be greater than 0")
         return self
 
-    local_ssd_base_size: Optional[NonNegativeFloat] = None
-    min_local_ssd_per_cpu: Optional[NonNegativeFloat] = None
-    max_local_ssd_per_cpu: Optional[NonNegativeFloat] = None
+    local_ssd_base_size: NonNegativeFloat | None = None
+    min_local_ssd_per_cpu: NonNegativeFloat | None = None
+    max_local_ssd_per_cpu: NonNegativeFloat | None = None
 
     @model_validator(mode="after")
     def validate_min_max_local_ssd_per_cpu(self) -> "RunConfig":
@@ -175,8 +175,8 @@ class RunConfig(BaseModel, validate_assignment=True):
             raise ValueError("max_local_ssd_per_cpu must be greater than 0")
         return self
 
-    min_local_ssd_per_task: Optional[NonNegativeFloat] = None
-    max_local_ssd_per_task: Optional[NonNegativeFloat] = None
+    min_local_ssd_per_task: NonNegativeFloat | None = None
+    max_local_ssd_per_task: NonNegativeFloat | None = None
 
     @model_validator(mode="after")
     def validate_min_max_local_ssd_per_task(self) -> "RunConfig":
@@ -191,42 +191,42 @@ class RunConfig(BaseModel, validate_assignment=True):
     # Boot disk specifications
     #
 
-    boot_disk_types: Optional[List[str] | str] = None
-    boot_disk_iops: Optional[PositiveInt] = None  # GCP only
-    boot_disk_throughput: Optional[PositiveInt] = None  # GCP only
-    total_boot_disk_size: Optional[PositiveFloat] = None
-    boot_disk_base_size: Optional[NonNegativeFloat] = None
-    boot_disk_per_cpu: Optional[NonNegativeFloat] = None
-    boot_disk_per_task: Optional[NonNegativeFloat] = None
+    boot_disk_types: list[str] | str | None = None
+    boot_disk_iops: PositiveInt | None = None  # GCP only
+    boot_disk_throughput: PositiveInt | None = None  # GCP only
+    total_boot_disk_size: PositiveFloat | None = None
+    boot_disk_base_size: NonNegativeFloat | None = None
+    boot_disk_per_cpu: NonNegativeFloat | None = None
+    boot_disk_per_task: NonNegativeFloat | None = None
 
-    instance_types: Optional[List[str] | str] = None
+    instance_types: list[str] | str | None = None
 
     #
     # Pricing options
     #
-    use_spot: Optional[bool] = None
+    use_spot: bool | None = None
 
     #
     # Boot options
     #
-    startup_script: Optional[str] = None
-    startup_script_file: Optional[str] = None
-    image: Optional[str] = None
+    startup_script: str | None = None
+    startup_script_file: str | None = None
+    image: str | None = None
 
     #
     # Worker and manage_pool options
     #
-    scaling_check_interval: Optional[PositiveInt] = None
-    instance_termination_delay: Optional[PositiveInt] = None
-    max_runtime: Optional[PositiveInt] = None  # Use for queue timeout and workout task kill
-    retry_on_exit: Optional[bool] = None
-    retry_on_exception: Optional[bool] = None
-    retry_on_timeout: Optional[bool] = None
+    scaling_check_interval: PositiveInt | None = None
+    instance_termination_delay: PositiveInt | None = None
+    max_runtime: PositiveInt | None = None  # Use for queue timeout and workout task kill
+    retry_on_exit: bool | None = None
+    retry_on_exception: bool | None = None
+    retry_on_timeout: bool | None = None
 
     #
     # Database options
     #
-    db_file: Optional[str] = None  # SQLite database file path
+    db_file: str | None = None  # SQLite database file path
 
 
 class ProviderConfig(RunConfig, validate_assignment=True):
@@ -234,15 +234,15 @@ class ProviderConfig(RunConfig, validate_assignment=True):
 
     model_config = ConfigDict(extra="forbid")
 
-    job_id: Optional[
-        Annotated[str, Field(min_length=1, max_length=24, pattern=r"^[a-z][-a-z0-9]{0,23}$")]
-    ] = None
-    queue_name: Optional[
-        Annotated[str, Field(min_length=1, max_length=24, pattern=r"^[a-z][-a-z0-9]{0,23}$")]
-    ] = None
-    region: Optional[Annotated[str, Field(min_length=1)]] = None
-    zone: Optional[Annotated[str, Field(min_length=1)]] = None
-    exactly_once_queue: Optional[bool] = None
+    job_id: (
+        Annotated[str, Field(min_length=1, max_length=24, pattern=r"^[a-z][-a-z0-9]{0,23}$")] | None
+    ) = None
+    queue_name: (
+        Annotated[str, Field(min_length=1, max_length=24, pattern=r"^[a-z][-a-z0-9]{0,23}$")] | None
+    ) = None
+    region: Annotated[str, Field(min_length=1)] | None = None
+    zone: Annotated[str, Field(min_length=1)] | None = None
+    exactly_once_queue: bool | None = None
 
 
 class AWSConfig(ProviderConfig, validate_assignment=True):
@@ -250,8 +250,8 @@ class AWSConfig(ProviderConfig, validate_assignment=True):
 
     model_config = ConfigDict(extra="forbid")
 
-    access_key: Optional[Annotated[str, Field(min_length=1)]] = None
-    secret_key: Optional[Annotated[str, Field(min_length=1)]] = None
+    access_key: Annotated[str, Field(min_length=1)] | None = None
+    secret_key: Annotated[str, Field(min_length=1)] | None = None
 
 
 class GCPConfig(ProviderConfig, validate_assignment=True):
@@ -259,9 +259,9 @@ class GCPConfig(ProviderConfig, validate_assignment=True):
 
     model_config = ConfigDict(extra="forbid")
 
-    project_id: Optional[Annotated[str, Field(min_length=1)]] = None
-    credentials_file: Optional[Annotated[str, Field(min_length=1)]] = None
-    service_account: Optional[Annotated[str, Field(min_length=1)]] = None
+    project_id: Annotated[str, Field(min_length=1)] | None = None
+    credentials_file: Annotated[str, Field(min_length=1)] | None = None
+    service_account: Annotated[str, Field(min_length=1)] | None = None
 
 
 class AzureConfig(ProviderConfig, validate_assignment=True):
@@ -269,10 +269,12 @@ class AzureConfig(ProviderConfig, validate_assignment=True):
 
     model_config = ConfigDict(extra="forbid")
 
-    subscription_id: Optional[str] = None
-    tenant_id: Optional[str] = None
-    client_id: Optional[str] = None
-    client_secret: Optional[str] = None
+    subscription_id: str | None = None
+    tenant_id: str | None = None
+    client_id: str | None = None
+    client_secret: str | None = None
+    namespace_name: str | None = None
+    connection_string: str | None = None
 
 
 class Config(BaseModel, validate_assignment=True):
@@ -288,13 +290,13 @@ class Config(BaseModel, validate_assignment=True):
 
     model_config = ConfigDict(extra="forbid")
 
-    provider: Optional[Literal["aws", "gcp", "azure", "AWS", "GCP", "AZURE"]] = None
+    provider: Literal["aws", "gcp", "azure", "AWS", "GCP", "AZURE"] | None = None
     aws: AWSConfig = AWSConfig()
     gcp: GCPConfig = GCPConfig()
     azure: AzureConfig = AzureConfig()
     run: RunConfig = RunConfig()
 
-    def overload_from_cli(self, cli_args: Optional[Dict[str, Any]] = None) -> None:
+    def overload_from_cli(self, cli_args: dict[str, Any] | None = None) -> None:
         """Overload Config object with command line arguments.
 
         Args:
@@ -302,7 +304,8 @@ class Config(BaseModel, validate_assignment=True):
         """
         if self.provider is not None:
             self.provider = cast(
-                Literal["aws", "gcp", "azure", "AWS", "GCP", "AZURE"], self.provider.upper()
+                Literal["aws", "gcp", "azure", "AWS", "GCP", "AZURE"],
+                self.provider.upper(),
             )
 
         # Override loaded file and/or defaults with command line arguments
@@ -324,7 +327,8 @@ class Config(BaseModel, validate_assignment=True):
                     setattr(self, attr_name, cli_args[attr_name])
             if self.provider is not None:
                 self.provider = cast(
-                    Literal["aws", "gcp", "azure", "AWS", "GCP", "AZURE"], self.provider.upper()
+                    Literal["aws", "gcp", "azure", "AWS", "GCP", "AZURE"],
+                    self.provider.upper(),
                 )
             for attr_name in vars(self.run):
                 if attr_name in cli_args and cli_args[attr_name] is not None:
@@ -358,8 +362,7 @@ class Config(BaseModel, validate_assignment=True):
                         val = getattr(self.azure, attr_name)
                         if val is not None and val != cli_args[attr_name]:
                             LOGGER.warning(
-                                f"overriding azure.{attr_name}={val} with "
-                                f"CLI={cli_args[attr_name]}"
+                                f"overriding azure.{attr_name}={val} with CLI={cli_args[attr_name]}"
                             )
                         setattr(self.azure, attr_name, cli_args[attr_name])
 
@@ -464,7 +467,8 @@ class Config(BaseModel, validate_assignment=True):
         # Fix case
         if self.run.architecture is not None:
             self.run.architecture = cast(
-                Literal["x86_64", "arm64", "X86_64", "ARM64"], self.run.architecture.upper()
+                Literal["x86_64", "arm64", "X86_64", "ARM64"],
+                self.run.architecture.upper(),
             )
         if self.run.cpu_family is not None:
             self.run.cpu_family = self.run.cpu_family.upper()
@@ -478,7 +482,7 @@ class Config(BaseModel, validate_assignment=True):
         if self.provider is None:
             raise ValueError("Provider must be specified")
 
-    def get_provider_config(self, provider_name: Optional[str] = None) -> ProviderConfig:
+    def get_provider_config(self, provider_name: str | None = None) -> ProviderConfig:
         """Get configuration for a specific cloud provider.
 
         Args:
@@ -506,7 +510,8 @@ class Config(BaseModel, validate_assignment=True):
             case _:
                 raise ValueError(f"Unsupported provider: {provider_name}")
 
-        if provider_config is None:
+        if provider_config is None:  # pragma: no cover
+            # This should not be possible
             raise ValueError(f"Provider configuration not found for {provider_name}")
 
         if provider_config.queue_name is None:
@@ -517,7 +522,7 @@ class Config(BaseModel, validate_assignment=True):
         return provider_config
 
 
-def load_config(config_file: Optional[str] = None) -> Config:
+def load_config(config_file: str | None = None) -> Config:
     """Load configuration from a YAML file.
 
     Args:
@@ -558,7 +563,8 @@ def load_config(config_file: Optional[str] = None) -> Config:
 
     if config.provider is not None:
         config.provider = cast(
-            Literal["aws", "gcp", "azure", "AWS", "GCP", "AZURE"], config.provider.upper()
+            Literal["aws", "gcp", "azure", "AWS", "GCP", "AZURE"],
+            config.provider.upper(),
         )
 
     # If the startup script filename is provided in the config file, then any relative paths

@@ -4,17 +4,16 @@ Instance Orchestrator module and factory function
 
 from typing import cast
 
+from ..common.config import AWSConfig, Config, GCPConfig
 from .instance_manager import InstanceManager
-from ..common.config import Config, AWSConfig, GCPConfig
 
 
 async def create_instance_manager(config: Config) -> InstanceManager:
     """
     Create an InstanceManager implementation for the specified cloud provider.
 
-    Args:
-        config: Configuration
-
+    Parameters:
+        config: Configuration.
 
     Returns:
         An InstanceManager implementation for the specified provider

@@ -1,7 +1,7 @@
 """Unit tests for the GCP Compute Engine instance manager."""
 
 import copy
-from unittest.mock import MagicMock, AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 

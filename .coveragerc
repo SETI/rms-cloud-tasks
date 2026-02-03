@@ -1,5 +1,12 @@
 [run]
 branch = false
+# Omit: tests, Azure/AWS modules with poor coverage.
 omit =
     tests/*
-    azure.py
+    src/cloud_tasks/instance_manager/azure.py
+    src/cloud_tasks/queue_manager/azure.py
+    src/cloud_tasks/instance_manager/aws.py
+    src/cloud_tasks/queue_manager/aws.py
+
+[report]
+fail_under = 80

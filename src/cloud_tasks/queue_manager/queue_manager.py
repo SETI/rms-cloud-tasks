@@ -1,5 +1,12 @@
+"""
+Queue management abstractions and base interface.
+
+Defines the QueueManager ABC and utilities used with ProviderConfig for
+provider-specific task queues (AWS, GCP, Azure).
+"""
+
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from ..common.config import ProviderConfig
 
@@ -9,37 +16,56 @@ class QueueManager(ABC):
 
     def __init__(
         self,
-        config: Optional[ProviderConfig] = None,
+        config: ProviderConfig | None = None,
         *,
-        queue_name: Optional[str] = None,
-        visibility_timeout: Optional[int] = None,
+        queue_name: str | None = None,
+        visibility_timeout: int | None = None,
         exactly_once: bool = False,
         **kwargs: Any,
     ) -> None:
-        """Initialize the task queue with configuration."""
+        """
+        Initialize the task queue with configuration.
+
+        Parameters:
+            config: Provider configuration (ProviderConfig or None). When None, subclasses
+                may use provider defaults or raise if required settings are missing.
+            queue_name: Optional queue name override; behavior is provider-specific.
+            visibility_timeout: How long (in seconds) a message is hidden after receipt
+                before it becomes visible again if not completed. Default and min/max
+                are provider-specific (e.g. GCP enforces a maximum).
+            exactly_once: If True, use exactly-once delivery semantics where supported;
+                otherwise at-least-once delivery. Default False. Some providers require
+                specific configuration or do not support exactly-once and may fall back
+                to at-least-once.
+            **kwargs: Provider-specific options (e.g. region, retry_policy, max_inflight,
+                ack_deadline, project_id for GCP). Subclasses document supported keys.
+
+        Returns:
+            None.
+        """
         pass  # pragma: no cover
 
     @abstractmethod
-    async def send_message(self, message: Dict[str, Any], _quiet: bool = False) -> None:
+    async def send_message(self, message: dict[str, Any], _quiet: bool = False) -> None:
         """Send a message to the queue."""
         pass  # pragma: no cover
 
     @abstractmethod
-    async def send_task(self, task_id: str, task_data: Dict[str, Any]) -> None:
+    async def send_task(self, task_id: str, task_data: dict[str, Any]) -> None:
         """Send a task to the queue."""
         pass  # pragma: no cover
 
     @abstractmethod
     async def receive_messages(
         self, max_count: int = 1, acknowledge: bool = True
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Receive messages from the queue."""
         pass  # pragma: no cover
 
     @abstractmethod
     async def receive_tasks(
         self, max_count: int = 1, acknowledge: bool = True
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Receive tasks from the queue."""
         pass  # pragma: no cover
 
@@ -97,7 +123,7 @@ class QueueManager(ABC):
 
     @abstractmethod
     async def extend_message_visibility(
-        self, message_handle: Any, timeout: Optional[int] = None
+        self, message_handle: Any, timeout: int | None = None
     ) -> None:
         """Extend the visibility timeout for a message.
 

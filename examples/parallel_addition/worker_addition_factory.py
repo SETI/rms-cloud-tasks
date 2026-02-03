@@ -9,23 +9,24 @@ tasks instead of an external task file or queue.
 """
 
 import asyncio
-import os
 import multiprocessing
+import os
 import random
 import socket
 import sys
 import time
-from typing import Any, Dict, Iterable, Tuple
+from collections.abc import Iterable
+from typing import Any
+
+from filecache import FCPath
 
 # Import the cloud task adapter
 from cloud_tasks.worker import Worker, WorkerData
 
-from filecache import FCPath
-
 
 def process_task(
-    task_id: str, task_data: Dict[str, Any], worker_data: WorkerData
-) -> Tuple[bool, Any]:
+    task_id: str, task_data: dict[str, Any], worker_data: WorkerData
+) -> tuple[bool, Any]:
     """
     Process a task by adding two numbers together.
 
@@ -73,7 +74,7 @@ def process_task(
     return False, str(output_file)
 
 
-def task_factory() -> Iterable[Dict[str, Any]]:
+def task_factory() -> Iterable[dict[str, Any]]:
     """Generate a series of tasks."""
     max_tasks = int(os.getenv("ADDITION_MAX_TASKS", "10000"))
     for task_num in range(max_tasks):

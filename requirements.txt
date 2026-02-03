@@ -1,6 +1,6 @@
 # Core dependencies
 aiohttp
-asyncio
+typing_extensions>=4.4.0
 click
 json-stream
 numpy
@@ -12,10 +12,9 @@ shortuuid
 tqdm
 
 # Type checking and linting
-black
-flake8
 moto
 mypy
+ruff
 types-aiofiles
 types-PyYAML
 types-tqdm
@@ -46,6 +45,7 @@ pytest
 pytest-asyncio
 pytest-cov
 pytest-mock
+pytest-timeout
 
 # Documentation
 myst-parser

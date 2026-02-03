@@ -2,11 +2,11 @@
 
 import asyncio
 import copy
-from unittest.mock import MagicMock, patch, AsyncMock
+import uuid as _uuid
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from google.api_core.exceptions import NotFound  # type: ignore
-import uuid as _uuid  # Import uuid module with alias to avoid conflicts
 
 from cloud_tasks.instance_manager.gcp import GCPComputeInstanceManager
 

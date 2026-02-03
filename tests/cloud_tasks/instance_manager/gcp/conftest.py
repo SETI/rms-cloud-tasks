@@ -2,16 +2,16 @@ import asyncio
 import copy
 import threading
 import time
-from typing import Any, Dict, Tuple, List
+from collections.abc import AsyncGenerator
+from typing import Any
+from unittest.mock import MagicMock, patch
 
 import pytest
 import pytest_asyncio
-from unittest.mock import MagicMock, patch
+from google.oauth2.credentials import Credentials
 
 from cloud_tasks.common.config import GCPConfig
 from cloud_tasks.instance_manager.gcp import GCPComputeInstanceManager
-from google.oauth2.credentials import Credentials
-
 
 # We go to a lot of effort to make sure these tests run fast. It turns out that the patches
 # in gcp_instance_manager_n1_n2 take 0.3 seconds for every test that is run. To avoid this, we
@@ -73,7 +73,7 @@ def mock_credentials() -> MagicMock:
 
 
 @pytest.fixture(scope="package")
-def mock_default_credentials(mock_credentials: MagicMock) -> Tuple[MagicMock, str]:
+def mock_default_credentials(mock_credentials: MagicMock) -> tuple[MagicMock, str]:
     """Create mock default credentials tuple for testing."""
     return mock_credentials, "test-project"
 
@@ -245,7 +245,7 @@ def local_ssd_pricing_n2_preemptible_sku() -> MagicMock:
 
 
 @pytest.fixture
-def boot_disk_pricing_default_skus() -> List[MagicMock]:
+def boot_disk_pricing_default_skus() -> list[MagicMock]:
     """Create a mock boot disk pricing SKU with standard pricing info."""
     pd_standard_sku = MagicMock()
     pd_standard_sku.description = "Storage PD Capacity in Iowa"
@@ -361,7 +361,7 @@ def boot_disk_pricing_default_skus() -> List[MagicMock]:
 
 
 @pytest.fixture
-def mock_instance_types_n1_n2() -> Dict[str, Dict[str, Any]]:
+def mock_instance_types_n1_n2() -> dict[str, dict[str, Any]]:
     """Create mock instance types dictionary."""
     return {
         "n1-standard-2": {
@@ -402,7 +402,7 @@ def mock_instance_types_n1_n2() -> Dict[str, Dict[str, Any]]:
 
 
 @pytest.fixture
-def mock_instance_types_n1_2_4() -> Dict[str, Dict[str, Any]]:
+def mock_instance_types_n1_2_4() -> dict[str, dict[str, Any]]:
     """Create mock instance types dictionary."""
     return {
         "n1-standard-2": {
@@ -523,14 +523,14 @@ def deepcopy_gcp_instance_manager(
     # serialization errors; restore them on the source; give the new instance
     # the source's _thread_local and a fresh threading.Lock.
     try:
-        gcp_instance_manager._thread_local = None
-        gcp_instance_manager._pricing_cache_lock = None
+        gcp_instance_manager._thread_local = None  # type: ignore[assignment]
+        gcp_instance_manager._pricing_cache_lock = None  # type: ignore[assignment]
         new_gcp_instance_manager = copy.deepcopy(gcp_instance_manager)
     finally:
-        gcp_instance_manager._thread_local = old_thread
-        gcp_instance_manager._pricing_cache_lock = old_lock
-    new_gcp_instance_manager._thread_local = old_thread
-    new_gcp_instance_manager._pricing_cache_lock = threading.Lock()
+        gcp_instance_manager._thread_local = old_thread  # type: ignore[assignment]
+        gcp_instance_manager._pricing_cache_lock = old_lock  # type: ignore[assignment]
+    new_gcp_instance_manager._thread_local = threading.local()  # type: ignore[assignment]
+    new_gcp_instance_manager._pricing_cache_lock = threading.Lock()  # type: ignore[assignment]
     return new_gcp_instance_manager
 
 
@@ -551,8 +551,8 @@ def gcp_config() -> GCPConfig:
 async def gcp_instance_manager_n1_n2(
     gcp_config: GCPConfig,
     mock_machine_types_client_n1_n2: MagicMock,
-    mock_default_credentials: Tuple[MagicMock, str],
-) -> GCPComputeInstanceManager:
+    mock_default_credentials: tuple[MagicMock, str],
+) -> AsyncGenerator[GCPComputeInstanceManager, None]:
     """Create a GCP instance manager with mocked dependencies."""
     start = time.time()
     with (
@@ -590,8 +590,8 @@ async def gcp_instance_manager_n1_n2(
 async def gcp_instance_manager_n1_2_4(
     gcp_config: GCPConfig,
     mock_machine_types_client_n1_2_4: MagicMock,
-    mock_default_credentials: Tuple[MagicMock, str],
-) -> GCPComputeInstanceManager:
+    mock_default_credentials: tuple[MagicMock, str],
+) -> AsyncGenerator[GCPComputeInstanceManager, None]:
     """Create a GCP instance manager with mocked dependencies."""
     start = time.time()
     with (

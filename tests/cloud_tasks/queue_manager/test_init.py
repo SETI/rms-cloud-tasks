@@ -1,14 +1,18 @@
+"""Tests for cloud_tasks.queue_manager factory: create_queue and provider selection."""
+
 # Manually verified 4/29/2025
 
-import pytest
-from unittest.mock import patch
+from collections.abc import Generator
+from unittest.mock import MagicMock, patch
 
+import pytest
+
+from cloud_tasks.common.config import AWSConfig, Config, GCPConfig
 from cloud_tasks.queue_manager import create_queue
-from cloud_tasks.common.config import Config, AWSConfig, GCPConfig
 
 
 @pytest.fixture
-def mock_aws_queue():
+def mock_aws_queue() -> Generator[MagicMock, None, None]:
     """Mock AWS queue implementation."""
     with patch("cloud_tasks.queue_manager.aws.AWSSQSQueue") as mock:
         # Create a mock instance that will be returned
@@ -32,7 +36,7 @@ def mock_gcp_queue():
 
 
 @pytest.mark.asyncio
-async def test_create_queue_aws_with_config(mock_aws_queue):
+async def test_create_queue_aws_with_config(mock_aws_queue: MagicMock) -> None:
     """Test creating an AWS queue with config."""
     aws_config = AWSConfig(
         region="us-west-2", queue_name="test-queue", access_key="test-key", secret_key="test-secret"
@@ -54,7 +58,7 @@ async def test_create_queue_aws_with_config(mock_aws_queue):
 
 
 @pytest.mark.asyncio
-async def test_create_queue_gcp_with_config(mock_gcp_queue):
+async def test_create_queue_gcp_with_config(mock_gcp_queue: MagicMock) -> None:
     """Test creating a GCP queue with config."""
     gcp_config = GCPConfig(
         project_id="test-project", queue_name="test-queue", credentials_file=None
@@ -75,7 +79,7 @@ async def test_create_queue_gcp_with_config(mock_gcp_queue):
 
 
 @pytest.mark.asyncio
-async def test_create_queue_invalid_provider():
+async def test_create_queue_invalid_provider() -> None:
     """Test creating a queue with an invalid provider."""
     with pytest.raises(ValueError) as exc_info:
         await create_queue(provider="INVALID")
@@ -84,7 +88,7 @@ async def test_create_queue_invalid_provider():
 
 
 @pytest.mark.asyncio
-async def test_create_queue_missing_provider():
+async def test_create_queue_missing_provider() -> None:
     """Test creating a queue without specifying a provider."""
     with pytest.raises(ValueError) as exc_info:
         await create_queue()
@@ -93,7 +97,7 @@ async def test_create_queue_missing_provider():
 
 
 @pytest.mark.asyncio
-async def test_create_queue_unsupported_provider_with_config():
+async def test_create_queue_unsupported_provider_with_config() -> None:
     """Test creating a queue with an unsupported provider using Config object."""
     # Create a Config object and bypass validation to set an unsupported provider
     config = Config()
@@ -106,7 +110,7 @@ async def test_create_queue_unsupported_provider_with_config():
 
 
 @pytest.mark.asyncio
-async def test_create_queue_unsupported_provider_no_config():
+async def test_create_queue_unsupported_provider_no_config() -> None:
     """Test creating a queue with an unsupported provider without a Config object."""
     with pytest.raises(ValueError) as exc_info:
         await create_queue(provider="UNSUPPORTED")

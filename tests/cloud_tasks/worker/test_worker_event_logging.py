@@ -2,35 +2,27 @@
 
 import asyncio
 import json
-import os
-import pytest
-import tempfile
+from typing import Any
 from unittest.mock import AsyncMock, patch
+
+import pytest
 
 from cloud_tasks.worker.worker import Worker
 
 
-def _mock_worker_function(task_id, task_data, worker):
-    return False, "success"
+def _extract_queue_message(call: Any) -> dict[str, Any]:
+    """Extract the first positional arg from a mock call as a dict; parse JSON if string.
 
+    Parameters:
+        call: Mock call (e.g. from call_args_list); the first positional argument
+            is the message (dict or JSON string).
 
-@pytest.fixture
-def mock_worker_function():
-    return _mock_worker_function
-
-
-@pytest.fixture
-def local_task_file_json():
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-        json.dump(
-            [
-                {"task_id": "task1", "data": {"key": "value1"}},
-                {"task_id": "task2", "data": {"key": "value2"}},
-            ],
-            f,
-        )
-    yield f.name
-    os.unlink(f.name)
+    Returns:
+        dict[str, Any]: The message as a dict; parsed from JSON if the argument
+            was a string.
+    """
+    arg = call.args[0]
+    return arg if isinstance(arg, dict) else json.loads(arg)
 
 
 @pytest.mark.asyncio
@@ -198,8 +190,8 @@ async def test_event_logging_to_queue(mock_worker_function):
             # Verify queue messages
             assert mock_queue.send_message.call_count == 7
 
-            # Get all sent messages
-            messages = [json.loads(call.args[0]) for call in mock_queue.send_message.call_args_list]
+            # Get all sent messages (send_message accepts dict; queue may pass through as-is)
+            messages = [_extract_queue_message(c) for c in mock_queue.send_message.call_args_list]
 
             # Verify task completion event
             completion_event = next(
@@ -307,7 +299,7 @@ async def test_event_logging_both_file_and_queue(mock_worker_function, tmp_path)
 
                 # Verify queue logging
                 assert mock_queue.send_message.call_count == 1
-                queue_event = json.loads(mock_queue.send_message.call_args[0][0])
+                queue_event = _extract_queue_message(mock_queue.send_message.call_args)
                 assert queue_event["task_id"] == "task1"
             finally:
                 worker._running = False

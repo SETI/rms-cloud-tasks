@@ -15,7 +15,7 @@ import random
 tasks = []
 for i in range(10000):
     task = {
-        "task_id": f"addition-task-{i+1:06d}",
+        "task_id": f"addition-task-{i + 1:06d}",
         "data": {"num1": random.randint(-99999, 99999), "num2": random.randint(-99999, 99999)},
     }
     tasks.append(task)
