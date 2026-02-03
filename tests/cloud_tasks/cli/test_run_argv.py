@@ -150,7 +150,9 @@ def test_run_argv_status_success(tmp_path: Path, capsys: pytest.CaptureFixture[s
         code = run_argv(["status", "--config", str(config_path), "--provider", "gcp"])
     assert code == 0
     out = capsys.readouterr().out
-    assert "2 instances" in out or "instances" in out.lower()
+    assert re.search(r"\b2\s+instances\b", out, re.IGNORECASE), (
+        f"Expected '2 instances' (or similar) in output, got: {out!r}"
+    )
     assert re.search(r"queue\s+depth\s*:\s*10", out, re.IGNORECASE), (
         f"Expected 'Queue depth: 10' (or similar) in output, got: {out!r}"
     )
@@ -452,7 +454,10 @@ def test_run_argv_show_queue_get_queue_depth_raises_exits_one(
         code = run_argv(["show_queue", "--config", str(config_path), "--provider", "gcp"])
     assert code == 1
     out = capsys.readouterr()
-    assert "permission" in out.out or "Error" in out.out
+    assert "Error retrieving queue depth" in out.out
+    assert re.search(r"permission\s+denied", out.out, re.IGNORECASE), (
+        f"Expected permission-denied error in output, got: {out.out!r}"
+    )
 
 
 def test_run_argv_show_queue_depth_none_exits_one(
@@ -721,8 +726,10 @@ def test_run_argv_list_running_instances_detail(
         )
     assert code == 0
     out = capsys.readouterr().out
-    assert "Instance ID" in out or "i-1" in out
-    assert "10.0.0.1" in out or "1.2.3.4" in out
+    assert "Instance ID" in out
+    assert "i-1" in out
+    assert "10.0.0.1" in out
+    assert "1.2.3.4" in out
 
 
 def test_run_argv_list_running_instances_raises_exits_one(tmp_path: Path) -> None:
@@ -776,7 +783,7 @@ def test_run_argv_list_regions_with_prefix(
         )
     assert code == 0
     out = capsys.readouterr().out
-    assert "us-central1" in out or "Found" in out
+    assert "us-" in out, f"Expected region prefix (e.g. us-central1) in output, got: {out!r}"
 
 
 # --- list_images extra paths ---
@@ -1038,7 +1045,7 @@ def test_log_task_stats_smoke(tmp_path: Path, caplog: pytest.LogCaptureFixture) 
     log_task_stats(task_db, header="Test summary:", include_remaining_ids=True)
     task_db.close()
     assert "Test summary:" in caplog.text
-    assert "t1" in caplog.text or "Remaining" in caplog.text
+    assert "t1" in caplog.text
     assert len(caplog.records) >= 1
 
 
@@ -1051,6 +1058,6 @@ def test_print_final_report_smoke(tmp_path: Path, caplog: pytest.LogCaptureFixtu
     caplog.clear()
     print_final_report(task_db)
     task_db.close()
-    assert "JOB COMPLETE" in caplog.text or "Total tasks:" in caplog.text
-    assert "t1" in caplog.text or "Total tasks:" in caplog.text
+    assert "JOB COMPLETE" in caplog.text or "Total tasks: 1" in caplog.text
+    assert "t1" in caplog.text
     assert len(caplog.records) >= 1

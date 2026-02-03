@@ -1,7 +1,9 @@
 """Tests for GCP pricing cache helpers: _get_pricing_cache_path, _load_pricing_cache_from_file, _save_pricing_cache_to_file."""
 
+import datetime
 import json
 import os
+from datetime import timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -193,9 +195,6 @@ def test_load_pricing_cache_from_file_skips_old_file(tmp_path: Path) -> None:
     Returns:
         None.
     """
-    import datetime
-    from datetime import timezone
-
     config = GCPConfig(
         project_id="p",
         region="r",
