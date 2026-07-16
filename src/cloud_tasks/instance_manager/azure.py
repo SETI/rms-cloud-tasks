@@ -12,12 +12,22 @@ import time
 from typing import Any
 
 import aiohttp
-from azure.core.exceptions import ResourceNotFoundError  # type: ignore
-from azure.identity import ClientSecretCredential  # type: ignore
-from azure.mgmt.commerce import UsageManagementClient  # type: ignore
-from azure.mgmt.compute import ComputeManagementClient  # type: ignore
-from azure.mgmt.network import NetworkManagementClient  # type: ignore
-from azure.mgmt.resource import ResourceManagementClient  # type: ignore
+from azure.core.exceptions import (  # type: ignore[import-not-found, import-untyped]
+    ResourceNotFoundError,
+)
+from azure.identity import ClientSecretCredential  # type: ignore[import-not-found, import-untyped]
+from azure.mgmt.commerce import (  # type: ignore[import-not-found, import-untyped]
+    UsageManagementClient,
+)
+from azure.mgmt.compute import (  # type: ignore[import-not-found, import-untyped]
+    ComputeManagementClient,
+)
+from azure.mgmt.network import (  # type: ignore[import-not-found, import-untyped]
+    NetworkManagementClient,
+)
+from azure.mgmt.resource import (  # type: ignore[import-not-found, import-untyped]
+    ResourceManagementClient,
+)
 
 from ..common.base import InstanceManager
 

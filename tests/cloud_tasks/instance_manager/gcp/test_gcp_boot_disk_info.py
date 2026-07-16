@@ -4,7 +4,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-from google.api_core.exceptions import NotFound  # type: ignore
+from google.api_core.exceptions import NotFound  # type: ignore[import-not-found, import-untyped]
 
 from cloud_tasks.instance_manager.gcp import GCPComputeInstanceManager
 

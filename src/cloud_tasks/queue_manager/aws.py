@@ -7,8 +7,8 @@ import json
 import logging
 from typing import Any
 
-import boto3  # type: ignore
-from botocore.exceptions import ClientError  # type: ignore
+import boto3  # type: ignore[import-not-found, import-untyped]
+from botocore.exceptions import ClientError  # type: ignore[import-not-found, import-untyped]
 
 from ..common.config import AWSConfig
 from .queue_manager import QueueManager

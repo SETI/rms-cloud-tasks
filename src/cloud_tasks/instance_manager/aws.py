@@ -9,8 +9,8 @@ import logging
 import re
 from typing import Any, TypeAlias, cast
 
-import boto3  # type: ignore
-from botocore.exceptions import ClientError  # type: ignore
+import boto3  # type: ignore[import-not-found, import-untyped]
+from botocore.exceptions import ClientError  # type: ignore[import-not-found, import-untyped]
 
 from ..common.config import AWSConfig
 from .instance_manager import InstanceManager

@@ -9,8 +9,13 @@ from datetime import timedelta
 from typing import Any
 
 import shortuuid
-from azure.servicebus import ServiceBusClient, ServiceBusMessage  # type: ignore
-from azure.servicebus.management import ServiceBusAdministrationClient  # type: ignore
+from azure.servicebus import (  # type: ignore[import-not-found, import-untyped]
+    ServiceBusClient,
+    ServiceBusMessage,
+)
+from azure.servicebus.management import (  # type: ignore[import-not-found, import-untyped]
+    ServiceBusAdministrationClient,
+)
 
 from ..common.config import AzureConfig
 from .queue_manager import QueueManager

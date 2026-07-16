@@ -19,7 +19,7 @@ import traceback
 import uuid
 from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
-from typing import IO, Any
+from typing import IO, Any, cast
 
 import json_stream
 import requests
@@ -470,8 +470,8 @@ class Worker:
         self._data.args = parsed_args
 
         # Set up multiprocessing events
-        self._data.shutdown_event = MP_CTX.Event()  # type: ignore
-        self._data.termination_event = MP_CTX.Event()  # type: ignore
+        self._data.shutdown_event = cast(MP_Event, MP_CTX.Event())
+        self._data.termination_event = cast(MP_Event, MP_CTX.Event())
 
         # Check if we're using a local tasks file
         self._task_source: str | Path | FCPath | Callable[[], Iterable[dict[str, Any]]] | None = (
@@ -767,7 +767,7 @@ class Worker:
         self._num_tasks_exception: int = 0
 
         # Task queue for inter-process communication
-        self._result_queue: MP_Queue = MP_CTX.Queue()  # type: ignore
+        self._result_queue: MP_Queue = cast(MP_Queue, MP_CTX.Queue())
 
         # Semaphores for synchronizing process operations
         self._process_ops_semaphore = asyncio.Semaphore(1)  # For process creation/monitoring
