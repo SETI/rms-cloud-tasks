@@ -15,9 +15,9 @@ from datetime import datetime, timezone
 from typing import Any, cast
 
 import shortuuid
-from google.api_core.exceptions import NotFound  # type: ignore
+from google.api_core.exceptions import NotFound  # type: ignore[import-not-found, import-untyped]
 from google.auth import default as get_default_credentials
-from google.cloud import billing, compute_v1  # type: ignore
+from google.cloud import billing, compute_v1  # type: ignore[import-not-found, import-untyped]
 from google.oauth2 import service_account
 
 from ..common.config import GCPConfig
@@ -1907,7 +1907,7 @@ class GCPComputeInstanceManager(InstanceManager):
         ]
 
         # Dictionary to store all images
-        all_images = []
+        all_images: list[dict[str, Any]] = []
 
         # Get public images from standard projects
         for project in public_projects:
@@ -1996,7 +1996,7 @@ class GCPComputeInstanceManager(InstanceManager):
             )
 
         # Sort by creation date
-        all_images.sort(key=lambda x: x.get("creation_date", ""), reverse=True)  # type: ignore
+        all_images.sort(key=lambda x: str(x.get("creation_date", "")), reverse=True)
 
         self._logger.debug(f"Found {len(all_images)} available images")
 

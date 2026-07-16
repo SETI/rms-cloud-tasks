@@ -15,10 +15,10 @@ from typing import Any, cast
 
 import json_stream
 import pydantic
-import yaml  # type: ignore
+import yaml  # type: ignore[import-untyped]
 from filecache import FCPath
 from prettytable import PrettyTable, TableStyle
-from tqdm import tqdm  # type: ignore
+from tqdm import tqdm  # type: ignore[import-untyped]
 
 from .common.config import Config, load_config
 from .common.logging_config import configure_logging
