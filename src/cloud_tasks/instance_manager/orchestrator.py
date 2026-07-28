@@ -249,6 +249,12 @@ class InstanceOrchestrator:
             f"  Instance termination delay: {self._instance_termination_delay} seconds"
         )
         self._logger.info(f"  Max runtime: {self._run_config.max_runtime} seconds")
+        if self._run_config.max_memory_allowed_per_task is not None:
+            self._logger.info(
+                f"  Max memory allowed per task: {self._run_config.max_memory_allowed_per_task} GB"
+            )
+        else:
+            self._logger.info("  Max memory allowed per task: No limit")
         if self._run_config.keepalive_interval is not None:
             self._logger.info(
                 f"  Worker keep-alive interval: {self._run_config.keepalive_interval} seconds"
@@ -332,6 +338,12 @@ export RMS_CLOUD_TASKS_PROJECT_ID={project_id}
 export RMS_CLOUD_TASKS_KEEPALIVE_INTERVAL={self._run_config.keepalive_interval}
 """
 
+        max_memory_supplement = ""
+        if self._run_config.max_memory_allowed_per_task is not None:
+            max_memory_supplement = f"""\
+export RMS_CLOUD_TASKS_MAX_MEMORY_ALLOWED_PER_TASK={self._run_config.max_memory_allowed_per_task}
+"""
+
         oii = self._optimal_instance_info
         supplement = f"""\
 export RMS_CLOUD_TASKS_PROVIDER={self._provider}
@@ -350,7 +362,7 @@ export RMS_CLOUD_TASKS_NUM_TASKS_PER_INSTANCE={self._optimal_instance_num_tasks}
 export RMS_CLOUD_TASKS_MAX_RUNTIME={self._run_config.max_runtime}
 export RMS_CLOUD_TASKS_RETRY_ON_EXIT={self._run_config.retry_on_exit}
 export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
-{keepalive_supplement}"""
+{keepalive_supplement}{max_memory_supplement}"""
         if not self._run_config.startup_script:
             raise RuntimeError("No startup script provided")
 

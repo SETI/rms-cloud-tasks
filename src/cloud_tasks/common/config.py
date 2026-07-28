@@ -222,6 +222,10 @@ class RunConfig(BaseModel, validate_assignment=True):
     retry_on_exit: bool | None = None
     retry_on_exception: bool | None = None
     retry_on_timeout: bool | None = None
+    # Maximum memory in GB each task process may use, enforced by the OS as an
+    # address-space limit; a task that exceeds it fails with a MemoryError and is not
+    # retried (passed to workers via the startup script); if None, there is no limit
+    max_memory_allowed_per_task: PositiveFloat | None = None
 
     #
     # Worker keep-alive options

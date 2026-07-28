@@ -450,3 +450,21 @@ def test_startup_script_omits_keepalive_interval_when_unset(orchestrator, mock_c
     mock_config.run.startup_script = "#!/bin/bash\necho 'Hello World'"
     script = orchestrator._generate_worker_startup_script()
     assert "RMS_CLOUD_TASKS_KEEPALIVE_INTERVAL" not in script
+
+
+def test_startup_script_exports_max_memory(orchestrator, mock_config):
+    """The generated startup script exports the configured memory limit."""
+    mock_config.run.keepalive_interval = None
+    mock_config.run.max_memory_allowed_per_task = 2.5
+    mock_config.run.startup_script = "#!/bin/bash\necho 'Hello World'"
+    script = orchestrator._generate_worker_startup_script()
+    assert "export RMS_CLOUD_TASKS_MAX_MEMORY_ALLOWED_PER_TASK=2.5" in script
+
+
+def test_startup_script_omits_max_memory_when_unset(orchestrator, mock_config):
+    """The generated startup script omits the memory limit when not configured."""
+    mock_config.run.keepalive_interval = None
+    mock_config.run.max_memory_allowed_per_task = None
+    mock_config.run.startup_script = "#!/bin/bash\necho 'Hello World'"
+    script = orchestrator._generate_worker_startup_script()
+    assert "RMS_CLOUD_TASKS_MAX_MEMORY_ALLOWED_PER_TASK" not in script

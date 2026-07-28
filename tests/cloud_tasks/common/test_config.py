@@ -924,3 +924,18 @@ def test_runconfig_keepalive_fields() -> None:
         RunConfig(keepalive_startup_timeout=-1)
     with pytest.raises(ValueError):
         RunConfig(keepalive_timeout=-1)
+
+
+def test_runconfig_max_memory_allowed_per_task() -> None:
+    """RunConfig accepts max_memory_allowed_per_task and rejects non-positive values."""
+    config = RunConfig(max_memory_allowed_per_task=2.5)
+    assert config.max_memory_allowed_per_task == 2.5
+
+    # Default is None (no limit)
+    config = RunConfig()
+    assert config.max_memory_allowed_per_task is None
+
+    with pytest.raises(ValueError):
+        RunConfig(max_memory_allowed_per_task=0)
+    with pytest.raises(ValueError):
+        RunConfig(max_memory_allowed_per_task=-1)

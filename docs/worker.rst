@@ -180,6 +180,7 @@ Optional Parameters
 --price PRICE_PER_HOUR                     Price in USD/hour on this computer; optional information for the worker processes [or ``RMS_CLOUD_TASKS_INSTANCE_PRICE``]
 --num-simultaneous-tasks N                 Number of concurrent tasks to process (defaults to number of vCPUs, or 1 if not specified) [or ``RMS_CLOUD_TASKS_NUM_TASKS_PER_INSTANCE``]
 --max-runtime SECONDS                      Maximum allowed runtime in seconds; used to determine queue visibility timeout and to kill tasks that are running too long [or ``RMS_CLOUD_TASKS_MAX_RUNTIME``] (default 600 seconds)
+--max-memory-allowed-per-task GB           Maximum memory in GB each task process is allowed to use, enforced by the OS as an address-space limit on the process; a task that exceeds it fails with a MemoryError and is not retried (see :ref:`worker_memory_limit`) [or ``RMS_CLOUD_TASKS_MAX_MEMORY_ALLOWED_PER_TASK``] (default no limit)
 --shutdown-grace-period SECONDS            How long to wait in seconds for processes to gracefully finish after shutdown (SIGINT, SIGTERM, or Ctrl-C) is requested before killing them (default 30) [or ``RMS_CLOUD_TASKS_SHUTDOWN_GRACE_PERIOD``]
 --tasks-to-skip TASKS_TO_SKIP              Number of tasks to skip before processing any from the queue [or ``RMS_CLOUD_TASKS_TO_SKIP``]
 --max-num-tasks MAX_NUM_TASKS              Maximum number of tasks to process [or ``RMS_CLOUD_TASKS_MAX_NUM_TASKS``]
@@ -276,6 +277,34 @@ The ``event_type`` field can have the following values:
   the health of each instance. Instances that never send a keep-alive or stop sending them
   are terminated by the task manager (see :ref:`config_worker_and_manage_pool_options`).
 
+
+.. _worker_memory_limit:
+
+Limiting Task Memory Usage
+--------------------------
+
+The ``--max-memory-allowed-per-task`` option (or the
+``RMS_CLOUD_TASKS_MAX_MEMORY_ALLOWED_PER_TASK`` environment variable) limits the amount of
+memory each task process may use. The limit is applied by the operating system (as an
+address-space limit, ``RLIMIT_AS``, set on each task process before the task starts), so no
+run-time monitoring is involved. When a task attempts to allocate memory beyond the limit,
+the allocation fails and Python raises a ``MemoryError``. The task then fails with a
+``task_exception`` event and is **never retried**, regardless of the ``--retry-on-exception``
+setting, because it would presumably just exceed the memory limit again.
+
+Notes and caveats:
+
+- The limit applies to *virtual address space*, not resident memory. Some software (GPU
+  runtimes, some memory allocators, programs that memory-map large files) reserves large
+  address ranges it never fully uses, so the limit should be set with some headroom above
+  the expected actual memory usage.
+- If the memory limit is exceeded inside non-Python code that does not handle allocation
+  failures gracefully, the process may crash instead of raising ``MemoryError``. In that
+  case the task is reported as ``task_exited`` and retry is governed by ``--retry-on-exit``.
+- If a task function spawns its own subprocesses, each one gets the same individual limit;
+  their combined usage is not limited.
+- The limit requires the POSIX ``resource`` module and is therefore not supported on
+  Windows, where it is ignored with a warning.
 
 .. _worker_spot_instances:
 

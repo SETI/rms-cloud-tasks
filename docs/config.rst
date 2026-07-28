@@ -281,6 +281,12 @@ Options to specify the worker process and run process
   unhandled exception
 * ``retry_on_timeout``: If True, tasks will be retried if they exceed the maximum runtime
   specified by ``max_runtime``
+* ``max_memory_allowed_per_task``: The maximum memory in GB each task process is allowed
+  to use; this value is passed to the workers through the generated startup script and is
+  enforced by the operating system as an address-space limit on each task process. A task
+  that exceeds the limit fails with a ``MemoryError`` and is never retried (regardless of
+  ``retry_on_exception``). If not specified, there is no limit. See
+  :ref:`worker_memory_limit` for details and caveats.
 * ``keepalive_interval``: The interval in seconds between keep-alive events sent by each
   worker to the event queue; this value is passed to the workers through the generated
   startup script (if not specified, workers use their built-in default of 60 seconds)

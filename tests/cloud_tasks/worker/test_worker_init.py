@@ -28,6 +28,7 @@ _DEFAULT_ARGS = {
     "price": None,
     "num_simultaneous_tasks": None,
     "max_runtime": None,
+    "max_memory_allowed_per_task": None,
     "shutdown_grace_period": None,
     "tasks_to_skip": None,
     "max_num_tasks": None,

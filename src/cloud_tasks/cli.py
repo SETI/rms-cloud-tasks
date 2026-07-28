@@ -2326,6 +2326,14 @@ def add_instance_pool_args(parser: argparse.ArgumentParser) -> None:
         help="Maximum seconds a single worker job is allowed to run (default: 3600)",
     )
     parser.add_argument(
+        "--max-memory-allowed-per-task",
+        type=float,
+        help="Maximum memory in GB each task process is allowed to use, enforced by the "
+        "OS as an address-space limit on the process; a task that exceeds it fails with "
+        "a MemoryError and is not retried; passed to workers via the startup script "
+        "(default: no limit)",
+    )
+    parser.add_argument(
         "--keepalive-interval",
         type=int,
         help="Interval in seconds between worker keep-alive events; passed to workers "

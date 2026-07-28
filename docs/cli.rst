@@ -203,6 +203,11 @@ options in the configuration file (see :ref:`config_worker_and_manage_pool_optio
                                        maximum runtime specified by --max-runtime
 --no-retry-on-timeout                  If specified, tasks will not be retried if they exceed the
                                        maximum runtime specified by --max-runtime (default)
+--max-memory-allowed-per-task GB       The maximum memory in GB each task process is allowed to
+                                       use, enforced by the OS as an address-space limit on the
+                                       process; a task that exceeds it fails with a MemoryError
+                                       and is not retried; passed to the workers via the startup
+                                       script (defaults to no limit)
 --keepalive-interval SECONDS           The interval between worker keep-alive events; passed to
                                        the workers via the startup script (defaults to 60)
 --keepalive-startup-timeout SECONDS    How long to wait after an instance is started for its

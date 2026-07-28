@@ -26,6 +26,11 @@ import requests
 import yaml
 from filecache import FCPath
 
+try:
+    import resource
+except ImportError:  # pragma: no cover - the resource module is unavailable on Windows
+    resource = None  # type: ignore[assignment]
+
 from ..common.logging_config import configure_logging
 from ..common.time_utils import utc_now_iso
 from ..queue_manager import QueueManager, create_queue
@@ -199,6 +204,14 @@ def _parse_args(
         help="Maximum allowed runtime in seconds; used to determine queue visibility "
         "timeout and to kill tasks that are running too long [overrides "
         "$RMS_CLOUD_TASKS_MAX_RUNTIME] (default 3600 seconds)",
+    )
+    parser.add_argument(
+        "--max-memory-allowed-per-task",
+        type=float,
+        help="Maximum memory in GB each task process is allowed to use, enforced by the "
+        "OS as an address-space limit on the process; a task that exceeds it fails with "
+        "a MemoryError and is not retried "
+        "[overrides $RMS_CLOUD_TASKS_MAX_MEMORY_ALLOWED_PER_TASK] (default no limit)",
     )
     parser.add_argument(
         "--shutdown-grace-period",
@@ -414,6 +427,8 @@ class WorkerData:
         self.price_per_hour: float | None = None  #: The price per hour for the instance
         self.num_simultaneous_tasks: int = 1  #: The number of simultaneous tasks to process
         self.max_runtime: int = 3600  #: The maximum runtime for a task in seconds (1 hour)
+        #: The maximum memory in GB each task process may use (None means no limit)
+        self.max_memory_allowed_per_task: float | None = None
         #: The time in seconds to wait for tasks to complete during shutdown
         self.shutdown_grace_period: int = 30
         self.retry_on_exit: bool = False  #: Whether to retry tasks on premature exit
@@ -712,6 +727,19 @@ class Worker:
             self._data.max_runtime = int(self._data.max_runtime)
         logger.info(f"  Maximum runtime: {self._data.max_runtime} seconds")
 
+        # Get maximum memory allowed per task from args or environment variable
+        raw_max_memory = parsed_args.max_memory_allowed_per_task
+        if raw_max_memory is None:
+            env_val = os.getenv("RMS_CLOUD_TASKS_MAX_MEMORY_ALLOWED_PER_TASK")
+            raw_max_memory = float(env_val) if env_val is not None else None
+        self._data.max_memory_allowed_per_task = (
+            float(raw_max_memory) if raw_max_memory is not None else None
+        )
+        if self._data.max_memory_allowed_per_task is not None:
+            logger.info(f"  Maximum memory per task: {self._data.max_memory_allowed_per_task} GB")
+        else:
+            logger.info("  Maximum memory per task: No limit")
+
         # Get shutdown grace period from args or environment variable
         self._data.shutdown_grace_period = (
             parsed_args.shutdown_grace_period
@@ -784,6 +812,7 @@ class Worker:
         self._num_tasks_timed_out: int = 0
         self._num_tasks_exited: int = 0
         self._num_tasks_exception: int = 0
+        self._num_tasks_memory_exceeded: int = 0
 
         # Task queue for inter-process communication
         self._result_queue: MP_Queue = cast(MP_Queue, MP_CTX.Queue())
@@ -1133,7 +1162,8 @@ class Worker:
         logger.info(
             f"Task scheduler shutdown complete. Not retried: {self._num_tasks_not_retried}, "
             f"Retried: {self._num_tasks_retried}, Timed out: {self._num_tasks_timed_out}, "
-            f"Exited: {self._num_tasks_exited}, Total: {total}"
+            f"Exited: {self._num_tasks_exited}, "
+            f"Memory exceeded: {self._num_tasks_memory_exceeded}, Total: {total}"
         )
         # We don't log an event here because this only happens when the user hits Ctrl-C
 
@@ -1209,6 +1239,22 @@ class Worker:
                             else:
                                 self._num_tasks_not_retried += 1
                                 await self._queue_acknowledge_task_with_logging(task)
+                        elif retry == "memory_error":
+                            self._num_tasks_memory_exceeded += 1
+                            self._num_tasks_not_retried += 1
+                            logger.warning(
+                                f"Worker #{worker_id} reported task {task['task_id']} exceeded "
+                                "the memory limit"
+                                f"{f' of {self._data.max_memory_allowed_per_task} GB' if self._data.max_memory_allowed_per_task is not None else ''} "
+                                f"in {elapsed_time:.1f} seconds; not retrying"
+                            )
+                            await self._log_task_exception(
+                                task["task_id"],
+                                retry=False,
+                                elapsed_time=elapsed_time,
+                                exception=result,
+                            )
+                            await self._queue_acknowledge_task_with_logging(task)
                         elif retry:
                             self._num_tasks_retried += 1
                             logger.info(
@@ -1694,6 +1740,23 @@ class Worker:
         )
         logger = logging.getLogger(f"worker-{worker_id}")
 
+        # Apply the memory limit, if any, before running the task so the OS enforces it;
+        # allocations beyond the limit fail and raise MemoryError
+        max_memory_gb = worker_data.max_memory_allowed_per_task
+        if max_memory_gb is not None:
+            if resource is None:
+                logger.warning(
+                    f"Worker #{worker_id}: A memory limit was requested but the 'resource' "
+                    "module is not available on this platform; no limit will be applied"
+                )
+            else:
+                max_memory_bytes = int(max_memory_gb * 1024**3)
+                try:
+                    resource.setrlimit(resource.RLIMIT_AS, (max_memory_bytes, max_memory_bytes))
+                    logger.info(f"Worker #{worker_id}: Memory limited to {max_memory_gb} GB")
+                except (ValueError, OSError) as e:
+                    logger.warning(f"Worker #{worker_id}: Failed to set memory limit: {e}")
+
         # Initialize task execution environment
         try:
             logger.info(f"Worker #{worker_id}: Started, processing task {task_id}")
@@ -1717,6 +1780,15 @@ class Worker:
 
                 # Send result back to main process
                 result_queue.put((worker_id, retry, result))
+
+            except MemoryError:
+                logger.error(
+                    f"Worker #{worker_id}: Task {task_id} exceeded the memory limit"
+                    f"{f' of {max_memory_gb} GB' if max_memory_gb is not None else ''}"
+                )
+                # Send failure back to main process; memory limit violations are never
+                # retried
+                result_queue.put((worker_id, "memory_error", str(traceback.format_exc())))
 
             except Exception as e:
                 logger.error(
