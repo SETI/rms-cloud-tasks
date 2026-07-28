@@ -268,3 +268,185 @@ async def test_dry_run_prevents_instance_creation(orchestrator):
 
     # Verify that scaling task was not created
     assert orchestrator._scaling_task is None
+
+
+def _make_instance(instance_id: str, state: str = "running") -> dict:
+    """Build a minimal instance dict as returned by list_job_instances."""
+    return {
+        "id": instance_id,
+        "type": "n1-standard-2",
+        "state": state,
+        "zone": "us-central1-a",
+        "creation_time": "2026-01-01T00:00:00+00:00",
+    }
+
+
+def test_record_keepalive(orchestrator):
+    """record_keepalive tracks the last-heard time and that any instance was heard."""
+    assert not orchestrator._keepalive_ever_heard
+    orchestrator.record_keepalive("instance-1", "2026-01-01T00:00:00+00:00")
+    assert "instance-1" in orchestrator._keepalive_last_heard
+    assert orchestrator._keepalive_ever_heard
+    assert orchestrator.keepalive_abort_reason is None
+
+
+@pytest.mark.asyncio
+async def test_check_keepalives_terminates_silent_instance(orchestrator):
+    """An instance that stops sending keep-alives is terminated."""
+    import time
+
+    orchestrator._keepalive_startup_timeout = 600.0
+    orchestrator._keepalive_timeout = 300.0
+    orchestrator._running = True
+    orchestrator._instance_manager.list_running_instances = AsyncMock(
+        return_value=[_make_instance("instance-1"), _make_instance("instance-2")]
+    )
+    orchestrator.record_keepalive("instance-1")
+    orchestrator.record_keepalive("instance-2")
+    # instance-2 has been silent for longer than the keep-alive timeout
+    orchestrator._keepalive_last_heard["instance-2"] = time.time() - 400
+
+    await orchestrator._check_keepalives()
+
+    orchestrator._instance_manager.terminate_instance.assert_awaited_once_with(
+        "instance-2", "us-central1-a"
+    )
+    assert "instance-2" not in orchestrator._keepalive_last_heard
+    assert orchestrator.keepalive_abort_reason is None
+    # Terminating a single crashed instance must not stop the whole job
+    assert orchestrator._running is True
+
+
+@pytest.mark.asyncio
+async def test_check_keepalives_aborts_when_no_instance_ever_heard(orchestrator):
+    """If every instance misses the startup timeout and none was ever heard, abort the job."""
+    import time
+
+    orchestrator._keepalive_startup_timeout = 600.0
+    orchestrator._keepalive_timeout = 300.0
+    orchestrator._running = True
+    orchestrator._instance_manager.list_running_instances = AsyncMock(
+        return_value=[_make_instance("instance-1"), _make_instance("instance-2")]
+    )
+    orchestrator.terminate_all_instances = AsyncMock()
+    # Both instances were first seen long ago and never sent a keep-alive
+    orchestrator._keepalive_first_seen = {
+        "instance-1": time.time() - 700,
+        "instance-2": time.time() - 700,
+    }
+
+    await orchestrator._check_keepalives()
+
+    orchestrator.terminate_all_instances.assert_awaited_once()
+    assert orchestrator.keepalive_abort_reason is not None
+    assert orchestrator._running is False
+    orchestrator._instance_manager.terminate_instance.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_check_keepalives_waits_for_young_instances(orchestrator):
+    """If some instances are still within the startup window, nothing is terminated yet."""
+    import time
+
+    orchestrator._keepalive_startup_timeout = 600.0
+    orchestrator._keepalive_timeout = 300.0
+    orchestrator._running = True
+    orchestrator._instance_manager.list_running_instances = AsyncMock(
+        return_value=[_make_instance("instance-1"), _make_instance("instance-2")]
+    )
+    orchestrator.terminate_all_instances = AsyncMock()
+    # instance-1 is overdue but instance-2 was just seen; nothing was ever heard
+    orchestrator._keepalive_first_seen = {"instance-1": time.time() - 700}
+
+    await orchestrator._check_keepalives()
+
+    orchestrator.terminate_all_instances.assert_not_awaited()
+    orchestrator._instance_manager.terminate_instance.assert_not_awaited()
+    assert orchestrator.keepalive_abort_reason is None
+    assert orchestrator._running is True
+
+
+@pytest.mark.asyncio
+async def test_check_keepalives_terminates_startup_failure_when_others_alive(orchestrator):
+    """If other instances are alive, a startup-timeout instance is terminated individually."""
+    import time
+
+    orchestrator._keepalive_startup_timeout = 600.0
+    orchestrator._keepalive_timeout = 300.0
+    orchestrator._running = True
+    orchestrator._instance_manager.list_running_instances = AsyncMock(
+        return_value=[_make_instance("instance-1"), _make_instance("instance-2")]
+    )
+    orchestrator.terminate_all_instances = AsyncMock()
+    orchestrator.record_keepalive("instance-1")
+    orchestrator._keepalive_first_seen = {
+        "instance-1": time.time() - 700,
+        "instance-2": time.time() - 700,
+    }
+
+    await orchestrator._check_keepalives()
+
+    orchestrator.terminate_all_instances.assert_not_awaited()
+    orchestrator._instance_manager.terminate_instance.assert_awaited_once_with(
+        "instance-2", "us-central1-a"
+    )
+    assert orchestrator.keepalive_abort_reason is None
+    assert orchestrator._running is True
+
+
+@pytest.mark.asyncio
+async def test_check_keepalives_disabled_timeouts(orchestrator):
+    """Timeouts of 0 disable the keep-alive checks."""
+    import time
+
+    orchestrator._keepalive_startup_timeout = 0.0
+    orchestrator._keepalive_timeout = 0.0
+    orchestrator._running = True
+    orchestrator._instance_manager.list_running_instances = AsyncMock(
+        return_value=[_make_instance("instance-1")]
+    )
+    orchestrator.terminate_all_instances = AsyncMock()
+    orchestrator._keepalive_first_seen = {"instance-1": time.time() - 100000}
+    orchestrator.record_keepalive("instance-1")
+    orchestrator._keepalive_last_heard["instance-1"] = time.time() - 100000
+
+    await orchestrator._check_keepalives()
+
+    orchestrator.terminate_all_instances.assert_not_awaited()
+    orchestrator._instance_manager.terminate_instance.assert_not_awaited()
+    assert orchestrator._running is True
+
+
+@pytest.mark.asyncio
+async def test_check_keepalives_cleans_up_gone_instances(orchestrator):
+    """Tracking data is dropped for instances that no longer exist."""
+    orchestrator._keepalive_startup_timeout = 600.0
+    orchestrator._keepalive_timeout = 300.0
+    orchestrator._instance_manager.list_running_instances = AsyncMock(
+        return_value=[_make_instance("instance-1")]
+    )
+    orchestrator.record_keepalive("instance-1")
+    orchestrator.record_keepalive("instance-gone")
+    orchestrator._keepalive_first_seen["instance-gone"] = 1.0
+
+    await orchestrator._check_keepalives()
+
+    assert "instance-gone" not in orchestrator._keepalive_last_heard
+    assert "instance-gone" not in orchestrator._keepalive_first_seen
+    assert "instance-1" in orchestrator._keepalive_last_heard
+
+
+def test_startup_script_exports_keepalive_interval(orchestrator, mock_config):
+    """The generated startup script exports the configured keep-alive interval."""
+    mock_config.run.keepalive_interval = 45
+    mock_config.run.startup_script = "#!/bin/bash\necho 'Hello World'"
+    script = orchestrator._generate_worker_startup_script()
+    assert "export RMS_CLOUD_TASKS_KEEPALIVE_INTERVAL=45" in script
+
+
+def test_startup_script_omits_keepalive_interval_when_unset(orchestrator, mock_config):
+    """The generated startup script omits the keep-alive interval when not configured."""
+    mock_config.run.keepalive_interval = None
+    mock_config.run.startup_script = "#!/bin/bash\necho 'Hello World'"
+    script = orchestrator._generate_worker_startup_script()
+    assert "RMS_CLOUD_TASKS_KEEPALIVE_INTERVAL" not in script

@@ -899,3 +899,28 @@ def test_boot_disk_types_capitalization(config_obj):
     c.run.boot_disk_types = []
     c.update_run_config_from_provider_config()
     assert c.run.boot_disk_types == []
+
+
+def test_runconfig_keepalive_fields() -> None:
+    """RunConfig accepts the keep-alive options and rejects invalid values."""
+    config = RunConfig(keepalive_interval=45, keepalive_startup_timeout=600, keepalive_timeout=300)
+    assert config.keepalive_interval == 45
+    assert config.keepalive_startup_timeout == 600
+    assert config.keepalive_timeout == 300
+
+    # Defaults are None (use built-in defaults downstream)
+    config = RunConfig()
+    assert config.keepalive_interval is None
+    assert config.keepalive_startup_timeout is None
+    assert config.keepalive_timeout is None
+
+    # Timeouts may be 0 (disabled), but the interval must be positive
+    config = RunConfig(keepalive_startup_timeout=0, keepalive_timeout=0)
+    assert config.keepalive_startup_timeout == 0
+    assert config.keepalive_timeout == 0
+    with pytest.raises(ValueError):
+        RunConfig(keepalive_interval=0)
+    with pytest.raises(ValueError):
+        RunConfig(keepalive_startup_timeout=-1)
+    with pytest.raises(ValueError):
+        RunConfig(keepalive_timeout=-1)

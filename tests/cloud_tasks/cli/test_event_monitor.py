@@ -305,3 +305,118 @@ async def test_run_event_monitoring_loop_process_events_raises(tmp_path: Path) -
             )
     task_db.close()
     assert call_count >= 2
+
+
+@pytest.mark.asyncio
+async def test_event_monitor_intercepts_keepalive_events(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Keep-alive events invoke the callback and are not printed, filed, or stored.
+
+    Parameters:
+        tmp_path: Pytest fixture; temporary directory for DB and output file.
+        capsys: Pytest fixture; captured stdout/stderr.
+
+    Returns:
+        None. Asserts callback invocation and absence of keep_alive in outputs.
+    """
+    db_path = tmp_path / "events.db"
+    task_db = TaskDatabase(str(db_path))
+    task_db.insert_task("t1", {})
+    out_file = tmp_path / "events.txt"
+    mock_queue = AsyncMock()
+    mock_queue.receive_messages = AsyncMock(
+        return_value=[
+            {
+                "data": {
+                    "event_type": "keep_alive",
+                    "instance_id": "instance-1",
+                    "timestamp": "2026-01-01T00:00:00+00:00",
+                    "hostname": "instance-1",
+                }
+            },
+            {"data": {"task_id": "t1", "event_type": "task_completed", "retry": False}},
+        ]
+    )
+    keepalives: list[tuple[str, str | None]] = []
+    monitor = EventMonitor(
+        mock_queue,
+        task_db,
+        output_file_path=str(out_file),
+        print_events=True,
+        print_summary=False,
+        keepalive_callback=lambda instance_id, timestamp: keepalives.append(
+            (instance_id, timestamp)
+        ),
+    )
+    await monitor.start()
+    count = await monitor.process_events_batch()
+    monitor.close()
+
+    assert count == 2
+    assert keepalives == [("instance-1", "2026-01-01T00:00:00+00:00")]
+    assert "keep_alive" not in out_file.read_text()
+    assert "keep_alive" not in capsys.readouterr().out
+    # The keep-alive event must not be stored in the events table
+    cursor = task_db._get_conn().cursor()
+    cursor.execute("SELECT COUNT(*) FROM events WHERE event_type = 'keep_alive'")
+    assert cursor.fetchone()[0] == 0
+    cursor.execute("SELECT COUNT(*) FROM events")
+    assert cursor.fetchone()[0] == 1
+    task_db.close()
+
+
+@pytest.mark.asyncio
+async def test_event_monitor_keepalive_without_callback(tmp_path: Path) -> None:
+    """Keep-alive events are skipped harmlessly when no callback is registered.
+
+    Parameters:
+        tmp_path: Pytest fixture; temporary directory for the task DB.
+
+    Returns:
+        None. Asserts the batch is processed without errors or DB writes.
+    """
+    db_path = tmp_path / "events.db"
+    task_db = TaskDatabase(str(db_path))
+    mock_queue = AsyncMock()
+    mock_queue.receive_messages = AsyncMock(
+        return_value=[{"data": {"event_type": "keep_alive", "instance_id": "instance-1"}}]
+    )
+    monitor = EventMonitor(mock_queue, task_db, print_events=False, print_summary=False)
+    count = await monitor.process_events_batch()
+    cursor = task_db._get_conn().cursor()
+    cursor.execute("SELECT COUNT(*) FROM events")
+    assert cursor.fetchone()[0] == 0
+    task_db.close()
+    assert count == 1
+
+
+@pytest.mark.asyncio
+async def test_event_monitor_keepalive_falls_back_to_hostname(tmp_path: Path) -> None:
+    """Keep-alive events without an instance_id use the hostname for the callback.
+
+    Parameters:
+        tmp_path: Pytest fixture; temporary directory for the task DB.
+
+    Returns:
+        None. Asserts the callback receives the hostname.
+    """
+    db_path = tmp_path / "events.db"
+    task_db = TaskDatabase(str(db_path))
+    mock_queue = AsyncMock()
+    mock_queue.receive_messages = AsyncMock(
+        return_value=[{"data": {"event_type": "keep_alive", "hostname": "host-7"}}]
+    )
+    keepalives: list[tuple[str, str | None]] = []
+    monitor = EventMonitor(
+        mock_queue,
+        task_db,
+        print_events=False,
+        print_summary=False,
+        keepalive_callback=lambda instance_id, timestamp: keepalives.append(
+            (instance_id, timestamp)
+        ),
+    )
+    await monitor.process_events_batch()
+    task_db.close()
+    assert keepalives == [("host-7", None)]

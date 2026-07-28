@@ -51,6 +51,12 @@ class InstanceOrchestrator:
     _DEFAULT_BOOT_DISK_TYPE = "pd-balanced"
     # Sentinel for max_allowed_instances when --max-instances is not set (no limit).
     _MAX_ALLOWED_INSTANCES_SENTINEL = 999999
+    # How long to wait after an instance is started for its first keep-alive event
+    _DEFAULT_KEEPALIVE_STARTUP_TIMEOUT = 600.0
+    # How long to wait after a keep-alive event for the next one
+    _DEFAULT_KEEPALIVE_TIMEOUT = 300.0
+    # How often to check for overdue keep-alive events
+    _KEEPALIVE_CHECK_INTERVAL = 15.0
 
     def __init__(
         self,
@@ -121,6 +127,29 @@ class InstanceOrchestrator:
         self._empty_queue_since = None
         self._instance_termination_delay = self._run_config.instance_termination_delay
         self._scaling_task: asyncio.Task[None] | None = None
+
+        # Keep-alive tracking for detecting failed or crashed instances
+        startup_timeout = self._run_config.keepalive_startup_timeout
+        self._keepalive_startup_timeout: float = (
+            float(startup_timeout)
+            if startup_timeout is not None
+            else self._DEFAULT_KEEPALIVE_STARTUP_TIMEOUT
+        )
+        keepalive_timeout = self._run_config.keepalive_timeout
+        self._keepalive_timeout: float = (
+            float(keepalive_timeout)
+            if keepalive_timeout is not None
+            else self._DEFAULT_KEEPALIVE_TIMEOUT
+        )
+        # Maps instance ID to the time we last received a keep-alive event from it
+        self._keepalive_last_heard: dict[str, float] = {}
+        # Maps instance ID to the time we first saw it in the running instance list
+        self._keepalive_first_seen: dict[str, float] = {}
+        # Whether any instance has ever sent a keep-alive event
+        self._keepalive_ever_heard = False
+        self._keepalive_task: asyncio.Task[None] | None = None
+        # Set when keep-alive monitoring determined no instance ever started properly
+        self._keepalive_abort_reason: str | None = None
 
         # Initialize lock for instance creation
         self._instance_creation_lock = asyncio.Lock()
@@ -220,6 +249,21 @@ class InstanceOrchestrator:
             f"  Instance termination delay: {self._instance_termination_delay} seconds"
         )
         self._logger.info(f"  Max runtime: {self._run_config.max_runtime} seconds")
+        if self._run_config.keepalive_interval is not None:
+            self._logger.info(
+                f"  Worker keep-alive interval: {self._run_config.keepalive_interval} seconds"
+            )
+        else:
+            self._logger.info("  Worker keep-alive interval: worker default (60 seconds)")
+        self._logger.info(
+            "  Keep-alive startup timeout: "
+            f"{self._keepalive_startup_timeout} seconds"
+            f"{' (disabled)' if self._keepalive_startup_timeout == 0 else ''}"
+        )
+        self._logger.info(
+            f"  Keep-alive timeout: {self._keepalive_timeout} seconds"
+            f"{' (disabled)' if self._keepalive_timeout == 0 else ''}"
+        )
         self._logger.info(f"  Max parallel instance creations: {self._start_instance_max_threads}")
         self._logger.info(f"  Image: {self._run_config.image}")
         self._logger.info("  Startup script:")
@@ -241,6 +285,27 @@ class InstanceOrchestrator:
     def queue_name(self) -> str:
         return self._queue_name
 
+    @property
+    def keepalive_abort_reason(self) -> str | None:
+        """Reason the job was aborted by keep-alive monitoring, or None."""
+        return self._keepalive_abort_reason
+
+    def record_keepalive(self, instance_id: str, timestamp: str | None = None) -> None:
+        """Record a keep-alive event received from a worker instance.
+
+        Parameters:
+            instance_id: The ID of the instance the keep-alive came from, as reported
+                by the instance manager (GCP/Azure: instance name; AWS: instance ID).
+            timestamp: The time the keep-alive was sent, as reported by the worker
+                (informational only; the local receive time is used for timeouts so
+                clock skew between machines doesn't matter).
+        """
+        if instance_id not in self._keepalive_last_heard:
+            self._logger.info(f"Received first keep-alive event from instance '{instance_id}'")
+        self._logger.debug(f"Keep-alive from instance '{instance_id}' (sent at {timestamp})")
+        self._keepalive_last_heard[instance_id] = time.time()
+        self._keepalive_ever_heard = True
+
     def _generate_worker_startup_script(self) -> str:
         """
         Generate a startup script for worker instances.
@@ -261,6 +326,12 @@ export RMS_CLOUD_TASKS_PROJECT_ID={project_id}
             raise RuntimeError("_optimal_instance_boot_disk_size is not set")
         if self._optimal_instance_num_tasks is None:
             raise RuntimeError("_optimal_instance_num_tasks is not set")
+        keepalive_supplement = ""
+        if self._run_config.keepalive_interval is not None:
+            keepalive_supplement = f"""\
+export RMS_CLOUD_TASKS_KEEPALIVE_INTERVAL={self._run_config.keepalive_interval}
+"""
+
         oii = self._optimal_instance_info
         supplement = f"""\
 export RMS_CLOUD_TASKS_PROVIDER={self._provider}
@@ -279,7 +350,7 @@ export RMS_CLOUD_TASKS_NUM_TASKS_PER_INSTANCE={self._optimal_instance_num_tasks}
 export RMS_CLOUD_TASKS_MAX_RUNTIME={self._run_config.max_runtime}
 export RMS_CLOUD_TASKS_RETRY_ON_EXIT={self._run_config.retry_on_exit}
 export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
-"""
+{keepalive_supplement}"""
         if not self._run_config.startup_script:
             raise RuntimeError("No startup script provided")
 
@@ -457,6 +528,8 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
             self._running = False
         else:
             self._scaling_task = asyncio.create_task(self._scaling_loop())
+            if self._keepalive_startup_timeout > 0 or self._keepalive_timeout > 0:
+                self._keepalive_task = asyncio.create_task(self._keepalive_monitor_loop())
 
     async def _scaling_loop(self) -> None:
         """Background task to periodically check scaling."""
@@ -477,6 +550,142 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
             # Handle task cancellation gracefully
             self._logger.info("Scaling loop cancelled")
             raise  # Re-raise to properly handle cancellation
+
+    async def _keepalive_monitor_loop(self) -> None:
+        """Background task to periodically check for overdue keep-alive events."""
+        last_check = time.time()
+        try:
+            while self._running:
+                try:
+                    now = time.time()
+                    if now - last_check > self._KEEPALIVE_CHECK_INTERVAL:
+                        await self._check_keepalives()
+                        last_check = now
+                except Exception as e:
+                    self._logger.error(f"Error in keep-alive monitor loop: {e}", exc_info=True)
+
+                await asyncio.sleep(1)
+        except asyncio.CancelledError:
+            self._logger.info("Keep-alive monitor loop cancelled")
+            raise
+
+    async def _check_keepalives(self) -> None:
+        """Check all job instances for overdue keep-alive events.
+
+        Two timeouts are enforced:
+
+        - keepalive_startup_timeout: How long after an instance is first seen we wait
+          for its first keep-alive event. If it is exceeded and no instance has ever
+          sent a keep-alive, and every active instance is overdue, the startup script
+          is assumed to be broken: all instances are terminated and the job is aborted
+          (keepalive_abort_reason is set). If other instances are alive, only the
+          overdue instance is terminated.
+        - keepalive_timeout: How long after the most recent keep-alive event from an
+          instance we wait for the next one. If it is exceeded the instance is assumed
+          to have crashed and is terminated; the scaling loop will start a replacement
+          if one is needed.
+        """
+        now = time.time()
+
+        instances = await self.list_job_instances()
+        active = {
+            instance["id"]: instance
+            for instance in instances
+            if instance["state"] in ("running", "starting")
+        }
+
+        # Drop tracking for instances that no longer exist (terminated by us, by the
+        # scaling loop, or externally)
+        for instance_id in list(self._keepalive_first_seen):
+            if instance_id not in active:
+                del self._keepalive_first_seen[instance_id]
+        for instance_id in list(self._keepalive_last_heard):
+            if instance_id not in active:
+                del self._keepalive_last_heard[instance_id]
+
+        startup_overdue = []
+        for instance_id, instance in active.items():
+            if instance_id not in self._keepalive_first_seen:
+                self._keepalive_first_seen[instance_id] = now
+
+            last_heard = self._keepalive_last_heard.get(instance_id)
+            if last_heard is None:
+                silent_for = now - self._keepalive_first_seen[instance_id]
+                if self._keepalive_startup_timeout > 0 and silent_for > (
+                    self._keepalive_startup_timeout
+                ):
+                    startup_overdue.append((instance, silent_for))
+            else:
+                silent_for = now - last_heard
+                if self._keepalive_timeout > 0 and silent_for > self._keepalive_timeout:
+                    self._logger.warning(
+                        f"Instance '{instance_id}' has not sent a keep-alive event in "
+                        f"{silent_for:.0f} seconds (limit {self._keepalive_timeout:.0f}); "
+                        "assuming it has crashed and terminating it"
+                    )
+                    await self._terminate_keepalive_instance(instance)
+
+        if not startup_overdue:
+            return
+
+        if self._keepalive_ever_heard:
+            # Other instances have started successfully, so the startup script works;
+            # only these specific instances failed. Terminate them and let the scaling
+            # loop start replacements if needed.
+            for instance, silent_for in startup_overdue:
+                self._logger.warning(
+                    f"Instance '{instance['id']}' has not sent its first keep-alive event "
+                    f"{silent_for:.0f} seconds after starting "
+                    f"(limit {self._keepalive_startup_timeout:.0f}); "
+                    "assuming it failed to start and terminating it"
+                )
+                await self._terminate_keepalive_instance(instance)
+            return
+
+        # No instance has ever sent a keep-alive event
+        if len(startup_overdue) == len(active):
+            # Every instance failed to start; the startup script is probably broken.
+            # Terminate everything and abort the job.
+            self._keepalive_abort_reason = (
+                f"No keep-alive event was received from any of the {len(active)} "
+                f"instance(s) within {self._keepalive_startup_timeout:.0f} seconds of "
+                "startup; the startup script is probably broken"
+            )
+            self._logger.error(self._keepalive_abort_reason)
+            self._logger.error("Terminating all instances and aborting the job")
+            await self.terminate_all_instances()
+            self._running = False
+        else:
+            # Some instances are still within their startup window. Don't terminate
+            # anything yet: if the startup script is broken, replacements would fail
+            # too, so wait until every instance is overdue and then abort above.
+            self._logger.warning(
+                f"{len(startup_overdue)} of {len(active)} instance(s) have not sent their "
+                "first keep-alive event within "
+                f"{self._keepalive_startup_timeout:.0f} seconds and no instance has ever "
+                "sent one; waiting for the remaining instances before deciding whether "
+                "to abort the job"
+            )
+
+    async def _terminate_keepalive_instance(self, instance: dict[str, Any]) -> None:
+        """Terminate an instance that failed its keep-alive checks.
+
+        Parameters:
+            instance: Instance dictionary from list_job_instances
+        """
+        instance_id = instance["id"]
+        if self._instance_manager is None:
+            raise RuntimeError("Instance manager not initialized. Call start() first.")
+        try:
+            await self._instance_manager.terminate_instance(instance_id, instance.get("zone"))
+            self._logger.info(f"Terminated unresponsive instance '{instance_id}'")
+        except Exception as e:
+            self._logger.error(
+                f"Failed to terminate unresponsive instance '{instance_id}': {e}", exc_info=True
+            )
+            return
+        self._keepalive_first_seen.pop(instance_id, None)
+        self._keepalive_last_heard.pop(instance_id, None)
 
     def _get_default_boot_disk_type(self) -> str:
         """
@@ -875,6 +1084,14 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
             self._scaling_task.cancel()
             try:
                 await self._scaling_task
+            except asyncio.CancelledError:
+                pass
+
+        # Cancel keep-alive monitor task if it exists
+        if self._keepalive_task is not None:
+            self._keepalive_task.cancel()
+            try:
+                await self._keepalive_task
             except asyncio.CancelledError:
                 pass
 

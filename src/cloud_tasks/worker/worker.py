@@ -130,6 +130,14 @@ def _parse_args(
         "[overrides $RMS_CLOUD_TASKS_EVENT_LOG_TO_QUEUE]",
     )
     parser.add_argument(
+        "--keepalive-interval",
+        type=float,
+        help="Interval in seconds between keep-alive events sent to the cloud-based event "
+        "queue so the task manager knows this instance is still alive; 0 disables "
+        "keep-alive events [overrides $RMS_CLOUD_TASKS_KEEPALIVE_INTERVAL] "
+        "(default 60 seconds)",
+    )
+    parser.add_argument(
         "--instance-type",
         help="Instance type; optional information for the worker processes "
         "[overrides $RMS_CLOUD_TASKS_INSTANCE_TYPE]",
@@ -395,6 +403,8 @@ class WorkerData:
         self.event_log_queue_name: str | None = None
         self.event_log_to_file: bool = False  #: Whether to log events to a file
         self.event_log_file: str | None = None  #: The name of the file to log events to
+        #: The interval in seconds between keep-alive events (0 disables them)
+        self.keepalive_interval: float = 60.0
         self.instance_type: str | None = None  #: The instance type this task is running on
         self.num_cpus: int | None = None  #: The number of vCPUs on this computer
         self.memory_gb: float | None = None  #: The amount of memory on this computer
@@ -609,6 +619,15 @@ class Worker:
                 logger.error("--event-log-to-queue requires either --job-id or --queue-name")
                 sys.exit(1)
 
+        # Get keep-alive interval from args or environment variable
+        raw_keepalive = parsed_args.keepalive_interval
+        if raw_keepalive is None:
+            env_val = os.getenv("RMS_CLOUD_TASKS_KEEPALIVE_INTERVAL")
+            raw_keepalive = float(env_val) if env_val is not None else None
+        if raw_keepalive is not None:
+            self._data.keepalive_interval = float(raw_keepalive)
+        logger.info(f"  Keep-alive interval: {self._data.keepalive_interval} seconds")
+
         # Get instance type from args or environment variable
         self._data.instance_type = parsed_args.instance_type or os.getenv(
             "RMS_CLOUD_TASKS_INSTANCE_TYPE"
@@ -778,6 +797,7 @@ class Worker:
         signal.signal(signal.SIGTERM, self._signal_handler)
 
         self._hostname = socket.gethostname()
+        self._instance_identity: str | None = None
         self._event_logger_fp: IO[Any] | None = None
         self._event_logger_queue: QueueManager | None = None
 
@@ -820,9 +840,16 @@ class Worker:
     _EVENT_TYPE_NON_FATAL_EXCEPTION = "non_fatal_exception"
     _EVENT_TYPE_FATAL_EXCEPTION = "fatal_exception"
     _EVENT_TYPE_SPOT_TERMINATION = "spot_termination"
+    _EVENT_TYPE_KEEP_ALIVE = "keep_alive"
 
-    async def _log_event(self, event: dict[str, Any]) -> None:
-        """Log an event to the event log."""
+    async def _log_event(self, event: dict[str, Any], *, queue_only: bool = False) -> None:
+        """Log an event to the event log.
+
+        Args:
+            event: The event to log; must contain an "event_type" key.
+            queue_only: If True, only send the event to the cloud-based event queue,
+                never to the local event log file.
+        """
         # Reorder so these fields are first in the diction to make the display nicer
         new_event = {
             "timestamp": utc_now_iso(),
@@ -830,7 +857,7 @@ class Worker:
             "event_type": event["event_type"],
             **event,
         }
-        if self._event_logger_fp:
+        if self._event_logger_fp and not queue_only:
             self._event_logger_fp.write(json.dumps(new_event) + "\n")
             self._event_logger_fp.flush()
         if self._event_logger_queue:
@@ -910,6 +937,105 @@ class Worker:
     async def _log_spot_termination(self) -> None:
         """Log a spot termination event."""
         await self._log_event({"event_type": self._EVENT_TYPE_SPOT_TERMINATION})
+
+    async def _log_keep_alive(self) -> None:
+        """Log a keep-alive event to the cloud-based event queue only."""
+        await self._log_event(
+            {
+                "event_type": self._EVENT_TYPE_KEEP_ALIVE,
+                "instance_id": self._get_instance_identity(),
+            },
+            queue_only=True,
+        )
+
+    def _get_instance_identity(self) -> str:
+        """Get the instance ID as known to the cloud provider.
+
+        Queries the provider's metadata server so the returned value matches the
+        instance ID reported by the instance managers (GCP/Azure: instance name;
+        AWS: instance ID like "i-0abc..."). Falls back to the hostname if the
+        metadata server is unavailable (e.g. when not running on a cloud instance).
+        The result is cached after the first call.
+
+        Returns:
+            The instance ID, or the hostname if the metadata server can't be reached.
+        """
+        if self._instance_identity is not None:
+            return self._instance_identity
+
+        identity: str | None = None
+        try:
+            if self._data.provider == "AWS":
+                headers = {}
+                try:
+                    token_response = requests.put(
+                        "http://169.254.169.254/latest/api/token",
+                        headers={"X-aws-ec2-metadata-token-ttl-seconds": "21600"},
+                        timeout=2,
+                    )
+                    if token_response.status_code == 200:
+                        headers = {"X-aws-ec2-metadata-token": token_response.text}
+                except Exception:
+                    pass  # Fall back to IMDSv1
+                response = requests.get(
+                    "http://169.254.169.254/latest/meta-data/instance-id",
+                    headers=headers,
+                    timeout=2,
+                )
+                if response.status_code == 200:
+                    identity = response.text.strip()
+
+            elif self._data.provider == "GCP":
+                response = requests.get(
+                    "http://metadata.google.internal/computeMetadata/v1/instance/name",
+                    headers={"Metadata-Flavor": "Google"},
+                    timeout=2,
+                )
+                if response.status_code == 200:
+                    identity = response.text.strip()
+
+            elif self._data.provider == "AZURE":
+                response = requests.get(
+                    "http://169.254.169.254/metadata/instance/compute/name",
+                    params={"api-version": "2021-02-01", "format": "text"},
+                    headers={"Metadata": "true"},
+                    timeout=2,
+                )
+                if response.status_code == 200:
+                    identity = response.text.strip()
+        except Exception:
+            pass
+
+        if not identity:
+            logger.debug("Could not determine instance ID from metadata server; using hostname")
+            identity = self._hostname
+
+        self._instance_identity = identity
+        logger.info(f"Instance identity for keep-alive events: {identity}")
+        return identity
+
+    async def _keepalive_worker(self) -> None:
+        """Background worker that periodically sends keep-alive events.
+
+        The events are sent to the cloud-based event queue only (never to a local
+        event log file) so the task manager can detect instances that failed to
+        start or have crashed.
+        """
+        interval = self._data.keepalive_interval
+        logger.info(f"Starting keep-alive worker with {interval}s interval")
+
+        last_sent: float | None = None
+
+        while self._running:
+            current_time = time.time()
+            if last_sent is None or current_time - last_sent >= interval:
+                try:
+                    await self._log_keep_alive()
+                except Exception as e:
+                    logger.warning(f"Failed to send keep-alive event: {e}")
+                    # We'll try again on the next interval
+                last_sent = current_time
+            await asyncio.sleep(1)
 
     async def start(self) -> None:
         """Start the worker and begin processing tasks."""
@@ -994,6 +1120,10 @@ class Worker:
         # Start the visibility renewal worker for cloud queues only
         if not self._task_source:
             self._task_list.append(asyncio.create_task(self._visibility_renewal_worker()))
+
+        # Start the keep-alive worker for cloud-based event queues only
+        if self._event_logger_queue is not None and self._data.keepalive_interval > 0:
+            self._task_list.append(asyncio.create_task(self._keepalive_worker()))
 
         # Process tasks until shutdown
         await self._wait_for_shutdown()

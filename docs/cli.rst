@@ -203,6 +203,16 @@ options in the configuration file (see :ref:`config_worker_and_manage_pool_optio
                                        maximum runtime specified by --max-runtime
 --no-retry-on-timeout                  If specified, tasks will not be retried if they exceed the
                                        maximum runtime specified by --max-runtime (default)
+--keepalive-interval SECONDS           The interval between worker keep-alive events; passed to
+                                       the workers via the startup script (defaults to 60)
+--keepalive-startup-timeout SECONDS    How long to wait after an instance is started for its
+                                       first keep-alive event before considering it failed; if no
+                                       instance has ever sent a keep-alive and all instances
+                                       exceed this timeout, all instances are terminated and the
+                                       job is aborted; 0 disables the check (defaults to 600)
+--keepalive-timeout SECONDS            How long to wait after a keep-alive event for the next one
+                                       before declaring the instance crashed and terminating it;
+                                       0 disables the check (defaults to 300)
 
 
 .. _cli_information_commands:

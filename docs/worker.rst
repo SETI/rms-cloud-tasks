@@ -169,6 +169,7 @@ Optional Parameters
 --no-event-log-to-file                     If specified, events will not be written to a file [or ``RMS_CLOUD_TASKS_EVENT_LOG_TO_FILE`` is "0" or "false"]
 --event-log-to-queue                       If specified, events will be written to a cloud-based queue (default if --task-file is not specified) [or ``RMS_CLOUD_TASKS_EVENT_LOG_TO_QUEUE`` is "1" or "true"]
 --no-event-log-to-queue                    If specified, events will not be written to a cloud-based queue [or ``RMS_CLOUD_TASKS_EVENT_LOG_TO_QUEUE`` is "0" or "false"]
+--keepalive-interval SECONDS               Interval in seconds between keep-alive events sent to the cloud-based event queue so the task manager knows this instance is still alive; only used when events are being written to a cloud-based queue; 0 disables keep-alive events [or ``RMS_CLOUD_TASKS_KEEPALIVE_INTERVAL``] (default 60 seconds)
 --instance-type INSTANCE_TYPE              Instance type; optional information for the worker processes [or ``RMS_CLOUD_TASKS_INSTANCE_TYPE``]
 --num-cpus N                               Number of vCPUs on this computer; optional information for the worker processes [or ``RMS_CLOUD_TASKS_INSTANCE_NUM_VCPUS``]
 --memory MEMORY_GB                         Memory in GB on this computer; optional information for the worker processes [or ``RMS_CLOUD_TASKS_INSTANCE_MEM_GB``]
@@ -266,6 +267,14 @@ The ``event_type`` field can have the following values:
   No further tasks will be accepted and any existing tasks may be terminated prematurely
   if the instance is destroyed before they finish. Any existing tasks that complete before
   the instance is destroyed will have their results reported as usual.
+- ``keep_alive``: Sent periodically (every ``--keepalive-interval`` seconds, 60 by default)
+  to indicate the worker is still alive, independent of the status of any tasks. The
+  ``instance_id`` field contains the instance ID as known to the cloud provider (obtained
+  from the provider's metadata server, falling back to the hostname). These events are only
+  sent to the cloud-based event queue, never to a local event log file, and the task
+  manager intercepts them (they are not printed or stored in the task database) to track
+  the health of each instance. Instances that never send a keep-alive or stop sending them
+  are terminated by the task manager (see :ref:`config_worker_and_manage_pool_options`).
 
 
 .. _worker_spot_instances:

@@ -224,6 +224,20 @@ class RunConfig(BaseModel, validate_assignment=True):
     retry_on_timeout: bool | None = None
 
     #
+    # Worker keep-alive options
+    #
+
+    # Interval in seconds between worker keep-alive events (passed to workers via the
+    # startup script); if None, workers use their own default (60 seconds)
+    keepalive_interval: PositiveInt | None = None
+    # Seconds to wait after an instance is started for its first keep-alive event;
+    # 0 disables the check (default 600 seconds)
+    keepalive_startup_timeout: NonNegativeInt | None = None
+    # Seconds to wait after a keep-alive event for the next one before declaring the
+    # instance dead; 0 disables the check (default 300 seconds)
+    keepalive_timeout: NonNegativeInt | None = None
+
+    #
     # Database options
     #
     db_file: str | None = None  # SQLite database file path

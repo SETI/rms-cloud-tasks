@@ -36,6 +36,7 @@ _DEFAULT_ARGS = {
     "event_log_to_file": None,
     "event_log_file": None,
     "event_log_to_queue": False,
+    "keepalive_interval": None,
     "verbose": False,
     "retry_on_timeout": None,
     "retry_on_exception": None,

@@ -9,7 +9,7 @@ import logging
 import os
 import signal
 import sys
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any, cast
 
@@ -483,6 +483,7 @@ class EventMonitor:
         *,
         print_events: bool = True,
         print_summary: bool = True,
+        keepalive_callback: Callable[[str, str | None], None] | None = None,
     ) -> None:
         """
         Initialize the event monitor.
@@ -493,12 +494,16 @@ class EventMonitor:
             output_file_path: Optional path to write events to
             print_events: Whether to print events to stdout
             print_summary: Whether to print summary statistics
+            keepalive_callback: Optional callback invoked with (instance_id, timestamp)
+                for each keep-alive event; keep-alive events are intercepted and never
+                printed, written to the output file, or stored in the database
         """
         self.events_queue = events_queue
         self.task_db = task_db
         self.output_file_path = output_file_path
         self.print_events = print_events
         self.print_summary = print_summary
+        self.keepalive_callback = keepalive_callback
         self.output_file = None
         self.something_changed = True
 
@@ -541,7 +546,6 @@ class EventMonitor:
             messages = await self.events_queue.receive_messages(max_count=100)
 
             if messages:
-                self.something_changed = True
                 for message in messages:
                     try:
                         payload = message.get("data", {})
@@ -553,6 +557,17 @@ class EventMonitor:
                             data = {}
                         if not isinstance(data, dict):
                             data = {}
+
+                        if data.get("event_type") == "keep_alive":
+                            # Keep-alive events are only used to track instance health;
+                            # they are not printed, written to a file, or stored in the
+                            # database
+                            instance_id = data.get("instance_id") or data.get("hostname")
+                            if instance_id and self.keepalive_callback:
+                                self.keepalive_callback(instance_id, data.get("timestamp"))
+                            continue
+
+                        self.something_changed = True
 
                         # Write to file if specified
                         if self.output_file:
@@ -1123,6 +1138,7 @@ async def run_cmd(args: argparse.Namespace, config: Config) -> None:
             output_file_path=getattr(args, "output_file", None),
             print_events=False,  # Don't print individual events
             print_summary=True,
+            keepalive_callback=orchestrator.record_keepalive,
         )
         await event_monitor.start()
 
@@ -1146,6 +1162,11 @@ async def run_cmd(args: argparse.Namespace, config: Config) -> None:
                 # Keep checking until job is complete or interrupted
                 while orchestrator.is_running and not job_complete and not interrupted:
                     await asyncio.sleep(1)
+                if orchestrator.keepalive_abort_reason is not None:
+                    # The orchestrator terminated all instances and aborted the job
+                    # because no worker ever sent a keep-alive event
+                    logger.error(f"Aborting job: {orchestrator.keepalive_abort_reason}")
+                    stop_signal.set()
             except Exception as e:
                 logger.error(f"Error in orchestrator: {e}", exc_info=True)
                 raise
@@ -1254,6 +1275,13 @@ async def run_cmd(args: argparse.Namespace, config: Config) -> None:
         finally:
             # Restore original signal handler
             signal.signal(signal.SIGINT, old_handler)
+
+        # If the orchestrator aborted the job (no worker ever sent a keep-alive event),
+        # the instances have already been terminated; report the failure and exit
+        if orchestrator.keepalive_abort_reason is not None:
+            logger.error(f"Job aborted: {orchestrator.keepalive_abort_reason}")
+            await orchestrator.stop(terminate_instances=False)
+            sys.exit(1)
 
         # If job completed normally, clean up
         if job_complete and not interrupted:
@@ -2296,6 +2324,26 @@ def add_instance_pool_args(parser: argparse.ArgumentParser) -> None:
         "--max-runtime",
         type=int,
         help="Maximum seconds a single worker job is allowed to run (default: 3600)",
+    )
+    parser.add_argument(
+        "--keepalive-interval",
+        type=int,
+        help="Interval in seconds between worker keep-alive events; passed to workers "
+        "via the startup script (default: 60)",
+    )
+    parser.add_argument(
+        "--keepalive-startup-timeout",
+        type=int,
+        help="Seconds to wait after an instance is started for its first keep-alive event "
+        "before considering it failed; if no instance has ever sent a keep-alive, all "
+        "instances are terminated and the job is aborted; 0 disables the check "
+        "(default: 600)",
+    )
+    parser.add_argument(
+        "--keepalive-timeout",
+        type=int,
+        help="Seconds to wait after a keep-alive event for the next one before declaring "
+        "the instance crashed and terminating it; 0 disables the check (default: 300)",
     )
     parser.add_argument(
         "--retry-on-exit",
