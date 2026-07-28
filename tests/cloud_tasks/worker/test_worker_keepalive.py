@@ -91,11 +91,20 @@ def test_get_instance_identity_aws(mock_worker_function, monkeypatch) -> None:
 
 
 def test_get_instance_identity_fallback_to_hostname(keepalive_worker: Worker) -> None:
-    """The instance identity falls back to the hostname if the metadata server is unreachable."""
+    """The hostname fallback is not cached, so the metadata server is retried later."""
     with patch(
         "cloud_tasks.worker.worker.requests.get", side_effect=ConnectionError("no metadata")
-    ):
+    ) as mock_get:
         assert keepalive_worker._get_instance_identity() == keepalive_worker._hostname
+        assert keepalive_worker._get_instance_identity() == keepalive_worker._hostname
+        # The fallback must not be cached; each call retries the metadata server
+        assert mock_get.call_count == 2
+
+    # Once the metadata server recovers, its answer is used and cached
+    response = MagicMock(status_code=200, text="gcp-instance-name\n")
+    with patch("cloud_tasks.worker.worker.requests.get", return_value=response):
+        assert keepalive_worker._get_instance_identity() == "gcp-instance-name"
+    assert keepalive_worker._get_instance_identity() == "gcp-instance-name"
 
 
 @pytest.mark.asyncio

@@ -902,7 +902,13 @@ def test_boot_disk_types_capitalization(config_obj):
 
 
 def test_runconfig_keepalive_fields() -> None:
-    """RunConfig accepts the keep-alive options and rejects invalid values."""
+    """RunConfig validates the keep-alive options.
+
+    Covers: positive values are accepted; all three fields default to None (downstream
+    code substitutes the built-in defaults); the two timeouts accept 0 (which disables
+    that check) but reject negative values; keepalive_interval must be strictly
+    positive (0 and negatives are rejected).
+    """
     config = RunConfig(keepalive_interval=45, keepalive_startup_timeout=600, keepalive_timeout=300)
     assert config.keepalive_interval == 45
     assert config.keepalive_startup_timeout == 600

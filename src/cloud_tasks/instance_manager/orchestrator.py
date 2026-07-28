@@ -55,8 +55,10 @@ class InstanceOrchestrator:
     _DEFAULT_KEEPALIVE_STARTUP_TIMEOUT = 600.0
     # How long to wait after a keep-alive event for the next one
     _DEFAULT_KEEPALIVE_TIMEOUT = 300.0
-    # How often to check for overdue keep-alive events
-    _KEEPALIVE_CHECK_INTERVAL = 15.0
+    # How often to check for overdue keep-alive events; each check lists the job's
+    # instances, so this is kept coarse (the timeouts are minutes) to limit the extra
+    # provider API load on top of the scaling loop's own instance listing
+    _KEEPALIVE_CHECK_INTERVAL = 60.0
 
     def __init__(
         self,
@@ -1219,7 +1221,9 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
                         return False
 
             current_instances = await self.list_job_instances()
-            running_instances = [i for i in current_instances if i["state"] == "running"]
+            running_instances = [
+                i for i in current_instances if i["state"] in ("running", "starting")
+            ]
 
             # Create tasks for all instance terminations
             tasks = [terminate_single_instance(instance) for instance in running_instances]

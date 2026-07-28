@@ -969,10 +969,13 @@ class Worker:
 
     async def _log_keep_alive(self) -> None:
         """Log a keep-alive event to the cloud-based event queue only."""
+        # The metadata server lookup uses synchronous HTTP calls, so run it in a
+        # thread to avoid blocking the event loop
+        instance_id = await asyncio.to_thread(self._get_instance_identity)
         await self._log_event(
             {
                 "event_type": self._EVENT_TYPE_KEEP_ALIVE,
-                "instance_id": self._get_instance_identity(),
+                "instance_id": instance_id,
             },
             queue_only=True,
         )
@@ -984,7 +987,8 @@ class Worker:
         instance ID reported by the instance managers (GCP/Azure: instance name;
         AWS: instance ID like "i-0abc..."). Falls back to the hostname if the
         metadata server is unavailable (e.g. when not running on a cloud instance).
-        The result is cached after the first call.
+        Only a metadata-server result is cached; the hostname fallback is re-tried
+        on the next call in case the failure was transient.
 
         Returns:
             The instance ID, or the hostname if the metadata server can't be reached.
@@ -1032,16 +1036,21 @@ class Worker:
                 )
                 if response.status_code == 200:
                     identity = response.text.strip()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Error querying the metadata server for the instance ID: {e}")
 
-        if not identity:
-            logger.debug("Could not determine instance ID from metadata server; using hostname")
-            identity = self._hostname
+        if identity:
+            self._instance_identity = identity
+            logger.info(f"Instance identity for keep-alive events: {identity}")
+            return identity
 
-        self._instance_identity = identity
-        logger.info(f"Instance identity for keep-alive events: {identity}")
-        return identity
+        # Don't cache the fallback: if the metadata server failure was transient, a
+        # permanently cached hostname would make the task manager believe this instance
+        # never started (on AWS the hostname doesn't match the instance ID) and
+        # terminate it even though it is healthy. Keep-alives are infrequent, so
+        # re-trying the lookup on each one is cheap.
+        logger.debug("Could not determine instance ID from metadata server; using hostname")
+        return self._hostname
 
     async def _keepalive_worker(self) -> None:
         """Background worker that periodically sends keep-alive events.

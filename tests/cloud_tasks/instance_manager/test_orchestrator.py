@@ -468,3 +468,33 @@ def test_startup_script_omits_max_memory_when_unset(orchestrator, mock_config):
     mock_config.run.startup_script = "#!/bin/bash\necho 'Hello World'"
     script = orchestrator._generate_worker_startup_script()
     assert "RMS_CLOUD_TASKS_MAX_MEMORY_ALLOWED_PER_TASK" not in script
+
+
+@pytest.mark.asyncio
+async def test_check_keepalives_abort_terminates_starting_instances(orchestrator):
+    """A full abort terminates instances still in the 'starting' state, not just 'running'."""
+    import time
+
+    orchestrator._keepalive_startup_timeout = 600.0
+    orchestrator._keepalive_timeout = 300.0
+    orchestrator._running = True
+    orchestrator._instance_manager.list_running_instances = AsyncMock(
+        return_value=[
+            _make_instance("instance-1", state="running"),
+            _make_instance("instance-2", state="starting"),
+        ]
+    )
+    orchestrator._keepalive_first_seen = {
+        "instance-1": time.time() - 700,
+        "instance-2": time.time() - 700,
+    }
+
+    # Use the real terminate_all_instances so the state filter is exercised
+    await orchestrator._check_keepalives()
+
+    assert orchestrator.keepalive_abort_reason is not None
+    assert orchestrator._running is False
+    terminated = {
+        call.args[0] for call in orchestrator._instance_manager.terminate_instance.await_args_list
+    }
+    assert terminated == {"instance-1", "instance-2"}
