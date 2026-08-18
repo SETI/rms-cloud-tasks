@@ -716,6 +716,126 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
             return boot_disk_types_cfg
         return self._DEFAULT_BOOT_DISK_TYPE
 
+    def _keepalive_monitoring_active(self) -> bool:
+        """Whether the keep-alive monitor is (about to be) running for this orchestrator.
+
+        False when the orchestrator isn't running the job itself - e.g. the ``status``
+        command, which builds an orchestrator just to query instances and so never
+        receives keep-alive events - so the instance table doesn't report healthy
+        workers as silent.
+        """
+        return (
+            self._running
+            and not self._dry_run
+            and (self._keepalive_startup_timeout > 0 or self._keepalive_timeout > 0)
+        )
+
+    def _keepalive_status(self, instance: dict[str, Any], now: float) -> tuple[str, str]:
+        """Describe an instance's keep-alive state for the debug instance table.
+
+        Parameters:
+            instance: Instance dictionary from list_job_instances
+            now: Current time (time.time()), passed in so every row of a table is
+                described relative to the same instant
+
+        Returns:
+            tuple[str, str]: (last keep-alive column, status column)
+        """
+        if instance["state"] not in ("running", "starting"):
+            return "-", "not active"
+        if not self._keepalive_monitoring_active():
+            return "-", "not monitored"
+
+        instance_id = instance["id"]
+        last_heard = self._keepalive_last_heard.get(instance_id)
+
+        if last_heard is not None:
+            silent_for = now - last_heard
+            last_str = f"{silent_for:.0f}s ago"
+            if self._keepalive_timeout <= 0:
+                return last_str, "OK (timeout disabled)"
+            if silent_for > self._keepalive_timeout:
+                return last_str, (
+                    f"OVERDUE by {silent_for - self._keepalive_timeout:.0f}s "
+                    f"(limit {self._keepalive_timeout:.0f}s)"
+                )
+            return last_str, f"OK ({self._keepalive_timeout - silent_for:.0f}s until overdue)"
+
+        first_seen = self._keepalive_first_seen.get(instance_id)
+        if first_seen is None:
+            # The keep-alive monitor hasn't seen this instance yet; it will start its
+            # startup clock on its next pass
+            return "never", "awaiting first keep-alive"
+        waiting_for = now - first_seen
+        if self._keepalive_startup_timeout <= 0:
+            return "never", f"awaiting first keep-alive ({waiting_for:.0f}s, timeout disabled)"
+        if waiting_for > self._keepalive_startup_timeout:
+            return "never", (
+                f"OVERDUE by {waiting_for - self._keepalive_startup_timeout:.0f}s for its first "
+                f"keep-alive (limit {self._keepalive_startup_timeout:.0f}s)"
+            )
+        return "never", (
+            f"awaiting first keep-alive ({waiting_for:.0f}s of "
+            f"{self._keepalive_startup_timeout:.0f}s)"
+        )
+
+    def _log_instance_details(self, instances: list[dict[str, Any]]) -> None:
+        """Log a table with one row per instance, including its keep-alive status.
+
+        This is a diagnostic aid that adds a line of output per instance every time the
+        instance summary is computed, so it is only emitted when debug logging is
+        enabled (-vv or higher).
+
+        Parameters:
+            instances: Instance dictionaries from list_job_instances
+        """
+        if not self._logger.isEnabledFor(logging.DEBUG):
+            return
+
+        if not instances:
+            self._logger.debug("Instance details: no instances")
+            return
+
+        now = time.time()
+        headers = ["Instance ID", "Type", "State", "Zone", "Created", "Keep-Alive", "Status"]
+        rows = []
+        for instance in sorted(instances, key=lambda i: str(i["id"])):
+            # Azure instances don't report a zone, creation time, or boot disk type
+            created = str(instance.get("creation_time") or "-")[:19]
+            zone = str(instance.get("zone") or instance.get("location") or "-")
+            last_keepalive, status = self._keepalive_status(instance, now)
+            rows.append(
+                [
+                    str(instance["id"]),
+                    str(instance["type"]),
+                    str(instance["state"]),
+                    zone,
+                    created,
+                    last_keepalive,
+                    status,
+                ]
+            )
+
+        # Size each column to its widest value, since instance IDs, types, and zones
+        # vary a lot in length between providers. The final column isn't padded because
+        # nothing follows it.
+        widths = [
+            max(len(header), *(len(row[col]) for row in rows))
+            for col, header in enumerate(headers[:-1])
+        ]
+
+        def format_row(cells: list[str]) -> str:
+            padded = [cell.ljust(width) for cell, width in zip(cells, widths)]
+            return "  " + "  ".join([*padded, cells[-1]])
+
+        table = [format_row(headers), *(format_row(row) for row in rows)]
+        separator = "  " + "-" * (max(len(line) for line in table) - 2)
+        self._logger.debug("Instance details:")
+        self._logger.debug(table[0])
+        self._logger.debug(separator)
+        for line in table[1:]:
+            self._logger.debug(line)
+
     async def get_job_instances(self) -> tuple[int, int, float, str]:
         """Return job instance counts and pricing summary.
 
@@ -737,6 +857,8 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
             self._logger.error(f"Failed to get running instances: {e}", exc_info=True)
             self._logger.error("Cannot make scaling decisions without instance information")
             return 0, 0, 0.0, "Error getting running instances"
+
+        self._log_instance_details(running_instances)
 
         # Count the number of instances of each type and running status
         # Also count by "state" and "zone" fields

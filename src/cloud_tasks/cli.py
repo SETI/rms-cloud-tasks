@@ -2249,7 +2249,7 @@ def add_common_args(
         "-v",
         action="count",
         default=0,
-        help="Increase verbosity level (-v for warning, -vv for info, -vvv for debug)",
+        help="Increase verbosity level (default is warning, -v for info, -vv or more for debug)",
     )
 
 
