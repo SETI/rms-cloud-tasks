@@ -193,7 +193,11 @@ class RunConfig(BaseModel, validate_assignment=True):
 
     boot_disk_types: list[str] | str | None = None
     boot_disk_iops: PositiveInt | None = None  # GCP only
+    boot_disk_iops_per_cpu: NonNegativeFloat | None = None  # GCP only
+    boot_disk_iops_per_task: NonNegativeFloat | None = None  # GCP only
     boot_disk_throughput: PositiveInt | None = None  # GCP only
+    boot_disk_throughput_per_cpu: NonNegativeFloat | None = None  # GCP only
+    boot_disk_throughput_per_task: NonNegativeFloat | None = None  # GCP only
     total_boot_disk_size: PositiveFloat | None = None
     boot_disk_base_size: NonNegativeFloat | None = None
     boot_disk_per_cpu: NonNegativeFloat | None = None

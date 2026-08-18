@@ -266,3 +266,83 @@ async def test_get_available_instance_types_with_memory_per_cpu_constraints(
     assert len(result) == 1
     assert "n1-standard-2" in result
     assert "n2-standard-4-lssd" not in result  # Has 4 GB/CPU
+
+
+@pytest.mark.asyncio
+async def test_get_available_instance_types_with_boot_disk_iops_per_cpu(
+    gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
+) -> None:
+    """Test scaling the provisioned boot disk IOPS and throughput by the number of vCPUs."""
+    gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
+
+    # Arrange
+    constraints = {
+        "boot_disk_iops_per_cpu": 2000,
+        "boot_disk_throughput_per_cpu": 100,
+    }
+
+    # Act
+    result = await gcp_instance_manager_n1_n2.get_available_instance_types(constraints)
+
+    # Assert
+    assert len(result) == 2
+    # n1-standard-2 has 2 vCPUs
+    assert result["n1-standard-2"]["boot_disk_iops"] == 4000
+    assert result["n1-standard-2"]["boot_disk_throughput"] == 200
+    # n2-standard-4-lssd has 4 vCPUs
+    assert result["n2-standard-4-lssd"]["boot_disk_iops"] == 8000
+    assert result["n2-standard-4-lssd"]["boot_disk_throughput"] == 400
+
+
+@pytest.mark.asyncio
+async def test_get_available_instance_types_with_boot_disk_iops_per_task(
+    gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
+) -> None:
+    """Test scaling the provisioned boot disk IOPS and throughput by the number of tasks."""
+    gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
+
+    # Arrange
+    constraints = {
+        "cpus_per_task": 2,
+        "boot_disk_iops_per_task": 2000,
+        "boot_disk_throughput_per_task": 100,
+    }
+
+    # Act
+    result = await gcp_instance_manager_n1_n2.get_available_instance_types(constraints)
+
+    # Assert
+    assert len(result) == 2
+    # n1-standard-2 has 2 vCPUs, so one task; the provider defaults are larger
+    assert result["n1-standard-2"]["boot_disk_iops"] == 3120
+    assert result["n1-standard-2"]["boot_disk_throughput"] == 170
+    # n2-standard-4-lssd has 4 vCPUs, so two tasks
+    assert result["n2-standard-4-lssd"]["boot_disk_iops"] == 4000
+    assert result["n2-standard-4-lssd"]["boot_disk_throughput"] == 200
+
+
+@pytest.mark.asyncio
+async def test_get_available_instance_types_with_absolute_boot_disk_iops(
+    gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
+) -> None:
+    """Test that an absolute boot disk IOPS value is a floor for the scaled values."""
+    gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
+
+    # Arrange
+    constraints = {
+        "boot_disk_iops": 10000,
+        "boot_disk_iops_per_cpu": 2000,
+        "boot_disk_throughput": 500,
+        "boot_disk_throughput_per_cpu": 100,
+    }
+
+    # Act
+    result = await gcp_instance_manager_n1_n2.get_available_instance_types(constraints)
+
+    # Assert
+    assert len(result) == 2
+    # Both instances are too small for the per-CPU values to reach the absolute values
+    assert result["n1-standard-2"]["boot_disk_iops"] == 10000
+    assert result["n1-standard-2"]["boot_disk_throughput"] == 500
+    assert result["n2-standard-4-lssd"]["boot_disk_iops"] == 10000
+    assert result["n2-standard-4-lssd"]["boot_disk_throughput"] == 500

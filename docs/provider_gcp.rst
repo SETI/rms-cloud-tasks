@@ -220,6 +220,11 @@ number of provisioned IOPS, and also requires the specification of the amount of
 provisioned throughput in MB/s using the ``boot_disk_throughput`` configuration option. If
 not specified, the default amount of throughput (170 MB/s) will be used.
 
+Both amounts can also be scaled by the size of the selected instance using the
+``boot_disk_iops_per_cpu``, ``boot_disk_iops_per_task``, ``boot_disk_throughput_per_cpu``,
+and ``boot_disk_throughput_per_task`` configuration options. When more than one of these is
+given, the largest resulting amount is used, so the absolute option acts as a floor.
+
 Note that different instances and boot disk types have different limits on the number of IOPS
 and the amount of throughput, and also the minimum and maximum disk size. These limits are
 not enforced in the Cloud Tasks system and it is your responsibility to ensure that what

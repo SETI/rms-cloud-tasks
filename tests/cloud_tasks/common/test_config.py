@@ -139,6 +139,36 @@ def test_runconfig_instance_types_list_or_str():
     RunConfig(instance_types="foo")
 
 
+def test_runconfig_boot_disk_iops_and_throughput_per_cpu_and_task():
+    rc = RunConfig(
+        boot_disk_iops_per_cpu=100,
+        boot_disk_iops_per_task=200,
+        boot_disk_throughput_per_cpu=10,
+        boot_disk_throughput_per_task=20,
+    )
+    assert rc.boot_disk_iops_per_cpu == 100
+    assert rc.boot_disk_iops_per_task == 200
+    assert rc.boot_disk_throughput_per_cpu == 10
+    assert rc.boot_disk_throughput_per_task == 20
+
+    # They are optional, like the absolute versions
+    rc = RunConfig()
+    assert rc.boot_disk_iops_per_cpu is None
+    assert rc.boot_disk_iops_per_task is None
+    assert rc.boot_disk_throughput_per_cpu is None
+    assert rc.boot_disk_throughput_per_task is None
+
+    # Negative values are rejected
+    for field in (
+        "boot_disk_iops_per_cpu",
+        "boot_disk_iops_per_task",
+        "boot_disk_throughput_per_cpu",
+        "boot_disk_throughput_per_task",
+    ):
+        with pytest.raises(ValueError):
+            RunConfig(**{field: -1})
+
+
 def test_runconfig_architecture_case():
     rc = RunConfig(architecture="x86_64")
     assert rc.architecture == "x86_64"

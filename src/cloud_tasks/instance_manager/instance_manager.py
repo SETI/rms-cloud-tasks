@@ -1,3 +1,4 @@
+import math
 from abc import ABC, abstractmethod
 from typing import Any
 
@@ -256,6 +257,62 @@ class InstanceManager(ABC):
         boot_disk_from_tasks = boot_disk_base_size + boot_disk_per_task * tasks_per_instance
 
         return max(boot_disk, boot_disk_from_cpus, boot_disk_from_tasks)
+
+    def _get_boot_disk_provisioned_amount(
+        self,
+        instance_info: dict[str, Any],
+        boot_disk_constraints: dict[str, Any],
+        *,
+        absolute_key: str,
+        per_cpu_key: str,
+        per_task_key: str,
+        default: int,
+    ) -> int:
+        """Compute a provisioned boot disk amount (IOPS or throughput) for an instance.
+
+        The absolute constraint named by absolute_key acts as a floor and defaults to
+        default if missing. Missing per_cpu_key and per_task_key constraints are treated
+        as 0. cpus_per_task defaults to 1. Formula: amount_from_cpus = per_cpu *
+        num_cpus; amount_from_tasks = per_task * tasks_per_instance. The returned amount
+        is max(absolute, amount_from_cpus, amount_from_tasks), rounded up to the next
+        whole unit because providers only accept integral IOPS and throughput. When
+        neither per-CPU nor per-task scaling is configured the absolute value (or
+        default) is returned unchanged.
+
+        Parameters:
+            instance_info: dict[str, Any] – instance attributes; "vcpu" is used for
+                per-cpu/per-task scaling.
+            boot_disk_constraints: dict[str, Any] – keys read: the key named by
+                absolute_key (numeric, default default), the keys named by per_cpu_key
+                and per_task_key (numeric, default 0), cpus_per_task (int, default 1).
+            absolute_key: str – constraint name holding the absolute amount.
+            per_cpu_key: str – constraint name holding the amount per vCPU.
+            per_task_key: str – constraint name holding the amount per task.
+            default: int – amount to use when the absolute constraint is missing.
+
+        Returns:
+            int: Computed amount, at least the absolute value (or default). No exception
+            is raised for missing keys.
+        """
+        absolute = boot_disk_constraints.get(absolute_key)
+        if absolute is None:
+            absolute = default
+        per_cpu = boot_disk_constraints.get(per_cpu_key)
+        if per_cpu is None:
+            per_cpu = 0
+        per_task = boot_disk_constraints.get(per_task_key)
+        if per_task is None:
+            per_task = 0
+        num_cpus = instance_info["vcpu"]
+        cpus_per_task = boot_disk_constraints.get("cpus_per_task")
+        if cpus_per_task is None:
+            cpus_per_task = 1
+        tasks_per_instance = num_cpus // cpus_per_task
+
+        amount_from_cpus = per_cpu * num_cpus
+        amount_from_tasks = per_task * tasks_per_instance
+
+        return math.ceil(max(absolute, amount_from_cpus, amount_from_tasks))
 
     @abstractmethod
     async def get_available_instance_types(
