@@ -5,6 +5,7 @@ SQLite database for task tracking and event logging.
 import json
 import logging
 import sqlite3
+from collections.abc import Iterator
 from pathlib import Path
 from types import TracebackType
 from typing import Any
@@ -252,6 +253,28 @@ class TaskDatabase:
             ),
         )
         conn.commit()
+
+    def iter_raw_events(self) -> Iterator[str]:
+        """Yield the raw JSON of every stored event, oldest first.
+
+        Events are streamed rather than returned as a list because a long job can
+        accumulate tens of thousands of them.
+
+        Yields:
+            The raw_event JSON string of each event, in the order it was recorded.
+        """
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT raw_event
+            FROM events
+            ORDER BY id
+            """
+        )
+        for row in cursor:
+            if row["raw_event"] is not None:
+                yield str(row["raw_event"])
 
     def get_task_counts(self) -> dict[str, int]:
         """

@@ -8,6 +8,7 @@ caplog (pytest.LogCaptureFixture): Captured log records.
 """
 
 import asyncio
+import json
 import logging
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -420,3 +421,191 @@ async def test_event_monitor_keepalive_falls_back_to_hostname(tmp_path: Path) ->
     await monitor.process_events_batch()
     task_db.close()
     assert keepalives == [("host-7", None)]
+
+
+def _stored_event(task_db: TaskDatabase, task_id: str, event_type: str = "task_completed") -> dict:
+    """Insert one event into the database and return it."""
+    event = {
+        "timestamp": "2026-08-18T12:00:00+00:00",
+        "hostname": "host-1",
+        "event_type": event_type,
+        "task_id": task_id,
+        "retry": False,
+        "elapsed_time": 1.5,
+    }
+    task_db.insert_event(event)
+    return event
+
+
+def test_iter_raw_events_streams_in_insertion_order(tmp_path: Path) -> None:
+    """iter_raw_events yields each stored event's raw JSON, oldest first."""
+    task_db = TaskDatabase(str(tmp_path / "events.db"))
+    for task_id in ("t1", "t2", "t3"):
+        _stored_event(task_db, task_id)
+
+    raw = list(task_db.iter_raw_events())
+    task_db.close()
+
+    assert [json.loads(line)["task_id"] for line in raw] == ["t1", "t2", "t3"]
+
+
+def test_iter_raw_events_empty_database(tmp_path: Path) -> None:
+    """iter_raw_events yields nothing when no events have been recorded."""
+    task_db = TaskDatabase(str(tmp_path / "events.db"))
+    assert list(task_db.iter_raw_events()) == []
+    task_db.close()
+
+
+@pytest.mark.asyncio
+async def test_start_backfills_new_output_file(tmp_path: Path, caplog) -> None:
+    """A new output file is seeded with the events already in the database."""
+    task_db = TaskDatabase(str(tmp_path / "events.db"))
+    for task_id in ("t1", "t2"):
+        _stored_event(task_db, task_id)
+    out_file = tmp_path / "events.jsonl"
+
+    monitor = EventMonitor(
+        AsyncMock(),
+        task_db,
+        output_file_path=str(out_file),
+        print_events=False,
+        print_summary=False,
+        backfill_output_file=True,
+    )
+    with caplog.at_level(logging.INFO, logger="cloud_tasks.cli"):
+        await monitor.start()
+    monitor.close()
+    task_db.close()
+
+    lines = out_file.read_text().splitlines()
+    assert [json.loads(line)["task_id"] for line in lines] == ["t1", "t2"]
+    assert "Wrote 2 events already in the database" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_start_does_not_backfill_existing_output_file(tmp_path: Path) -> None:
+    """An output file that already exists is appended to, not re-seeded.
+
+    Its contents are presumed to already cover the events in the database, so
+    re-writing them would duplicate every line on each resume.
+    """
+    task_db = TaskDatabase(str(tmp_path / "events.db"))
+    _stored_event(task_db, "t1")
+    out_file = tmp_path / "events.jsonl"
+    out_file.write_text('{"event_type": "pre-existing"}\n')
+
+    monitor = EventMonitor(
+        AsyncMock(),
+        task_db,
+        output_file_path=str(out_file),
+        print_events=False,
+        print_summary=False,
+        backfill_output_file=True,
+    )
+    await monitor.start()
+    monitor.close()
+    task_db.close()
+
+    assert out_file.read_text() == '{"event_type": "pre-existing"}\n'
+
+
+@pytest.mark.asyncio
+async def test_start_does_not_backfill_when_disabled(tmp_path: Path) -> None:
+    """A fresh run leaves the output file empty even though the database has events."""
+    task_db = TaskDatabase(str(tmp_path / "events.db"))
+    _stored_event(task_db, "t1")
+    out_file = tmp_path / "events.jsonl"
+
+    monitor = EventMonitor(
+        AsyncMock(),
+        task_db,
+        output_file_path=str(out_file),
+        print_events=False,
+        print_summary=False,
+    )
+    await monitor.start()
+    monitor.close()
+    task_db.close()
+
+    assert out_file.read_text() == ""
+
+
+@pytest.mark.asyncio
+async def test_backfilled_events_are_followed_by_live_events(tmp_path: Path) -> None:
+    """Events received after the backfill append to it, giving one continuous log."""
+    task_db = TaskDatabase(str(tmp_path / "events.db"))
+    task_db.insert_task("t2", {})
+    _stored_event(task_db, "t1")
+    out_file = tmp_path / "events.jsonl"
+
+    mock_queue = AsyncMock()
+    mock_queue.receive_messages = AsyncMock(
+        return_value=[{"data": {"event_type": "task_completed", "task_id": "t2", "retry": False}}]
+    )
+    monitor = EventMonitor(
+        mock_queue,
+        task_db,
+        output_file_path=str(out_file),
+        print_events=False,
+        print_summary=False,
+        backfill_output_file=True,
+    )
+    await monitor.start()
+    await monitor.process_events_batch()
+    monitor.close()
+    task_db.close()
+
+    lines = out_file.read_text().splitlines()
+    assert [json.loads(line)["task_id"] for line in lines] == ["t1", "t2"]
+
+
+@pytest.mark.asyncio
+async def test_backfill_failure_does_not_abort_monitoring(tmp_path: Path, caplog) -> None:
+    """A failed backfill is logged but leaves the monitor usable.
+
+    The job may already be running, so losing the historical part of the log is
+    preferable to refusing to monitor it.
+    """
+    task_db = TaskDatabase(str(tmp_path / "events.db"))
+    _stored_event(task_db, "t1")
+    out_file = tmp_path / "events.jsonl"
+
+    monitor = EventMonitor(
+        AsyncMock(),
+        task_db,
+        output_file_path=str(out_file),
+        print_events=False,
+        print_summary=False,
+        backfill_output_file=True,
+    )
+    with patch.object(task_db, "iter_raw_events", side_effect=RuntimeError("db gone")):
+        with caplog.at_level(logging.ERROR, logger="cloud_tasks.cli"):
+            await monitor.start()
+
+    assert monitor.output_file is not None
+    assert "Error writing stored events" in caplog.text
+    monitor.close()
+    task_db.close()
+
+
+@pytest.mark.asyncio
+async def test_start_logs_nothing_when_database_has_no_events(tmp_path: Path, caplog) -> None:
+    """Backfilling an empty database creates the file without a misleading log line."""
+    task_db = TaskDatabase(str(tmp_path / "events.db"))
+    out_file = tmp_path / "events.jsonl"
+
+    monitor = EventMonitor(
+        AsyncMock(),
+        task_db,
+        output_file_path=str(out_file),
+        print_events=False,
+        print_summary=False,
+        backfill_output_file=True,
+    )
+    with caplog.at_level(logging.INFO, logger="cloud_tasks.cli"):
+        await monitor.start()
+    monitor.close()
+    task_db.close()
+
+    assert out_file.exists()
+    assert "already in the database" not in caplog.text

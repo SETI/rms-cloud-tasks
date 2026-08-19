@@ -390,6 +390,10 @@ If you want to save the raw events to a file in addition to the SQLite database,
 
   cloud_tasks run --config examples/parallel_addition/config.yml --task-file examples/parallel_addition/addition_tasks.json --output-file addition_events.log [other options...]
 
+If you interrupt the run and later resume it with ``--continue``, adding ``--output-file``
+at that point still gives you a complete log: because the file does not exist yet, the
+events already recorded in the database are written to it before monitoring resumes.
+
 
 Version 2: Addition with Exceptions and Timeouts
 ------------------------------------------------

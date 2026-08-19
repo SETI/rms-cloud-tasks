@@ -513,7 +513,9 @@ Additional options:
 --db-file DB_FILE                     Path to SQLite database file (default: {job_id}.db);
                                       can also be set in configuration file under run.db_file
 --output-file OUTPUT_FILE             Optional file to write events to in JSON-lines format
-                                      in addition to the SQLite database
+                                      in addition to the SQLite database; the file is appended
+                                      to, and with --continue a file that does not yet exist is
+                                      first seeded with the events already in the database
 --force, -f                           Force fresh run without confirmation even if queue has
                                       existing messages
 --dry-run                             Do not actually load any tasks or create or delete any
@@ -525,6 +527,16 @@ status and events. It contains:
 - **tasks table**: task_id, task_data, status, retry flag, timestamps, hostname, results,
   exceptions, exit codes
 - **events table**: Raw event log from workers
+
+**Event Log File**: ``--output-file`` writes every received event to a file in JSON-lines
+format, in addition to the SQLite database. The file is opened for append, so resuming a job
+with ``--continue`` extends the existing log rather than truncating it. If the file does not
+exist yet — because the earlier part of the job ran without ``--output-file``, or the file was
+moved away — a ``--continue`` run first writes out the events already recorded in the database,
+so the result is a complete log of the whole job rather than only the part this process
+observed. An output file that already exists is never re-seeded, since its contents are presumed
+to already cover those events; otherwise every resume would duplicate the entire history.
+Keep-alive events are not stored in the database and never appear in the log.
 
 **Task Completion**: A task is considered complete when it has any status with ``retry=False``.
 
@@ -622,7 +634,9 @@ this does not manage compute instances.
 Additional options:
 
 --db-file DB_FILE                     Path to SQLite database file (default: {job_id}.db)
---output-file OUTPUT_FILE             Optional file to write events to in JSON-lines format
+--output-file OUTPUT_FILE             Optional file to write events to in JSON-lines format; the
+                                      file is appended to, and one that does not yet exist is
+                                      first seeded with the events already in the database
 --print-events                        Print events to stdout as they are received
 --no-auto-complete                    Don't stop automatically when all tasks complete
 
@@ -662,7 +676,9 @@ testing or debugging) but still use the automated event monitoring and task trac
 - Updates the database with task status, results, and statistics
 - Prints periodic status summaries to the console
 - Automatically stops when all tasks complete (unless ``--no-auto-complete`` is specified)
-- Optionally writes events to a JSON-lines output file for archival
+- Optionally writes events to a JSON-lines output file for archival; because this command
+  always attaches to a job that is already under way, an output file that does not yet exist
+  is first seeded with the events already in the database
 
 **Comparison with ``run`` command:**
 

@@ -484,6 +484,7 @@ class EventMonitor:
         print_events: bool = True,
         print_summary: bool = True,
         keepalive_callback: Callable[[str, str | None], None] | None = None,
+        backfill_output_file: bool = False,
     ) -> None:
         """
         Initialize the event monitor.
@@ -497,6 +498,12 @@ class EventMonitor:
             keepalive_callback: Optional callback invoked with (instance_id, timestamp)
                 for each keep-alive event; keep-alive events are intercepted and never
                 printed, written to the output file, or stored in the database
+            backfill_output_file: Whether to seed a newly created output file with the
+                events already recorded in the database. Used when attaching to a job
+                that is already under way so the file is a complete log of the job
+                rather than only the part observed by this process. Ignored when the
+                output file already exists, since those events are presumed to be in it
+                already.
         """
         self.events_queue = events_queue
         self.task_db = task_db
@@ -504,13 +511,30 @@ class EventMonitor:
         self.print_events = print_events
         self.print_summary = print_summary
         self.keepalive_callback = keepalive_callback
+        self.backfill_output_file = backfill_output_file
         self.output_file = None
         self.something_changed = True
+
+    def _write_stored_events(self) -> int:
+        """Write every event already in the database to the output file.
+
+        Returns:
+            The number of events written.
+        """
+        assert self.output_file is not None
+        count = 0
+        for raw_event in self.task_db.iter_raw_events():
+            self.output_file.write(raw_event.rstrip("\n") + "\n")
+            count += 1
+        self.output_file.flush()
+        return count
 
     async def start(self) -> None:
         """Start monitoring events."""
         if self.output_file_path:
             path = self.output_file_path
+            # Decide before opening, since opening for append creates the file
+            backfill = self.backfill_output_file and not Path(path).exists()
             try:
 
                 def _open_file(p: str, mode: str) -> Any:
@@ -532,6 +556,16 @@ class EventMonitor:
             except Exception as e:
                 logger.fatal(f'Error opening events file "{path}": {e}', exc_info=True)
                 sys.exit(1)
+            if backfill and self.output_file is not None:
+                try:
+                    count = await asyncio.to_thread(self._write_stored_events)
+                except Exception as e:
+                    # The file is open and new events will still be written to it; a
+                    # partial history is better than aborting a job that is under way
+                    logger.error(f'Error writing stored events to "{path}": {e}', exc_info=True)
+                else:
+                    if count:
+                        logger.info(f'Wrote {count} events already in the database to "{path}"')
         return
 
     async def process_events_batch(self) -> int:
@@ -725,6 +759,8 @@ async def monitor_event_queue_cmd(args: argparse.Namespace, config: Config) -> N
             output_file_path=getattr(args, "output_file", None),
             print_events=getattr(args, "print_events", False),
             print_summary=True,
+            # This command only ever attaches to a job that is already under way
+            backfill_output_file=True,
         )
         await event_monitor.start()
 
@@ -1139,6 +1175,8 @@ async def run_cmd(args: argparse.Namespace, config: Config) -> None:
             print_events=False,  # Don't print individual events
             print_summary=True,
             keepalive_callback=orchestrator.record_keepalive,
+            # A fresh run starts with an empty database, so there is nothing to seed
+            backfill_output_file=args.continue_run,
         )
         await event_monitor.start()
 
