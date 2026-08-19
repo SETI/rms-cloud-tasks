@@ -8,16 +8,28 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from cloud_tasks.worker.worker import Worker
+from cloud_tasks.worker.worker import Worker, WorkerData
 
 #: Signature of the callable a Worker is constructed with, as built by the
-#: mock_worker_function fixture: (task_id, task_data, worker) -> (retry, result).
-WorkerFunction = Callable[[str, dict[str, Any], Any], tuple[bool, str]]
+#: mock_worker_function fixture: (task_id, task_data, worker_data) -> (retry, result).
+WorkerFunction = Callable[[str, dict[str, Any], WorkerData], tuple[bool, str]]
 
 
 @pytest.fixture
 def timeout_worker(mock_worker_function: WorkerFunction, monkeypatch: pytest.MonkeyPatch) -> Worker:
-    """Worker with one process that has already exceeded max_runtime."""
+    """Worker with one process that has already exceeded max_runtime.
+
+    The worker is marked running with max_runtime set to 10 seconds and a single mock
+    process registered whose start time is 100 seconds in the past, so a single pass of
+    _monitor_process_runtimes sees it as timed out.
+
+    Parameters:
+        mock_worker_function: Fixture; the callable the Worker is constructed with.
+        monkeypatch: Pytest fixture used to set the environment and sys.argv.
+
+    Returns:
+        Worker: A worker whose only tracked process is over its runtime limit.
+    """
     monkeypatch.setenv("RMS_CLOUD_TASKS_PROVIDER", "GCP")
     monkeypatch.setenv("RMS_CLOUD_TASKS_JOB_ID", "test-job")
     monkeypatch.setattr(sys, "argv", ["worker.py"])

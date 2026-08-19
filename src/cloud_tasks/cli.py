@@ -472,6 +472,14 @@ async def list_running_instances_cmd(args: argparse.Namespace, config: Config) -
         sys.exit(1)
 
 
+class _OutputFileError(Exception):
+    """Raised when writing to the events output file fails.
+
+    Distinguishes an unusable output file, which is optional and can be dropped, from a
+    failure to read the events being written, which says nothing about the file.
+    """
+
+
 class EventMonitor:
     """Helper class for monitoring events from the event queue and updating the database."""
 
@@ -541,13 +549,25 @@ class EventMonitor:
 
         Returns:
             The number of events written.
+
+        Raises:
+            _OutputFileError: If writing or flushing the output file fails.
+            Exception: Whatever reading the events from the database raises, so the
+                caller can tell an unusable output file apart from an unreadable
+                database.
         """
         assert self.output_file is not None
         count = 0
         for raw_event in self.task_db.iter_raw_events():
-            self.output_file.write(raw_event.rstrip("\n") + "\n")
+            try:
+                self.output_file.write(raw_event.rstrip("\n") + "\n")
+            except Exception as e:
+                raise _OutputFileError(f"error writing stored events: {e}") from e
             count += 1
-        self.output_file.flush()
+        try:
+            self.output_file.flush()
+        except Exception as e:
+            raise _OutputFileError(f"error flushing stored events: {e}") from e
         return count
 
     async def start(self) -> None:
@@ -580,12 +600,19 @@ class EventMonitor:
             if backfill and self.output_file is not None:
                 try:
                     count = await asyncio.to_thread(self._write_stored_events)
+                except _OutputFileError as e:
+                    # The file itself is unusable, so drop it; keeping a stream that has
+                    # already failed would only stall event processing later
+                    self._disable_output_file(str(e))
                 except Exception as e:
-                    # Don't abort a job that is already under way just because its log
-                    # file can't be written, but don't keep a stream that has already
-                    # failed either - writing to it again would stall event processing
-                    logger.debug(f'Error writing stored events to "{path}"', exc_info=True)
-                    self._disable_output_file(f"error writing stored events: {e}")
+                    # Reading the stored events failed, which says nothing about the
+                    # output file - keep it and log the live events from here on. Either
+                    # way, don't abort a job that is already under way
+                    logger.error(
+                        f'Error reading stored events from the database, so "{path}" will '
+                        f"cover only the events received from now on: {e}",
+                        exc_info=True,
+                    )
                 else:
                     if count:
                         logger.info(f'Wrote {count} events already in the database to "{path}"')

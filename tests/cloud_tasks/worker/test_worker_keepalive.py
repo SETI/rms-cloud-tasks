@@ -8,11 +8,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from cloud_tasks.worker.worker import Worker
+from cloud_tasks.worker.worker import Worker, WorkerData
 
 #: Signature of the callable a Worker is constructed with, as built by the
-#: mock_worker_function fixture: (task_id, task_data, worker) -> (retry, result).
-WorkerFunction = Callable[[str, dict[str, Any], Any], tuple[bool, str]]
+#: mock_worker_function fixture: (task_id, task_data, worker_data) -> (retry, result).
+WorkerFunction = Callable[[str, dict[str, Any], WorkerData], tuple[bool, str]]
 
 
 @pytest.fixture

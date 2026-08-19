@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -560,12 +561,59 @@ async def test_backfilled_events_are_followed_by_live_events(tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
-async def test_backfill_failure_does_not_abort_monitoring(tmp_path: Path, caplog) -> None:
-    """A failed backfill is logged and the output file is dropped, but monitoring goes on.
+async def test_backfill_write_failure_drops_the_output_file(tmp_path: Path, caplog) -> None:
+    """An output file that can't be written during the backfill is dropped.
 
-    The job may already be running, so refusing to monitor it would be worse than
-    losing its log file. The stream is disabled rather than kept, because a stream that
-    has already failed would keep failing on every live event.
+    The job may already be running, so refusing to monitor it would be worse than losing
+    its log file. The stream is disabled rather than kept, because a stream that has
+    already failed would keep failing on every live event.
+    """
+    task_db = TaskDatabase(str(tmp_path / "events.db"))
+    task_db.insert_task("t2", {})
+    _stored_event(task_db, "t1")
+    out_file = tmp_path / "events.jsonl"
+
+    mock_queue = AsyncMock()
+    mock_queue.receive_messages = AsyncMock(
+        return_value=[{"data": {"event_type": "task_completed", "task_id": "t2", "retry": False}}]
+    )
+    monitor = EventMonitor(
+        mock_queue,
+        task_db,
+        output_file_path=str(out_file),
+        print_events=False,
+        print_summary=False,
+        backfill_output_file=True,
+    )
+    real_open = open
+
+    def open_with_failing_write(path: str, mode: str) -> Any:
+        """Open the file for real but make writing to it fail."""
+        handle = real_open(path, mode)
+        handle.write = MagicMock(side_effect=OSError("No space left on device"))
+        return handle
+
+    with patch("cloud_tasks.cli.open", side_effect=open_with_failing_write):
+        with caplog.at_level(logging.ERROR, logger="cloud_tasks.cli"):
+            await monitor.start()
+
+    assert monitor.output_file is None
+    assert "No space left on device" in caplog.text
+
+    # Monitoring still works and the database is still updated
+    assert await monitor.process_events_batch() == 1
+    monitor.close()
+    counts = task_db.get_task_counts()
+    task_db.close()
+    assert counts == {"completed": 1}
+
+
+@pytest.mark.asyncio
+async def test_backfill_database_failure_keeps_the_output_file(tmp_path: Path, caplog) -> None:
+    """A database read failure during the backfill says nothing about the output file.
+
+    The file is left open so live events are still logged to it, and the history it is
+    missing is reported rather than silently dropped.
     """
     task_db = TaskDatabase(str(tmp_path / "events.db"))
     task_db.insert_task("t2", {})
@@ -588,15 +636,15 @@ async def test_backfill_failure_does_not_abort_monitoring(tmp_path: Path, caplog
         with caplog.at_level(logging.ERROR, logger="cloud_tasks.cli"):
             await monitor.start()
 
-    assert monitor.output_file is None
-    assert "No longer writing events" in caplog.text
+    assert monitor.output_file is not None
+    assert "Error reading stored events from the database" in caplog.text
 
-    # Monitoring still works and the database is still updated
     assert await monitor.process_events_batch() == 1
     monitor.close()
-    counts = task_db.get_task_counts()
     task_db.close()
-    assert counts == {"completed": 1}
+    # The backfilled history is missing, but live events were still logged
+    lines = out_file.read_text().splitlines()
+    assert [json.loads(line)["task_id"] for line in lines] == ["t2"]
 
 
 @pytest.mark.asyncio

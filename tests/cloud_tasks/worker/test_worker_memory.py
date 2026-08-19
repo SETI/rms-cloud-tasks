@@ -10,11 +10,11 @@ from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
-from cloud_tasks.worker.worker import Worker
+from cloud_tasks.worker.worker import Worker, WorkerData
 
 #: Signature of the callable a Worker is constructed with, as built by the
-#: mock_worker_function fixture: (task_id, task_data, worker) -> (retry, result).
-WorkerFunction = Callable[[str, dict[str, Any], Any], tuple[bool, str]]
+#: mock_worker_function fixture: (task_id, task_data, worker_data) -> (retry, result).
+WorkerFunction = Callable[[str, dict[str, Any], WorkerData], tuple[bool, str]]
 
 
 def test_max_memory_default_no_limit(
@@ -110,7 +110,7 @@ def test_worker_process_main_memory_limit_without_resource_module(
     with (
         patch("cloud_tasks.worker.worker.resource", None),
         patch("sys.exit"),
-        caplog.at_level(logging.WARNING, logger="cloud_tasks.worker.worker"),
+        caplog.at_level(logging.WARNING),
     ):
         Worker._worker_process_main(
             1, mock_worker_function, worker_data, "test-task", {"key": "value"}, result_queue
@@ -138,7 +138,7 @@ def test_worker_process_main_setrlimit_failure(
     with (
         patch("cloud_tasks.worker.worker.resource", mock_resource),
         patch("sys.exit"),
-        caplog.at_level(logging.WARNING, logger="cloud_tasks.worker.worker"),
+        caplog.at_level(logging.WARNING),
     ):
         Worker._worker_process_main(
             1, mock_worker_function, worker_data, "test-task", {"key": "value"}, result_queue
@@ -154,7 +154,19 @@ def test_worker_process_main_setrlimit_failure(
 def test_worker_process_main_memory_error(mock_worker_function: WorkerFunction) -> None:
     """A MemoryError from the task is reported as a memory_error result."""
 
-    def oom_worker_function(task_id: str, task_data: dict[str, Any], worker: Any):
+    def oom_worker_function(
+        task_id: str, task_data: dict[str, Any], worker_data: WorkerData
+    ) -> tuple[bool, str]:
+        """Worker function that exhausts the memory limit.
+
+        Parameters:
+            task_id: The ID of the task being run.
+            task_data: The task's payload.
+            worker_data: The worker's configuration.
+
+        Raises:
+            MemoryError: Always, standing in for an allocation past RLIMIT_AS.
+        """
         raise MemoryError("out of memory")
 
     result_queue = MagicMock()
@@ -269,19 +281,34 @@ async def test_handle_results_memory_error_logs_nonretriable_exception_event(
 
 
 @pytest.mark.parametrize("bad_value", ["-1", "0", "nan", "inf"])
+@pytest.mark.parametrize("source", ["args", "env"])
 def test_max_memory_rejects_invalid_values(
-    mock_worker_function: WorkerFunction, monkeypatch: pytest.MonkeyPatch, bad_value: str
+    mock_worker_function: WorkerFunction,
+    monkeypatch: pytest.MonkeyPatch,
+    bad_value: str,
+    source: str,
 ) -> None:
     """A non-positive or non-finite memory limit is rejected during worker startup.
 
     A worker configured from the command line or the environment doesn't go through the
-    manager's RunConfig validation. Left unchecked, a non-finite value raises while being
-    converted to bytes in every task process, and a negative one is rejected by setrlimit
-    and leaves the task running with no limit at all despite one having been requested.
+    manager's RunConfig validation, so both sources are checked here. Left unchecked, a
+    non-finite value raises while being converted to bytes in every task process, and a
+    negative one is rejected by setrlimit and leaves the task running with no limit at
+    all despite one having been requested.
+
+    Parameters:
+        mock_worker_function: Fixture; the callable the Worker is constructed with.
+        monkeypatch: Pytest fixture used to set the environment and sys.argv.
+        bad_value: The rejected value, as it would be typed or exported.
+        source: Whether the value arrives as a command-line option or an env var.
     """
     monkeypatch.setenv("RMS_CLOUD_TASKS_PROVIDER", "GCP")
     monkeypatch.setenv("RMS_CLOUD_TASKS_JOB_ID", "test-job")
-    monkeypatch.setattr(sys, "argv", ["worker.py", "--max-memory-allowed-per-task", bad_value])
+    if source == "args":
+        monkeypatch.setattr(sys, "argv", ["worker.py", "--max-memory-allowed-per-task", bad_value])
+    else:
+        monkeypatch.setenv("RMS_CLOUD_TASKS_MAX_MEMORY_ALLOWED_PER_TASK", bad_value)
+        monkeypatch.setattr(sys, "argv", ["worker.py"])
 
     with patch("cloud_tasks.worker.worker.sys.exit", side_effect=SystemExit(1)) as mock_exit:
         with pytest.raises(SystemExit):
