@@ -773,7 +773,8 @@ async def test_acknowledge_task_error(gcp_queue, mock_pubsub_client):
 
 
 def test_get_max_visibility_timeout(gcp_queue: GCPPubSubQueue) -> None:
-    """Test that the maximum visibility timeout matches GCP's 600-second ack deadline limit."""
+    """Test that the maximum visibility timeout matches GCP's 600-second ack
+    deadline limit."""
     assert gcp_queue.get_max_visibility_timeout() == 600
 
 

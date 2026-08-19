@@ -2,6 +2,7 @@
 
 import sys
 import time
+from collections.abc import Callable
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -9,9 +10,13 @@ import pytest
 
 from cloud_tasks.worker.worker import Worker
 
+#: Signature of the callable a Worker is constructed with, as built by the
+#: mock_worker_function fixture: (task_id, task_data, worker) -> (retry, result).
+WorkerFunction = Callable[[str, dict[str, Any], Any], tuple[bool, str]]
+
 
 @pytest.fixture
-def timeout_worker(mock_worker_function, monkeypatch) -> Worker:
+def timeout_worker(mock_worker_function: WorkerFunction, monkeypatch: pytest.MonkeyPatch) -> Worker:
     """Worker with one process that has already exceeded max_runtime."""
     monkeypatch.setenv("RMS_CLOUD_TASKS_PROVIDER", "GCP")
     monkeypatch.setenv("RMS_CLOUD_TASKS_JOB_ID", "test-job")

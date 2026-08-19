@@ -11,7 +11,7 @@ import asyncio
 import json
 import logging
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -561,17 +561,23 @@ async def test_backfilled_events_are_followed_by_live_events(tmp_path: Path) -> 
 
 @pytest.mark.asyncio
 async def test_backfill_failure_does_not_abort_monitoring(tmp_path: Path, caplog) -> None:
-    """A failed backfill is logged but leaves the monitor usable.
+    """A failed backfill is logged and the output file is dropped, but monitoring goes on.
 
-    The job may already be running, so losing the historical part of the log is
-    preferable to refusing to monitor it.
+    The job may already be running, so refusing to monitor it would be worse than
+    losing its log file. The stream is disabled rather than kept, because a stream that
+    has already failed would keep failing on every live event.
     """
     task_db = TaskDatabase(str(tmp_path / "events.db"))
+    task_db.insert_task("t2", {})
     _stored_event(task_db, "t1")
     out_file = tmp_path / "events.jsonl"
 
+    mock_queue = AsyncMock()
+    mock_queue.receive_messages = AsyncMock(
+        return_value=[{"data": {"event_type": "task_completed", "task_id": "t2", "retry": False}}]
+    )
     monitor = EventMonitor(
-        AsyncMock(),
+        mock_queue,
         task_db,
         output_file_path=str(out_file),
         print_events=False,
@@ -582,10 +588,60 @@ async def test_backfill_failure_does_not_abort_monitoring(tmp_path: Path, caplog
         with caplog.at_level(logging.ERROR, logger="cloud_tasks.cli"):
             await monitor.start()
 
+    assert monitor.output_file is None
+    assert "No longer writing events" in caplog.text
+
+    # Monitoring still works and the database is still updated
+    assert await monitor.process_events_batch() == 1
+    monitor.close()
+    counts = task_db.get_task_counts()
+    task_db.close()
+    assert counts == {"completed": 1}
+
+
+@pytest.mark.asyncio
+async def test_output_file_write_failure_does_not_block_database(tmp_path: Path, caplog) -> None:
+    """A broken output stream is dropped and the database is still updated.
+
+    The database is the authoritative record. If a write error on the optional log file
+    aborted event processing, a full disk would silently stop all task tracking.
+    """
+    task_db = TaskDatabase(str(tmp_path / "events.db"))
+    task_db.insert_task("t1", {})
+    task_db.insert_task("t2", {})
+    out_file = tmp_path / "events.jsonl"
+
+    mock_queue = AsyncMock()
+    mock_queue.receive_messages = AsyncMock(
+        return_value=[{"data": {"event_type": "task_completed", "task_id": "t1", "retry": False}}]
+    )
+    monitor = EventMonitor(
+        mock_queue,
+        task_db,
+        output_file_path=str(out_file),
+        print_events=False,
+        print_summary=False,
+    )
+    await monitor.start()
     assert monitor.output_file is not None
-    assert "Error writing stored events" in caplog.text
+    monitor.output_file.write = MagicMock(side_effect=OSError("No space left on device"))
+
+    with caplog.at_level(logging.ERROR, logger="cloud_tasks.cli"):
+        assert await monitor.process_events_batch() == 1
+
+    assert monitor.output_file is None
+    assert "No space left on device" in caplog.text
+    assert task_db.get_task_counts() == {"completed": 1, "pending": 1}
+
+    # A later event is still recorded even though the file is gone
+    mock_queue.receive_messages = AsyncMock(
+        return_value=[{"data": {"event_type": "task_completed", "task_id": "t2", "retry": False}}]
+    )
+    assert await monitor.process_events_batch() == 1
+    counts = task_db.get_task_counts()
     monitor.close()
     task_db.close()
+    assert counts == {"completed": 2}
 
 
 @pytest.mark.asyncio

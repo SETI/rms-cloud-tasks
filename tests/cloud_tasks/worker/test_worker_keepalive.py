@@ -2,6 +2,7 @@
 
 import asyncio
 import sys
+from collections.abc import Callable
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -9,9 +10,15 @@ import pytest
 
 from cloud_tasks.worker.worker import Worker
 
+#: Signature of the callable a Worker is constructed with, as built by the
+#: mock_worker_function fixture: (task_id, task_data, worker) -> (retry, result).
+WorkerFunction = Callable[[str, dict[str, Any], Any], tuple[bool, str]]
+
 
 @pytest.fixture
-def keepalive_worker(mock_worker_function, monkeypatch) -> Worker:
+def keepalive_worker(
+    mock_worker_function: WorkerFunction, monkeypatch: pytest.MonkeyPatch
+) -> Worker:
     """Worker instance with provider and job-id from env; sys.argv patched for test scope."""
     monkeypatch.setenv("RMS_CLOUD_TASKS_PROVIDER", "GCP")
     monkeypatch.setenv("RMS_CLOUD_TASKS_JOB_ID", "test-job")
@@ -24,7 +31,9 @@ def test_keepalive_interval_default(keepalive_worker: Worker) -> None:
     assert keepalive_worker._data.keepalive_interval == 60.0
 
 
-def test_keepalive_interval_from_env(mock_worker_function, monkeypatch) -> None:
+def test_keepalive_interval_from_env(
+    mock_worker_function: WorkerFunction, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The keep-alive interval can be set via RMS_CLOUD_TASKS_KEEPALIVE_INTERVAL."""
     monkeypatch.setenv("RMS_CLOUD_TASKS_PROVIDER", "GCP")
     monkeypatch.setenv("RMS_CLOUD_TASKS_JOB_ID", "test-job")
@@ -34,7 +43,9 @@ def test_keepalive_interval_from_env(mock_worker_function, monkeypatch) -> None:
     assert worker._data.keepalive_interval == 120.0
 
 
-def test_keepalive_interval_from_args(mock_worker_function, monkeypatch) -> None:
+def test_keepalive_interval_from_args(
+    mock_worker_function: WorkerFunction, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The keep-alive interval can be set via --keepalive-interval, overriding the env var."""
     monkeypatch.setenv("RMS_CLOUD_TASKS_PROVIDER", "GCP")
     monkeypatch.setenv("RMS_CLOUD_TASKS_JOB_ID", "test-job")
@@ -73,7 +84,9 @@ def test_get_instance_identity_gcp(keepalive_worker: Worker) -> None:
         assert "metadata.google.internal" in mock_get.call_args.args[0]
 
 
-def test_get_instance_identity_aws(mock_worker_function, monkeypatch) -> None:
+def test_get_instance_identity_aws(
+    mock_worker_function: WorkerFunction, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The instance identity is fetched from the AWS metadata server."""
     monkeypatch.setenv("RMS_CLOUD_TASKS_PROVIDER", "AWS")
     monkeypatch.setenv("RMS_CLOUD_TASKS_JOB_ID", "test-job")
@@ -140,7 +153,7 @@ async def test_keepalive_worker_survives_send_errors(keepalive_worker: Worker) -
 
 @pytest.mark.asyncio
 async def test_keepalive_worker_started_only_with_event_queue(
-    mock_worker_function, monkeypatch
+    mock_worker_function: WorkerFunction, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """start() launches the keep-alive worker only when logging events to a queue."""
     monkeypatch.setenv("RMS_CLOUD_TASKS_PROVIDER", "GCP")

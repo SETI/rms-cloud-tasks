@@ -9,6 +9,7 @@ import argparse
 import asyncio
 import json
 import logging
+import math
 import multiprocessing
 import os
 import signal
@@ -736,6 +737,20 @@ class Worker:
             float(raw_max_memory) if raw_max_memory is not None else None
         )
         if self._data.max_memory_allowed_per_task is not None:
+            # A worker configured directly from the command line or the environment
+            # bypasses the manager's RunConfig validation, so check the value here. A
+            # non-finite value would raise while being converted to bytes in each task
+            # process, and a negative one would be rejected by setrlimit and silently
+            # leave the task running with no limit at all.
+            if (
+                not math.isfinite(self._data.max_memory_allowed_per_task)
+                or self._data.max_memory_allowed_per_task <= 0
+            ):
+                logger.error(
+                    "Maximum memory per task must be a positive number of GB, not "
+                    f"{self._data.max_memory_allowed_per_task}"
+                )
+                sys.exit(1)
             logger.info(f"  Maximum memory per task: {self._data.max_memory_allowed_per_task} GB")
         else:
             logger.info("  Maximum memory per task: No limit")

@@ -515,6 +515,27 @@ class EventMonitor:
         self.output_file = None
         self.something_changed = True
 
+    def _disable_output_file(self, reason: str) -> None:
+        """Stop writing to the output file after an I/O error.
+
+        The database is the authoritative record; a file that can no longer be written
+        must not be allowed to hold up event processing, so the stream is closed and
+        dropped and monitoring continues without it.
+
+        Parameters:
+            reason: What went wrong, for the log message.
+        """
+        logger.error(
+            f'No longer writing events to "{self.output_file_path}": {reason}. '
+            "Event processing continues; the database remains complete."
+        )
+        try:
+            if self.output_file is not None:
+                self.output_file.close()
+        except Exception:  # pragma: no cover - the stream is already broken
+            logger.debug("Error closing the events output file", exc_info=True)
+        self.output_file = None
+
     def _write_stored_events(self) -> int:
         """Write every event already in the database to the output file.
 
@@ -560,9 +581,11 @@ class EventMonitor:
                 try:
                     count = await asyncio.to_thread(self._write_stored_events)
                 except Exception as e:
-                    # The file is open and new events will still be written to it; a
-                    # partial history is better than aborting a job that is under way
-                    logger.error(f'Error writing stored events to "{path}": {e}', exc_info=True)
+                    # Don't abort a job that is already under way just because its log
+                    # file can't be written, but don't keep a stream that has already
+                    # failed either - writing to it again would stall event processing
+                    logger.debug(f'Error writing stored events to "{path}"', exc_info=True)
+                    self._disable_output_file(f"error writing stored events: {e}")
                 else:
                     if count:
                         logger.info(f'Wrote {count} events already in the database to "{path}"')
@@ -603,17 +626,22 @@ class EventMonitor:
 
                         self.something_changed = True
 
+                        # Update the database first: it is the authoritative record
+                        # and must not be skipped because of a problem with the
+                        # optional output file
+                        self.task_db.insert_event(data)
+                        self.task_db.update_task_from_event(data)
+
                         # Write to file if specified
                         if self.output_file:
-                            self.output_file.write(json.dumps(data) + "\n")
+                            try:
+                                self.output_file.write(json.dumps(data) + "\n")
+                            except Exception as e:
+                                self._disable_output_file(f"error writing event: {e}")
 
                         # Print to stdout if requested
                         if self.print_events:
                             print(json.dumps(data))
-
-                        # Update database
-                        self.task_db.insert_event(data)
-                        self.task_db.update_task_from_event(data)
 
                     except json.JSONDecodeError as e:
                         logger.error(f"Error decoding message: {e}")
@@ -621,7 +649,10 @@ class EventMonitor:
                         logger.error(f"Error processing message: {e}")
 
                 if self.output_file:
-                    self.output_file.flush()
+                    try:
+                        self.output_file.flush()
+                    except Exception as e:
+                        self._disable_output_file(f"error flushing events: {e}")
 
                 return len(messages)
             else:
