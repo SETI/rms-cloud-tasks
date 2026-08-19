@@ -899,3 +899,49 @@ def test_boot_disk_types_capitalization(config_obj):
     c.run.boot_disk_types = []
     c.update_run_config_from_provider_config()
     assert c.run.boot_disk_types == []
+
+
+def test_runconfig_keepalive_fields() -> None:
+    """RunConfig validates the keep-alive options.
+
+    Covers: positive values are accepted; all three fields default to None (downstream
+    code substitutes the built-in defaults); the two timeouts accept 0 (which disables
+    that check) but reject negative values; keepalive_interval must be strictly
+    positive (0 and negatives are rejected).
+    """
+    config = RunConfig(keepalive_interval=45, keepalive_startup_timeout=600, keepalive_timeout=300)
+    assert config.keepalive_interval == 45
+    assert config.keepalive_startup_timeout == 600
+    assert config.keepalive_timeout == 300
+
+    # Defaults are None (use built-in defaults downstream)
+    config = RunConfig()
+    assert config.keepalive_interval is None
+    assert config.keepalive_startup_timeout is None
+    assert config.keepalive_timeout is None
+
+    # Timeouts may be 0 (disabled), but the interval must be positive
+    config = RunConfig(keepalive_startup_timeout=0, keepalive_timeout=0)
+    assert config.keepalive_startup_timeout == 0
+    assert config.keepalive_timeout == 0
+    with pytest.raises(ValueError):
+        RunConfig(keepalive_interval=0)
+    with pytest.raises(ValueError):
+        RunConfig(keepalive_startup_timeout=-1)
+    with pytest.raises(ValueError):
+        RunConfig(keepalive_timeout=-1)
+
+
+def test_runconfig_max_memory_allowed_per_task() -> None:
+    """RunConfig accepts max_memory_allowed_per_task and rejects non-positive values."""
+    config = RunConfig(max_memory_allowed_per_task=2.5)
+    assert config.max_memory_allowed_per_task == 2.5
+
+    # Default is None (no limit)
+    config = RunConfig()
+    assert config.max_memory_allowed_per_task is None
+
+    with pytest.raises(ValueError):
+        RunConfig(max_memory_allowed_per_task=0)
+    with pytest.raises(ValueError):
+        RunConfig(max_memory_allowed_per_task=-1)

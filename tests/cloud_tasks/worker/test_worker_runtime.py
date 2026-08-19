@@ -232,6 +232,7 @@ async def test_handle_results_process_exception(
 def test_worker_process_main(mock_worker_function):
     result_queue = MagicMock()
     worker_data = MagicMock()
+    worker_data.max_memory_allowed_per_task = None
     task = {
         "task_id": "test-task",
         "data": {"key": "value"},
@@ -1297,6 +1298,7 @@ def test_worker_process_main_with_exception():
 
     result_queue = MagicMock()
     worker_data = MagicMock()
+    worker_data.max_memory_allowed_per_task = None
     worker_data.received_shutdown_request = False
     worker_data.received_termination_notice = False
 
@@ -1324,6 +1326,7 @@ def test_worker_process_main_with_unhandled_exception() -> None:
 
     result_queue = MagicMock()
     worker_data = MagicMock()
+    worker_data.max_memory_allowed_per_task = None
     worker_data.received_shutdown_request = False
     worker_data.received_termination_notice = False
 

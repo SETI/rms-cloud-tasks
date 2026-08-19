@@ -281,6 +281,27 @@ Options to specify the worker process and run process
   unhandled exception
 * ``retry_on_timeout``: If True, tasks will be retried if they exceed the maximum runtime
   specified by ``max_runtime``
+* ``max_memory_allowed_per_task``: The maximum memory in GB each task process is allowed
+  to use; this value is passed to the workers through the generated startup script and is
+  enforced by the operating system as an address-space limit on each task process. A task
+  that exceeds the limit fails with a ``MemoryError`` and is never retried (regardless of
+  ``retry_on_exception``). If not specified, there is no limit. See
+  :ref:`worker_memory_limit` for details and caveats.
+* ``keepalive_interval``: The interval in seconds between keep-alive events sent by each
+  worker to the event queue; this value is passed to the workers through the generated
+  startup script (if not specified, workers use their built-in default of 60 seconds)
+* ``keepalive_startup_timeout``: How long in seconds to wait after an instance is started
+  for its first keep-alive event (defaults to 600; 0 disables the check). If an instance
+  exceeds this timeout while other instances are sending keep-alives, the instance is
+  assumed to have failed to start and is terminated (a replacement will be created if
+  needed). If *no* instance has ever sent a keep-alive and every instance exceeds this
+  timeout, the startup script is assumed to be broken: all instances are terminated and
+  the job is aborted.
+* ``keepalive_timeout``: How long in seconds to wait after a keep-alive event for the next
+  one from the same instance (defaults to 300; 0 disables the check). An instance that
+  exceeds this timeout is assumed to have crashed and is terminated; a replacement will be
+  created if needed. This value should be set to several times the keep-alive interval so
+  that a single delayed event doesn't cause a healthy instance to be terminated.
 * ``db_file``: Path to the SQLite database file used by the ``run`` command to track task
   status and events (defaults to ``{job_id}.db`` in the current working directory). The 
   database enables crash recovery via the ``--continue`` option and stores comprehensive 

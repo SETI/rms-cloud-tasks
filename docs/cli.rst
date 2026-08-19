@@ -203,6 +203,21 @@ options in the configuration file (see :ref:`config_worker_and_manage_pool_optio
                                        maximum runtime specified by --max-runtime
 --no-retry-on-timeout                  If specified, tasks will not be retried if they exceed the
                                        maximum runtime specified by --max-runtime (default)
+--max-memory-allowed-per-task GB       The maximum memory in GB each task process is allowed to
+                                       use, enforced by the OS as an address-space limit on the
+                                       process; a task that exceeds it fails with a MemoryError
+                                       and is not retried; passed to the workers via the startup
+                                       script (defaults to no limit)
+--keepalive-interval SECONDS           The interval between worker keep-alive events; passed to
+                                       the workers via the startup script (defaults to 60)
+--keepalive-startup-timeout SECONDS    How long to wait after an instance is started for its
+                                       first keep-alive event before considering it failed; if no
+                                       instance has ever sent a keep-alive and all instances
+                                       exceed this timeout, all instances are terminated and the
+                                       job is aborted; 0 disables the check (defaults to 600)
+--keepalive-timeout SECONDS            How long to wait after a keep-alive event for the next one
+                                       before declaring the instance crashed and terminating it;
+                                       0 disables the check (defaults to 300)
 
 
 .. _cli_information_commands:
@@ -498,7 +513,9 @@ Additional options:
 --db-file DB_FILE                     Path to SQLite database file (default: {job_id}.db);
                                       can also be set in configuration file under run.db_file
 --output-file OUTPUT_FILE             Optional file to write events to in JSON-lines format
-                                      in addition to the SQLite database
+                                      in addition to the SQLite database; the file is appended
+                                      to, and with --continue a file that does not yet exist is
+                                      first seeded with the events already in the database
 --force, -f                           Force fresh run without confirmation even if queue has
                                       existing messages
 --dry-run                             Do not actually load any tasks or create or delete any
@@ -510,6 +527,16 @@ status and events. It contains:
 - **tasks table**: task_id, task_data, status, retry flag, timestamps, hostname, results,
   exceptions, exit codes
 - **events table**: Raw event log from workers
+
+**Event Log File**: ``--output-file`` writes every received event to a file in JSON-lines
+format, in addition to the SQLite database. The file is opened for append, so resuming a job
+with ``--continue`` extends the existing log rather than truncating it. If the file does not
+exist yet — because the earlier part of the job ran without ``--output-file``, or the file was
+moved away — a ``--continue`` run first writes out the events already recorded in the database,
+so the result is a complete log of the whole job rather than only the part this process
+observed. An output file that already exists is never re-seeded, since its contents are presumed
+to already cover those events; otherwise every resume would duplicate the entire history.
+Keep-alive events are not stored in the database and never appear in the log.
 
 **Task Completion**: A task is considered complete when it has any status with ``retry=False``.
 
@@ -533,6 +560,28 @@ status and events. It contains:
 - Task execution time statistics (range, mean, median, 90th/95th percentile)
 - Exception summaries with counts
 - Spot termination tracking
+
+**Instance Detail Table**: With debug logging enabled (``-vv`` or more, e.g. ``-vvv``), each
+time the periodic scaling check computes the running-instance summary it first logs a table
+with one row per instance, giving the instance's ID, type, state, zone, creation time, how
+long ago its last keep-alive event arrived, and its keep-alive status. This makes it possible
+to see exactly which instance the manager considers overdue, and by how much, before it is
+terminated:
+
+.. code-block:: none
+
+   Instance details:
+     Instance ID              Type            State     Zone           Created              Keep-Alive  Status
+     --------------------------------------------------------------------------------------------------------------------------------------------------------
+     my-job-1riovtucuu1o1dx9  n2-highcpu-4    running   us-central1-f  2026-08-18T13:47:46  45s ago     OK (255s until overdue)
+     my-job-2b77c9e4a1f0d3b8  n2-highcpu-4    starting  us-central1-f  2026-08-18T14:18:00  never       awaiting first keep-alive (120s of 600s)
+     my-job-8ad4013f9c22e7a5  n2-standard-16  running   us-central1-b  2026-08-18T13:58:00  never       OVERDUE by 600s for its first keep-alive (limit 600s)
+     my-job-c1902e77bb410fa6  n2-highcpu-4    running   us-central1-f  2026-08-18T13:28:00  900s ago    OVERDUE by 600s (limit 300s)
+
+The keep-alive columns read ``not monitored`` when keep-alive monitoring isn't running, which
+is the case when both keep-alive timeouts are disabled, during a ``--dry-run``, and for the
+:ref:`cli_status_cmd` command (which only queries instances and so never receives keep-alive
+events).
 
 Examples:
 
@@ -585,7 +634,9 @@ this does not manage compute instances.
 Additional options:
 
 --db-file DB_FILE                     Path to SQLite database file (default: {job_id}.db)
---output-file OUTPUT_FILE             Optional file to write events to in JSON-lines format
+--output-file OUTPUT_FILE             Optional file to write events to in JSON-lines format; the
+                                      file is appended to, and one that does not yet exist is
+                                      first seeded with the events already in the database
 --print-events                        Print events to stdout as they are received
 --no-auto-complete                    Don't stop automatically when all tasks complete
 
@@ -625,7 +676,9 @@ testing or debugging) but still use the automated event monitoring and task trac
 - Updates the database with task status, results, and statistics
 - Prints periodic status summaries to the console
 - Automatically stops when all tasks complete (unless ``--no-auto-complete`` is specified)
-- Optionally writes events to a JSON-lines output file for archival
+- Optionally writes events to a JSON-lines output file for archival; because this command
+  always attaches to a job that is already under way, an output file that does not yet exist
+  is first seeded with the events already in the database
 
 **Comparison with ``run`` command:**
 

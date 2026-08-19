@@ -169,6 +169,7 @@ Optional Parameters
 --no-event-log-to-file                     If specified, events will not be written to a file [or ``RMS_CLOUD_TASKS_EVENT_LOG_TO_FILE`` is "0" or "false"]
 --event-log-to-queue                       If specified, events will be written to a cloud-based queue (default if --task-file is not specified) [or ``RMS_CLOUD_TASKS_EVENT_LOG_TO_QUEUE`` is "1" or "true"]
 --no-event-log-to-queue                    If specified, events will not be written to a cloud-based queue [or ``RMS_CLOUD_TASKS_EVENT_LOG_TO_QUEUE`` is "0" or "false"]
+--keepalive-interval SECONDS               Interval in seconds between keep-alive events sent to the cloud-based event queue so the task manager knows this instance is still alive; only used when events are being written to a cloud-based queue; 0 disables keep-alive events [or ``RMS_CLOUD_TASKS_KEEPALIVE_INTERVAL``] (default 60 seconds)
 --instance-type INSTANCE_TYPE              Instance type; optional information for the worker processes [or ``RMS_CLOUD_TASKS_INSTANCE_TYPE``]
 --num-cpus N                               Number of vCPUs on this computer; optional information for the worker processes [or ``RMS_CLOUD_TASKS_INSTANCE_NUM_VCPUS``]
 --memory MEMORY_GB                         Memory in GB on this computer; optional information for the worker processes [or ``RMS_CLOUD_TASKS_INSTANCE_MEM_GB``]
@@ -179,6 +180,7 @@ Optional Parameters
 --price PRICE_PER_HOUR                     Price in USD/hour on this computer; optional information for the worker processes [or ``RMS_CLOUD_TASKS_INSTANCE_PRICE``]
 --num-simultaneous-tasks N                 Number of concurrent tasks to process (defaults to number of vCPUs, or 1 if not specified) [or ``RMS_CLOUD_TASKS_NUM_TASKS_PER_INSTANCE``]
 --max-runtime SECONDS                      Maximum allowed runtime in seconds; used to determine queue visibility timeout and to kill tasks that are running too long [or ``RMS_CLOUD_TASKS_MAX_RUNTIME``] (default 600 seconds)
+--max-memory-allowed-per-task GB           Maximum memory in GB each task process is allowed to use, enforced by the OS as an address-space limit on the process; a task that exceeds it fails with a MemoryError and is not retried (see :ref:`worker_memory_limit`) [or ``RMS_CLOUD_TASKS_MAX_MEMORY_ALLOWED_PER_TASK``] (default no limit)
 --shutdown-grace-period SECONDS            How long to wait in seconds for processes to gracefully finish after shutdown (SIGINT, SIGTERM, or Ctrl-C) is requested before killing them (default 30) [or ``RMS_CLOUD_TASKS_SHUTDOWN_GRACE_PERIOD``]
 --tasks-to-skip TASKS_TO_SKIP              Number of tasks to skip before processing any from the queue [or ``RMS_CLOUD_TASKS_TO_SKIP``]
 --max-num-tasks MAX_NUM_TASKS              Maximum number of tasks to process [or ``RMS_CLOUD_TASKS_MAX_NUM_TASKS``]
@@ -266,7 +268,43 @@ The ``event_type`` field can have the following values:
   No further tasks will be accepted and any existing tasks may be terminated prematurely
   if the instance is destroyed before they finish. Any existing tasks that complete before
   the instance is destroyed will have their results reported as usual.
+- ``keep_alive``: Sent periodically (every ``--keepalive-interval`` seconds, 60 by default)
+  to indicate the worker is still alive, independent of the status of any tasks. The
+  ``instance_id`` field contains the instance ID as known to the cloud provider (obtained
+  from the provider's metadata server, falling back to the hostname). These events are only
+  sent to the cloud-based event queue, never to a local event log file, and the task
+  manager intercepts them (they are not printed or stored in the task database) to track
+  the health of each instance. Instances that never send a keep-alive or stop sending them
+  are terminated by the task manager (see :ref:`config_worker_and_manage_pool_options`).
 
+
+.. _worker_memory_limit:
+
+Limiting Task Memory Usage
+--------------------------
+
+The ``--max-memory-allowed-per-task`` option (or the
+``RMS_CLOUD_TASKS_MAX_MEMORY_ALLOWED_PER_TASK`` environment variable) limits the amount of
+memory each task process may use. The limit is applied by the operating system (as an
+address-space limit, ``RLIMIT_AS``, set on each task process before the task starts), so no
+run-time monitoring is involved. When a task attempts to allocate memory beyond the limit,
+the allocation fails and Python raises a ``MemoryError``. The task then fails with a
+``task_exception`` event and is **never retried**, regardless of the ``--retry-on-exception``
+setting, because it would presumably just exceed the memory limit again.
+
+Notes and caveats:
+
+- The limit applies to *virtual address space*, not resident memory. Some software (GPU
+  runtimes, some memory allocators, programs that memory-map large files) reserves large
+  address ranges it never fully uses, so the limit should be set with some headroom above
+  the expected actual memory usage.
+- If the memory limit is exceeded inside non-Python code that does not handle allocation
+  failures gracefully, the process may crash instead of raising ``MemoryError``. In that
+  case the task is reported as ``task_exited`` and retry is governed by ``--retry-on-exit``.
+- If a task function spawns its own subprocesses, each one gets the same individual limit;
+  their combined usage is not limited.
+- The limit requires the POSIX ``resource`` module and is therefore not supported on
+  Windows, where it is ignored with a warning.
 
 .. _worker_spot_instances:
 

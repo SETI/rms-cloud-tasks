@@ -309,7 +309,10 @@ This will perform the following steps:
 
        cloud_tasks run --config myconfig.yml --task-file my_tasks.json --output-file events.json
 
-   The events file will contain one JSON object per line for each event.
+   The events file will contain one JSON object per line for each task event. The file
+   is appended to rather than overwritten, so it survives a resume with ``--continue``
+   (see :ref:`quickstart_crash_recovery`). Worker keep-alive events are used only to
+   monitor instance health and are not written to the file or stored in the database.
 
 #. When all tasks complete (or time out with no retry), automatically terminate instances
    and delete queues.
@@ -373,6 +376,13 @@ This will:
 #. Drain any pending events from the event queue to catch up on missed updates
 #. Query the cloud for current instance status
 #. Resume monitoring and managing instances until all tasks complete
+
+If you use ``--output-file`` with ``--continue`` and the file does not exist yet — because
+the earlier part of the job ran without ``--output-file``, or the file was moved away — the
+events already recorded in the database are written to it first, so you end up with a
+complete log of the whole job rather than only the part that ran after the resume. A file
+that already exists is appended to and never rewritten, so resuming repeatedly does not
+duplicate the history.
 
 .. note::
 

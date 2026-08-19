@@ -9,7 +9,7 @@ import logging
 import os
 import signal
 import sys
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any, cast
 
@@ -472,6 +472,14 @@ async def list_running_instances_cmd(args: argparse.Namespace, config: Config) -
         sys.exit(1)
 
 
+class _OutputFileError(Exception):
+    """Raised when writing to the events output file fails.
+
+    Distinguishes an unusable output file, which is optional and can be dropped, from a
+    failure to read the events being written, which says nothing about the file.
+    """
+
+
 class EventMonitor:
     """Helper class for monitoring events from the event queue and updating the database."""
 
@@ -483,6 +491,8 @@ class EventMonitor:
         *,
         print_events: bool = True,
         print_summary: bool = True,
+        keepalive_callback: Callable[[str, str | None], None] | None = None,
+        backfill_output_file: bool = False,
     ) -> None:
         """
         Initialize the event monitor.
@@ -493,19 +503,79 @@ class EventMonitor:
             output_file_path: Optional path to write events to
             print_events: Whether to print events to stdout
             print_summary: Whether to print summary statistics
+            keepalive_callback: Optional callback invoked with (instance_id, timestamp)
+                for each keep-alive event; keep-alive events are intercepted and never
+                printed, written to the output file, or stored in the database
+            backfill_output_file: Whether to seed a newly created output file with the
+                events already recorded in the database. Used when attaching to a job
+                that is already under way so the file is a complete log of the job
+                rather than only the part observed by this process. Ignored when the
+                output file already exists, since those events are presumed to be in it
+                already.
         """
         self.events_queue = events_queue
         self.task_db = task_db
         self.output_file_path = output_file_path
         self.print_events = print_events
         self.print_summary = print_summary
+        self.keepalive_callback = keepalive_callback
+        self.backfill_output_file = backfill_output_file
         self.output_file = None
         self.something_changed = True
+
+    def _disable_output_file(self, reason: str) -> None:
+        """Stop writing to the output file after an I/O error.
+
+        The database is the authoritative record; a file that can no longer be written
+        must not be allowed to hold up event processing, so the stream is closed and
+        dropped and monitoring continues without it.
+
+        Parameters:
+            reason: What went wrong, for the log message.
+        """
+        logger.error(
+            f'No longer writing events to "{self.output_file_path}": {reason}. '
+            "Event processing continues; the database remains complete."
+        )
+        try:
+            if self.output_file is not None:
+                self.output_file.close()
+        except Exception:  # pragma: no cover - the stream is already broken
+            logger.debug("Error closing the events output file", exc_info=True)
+        self.output_file = None
+
+    def _write_stored_events(self) -> int:
+        """Write every event already in the database to the output file.
+
+        Returns:
+            The number of events written.
+
+        Raises:
+            _OutputFileError: If writing or flushing the output file fails.
+            Exception: Whatever reading the events from the database raises, so the
+                caller can tell an unusable output file apart from an unreadable
+                database.
+        """
+        assert self.output_file is not None
+        count = 0
+        for raw_event in self.task_db.iter_raw_events():
+            try:
+                self.output_file.write(raw_event.rstrip("\n") + "\n")
+            except Exception as e:
+                raise _OutputFileError(f"error writing stored events: {e}") from e
+            count += 1
+        try:
+            self.output_file.flush()
+        except Exception as e:
+            raise _OutputFileError(f"error flushing stored events: {e}") from e
+        return count
 
     async def start(self) -> None:
         """Start monitoring events."""
         if self.output_file_path:
             path = self.output_file_path
+            # Decide before opening, since opening for append creates the file
+            backfill = self.backfill_output_file and not Path(path).exists()
             try:
 
                 def _open_file(p: str, mode: str) -> Any:
@@ -527,6 +597,25 @@ class EventMonitor:
             except Exception as e:
                 logger.fatal(f'Error opening events file "{path}": {e}', exc_info=True)
                 sys.exit(1)
+            if backfill and self.output_file is not None:
+                try:
+                    count = await asyncio.to_thread(self._write_stored_events)
+                except _OutputFileError as e:
+                    # The file itself is unusable, so drop it; keeping a stream that has
+                    # already failed would only stall event processing later
+                    self._disable_output_file(str(e))
+                except Exception as e:
+                    # Reading the stored events failed, which says nothing about the
+                    # output file - keep it and log the live events from here on. Either
+                    # way, don't abort a job that is already under way
+                    logger.error(
+                        f'Error reading stored events from the database, so "{path}" will '
+                        f"cover only the events received from now on: {e}",
+                        exc_info=True,
+                    )
+                else:
+                    if count:
+                        logger.info(f'Wrote {count} events already in the database to "{path}"')
         return
 
     async def process_events_batch(self) -> int:
@@ -541,7 +630,6 @@ class EventMonitor:
             messages = await self.events_queue.receive_messages(max_count=100)
 
             if messages:
-                self.something_changed = True
                 for message in messages:
                     try:
                         payload = message.get("data", {})
@@ -554,17 +642,33 @@ class EventMonitor:
                         if not isinstance(data, dict):
                             data = {}
 
+                        if data.get("event_type") == "keep_alive":
+                            # Keep-alive events are only used to track instance health;
+                            # they are not printed, written to a file, or stored in the
+                            # database
+                            instance_id = data.get("instance_id") or data.get("hostname")
+                            if instance_id and self.keepalive_callback:
+                                self.keepalive_callback(instance_id, data.get("timestamp"))
+                            continue
+
+                        self.something_changed = True
+
+                        # Update the database first: it is the authoritative record
+                        # and must not be skipped because of a problem with the
+                        # optional output file
+                        self.task_db.insert_event(data)
+                        self.task_db.update_task_from_event(data)
+
                         # Write to file if specified
                         if self.output_file:
-                            self.output_file.write(json.dumps(data) + "\n")
+                            try:
+                                self.output_file.write(json.dumps(data) + "\n")
+                            except Exception as e:
+                                self._disable_output_file(f"error writing event: {e}")
 
                         # Print to stdout if requested
                         if self.print_events:
                             print(json.dumps(data))
-
-                        # Update database
-                        self.task_db.insert_event(data)
-                        self.task_db.update_task_from_event(data)
 
                     except json.JSONDecodeError as e:
                         logger.error(f"Error decoding message: {e}")
@@ -572,7 +676,10 @@ class EventMonitor:
                         logger.error(f"Error processing message: {e}")
 
                 if self.output_file:
-                    self.output_file.flush()
+                    try:
+                        self.output_file.flush()
+                    except Exception as e:
+                        self._disable_output_file(f"error flushing events: {e}")
 
                 return len(messages)
             else:
@@ -710,6 +817,8 @@ async def monitor_event_queue_cmd(args: argparse.Namespace, config: Config) -> N
             output_file_path=getattr(args, "output_file", None),
             print_events=getattr(args, "print_events", False),
             print_summary=True,
+            # This command only ever attaches to a job that is already under way
+            backfill_output_file=True,
         )
         await event_monitor.start()
 
@@ -1123,6 +1232,9 @@ async def run_cmd(args: argparse.Namespace, config: Config) -> None:
             output_file_path=getattr(args, "output_file", None),
             print_events=False,  # Don't print individual events
             print_summary=True,
+            keepalive_callback=orchestrator.record_keepalive,
+            # A fresh run starts with an empty database, so there is nothing to seed
+            backfill_output_file=args.continue_run,
         )
         await event_monitor.start()
 
@@ -1146,6 +1258,11 @@ async def run_cmd(args: argparse.Namespace, config: Config) -> None:
                 # Keep checking until job is complete or interrupted
                 while orchestrator.is_running and not job_complete and not interrupted:
                     await asyncio.sleep(1)
+                if orchestrator.keepalive_abort_reason is not None:
+                    # The orchestrator terminated all instances and aborted the job
+                    # because no worker ever sent a keep-alive event
+                    logger.error(f"Aborting job: {orchestrator.keepalive_abort_reason}")
+                    stop_signal.set()
             except Exception as e:
                 logger.error(f"Error in orchestrator: {e}", exc_info=True)
                 raise
@@ -1254,6 +1371,13 @@ async def run_cmd(args: argparse.Namespace, config: Config) -> None:
         finally:
             # Restore original signal handler
             signal.signal(signal.SIGINT, old_handler)
+
+        # If the orchestrator aborted the job (no worker ever sent a keep-alive event),
+        # the instances have already been terminated; report the failure and exit
+        if orchestrator.keepalive_abort_reason is not None:
+            logger.error(f"Job aborted: {orchestrator.keepalive_abort_reason}")
+            await orchestrator.stop(terminate_instances=False)
+            sys.exit(1)
 
         # If job completed normally, clean up
         if job_complete and not interrupted:
@@ -2221,7 +2345,7 @@ def add_common_args(
         "-v",
         action="count",
         default=0,
-        help="Increase verbosity level (-v for warning, -vv for info, -vvv for debug)",
+        help="Increase verbosity level (default is warning, -v for info, -vv or more for debug)",
     )
 
 
@@ -2296,6 +2420,34 @@ def add_instance_pool_args(parser: argparse.ArgumentParser) -> None:
         "--max-runtime",
         type=int,
         help="Maximum seconds a single worker job is allowed to run (default: 3600)",
+    )
+    parser.add_argument(
+        "--max-memory-allowed-per-task",
+        type=float,
+        help="Maximum memory in GB each task process is allowed to use, enforced by the "
+        "OS as an address-space limit on the process; a task that exceeds it fails with "
+        "a MemoryError and is not retried; passed to workers via the startup script "
+        "(default: no limit)",
+    )
+    parser.add_argument(
+        "--keepalive-interval",
+        type=int,
+        help="Interval in seconds between worker keep-alive events; passed to workers "
+        "via the startup script (default: 60)",
+    )
+    parser.add_argument(
+        "--keepalive-startup-timeout",
+        type=int,
+        help="Seconds to wait after an instance is started for its first keep-alive event "
+        "before considering it failed; if no instance has ever sent a keep-alive, all "
+        "instances are terminated and the job is aborted; 0 disables the check "
+        "(default: 600)",
+    )
+    parser.add_argument(
+        "--keepalive-timeout",
+        type=int,
+        help="Seconds to wait after a keep-alive event for the next one before declaring "
+        "the instance crashed and terminating it; 0 disables the check (default: 300)",
     )
     parser.add_argument(
         "--retry-on-exit",

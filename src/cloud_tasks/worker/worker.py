@@ -9,6 +9,7 @@ import argparse
 import asyncio
 import json
 import logging
+import math
 import multiprocessing
 import os
 import signal
@@ -25,6 +26,11 @@ import json_stream
 import requests
 import yaml
 from filecache import FCPath
+
+try:
+    import resource
+except ImportError:  # pragma: no cover - the resource module is unavailable on Windows
+    resource = None  # type: ignore[assignment]
 
 from ..common.logging_config import configure_logging
 from ..common.time_utils import utc_now_iso
@@ -130,6 +136,14 @@ def _parse_args(
         "[overrides $RMS_CLOUD_TASKS_EVENT_LOG_TO_QUEUE]",
     )
     parser.add_argument(
+        "--keepalive-interval",
+        type=float,
+        help="Interval in seconds between keep-alive events sent to the cloud-based event "
+        "queue so the task manager knows this instance is still alive; 0 disables "
+        "keep-alive events [overrides $RMS_CLOUD_TASKS_KEEPALIVE_INTERVAL] "
+        "(default 60 seconds)",
+    )
+    parser.add_argument(
         "--instance-type",
         help="Instance type; optional information for the worker processes "
         "[overrides $RMS_CLOUD_TASKS_INSTANCE_TYPE]",
@@ -191,6 +205,14 @@ def _parse_args(
         help="Maximum allowed runtime in seconds; used to determine queue visibility "
         "timeout and to kill tasks that are running too long [overrides "
         "$RMS_CLOUD_TASKS_MAX_RUNTIME] (default 3600 seconds)",
+    )
+    parser.add_argument(
+        "--max-memory-allowed-per-task",
+        type=float,
+        help="Maximum memory in GB each task process is allowed to use, enforced by the "
+        "OS as an address-space limit on the process; a task that exceeds it fails with "
+        "a MemoryError and is not retried "
+        "[overrides $RMS_CLOUD_TASKS_MAX_MEMORY_ALLOWED_PER_TASK] (default no limit)",
     )
     parser.add_argument(
         "--shutdown-grace-period",
@@ -395,6 +417,8 @@ class WorkerData:
         self.event_log_queue_name: str | None = None
         self.event_log_to_file: bool = False  #: Whether to log events to a file
         self.event_log_file: str | None = None  #: The name of the file to log events to
+        #: The interval in seconds between keep-alive events (0 disables them)
+        self.keepalive_interval: float = 60.0
         self.instance_type: str | None = None  #: The instance type this task is running on
         self.num_cpus: int | None = None  #: The number of vCPUs on this computer
         self.memory_gb: float | None = None  #: The amount of memory on this computer
@@ -404,6 +428,8 @@ class WorkerData:
         self.price_per_hour: float | None = None  #: The price per hour for the instance
         self.num_simultaneous_tasks: int = 1  #: The number of simultaneous tasks to process
         self.max_runtime: int = 3600  #: The maximum runtime for a task in seconds (1 hour)
+        #: The maximum memory in GB each task process may use (None means no limit)
+        self.max_memory_allowed_per_task: float | None = None
         #: The time in seconds to wait for tasks to complete during shutdown
         self.shutdown_grace_period: int = 30
         self.retry_on_exit: bool = False  #: Whether to retry tasks on premature exit
@@ -609,6 +635,15 @@ class Worker:
                 logger.error("--event-log-to-queue requires either --job-id or --queue-name")
                 sys.exit(1)
 
+        # Get keep-alive interval from args or environment variable
+        raw_keepalive = parsed_args.keepalive_interval
+        if raw_keepalive is None:
+            env_val = os.getenv("RMS_CLOUD_TASKS_KEEPALIVE_INTERVAL")
+            raw_keepalive = float(env_val) if env_val is not None else None
+        if raw_keepalive is not None:
+            self._data.keepalive_interval = float(raw_keepalive)
+        logger.info(f"  Keep-alive interval: {self._data.keepalive_interval} seconds")
+
         # Get instance type from args or environment variable
         self._data.instance_type = parsed_args.instance_type or os.getenv(
             "RMS_CLOUD_TASKS_INSTANCE_TYPE"
@@ -693,6 +728,33 @@ class Worker:
             self._data.max_runtime = int(self._data.max_runtime)
         logger.info(f"  Maximum runtime: {self._data.max_runtime} seconds")
 
+        # Get maximum memory allowed per task from args or environment variable
+        raw_max_memory = parsed_args.max_memory_allowed_per_task
+        if raw_max_memory is None:
+            env_val = os.getenv("RMS_CLOUD_TASKS_MAX_MEMORY_ALLOWED_PER_TASK")
+            raw_max_memory = float(env_val) if env_val is not None else None
+        self._data.max_memory_allowed_per_task = (
+            float(raw_max_memory) if raw_max_memory is not None else None
+        )
+        if self._data.max_memory_allowed_per_task is not None:
+            # A worker configured directly from the command line or the environment
+            # bypasses the manager's RunConfig validation, so check the value here. A
+            # non-finite value would raise while being converted to bytes in each task
+            # process, and a negative one would be rejected by setrlimit and silently
+            # leave the task running with no limit at all.
+            if (
+                not math.isfinite(self._data.max_memory_allowed_per_task)
+                or self._data.max_memory_allowed_per_task <= 0
+            ):
+                logger.error(
+                    "Maximum memory per task must be a positive number of GB, not "
+                    f"{self._data.max_memory_allowed_per_task}"
+                )
+                sys.exit(1)
+            logger.info(f"  Maximum memory per task: {self._data.max_memory_allowed_per_task} GB")
+        else:
+            logger.info("  Maximum memory per task: No limit")
+
         # Get shutdown grace period from args or environment variable
         self._data.shutdown_grace_period = (
             parsed_args.shutdown_grace_period
@@ -765,6 +827,7 @@ class Worker:
         self._num_tasks_timed_out: int = 0
         self._num_tasks_exited: int = 0
         self._num_tasks_exception: int = 0
+        self._num_tasks_memory_exceeded: int = 0
 
         # Task queue for inter-process communication
         self._result_queue: MP_Queue = cast(MP_Queue, MP_CTX.Queue())
@@ -778,6 +841,7 @@ class Worker:
         signal.signal(signal.SIGTERM, self._signal_handler)
 
         self._hostname = socket.gethostname()
+        self._instance_identity: str | None = None
         self._event_logger_fp: IO[Any] | None = None
         self._event_logger_queue: QueueManager | None = None
 
@@ -820,9 +884,16 @@ class Worker:
     _EVENT_TYPE_NON_FATAL_EXCEPTION = "non_fatal_exception"
     _EVENT_TYPE_FATAL_EXCEPTION = "fatal_exception"
     _EVENT_TYPE_SPOT_TERMINATION = "spot_termination"
+    _EVENT_TYPE_KEEP_ALIVE = "keep_alive"
 
-    async def _log_event(self, event: dict[str, Any]) -> None:
-        """Log an event to the event log."""
+    async def _log_event(self, event: dict[str, Any], *, queue_only: bool = False) -> None:
+        """Log an event to the event log.
+
+        Args:
+            event: The event to log; must contain an "event_type" key.
+            queue_only: If True, only send the event to the cloud-based event queue,
+                never to the local event log file.
+        """
         # Reorder so these fields are first in the diction to make the display nicer
         new_event = {
             "timestamp": utc_now_iso(),
@@ -830,7 +901,7 @@ class Worker:
             "event_type": event["event_type"],
             **event,
         }
-        if self._event_logger_fp:
+        if self._event_logger_fp and not queue_only:
             self._event_logger_fp.write(json.dumps(new_event) + "\n")
             self._event_logger_fp.flush()
         if self._event_logger_queue:
@@ -910,6 +981,114 @@ class Worker:
     async def _log_spot_termination(self) -> None:
         """Log a spot termination event."""
         await self._log_event({"event_type": self._EVENT_TYPE_SPOT_TERMINATION})
+
+    async def _log_keep_alive(self) -> None:
+        """Log a keep-alive event to the cloud-based event queue only."""
+        # The metadata server lookup uses synchronous HTTP calls, so run it in a
+        # thread to avoid blocking the event loop
+        instance_id = await asyncio.to_thread(self._get_instance_identity)
+        await self._log_event(
+            {
+                "event_type": self._EVENT_TYPE_KEEP_ALIVE,
+                "instance_id": instance_id,
+            },
+            queue_only=True,
+        )
+
+    def _get_instance_identity(self) -> str:
+        """Get the instance ID as known to the cloud provider.
+
+        Queries the provider's metadata server so the returned value matches the
+        instance ID reported by the instance managers (GCP/Azure: instance name;
+        AWS: instance ID like "i-0abc..."). Falls back to the hostname if the
+        metadata server is unavailable (e.g. when not running on a cloud instance).
+        Only a metadata-server result is cached; the hostname fallback is re-tried
+        on the next call in case the failure was transient.
+
+        Returns:
+            The instance ID, or the hostname if the metadata server can't be reached.
+        """
+        if self._instance_identity is not None:
+            return self._instance_identity
+
+        identity: str | None = None
+        try:
+            if self._data.provider == "AWS":
+                headers = {}
+                try:
+                    token_response = requests.put(
+                        "http://169.254.169.254/latest/api/token",
+                        headers={"X-aws-ec2-metadata-token-ttl-seconds": "21600"},
+                        timeout=2,
+                    )
+                    if token_response.status_code == 200:
+                        headers = {"X-aws-ec2-metadata-token": token_response.text}
+                except Exception:
+                    pass  # Fall back to IMDSv1
+                response = requests.get(
+                    "http://169.254.169.254/latest/meta-data/instance-id",
+                    headers=headers,
+                    timeout=2,
+                )
+                if response.status_code == 200:
+                    identity = response.text.strip()
+
+            elif self._data.provider == "GCP":
+                response = requests.get(
+                    "http://metadata.google.internal/computeMetadata/v1/instance/name",
+                    headers={"Metadata-Flavor": "Google"},
+                    timeout=2,
+                )
+                if response.status_code == 200:
+                    identity = response.text.strip()
+
+            elif self._data.provider == "AZURE":
+                response = requests.get(
+                    "http://169.254.169.254/metadata/instance/compute/name",
+                    params={"api-version": "2021-02-01", "format": "text"},
+                    headers={"Metadata": "true"},
+                    timeout=2,
+                )
+                if response.status_code == 200:
+                    identity = response.text.strip()
+        except Exception as e:
+            logger.debug(f"Error querying the metadata server for the instance ID: {e}")
+
+        if identity:
+            self._instance_identity = identity
+            logger.info(f"Instance identity for keep-alive events: {identity}")
+            return identity
+
+        # Don't cache the fallback: if the metadata server failure was transient, a
+        # permanently cached hostname would make the task manager believe this instance
+        # never started (on AWS the hostname doesn't match the instance ID) and
+        # terminate it even though it is healthy. Keep-alives are infrequent, so
+        # re-trying the lookup on each one is cheap.
+        logger.debug("Could not determine instance ID from metadata server; using hostname")
+        return self._hostname
+
+    async def _keepalive_worker(self) -> None:
+        """Background worker that periodically sends keep-alive events.
+
+        The events are sent to the cloud-based event queue only (never to a local
+        event log file) so the task manager can detect instances that failed to
+        start or have crashed.
+        """
+        interval = self._data.keepalive_interval
+        logger.info(f"Starting keep-alive worker with {interval}s interval")
+
+        last_sent: float | None = None
+
+        while self._running:
+            current_time = time.time()
+            if last_sent is None or current_time - last_sent >= interval:
+                try:
+                    await self._log_keep_alive()
+                except Exception as e:
+                    logger.warning(f"Failed to send keep-alive event: {e}")
+                    # We'll try again on the next interval
+                last_sent = current_time
+            await asyncio.sleep(1)
 
     async def start(self) -> None:
         """Start the worker and begin processing tasks."""
@@ -995,6 +1174,10 @@ class Worker:
         if not self._task_source:
             self._task_list.append(asyncio.create_task(self._visibility_renewal_worker()))
 
+        # Start the keep-alive worker for cloud-based event queues only
+        if self._event_logger_queue is not None and self._data.keepalive_interval > 0:
+            self._task_list.append(asyncio.create_task(self._keepalive_worker()))
+
         # Process tasks until shutdown
         await self._wait_for_shutdown()
         await self._cleanup_tasks()
@@ -1003,7 +1186,8 @@ class Worker:
         logger.info(
             f"Task scheduler shutdown complete. Not retried: {self._num_tasks_not_retried}, "
             f"Retried: {self._num_tasks_retried}, Timed out: {self._num_tasks_timed_out}, "
-            f"Exited: {self._num_tasks_exited}, Total: {total}"
+            f"Exited: {self._num_tasks_exited}, "
+            f"Memory exceeded: {self._num_tasks_memory_exceeded}, Total: {total}"
         )
         # We don't log an event here because this only happens when the user hits Ctrl-C
 
@@ -1079,6 +1263,22 @@ class Worker:
                             else:
                                 self._num_tasks_not_retried += 1
                                 await self._queue_acknowledge_task_with_logging(task)
+                        elif retry == "memory_error":
+                            self._num_tasks_memory_exceeded += 1
+                            self._num_tasks_not_retried += 1
+                            logger.warning(
+                                f"Worker #{worker_id} reported task {task['task_id']} exceeded "
+                                "the memory limit"
+                                f"{f' of {self._data.max_memory_allowed_per_task} GB' if self._data.max_memory_allowed_per_task is not None else ''} "
+                                f"in {elapsed_time:.1f} seconds; not retrying"
+                            )
+                            await self._log_task_exception(
+                                task["task_id"],
+                                retry=False,
+                                elapsed_time=elapsed_time,
+                                exception=result,
+                            )
+                            await self._queue_acknowledge_task_with_logging(task)
                         elif retry:
                             self._num_tasks_retried += 1
                             logger.info(
@@ -1411,7 +1611,12 @@ class Worker:
                         f"{self._data.max_runtime} seconds (actual runtime {runtime:.1f} seconds); "
                         "terminating"
                     )
-                    await self._log_task_timed_out(task["task_id"], retry=False, runtime=runtime)
+                    # The retry flag must match what happens to the message below, or
+                    # the task database marks the task terminally timed out while the
+                    # message goes back on the queue for another attempt
+                    await self._log_task_timed_out(
+                        task["task_id"], retry=self._data.retry_on_timeout, runtime=runtime
+                    )
 
                     # Kill the process that exceeded runtime
                     try:
@@ -1564,6 +1769,23 @@ class Worker:
         )
         logger = logging.getLogger(f"worker-{worker_id}")
 
+        # Apply the memory limit, if any, before running the task so the OS enforces it;
+        # allocations beyond the limit fail and raise MemoryError
+        max_memory_gb = worker_data.max_memory_allowed_per_task
+        if max_memory_gb is not None:
+            if resource is None:
+                logger.warning(
+                    f"Worker #{worker_id}: A memory limit was requested but the 'resource' "
+                    "module is not available on this platform; no limit will be applied"
+                )
+            else:
+                max_memory_bytes = int(max_memory_gb * 1024**3)
+                try:
+                    resource.setrlimit(resource.RLIMIT_AS, (max_memory_bytes, max_memory_bytes))
+                    logger.info(f"Worker #{worker_id}: Memory limited to {max_memory_gb} GB")
+                except (ValueError, OSError) as e:
+                    logger.warning(f"Worker #{worker_id}: Failed to set memory limit: {e}")
+
         # Initialize task execution environment
         try:
             logger.info(f"Worker #{worker_id}: Started, processing task {task_id}")
@@ -1587,6 +1809,15 @@ class Worker:
 
                 # Send result back to main process
                 result_queue.put((worker_id, retry, result))
+
+            except MemoryError:
+                logger.error(
+                    f"Worker #{worker_id}: Task {task_id} exceeded the memory limit"
+                    f"{f' of {max_memory_gb} GB' if max_memory_gb is not None else ''}"
+                )
+                # Send failure back to main process; memory limit violations are never
+                # retried
+                result_queue.put((worker_id, "memory_error", str(traceback.format_exc())))
 
             except Exception as e:
                 logger.error(

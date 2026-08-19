@@ -29,8 +29,8 @@ class GCPPubSubQueue(QueueManager):
     # A message not acknowledged within this time will be made available again for processing
     _DEFAULT_VISIBILITY_TIMEOUT = 60
 
-    # Maximum visibility timeout allowed by GCP
-    _MAXIMUM_VISIBILITY_TIMEOUT = 30
+    # Maximum visibility timeout (ack deadline) allowed by GCP
+    _MAXIMUM_VISIBILITY_TIMEOUT = 600
 
     # Maximum number of messages that can be received at once allowed by GCP
     _MAXIMUM_MESSAGE_RECEIVE_COUNT = 1000
@@ -814,6 +814,10 @@ class GCPPubSubQueue(QueueManager):
         if timeout is None:
             # Use the current visibility timeout setting
             timeout = self._visibility_timeout or self._DEFAULT_VISIBILITY_TIMEOUT
+
+        # Clip to the maximum ack deadline GCP will accept; larger values are
+        # rejected with InvalidArgument
+        timeout = min(timeout, self._MAXIMUM_VISIBILITY_TIMEOUT)
 
         if self._exactly_once:
             # For exactly-once delivery, modify the ack deadline

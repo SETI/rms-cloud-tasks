@@ -222,6 +222,24 @@ class RunConfig(BaseModel, validate_assignment=True):
     retry_on_exit: bool | None = None
     retry_on_exception: bool | None = None
     retry_on_timeout: bool | None = None
+    # Maximum memory in GB each task process may use, enforced by the OS as an
+    # address-space limit; a task that exceeds it fails with a MemoryError and is not
+    # retried (passed to workers via the startup script); if None, there is no limit
+    max_memory_allowed_per_task: PositiveFloat | None = None
+
+    #
+    # Worker keep-alive options
+    #
+
+    # Interval in seconds between worker keep-alive events (passed to workers via the
+    # startup script); if None, workers use their own default (60 seconds)
+    keepalive_interval: PositiveInt | None = None
+    # Seconds to wait after an instance is started for its first keep-alive event;
+    # 0 disables the check (default 600 seconds)
+    keepalive_startup_timeout: NonNegativeInt | None = None
+    # Seconds to wait after a keep-alive event for the next one before declaring the
+    # instance dead; 0 disables the check (default 300 seconds)
+    keepalive_timeout: NonNegativeInt | None = None
 
     #
     # Database options

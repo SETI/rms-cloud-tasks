@@ -11,6 +11,7 @@ parsing from environment.
 
 import json
 import os
+import pathlib
 import sys
 import tempfile
 from collections.abc import Callable, Generator, Iterable
@@ -21,6 +22,19 @@ import pytest
 import yaml
 
 from cloud_tasks.worker.worker import Worker
+
+
+@pytest.fixture(autouse=True)
+def run_in_tmp_dir(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run every worker test in its own temporary directory.
+
+    A Worker created with a task_source defaults to logging events to a file, and the
+    default event log file name ("events.log") is relative, so a worker started by a
+    test appends to whatever directory pytest was invoked from - normally the top of
+    the repository. This fixture redirects those writes into the test's tmp_path
+    instead of leaving them in the working tree, where .gitignore's "*.log" hides them.
+    """
+    monkeypatch.chdir(tmp_path)
 
 
 def _mock_worker_function(task_id: str, task_data: dict[str, Any], worker: Any) -> tuple[bool, str]:

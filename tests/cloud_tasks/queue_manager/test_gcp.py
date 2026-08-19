@@ -19,6 +19,13 @@ from google.api_core import exceptions as gcp_exceptions
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from cloud_tasks.queue_manager.gcp import GCPPubSubQueue  # noqa
 
+#: The maximum ack deadline GCP Pub/Sub accepts, per its published limits. Deliberately
+#: spelled out here instead of read from GCPPubSubQueue._MAXIMUM_VISIBILITY_TIMEOUT: these
+#: tests exist to pin that constant to the real GCP limit, and sourcing the expected value
+#: from the code under test would make them pass for any value at all - which is how the
+#: constant sat at 30 seconds undetected.
+GCP_MAX_ACK_DEADLINE_SECONDS = 600
+
 # Filter coroutine warnings for these tests
 warnings.filterwarnings("ignore", message="coroutine .* was never awaited")
 
@@ -770,6 +777,57 @@ async def test_acknowledge_task_error(gcp_queue, mock_pubsub_client):
     with pytest.raises(gcp_exceptions.InvalidArgument) as exc_info:
         await gcp_queue.acknowledge_task("invalid-ack-id")
     assert "invalid" in str(exc_info.value).lower() or "ack" in str(exc_info.value).lower()
+
+
+def test_get_max_visibility_timeout(gcp_queue: GCPPubSubQueue) -> None:
+    """Test that the maximum visibility timeout matches GCP's published ack
+    deadline limit."""
+    assert gcp_queue.get_max_visibility_timeout() == GCP_MAX_ACK_DEADLINE_SECONDS
+
+
+@pytest.mark.asyncio
+async def test_extend_message_visibility_clips_to_maximum(
+    gcp_queue: GCPPubSubQueue, mock_pubsub_client: tuple[MagicMock, MagicMock]
+) -> None:
+    """Test that extend_message_visibility clips timeouts above GCP's maximum."""
+    mock_publisher, mock_subscriber = mock_pubsub_client
+
+    await gcp_queue.extend_message_visibility("test-ack-id", 10000)
+
+    mock_subscriber.modify_ack_deadline.assert_called_once_with(
+        request={
+            "subscription": gcp_queue._subscription_path,
+            "ack_ids": ["test-ack-id"],
+            "ack_deadline_seconds": GCP_MAX_ACK_DEADLINE_SECONDS,
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_extend_message_visibility_below_maximum(
+    gcp_queue: GCPPubSubQueue, mock_pubsub_client: tuple[MagicMock, MagicMock]
+) -> None:
+    """Test that extend_message_visibility passes through timeouts below the maximum."""
+    mock_publisher, mock_subscriber = mock_pubsub_client
+
+    await gcp_queue.extend_message_visibility("test-ack-id", 120)
+
+    mock_subscriber.modify_ack_deadline.assert_called_once_with(
+        request={
+            "subscription": gcp_queue._subscription_path,
+            "ack_ids": ["test-ack-id"],
+            "ack_deadline_seconds": 120,
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_visibility_timeout_capped_at_gcp_maximum(
+    mock_pubsub_client: tuple[MagicMock, MagicMock], gcp_config: MagicMock
+) -> None:
+    """Test that a visibility_timeout above GCP's maximum is capped at that maximum."""
+    queue = GCPPubSubQueue(gcp_config, visibility_timeout=10010)
+    assert queue._visibility_timeout == GCP_MAX_ACK_DEADLINE_SECONDS
 
 
 @pytest.mark.asyncio
