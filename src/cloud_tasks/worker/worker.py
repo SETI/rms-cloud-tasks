@@ -1596,7 +1596,12 @@ class Worker:
                         f"{self._data.max_runtime} seconds (actual runtime {runtime:.1f} seconds); "
                         "terminating"
                     )
-                    await self._log_task_timed_out(task["task_id"], retry=False, runtime=runtime)
+                    # The retry flag must match what happens to the message below, or
+                    # the task database marks the task terminally timed out while the
+                    # message goes back on the queue for another attempt
+                    await self._log_task_timed_out(
+                        task["task_id"], retry=self._data.retry_on_timeout, runtime=runtime
+                    )
 
                     # Kill the process that exceeded runtime
                     try:
