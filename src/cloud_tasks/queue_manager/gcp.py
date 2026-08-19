@@ -176,6 +176,9 @@ class GCPPubSubQueue(QueueManager):
 
         # Check if subscription exists
         self._subscription_exists = False
+        # True once the subscription's ack deadline is known to match
+        # self._visibility_timeout (set on create or after update_subscription)
+        self._ack_deadline_applied = False
         try:
             self._subscriber.get_subscription(request={"subscription": self._subscription_path})
             self._logger.debug(f'Subscription "{self._subscription_name}" already exists')
@@ -239,9 +242,40 @@ class GCPPubSubQueue(QueueManager):
 
         self._topic_exists = False
 
+    async def _update_ack_deadline(self) -> None:
+        """Apply self._visibility_timeout to a pre-existing subscription (at most once).
+
+        A subscription created by another process (e.g. the job dispatcher) may have a
+        different ack deadline than this instance requested; without this update, messages
+        pulled by a long-running worker would expire and be redelivered while still being
+        processed. No-op if no visibility timeout was requested or it was already applied.
+        """
+        if self._visibility_timeout is None or self._ack_deadline_applied:
+            return
+
+        loop = asyncio.get_event_loop()
+        self._logger.info(
+            f'Updating subscription "{self._subscription_name}" ack deadline to '
+            f"{self._visibility_timeout} seconds"
+        )
+        await loop.run_in_executor(
+            None,
+            lambda: self._subscriber.update_subscription(
+                request={
+                    "subscription": {
+                        "name": self._subscription_path,
+                        "ack_deadline_seconds": self._visibility_timeout,
+                    },
+                    "update_mask": {"paths": ["ack_deadline_seconds"]},
+                }
+            ),
+        )
+        self._ack_deadline_applied = True
+
     async def _create_subscription(self) -> None:
         """Create the Pub/Sub subscription if it doesn't exist."""
         if self._subscription_exists:
+            await self._update_ack_deadline()
             return
 
         try:
@@ -269,18 +303,12 @@ class GCPPubSubQueue(QueueManager):
             time.sleep(2)
             self._logger.info(f'Subscription "{self._subscription_name}" created successfully')
             self._subscription_exists = True
+            self._ack_deadline_applied = True
         except gcp_exceptions.AlreadyExists:
-            # Modify an existing subscription to change the ack deadline to visibility_timeout
+            # Created by another process; update its ack deadline to visibility_timeout
             self._logger.info(f'Subscription "{self._subscription_name}" already exists...')
-            if self._visibility_timeout is not None:
-                self._logger.info(f"Updating visibility timeout to {visibility_timeout} seconds")
-                self._subscriber.modify_subscription(
-                    request={
-                        "subscription": self._subscription_path,
-                        "ack_deadline_seconds": visibility_timeout,
-                    }
-                )
             self._subscription_exists = True
+            await self._update_ack_deadline()
         except Exception:
             raise
 

@@ -1676,15 +1676,19 @@ class Worker:
 
     async def _visibility_renewal_worker(self) -> None:
         """Background worker that renews visibility timeouts for long-running tasks."""
-        # Calculate renewal interval based on max visibility timeout
+        # Calculate renewal interval based on the effective visibility timeout: the
+        # deadline actually applied to the subscription is the requested value
+        # (max_runtime + 10) clipped to the provider maximum, so renewals must be
+        # scheduled against that, not the provider maximum alone.
         max_visibility = self._task_queue.get_max_visibility_timeout()
         if max_visibility is None:
             logger.info("No max visibility timeout found, skipping visibility renewal worker")
             return
+        effective_visibility = min(self._data.max_runtime + 10, max_visibility)
 
-        renewal_check_interval = max(max_visibility // 10, 10)
+        renewal_check_interval = max(effective_visibility // 10, 10)
 
-        when_to_renew = max_visibility // 2  # Renew half way through the visibility timeout
+        when_to_renew = effective_visibility // 2  # Renew half way through the visibility timeout
 
         logger.info(f"Starting visibility renewal worker with {renewal_check_interval}s interval")
 

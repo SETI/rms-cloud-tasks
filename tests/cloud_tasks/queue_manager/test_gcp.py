@@ -1060,6 +1060,98 @@ async def test_create_topic_subscription_already_exists(gcp_queue, mock_pubsub_c
 
 
 @pytest.mark.asyncio
+async def test_preexisting_subscription_ack_deadline_updated(mock_pubsub_client, gcp_config):
+    """A pre-existing subscription's ack deadline is updated to the requested (clipped) value.
+
+    This is the worker path: the dispatcher creates the subscription with the default
+    ack deadline, then the worker connects with visibility_timeout=max_runtime+10. Without
+    the update, messages expire and are redelivered while tasks are still being processed.
+    """
+    mock_publisher, mock_subscriber = mock_pubsub_client
+
+    # Topic and subscription already exist (created by the dispatcher)
+    mock_publisher.get_topic.side_effect = None
+    mock_publisher.get_topic.return_value = MagicMock(name="existing-topic")
+    mock_subscriber.get_subscription.side_effect = None
+    mock_subscriber.get_subscription.return_value = MagicMock(name="existing-subscription")
+
+    # Request a visibility timeout above the GCP maximum; it must be clipped
+    queue = GCPPubSubQueue(gcp_config, visibility_timeout=10010)
+    assert queue._subscription_exists is True
+
+    await queue.ensure_queue_ready()
+
+    # update_subscription is the real GCP API for this (modify_subscription does not exist
+    # on SubscriberClient; only a MagicMock would accept it)
+    mock_subscriber.update_subscription.assert_called_once_with(
+        request={
+            "subscription": {
+                "name": "projects/test-project/subscriptions/test-queue-subscription",
+                "ack_deadline_seconds": GCP_MAX_ACK_DEADLINE_SECONDS,
+            },
+            "update_mask": {"paths": ["ack_deadline_seconds"]},
+        }
+    )
+    assert not mock_subscriber.modify_subscription.called
+    assert not mock_subscriber.create_subscription.called
+
+    # The update is applied at most once, not on every ensure/ack/receive
+    await queue.ensure_queue_ready()
+    assert mock_subscriber.update_subscription.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_preexisting_subscription_no_visibility_timeout_no_update(
+    mock_pubsub_client, gcp_config
+):
+    """Without a requested visibility timeout, a pre-existing subscription is left untouched."""
+    mock_publisher, mock_subscriber = mock_pubsub_client
+
+    mock_publisher.get_topic.side_effect = None
+    mock_publisher.get_topic.return_value = MagicMock(name="existing-topic")
+    mock_subscriber.get_subscription.side_effect = None
+    mock_subscriber.get_subscription.return_value = MagicMock(name="existing-subscription")
+
+    queue = GCPPubSubQueue(gcp_config)
+
+    await queue.ensure_queue_ready()
+
+    assert not mock_subscriber.update_subscription.called
+    assert not mock_subscriber.create_subscription.called
+
+
+@pytest.mark.asyncio
+async def test_create_subscription_already_exists_race_updates_deadline(
+    mock_pubsub_client, gcp_config
+):
+    """If creation races with another process, the ack deadline is still applied."""
+    mock_publisher, mock_subscriber = mock_pubsub_client
+
+    # Subscription does not exist at construction time...
+    queue = GCPPubSubQueue(gcp_config, visibility_timeout=300)
+    assert queue._subscription_exists is False
+
+    # ...but another process creates it before our create_subscription call lands
+    mock_subscriber.create_subscription.side_effect = gcp_exceptions.AlreadyExists(
+        "Subscription already exists"
+    )
+
+    await queue.ensure_queue_ready()
+
+    assert queue._subscription_exists is True
+    mock_subscriber.update_subscription.assert_called_once_with(
+        request={
+            "subscription": {
+                "name": "projects/test-project/subscriptions/test-queue-subscription",
+                "ack_deadline_seconds": 300,
+            },
+            "update_mask": {"paths": ["ack_deadline_seconds"]},
+        }
+    )
+    assert not mock_subscriber.modify_subscription.called
+
+
+@pytest.mark.asyncio
 async def test_send_message(gcp_queue, mock_pubsub_client):
     """Test sending a message to the queue."""
     mock_publisher, mock_subscriber = mock_pubsub_client
