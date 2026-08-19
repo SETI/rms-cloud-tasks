@@ -2,13 +2,21 @@ GCP-Specific Documentation
 ==========================
 
 
-Known Issues
-------------
+Queue Visibility Timeout
+------------------------
 
-- The maximum queue visibility timeout allowed by GCP Pub/Sub is 600 seconds. This means
-  that if your task takes longer than 600 seconds to complete, it will be retried even if
-  it's still in process on another worker. The only current workaround is to break your
-  task into smaller chunks so that none of them exceed 600 seconds.
+The maximum queue visibility timeout (ack deadline) allowed by GCP Pub/Sub is 600 seconds.
+Tasks are not limited to that duration, because the worker renews the visibility timeout of
+each running task roughly every half of that interval, extending it for as long as the task
+keeps running (up to ``--max-runtime``). A task that takes hours is therefore not redelivered
+to another worker while it is still making progress.
+
+If a worker dies, its renewals stop and the task becomes visible again within at most 600
+seconds, which is how a crashed worker's task gets picked up by someone else. The same
+mechanism means a worker that is alive but unable to reach Pub/Sub - for example during a
+network partition long enough for the deadline to lapse - can have its task redelivered and
+executed a second time. Tasks should be written to tolerate this; see
+:ref:`gcp_queues` for the delivery guarantees the queue types provide.
 
 
 Setup
