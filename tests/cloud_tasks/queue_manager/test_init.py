@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from cloud_tasks.common.config import AWSConfig, Config, GCPConfig
+from cloud_tasks.common.config import AWSConfig, Config, GCPConfig, RunConfig
 from cloud_tasks.queue_manager import create_queue
 
 
@@ -76,6 +76,32 @@ async def test_create_queue_gcp_with_config(mock_gcp_queue: MagicMock) -> None:
     assert instance.project_id == "test-project"
     assert instance.queue_name == "test-queue"
     assert instance.credentials_file is None
+
+
+@pytest.mark.asyncio
+async def test_create_queue_visibility_timeout_from_config_max_runtime(
+    mock_gcp_queue: MagicMock,
+) -> None:
+    """The visibility timeout is derived from config.run.max_runtime."""
+    config = Config(
+        provider="GCP",
+        gcp=GCPConfig(project_id="test-project", queue_name="test-queue"),
+        run=RunConfig(max_runtime=1200),
+    )
+
+    await create_queue(config)
+
+    assert mock_gcp_queue.call_args.kwargs["visibility_timeout"] == 1210
+
+
+@pytest.mark.asyncio
+async def test_create_queue_no_config_uses_provider_default_visibility_timeout(
+    mock_gcp_queue: MagicMock,
+) -> None:
+    """A caller with no config (e.g. the worker) leaves the visibility timeout to the provider."""
+    await create_queue(provider="GCP", queue_name="test-queue")
+
+    assert mock_gcp_queue.call_args.kwargs["visibility_timeout"] is None
 
 
 @pytest.mark.asyncio
