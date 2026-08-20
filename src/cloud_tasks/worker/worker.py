@@ -1139,14 +1139,14 @@ class Worker:
                 f'"{self._data.queue_name}"'
             )
             try:
+                # The queue, including its visibility timeout, is created and configured
+                # by "cloud_tasks run" before any worker starts; a worker only ever attaches
+                # to it. Creating it here would be useless anyway, since a Pub/Sub
+                # subscription receives no message published before it existed.
                 self._task_queue = await create_queue(
                     provider=self._data.provider,
                     queue_name=self._data.queue_name,
                     project_id=self._data.project_id,
-                    visibility_timeout=self._data.max_runtime + 10,
-                    # Add 10 seconds to account for the time it takes to notice an event
-                    # is over time, kill it, and fail the task. We only want the message
-                    # to timeout if something goes really wrong with the task manager.
                     exactly_once=self._data.exactly_once_queue,
                 )
             except Exception as e:
