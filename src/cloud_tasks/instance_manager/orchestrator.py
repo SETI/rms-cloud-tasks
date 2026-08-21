@@ -413,7 +413,12 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
             # selected in the config.
             boot_disk_constraints = {
                 "boot_disk_iops": self._run_config.boot_disk_iops,
+                "boot_disk_iops_per_cpu": self._run_config.boot_disk_iops_per_cpu,
+                "boot_disk_iops_per_task": self._run_config.boot_disk_iops_per_task,
                 "boot_disk_throughput": self._run_config.boot_disk_throughput,
+                "boot_disk_throughput_per_cpu": self._run_config.boot_disk_throughput_per_cpu,
+                "boot_disk_throughput_per_task": self._run_config.boot_disk_throughput_per_task,
+                "cpus_per_task": self._run_config.cpus_per_task,
             }
             use_spot = self._run_config.use_spot if self._run_config.use_spot is not None else False
             result = await self._instance_manager.get_instance_pricing(

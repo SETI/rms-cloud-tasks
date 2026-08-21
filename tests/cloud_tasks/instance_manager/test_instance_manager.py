@@ -367,3 +367,153 @@ class TestInstanceManager:
                 "max_cpu": 6,  # Irrelevant as min_tasks already exceeds instance CPUs
             },
         )
+
+    def _iops(
+        self,
+        instance_manager: InstanceManager,
+        instance_info: dict,
+        constraints: dict,
+        default: int = 3120,
+    ) -> int:
+        """Compute the provisioned boot disk IOPS for the given constraints."""
+        return instance_manager._get_boot_disk_provisioned_amount(
+            instance_info,
+            constraints,
+            absolute_key="boot_disk_iops",
+            per_cpu_key="boot_disk_iops_per_cpu",
+            per_task_key="boot_disk_iops_per_task",
+            default=default,
+        )
+
+    def test_get_boot_disk_provisioned_amount_defaults(
+        self, instance_manager: InstanceManager, base_instance_info: dict
+    ) -> None:
+        """With no constraints at all the provider default is used."""
+        assert self._iops(instance_manager, base_instance_info, {}) == 3120
+
+    def test_get_boot_disk_provisioned_amount_absolute_only(
+        self, instance_manager: InstanceManager, base_instance_info: dict
+    ) -> None:
+        """An absolute value is used unchanged when no scaling is requested."""
+        assert self._iops(instance_manager, base_instance_info, {"boot_disk_iops": 5000}) == 5000
+
+        # Explicit Nones are treated the same as missing keys
+        assert (
+            self._iops(
+                instance_manager,
+                base_instance_info,
+                {
+                    "boot_disk_iops": 5000,
+                    "boot_disk_iops_per_cpu": None,
+                    "boot_disk_iops_per_task": None,
+                    "cpus_per_task": None,
+                },
+            )
+            == 5000
+        )
+
+    def test_get_boot_disk_provisioned_amount_per_cpu(
+        self, instance_manager: InstanceManager, base_instance_info: dict
+    ) -> None:
+        """The per-vCPU value is multiplied by the number of vCPUs."""
+        # 4 vCPUs * 1000 = 4000, which exceeds the 3120 default
+        assert (
+            self._iops(instance_manager, base_instance_info, {"boot_disk_iops_per_cpu": 1000})
+            == 4000
+        )
+
+        # The absolute value acts as a floor, as it does for boot disk size
+        assert (
+            self._iops(
+                instance_manager,
+                base_instance_info,
+                {"boot_disk_iops": 10000, "boot_disk_iops_per_cpu": 1000},
+            )
+            == 10000
+        )
+
+    def test_get_boot_disk_provisioned_amount_per_task(
+        self, instance_manager: InstanceManager, base_instance_info: dict
+    ) -> None:
+        """The per-task value is multiplied by the number of tasks per instance."""
+        # 4 vCPUs // 2 CPUs per task = 2 tasks; 2 * 4000 = 8000
+        assert (
+            self._iops(
+                instance_manager,
+                base_instance_info,
+                {"boot_disk_iops_per_task": 4000, "cpus_per_task": 2},
+            )
+            == 8000
+        )
+
+        # cpus_per_task defaults to 1, giving one task per vCPU
+        assert (
+            self._iops(instance_manager, base_instance_info, {"boot_disk_iops_per_task": 4000})
+            == 16000
+        )
+
+    def test_get_boot_disk_provisioned_amount_takes_maximum(
+        self, instance_manager: InstanceManager, base_instance_info: dict
+    ) -> None:
+        """When several values are given the largest one wins."""
+        assert (
+            self._iops(
+                instance_manager,
+                base_instance_info,
+                {
+                    "boot_disk_iops": 4500,
+                    "boot_disk_iops_per_cpu": 1000,  # 4000
+                    "boot_disk_iops_per_task": 2000,  # 2 tasks -> 4000
+                    "cpus_per_task": 2,
+                },
+            )
+            == 4500
+        )
+        assert (
+            self._iops(
+                instance_manager,
+                base_instance_info,
+                {
+                    "boot_disk_iops": 4500,
+                    "boot_disk_iops_per_cpu": 1000,  # 4000
+                    "boot_disk_iops_per_task": 3000,  # 2 tasks -> 6000
+                    "cpus_per_task": 2,
+                },
+            )
+            == 6000
+        )
+
+    def test_get_boot_disk_provisioned_amount_rounds_up(
+        self, instance_manager: InstanceManager, base_instance_info: dict
+    ) -> None:
+        """Fractional amounts are rounded up to a whole unit."""
+        # 4 vCPUs * 12.5 = 50.0 exactly
+        assert (
+            self._iops(
+                instance_manager, base_instance_info, {"boot_disk_iops_per_cpu": 12.5}, default=0
+            )
+            == 50
+        )
+        # 4 vCPUs * 12.6 = 50.4, rounded up so the disk is never under-provisioned
+        assert (
+            self._iops(
+                instance_manager, base_instance_info, {"boot_disk_iops_per_cpu": 12.6}, default=0
+            )
+            == 51
+        )
+
+    def test_get_boot_disk_provisioned_amount_throughput_keys(
+        self, instance_manager: InstanceManager, base_instance_info: dict
+    ) -> None:
+        """The same helper drives throughput using its own constraint names."""
+        assert (
+            instance_manager._get_boot_disk_provisioned_amount(
+                base_instance_info,
+                {"boot_disk_throughput_per_cpu": 100},
+                absolute_key="boot_disk_throughput",
+                per_cpu_key="boot_disk_throughput_per_cpu",
+                per_task_key="boot_disk_throughput_per_task",
+                default=170,
+            )
+            == 400
+        )

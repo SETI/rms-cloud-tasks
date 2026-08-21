@@ -2576,9 +2576,29 @@ def add_instance_args(parser: argparse.ArgumentParser) -> None:
         help="Specify the boot disk provisioned IOPS (GCP only)",
     )
     parser.add_argument(
+        "--boot-disk-iops-per-cpu",
+        type=float,
+        help="Specify the boot disk provisioned IOPS per vCPU (GCP only)",
+    )
+    parser.add_argument(
+        "--boot-disk-iops-per-task",
+        type=float,
+        help="Specify the boot disk provisioned IOPS per task (GCP only)",
+    )
+    parser.add_argument(
         "--boot-disk-throughput",
         type=int,
         help="Specify the boot disk provisioned throughput (GCP only)",
+    )
+    parser.add_argument(
+        "--boot-disk-throughput-per-cpu",
+        type=float,
+        help="Specify the boot disk provisioned throughput per vCPU (GCP only)",
+    )
+    parser.add_argument(
+        "--boot-disk-throughput-per-task",
+        type=float,
+        help="Specify the boot disk provisioned throughput per task (GCP only)",
     )
     parser.add_argument(
         "--total-boot-disk-size",

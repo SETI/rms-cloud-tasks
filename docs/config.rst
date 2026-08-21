@@ -196,10 +196,20 @@ The boot disk type is provider-specific and can be a single type or a list of ty
 Finally, some boot disk types require additional configuration:
 
 * ``boot_disk_iops``: For any boot disk type that supports it, the number of provisioned IOPS
-  to request; this is an absolute value and is not scaled by the number of vCPUs or tasks
+  to request; this is an absolute value
+* ``boot_disk_iops_per_cpu``: The number of provisioned IOPS to request per vCPU (defaults to 0)
+* ``boot_disk_iops_per_task``: The number of provisioned IOPS to request per task (defaults to 0)
 * ``boot_disk_throughput``: For any boot disk type that supports it, the number of provisioned
-  throughput in MB/s to request; this is an absolute value and is not scaled by the number of
-  vCPUs or tasks
+  throughput in MB/s to request; this is an absolute value
+* ``boot_disk_throughput_per_cpu``: The provisioned throughput in MB/s to request per vCPU
+  (defaults to 0)
+* ``boot_disk_throughput_per_task``: The provisioned throughput in MB/s to request per task
+  (defaults to 0)
+
+As with the boot disk size, if more than one value is specified the maximum of the values
+will be used, and the number of tasks per instance is derived from ``cpus_per_task``. The
+result is rounded up to a whole number of IOPS or MB/s. If no per-vCPU or per-task value is
+specified, the absolute value (or the provider default) is used unchanged.
 
 
 .. _config_number_of_instances_options:
