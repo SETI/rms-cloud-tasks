@@ -38,6 +38,20 @@ class GCPPubSubQueue(QueueManager):
     # Message retention duration (7 days)
     _MESSAGE_RETENTION_DURATION = 7 * 24 * 60 * 60
 
+    # The topic Pub/Sub reports for a subscription whose topic has been deleted. Deleting a
+    # topic does not delete its subscriptions, and creating a topic of the same name again does
+    # not reattach them, so such a subscription can never receive anything published to the new
+    # topic.
+    _DELETED_TOPIC = "_deleted-topic_"
+
+    # How long to wait for the creation or deletion of a topic or subscription to become
+    # visible to subsequent reads, and how often to look while waiting. Pub/Sub administrative
+    # operations are eventually consistent: get_subscription can keep returning a subscription
+    # for some time after delete_subscription returned, and create_subscription can be answered
+    # with AlreadyExists by that same already-deleted subscription.
+    _PROPAGATION_TIMEOUT = 120
+    _PROPAGATION_POLL_INTERVAL = 2
+
     def __init__(
         self,
         gcp_config: GCPConfig | None = None,
@@ -163,29 +177,19 @@ class GCPPubSubQueue(QueueManager):
         self._logger.debug(f"Topic path: {self._topic_path}")
         self._logger.debug(f"Subscription path: {self._subscription_path}")
 
-        # Check if topic exists
+        # Whether this object has confirmed that the topic and subscription are live. They are
+        # deliberately not seeded from a get_topic/get_subscription probe here: Pub/Sub reads
+        # are eventually consistent, so a probe made moments after the queue was deleted can
+        # still report the deleted subscription, and an object born believing the subscription
+        # exists never creates it. Every task published into that topic is then dropped by
+        # Pub/Sub without an error anywhere. Creation is attempted the first time the queue is
+        # needed instead, and is safe to repeat because AlreadyExists is treated as success.
         self._topic_exists = False
-        try:
-            self._publisher.get_topic(request={"topic": self._topic_path})
-            self._logger.debug(f'Topic "{self._topic_name}" already exists')
-            self._topic_exists = True
-        except gcp_exceptions.NotFound:
-            self._logger.debug(f'Topic "{self._topic_name}" doesn\'t exist...deferring creation')
-        except Exception:
-            raise
-
-        # Check if subscription exists
         self._subscription_exists = False
-        try:
-            self._subscriber.get_subscription(request={"subscription": self._subscription_path})
-            self._logger.debug(f'Subscription "{self._subscription_name}" already exists')
-            self._subscription_exists = True
-        except gcp_exceptions.NotFound:
-            self._logger.debug(
-                f'Subscription "{self._subscription_name}" doesn\'t exist...deferring creation'
-            )
-        except Exception:
-            raise
+
+        # Serializes the creation and deletion sequences below so that a concurrent enqueue
+        # loop cannot publish while another coroutine is still recreating the subscription.
+        self._admin_lock = asyncio.Lock()
 
         if self._exactly_once:
             # Initialize streaming pull subscription
@@ -195,6 +199,108 @@ class GCPPubSubQueue(QueueManager):
             )
             self._streaming_pull_future = None
             self._message_queue = asyncio.Queue()
+
+    async def _get_topic(self) -> Any:
+        """Return the topic as Pub/Sub currently reports it, or None if it doesn't exist.
+
+        Returns:
+            The Topic, or None if Pub/Sub says there is no such topic.
+        """
+        loop = asyncio.get_event_loop()
+        try:
+            return await loop.run_in_executor(
+                None, lambda: self._publisher.get_topic(request={"topic": self._topic_path})
+            )
+        except gcp_exceptions.NotFound:
+            return None
+
+    async def _get_subscription(self) -> Any:
+        """Return the subscription as Pub/Sub currently reports it, or None if it doesn't exist.
+
+        Returns:
+            The Subscription, or None if Pub/Sub says there is no such subscription.
+        """
+        loop = asyncio.get_event_loop()
+        try:
+            return await loop.run_in_executor(
+                None,
+                lambda: self._subscriber.get_subscription(
+                    request={"subscription": self._subscription_path}
+                ),
+            )
+        except gcp_exceptions.NotFound:
+            return None
+
+    async def _retry_after_propagation_delay(self, deadline: float, what: str) -> None:
+        """Wait before retrying `what`, or give up if `deadline` has passed.
+
+        Parameters:
+            deadline: time.monotonic() value after which to stop retrying
+            what: Description of the operation being retried, used in the error message
+
+        Raises:
+            RuntimeError: If the deadline has passed.
+        """
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"Gave up {what} after {self._PROPAGATION_TIMEOUT} seconds")
+        await asyncio.sleep(self._PROPAGATION_POLL_INTERVAL)
+
+    async def _wait_until_topic_gone(self) -> None:
+        """Wait until Pub/Sub stops reporting the topic after it has been deleted.
+
+        delete_topic returns before the deletion is visible everywhere, and a topic that is
+        still reported can make the creation of a subscription on the recreated topic fail with
+        NotFound. Waiting here is only best effort; a topic that never disappears is logged and
+        otherwise ignored, since publishing to a topic that does not exist fails loudly.
+        """
+        deadline = time.monotonic() + self._PROPAGATION_TIMEOUT
+        while await self._get_topic() is not None:
+            if time.monotonic() >= deadline:
+                self._logger.warning(
+                    f'Pub/Sub still reports topic "{self._topic_name}" '
+                    f"{self._PROPAGATION_TIMEOUT} seconds after it was deleted"
+                )
+                return
+            await asyncio.sleep(self._PROPAGATION_POLL_INTERVAL)
+
+    async def _wait_until_subscription_gone(self) -> None:
+        """Wait until Pub/Sub stops reporting the subscription after it has been deleted.
+
+        delete_subscription returns before the deletion is visible everywhere. Until it is,
+        create_subscription can be answered with AlreadyExists by the deleted subscription,
+        which would leave the queue with no live subscription and every task published to it
+        dropped in silence. Waiting here is best effort; the creation path checks as well.
+        """
+        deadline = time.monotonic() + self._PROPAGATION_TIMEOUT
+        while await self._get_subscription() is not None:
+            if time.monotonic() >= deadline:
+                self._logger.warning(
+                    f'Pub/Sub still reports subscription "{self._subscription_name}" '
+                    f"{self._PROPAGATION_TIMEOUT} seconds after it was deleted"
+                )
+                return
+            await asyncio.sleep(self._PROPAGATION_POLL_INTERVAL)
+
+    async def _wait_until_subscription_live(self) -> None:
+        """Wait until Pub/Sub reports the subscription attached to this queue's topic.
+
+        Raises:
+            RuntimeError: If the subscription is still not readable, or is not attached to this
+                queue's topic, once the propagation timeout has passed. Pub/Sub delivers a
+                message only to the subscriptions that exist when it is published, and reports
+                nothing when there are none, so refusing to continue is the only way the caller
+                finds out before its tasks disappear.
+        """
+        deadline = time.monotonic() + self._PROPAGATION_TIMEOUT
+        while True:
+            subscription = await self._get_subscription()
+            if subscription is not None and subscription.topic == self._topic_path:
+                return
+            await self._retry_after_propagation_delay(
+                deadline,
+                f'confirming that subscription "{self._subscription_name}" is live on topic '
+                f'"{self._topic_name}"',
+            )
 
     async def _create_topic(self) -> None:
         """Create the Pub/Sub topic if it doesn't exist."""
@@ -211,14 +317,12 @@ class GCPPubSubQueue(QueueManager):
             )
             self._logger.info(f'Topic "{self._topic_name}" created successfully')
             time.sleep(2)  # Give GCP a moment to create the topic
-            self._topic_exists = True
         except gcp_exceptions.AlreadyExists:
             self._logger.info(
                 f'Topic "{self._topic_name}" already exists (created by another process)'
             )
-            self._topic_exists = True
-        except Exception:
-            raise
+
+        self._topic_exists = True
 
     async def _delete_topic(self) -> None:
         """Delete the Pub/Sub topic."""
@@ -238,19 +342,39 @@ class GCPPubSubQueue(QueueManager):
             raise
 
         self._topic_exists = False
+        await self._wait_until_topic_gone()
 
-    async def _create_subscription(self) -> None:
-        """Create the Pub/Sub subscription if it doesn't exist."""
+    async def _create_subscription(self, repair_orphaned: bool = False) -> None:
+        """Create the Pub/Sub subscription if it doesn't exist.
+
+        The subscription is not assumed to exist because Pub/Sub says so: creation is attempted
+        and AlreadyExists is only accepted once the subscription that already exists has been
+        read back and found attached to this queue's topic.
+
+        Parameters:
+            repair_orphaned: If True, a subscription whose topic has been deleted is deleted and
+                created again. Such a subscription can never receive anything published to the
+                current topic, but recreating it discards whatever it still holds, so only
+                callers that are about to publish ask for this (see ensure_queue_ready).
+
+        Raises:
+            RuntimeError: If the subscription cannot be confirmed to exist and be attached to
+                this queue's topic. Pub/Sub delivers a message only to the subscriptions that
+                exist when it is published and reports nothing when there are none, so this is
+                raised rather than letting the caller enqueue tasks that would be dropped.
+        """
         if self._subscription_exists:
             return
 
-        try:
-            loop = asyncio.get_event_loop()
+        loop = asyncio.get_event_loop()
 
-            visibility_timeout = self._visibility_timeout
-            if visibility_timeout is None:
-                visibility_timeout = self._DEFAULT_VISIBILITY_TIMEOUT
+        visibility_timeout = self._visibility_timeout
+        if visibility_timeout is None:
+            visibility_timeout = self._DEFAULT_VISIBILITY_TIMEOUT
 
+        deadline = time.monotonic() + self._PROPAGATION_TIMEOUT
+
+        while True:
             self._logger.debug(
                 f'Creating subscription "{self._subscription_name}" '
                 f"with visibility timeout {visibility_timeout} seconds"
@@ -262,40 +386,117 @@ class GCPPubSubQueue(QueueManager):
                 "enable_exactly_once_delivery": self._exactly_once,
                 "ack_deadline_seconds": visibility_timeout,
             }
-            await loop.run_in_executor(
-                None, lambda: self._subscriber.create_subscription(request=request)
-            )
-            # TODO https://cloud.google.com/pubsub/docs/exactly-once-delivery#python
-            time.sleep(2)
-            self._logger.info(f'Subscription "{self._subscription_name}" created successfully')
-            self._subscription_exists = True
-        except gcp_exceptions.AlreadyExists:
-            # Modify an existing subscription to change the ack deadline to visibility_timeout
-            self._logger.info(f'Subscription "{self._subscription_name}" already exists...')
-            if self._visibility_timeout is not None:
-                self._logger.info(f"Updating visibility timeout to {visibility_timeout} seconds")
-                self._subscriber.modify_subscription(
-                    request={
-                        "subscription": self._subscription_path,
-                        "ack_deadline_seconds": visibility_timeout,
-                    }
+            try:
+                await loop.run_in_executor(
+                    None, lambda: self._subscriber.create_subscription(request=request)
                 )
-            self._subscription_exists = True
-        except Exception:
-            raise
+            except gcp_exceptions.NotFound:
+                # The topic isn't there, which happens while the deletion of the topic of the
+                # same name is still propagating: _create_topic can be answered with
+                # AlreadyExists by the topic being deleted. Create it again before retrying.
+                self._logger.debug(
+                    f'Topic "{self._topic_name}" is not visible yet, retrying creation of '
+                    f'subscription "{self._subscription_name}"'
+                )
+                self._topic_exists = False
+                await self._retry_after_propagation_delay(
+                    deadline, f'creating subscription "{self._subscription_name}"'
+                )
+                await self._create_topic()
+                continue
+            except gcp_exceptions.AlreadyExists:
+                existing = await self._get_subscription()
+                if existing is None:
+                    # Pub/Sub answered from a replica that hasn't caught up with the deletion of
+                    # the previous subscription of this name. Taking AlreadyExists at face value
+                    # here is what leaves a run publishing into a topic nothing is subscribed
+                    # to, so wait for the deletion to settle and create it again.
+                    self._logger.debug(
+                        f'Subscription "{self._subscription_name}" is reported as already '
+                        "existing but cannot be read back, retrying creation"
+                    )
+                    await self._retry_after_propagation_delay(
+                        deadline, f'creating subscription "{self._subscription_name}"'
+                    )
+                    continue
+                if existing.topic == self._DELETED_TOPIC:
+                    if not repair_orphaned:
+                        raise RuntimeError(
+                            f'Subscription "{self._subscription_name}" is orphaned: the topic it '
+                            "was attached to has been deleted, so it can never receive tasks "
+                            f'published to queue "{self._queue_name}"'
+                        )
+                    self._logger.warning(
+                        f'Subscription "{self._subscription_name}" is attached to a deleted '
+                        "topic and cannot receive anything published to the current topic; "
+                        "deleting and recreating it"
+                    )
+                    await self._delete_subscription()
+                    await self._retry_after_propagation_delay(
+                        deadline, f'recreating orphaned subscription "{self._subscription_name}"'
+                    )
+                    continue
+                if existing.topic != self._topic_path:
+                    raise RuntimeError(
+                        f'Subscription "{self._subscription_name}" is attached to topic '
+                        f'"{existing.topic}" instead of "{self._topic_path}", so it cannot '
+                        f'receive tasks published to queue "{self._queue_name}"'
+                    )
+                self._logger.info(f'Subscription "{self._subscription_name}" already exists...')
+                # Change the ack deadline of the existing subscription to visibility_timeout
+                if (
+                    self._visibility_timeout is not None
+                    and existing.ack_deadline_seconds != visibility_timeout
+                ):
+                    self._logger.info(
+                        f"Updating visibility timeout to {visibility_timeout} seconds"
+                    )
+                    await loop.run_in_executor(
+                        None,
+                        lambda: self._subscriber.update_subscription(
+                            request={
+                                "subscription": {
+                                    "name": self._subscription_path,
+                                    "ack_deadline_seconds": visibility_timeout,
+                                },
+                                "update_mask": {"paths": ["ack_deadline_seconds"]},
+                            }
+                        ),
+                    )
+                break
+            else:
+                # TODO https://cloud.google.com/pubsub/docs/exactly-once-delivery#python
+                self._logger.info(f'Subscription "{self._subscription_name}" created successfully')
+                break
 
-    async def _create_topic_and_subscription(self) -> None:
-        """Create the Pub/Sub topic and subscription if they don't exist."""
-        await self._create_topic()
-        await self._create_subscription()
+        await self._wait_until_subscription_live()
+        self._subscription_exists = True
+
+    async def _create_topic_and_subscription(self, repair_orphaned: bool = False) -> None:
+        """Create the Pub/Sub topic and subscription if they don't exist.
+
+        Parameters:
+            repair_orphaned: Passed to _create_subscription.
+        """
+        # One creation sequence at a time: a task must not be published while another coroutine
+        # is still deleting and recreating the subscription that is supposed to receive it.
+        async with self._admin_lock:
+            await self._create_topic()
+            await self._create_subscription(repair_orphaned=repair_orphaned)
 
     async def ensure_queue_ready(self) -> None:
         """
         Ensure the Pub/Sub topic and subscription exist before concurrent operations.
         Call this once before starting a multi-threaded or concurrent task enqueue loop
         so that each concurrent send_task does not try to create the topic.
+
+        This returns only once the subscription has been read back and found attached to the
+        topic, because Pub/Sub delivers a message only to the subscriptions that exist when it
+        is published; anything enqueued before then is dropped without an error. A subscription
+        orphaned by an earlier run, whose topic was deleted out from under it, is deleted and
+        recreated here for the same reason.
         """
-        await self._create_topic_and_subscription()
+        await self._create_topic_and_subscription(repair_orphaned=True)
 
     async def _delete_subscription(self) -> None:
         """Delete the Pub/Sub subscription."""
@@ -320,9 +521,9 @@ class GCPPubSubQueue(QueueManager):
 
         self._subscription_exists = False
 
-        # Wait a moment for deletion to complete
-        # Don't use asyncio.sleep because we don't want other threads to start running
-        time.sleep(2)
+        # Wait for the deletion to become visible, so that the next creation isn't answered
+        # with AlreadyExists by the subscription that was just deleted
+        await self._wait_until_subscription_gone()
 
     def _start_streaming_pull(self) -> None:
         """Start the streaming pull subscription if it's not already running."""
@@ -729,11 +930,17 @@ class GCPPubSubQueue(QueueManager):
         This is a best-effort estimate, and the actual queue depth may be different.
 
         Returns:
-            Approximate number of messages in the queue.
+            Approximate number of messages in the queue, or None if the depth cannot be
+            determined, including when the queue does not exist.
         """
         self._logger.debug(f"Getting queue depth for queue '{self._queue_name}'")
 
-        await self._create_topic_and_subscription()
+        # Reading the depth must not create the queue. A fresh run reads the depth of the queue
+        # it is about to delete and recreate, and creating a subscription only to delete it
+        # seconds later leaves the recreated one racing the first tasks published to it.
+        if not self._subscription_exists and await self._get_subscription() is None:
+            self._logger.debug(f"Queue '{self._queue_name}' does not exist")
+            return None
 
         self._start_streaming_pull()
 
@@ -848,11 +1055,18 @@ class GCPPubSubQueue(QueueManager):
     async def purge_queue(self) -> None:
         """Remove all messages from the queue by deleting the subscription."""
         self._logger.debug(f"Purging queue '{self._queue_name}'")
-        await self._delete_subscription()
-        await self._create_topic_and_subscription()
+        # Under the lock for the whole sequence: between the delete and the recreation there
+        # is no subscription, and anything published in that window is dropped by Pub/Sub
+        # without an error. The topic and subscription are created through the helpers rather
+        # than _create_topic_and_subscription, which takes this lock itself.
+        async with self._admin_lock:
+            await self._delete_subscription()
+            await self._create_topic()
+            await self._create_subscription()
 
     async def delete_queue(self) -> None:
         """Delete both the Pub/Sub subscription and topic entirely."""
         self._logger.debug(f"Deleting queue '{self._queue_name}'")
-        await self._delete_subscription()
-        await self._delete_topic()
+        async with self._admin_lock:
+            await self._delete_subscription()
+            await self._delete_topic()

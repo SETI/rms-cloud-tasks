@@ -14,6 +14,7 @@ from cloud_tasks.cli import (
     print_final_report,
     run_argv,
 )
+from cloud_tasks.common.config import Config, GCPConfig
 from cloud_tasks.common.task_db import TaskDatabase
 
 
@@ -1061,3 +1062,32 @@ def test_print_final_report_smoke(tmp_path: Path, caplog: pytest.LogCaptureFixtu
     assert "JOB COMPLETE" in caplog.text or "Total tasks: 1" in caplog.text
     assert "t1" in caplog.text
     assert len(caplog.records) >= 1
+
+
+def test_use_spot_is_not_set_unless_asked_for() -> None:
+    """Leaving --use-spot off must leave the configured value alone.
+
+    argparse's store_true supplies False for an option that isn't given, and
+    overload_from_cli takes any value that isn't None as one the user asked for. Without
+    default=None, every run that didn't name the flag overwrote use_spot in the configuration
+    file with False and quietly started on-demand instances.
+
+    Returns:
+        None. Asserts a configured use_spot survives a command line that doesn't mention it,
+        and that --use-spot still turns it on.
+    """
+    parser = build_parser()
+
+    args = parser.parse_args(["run", "--config", "/nonexistent", "--provider", "gcp"])
+    assert args.use_spot is None
+
+    config = Config(provider="GCP", gcp=GCPConfig(use_spot=True))
+    config.overload_from_cli(vars(args))
+    assert config.gcp.use_spot is True
+
+    args = parser.parse_args(["run", "--config", "/nonexistent", "--provider", "gcp", "--use-spot"])
+    assert args.use_spot is True
+
+    config = Config(provider="GCP", gcp=GCPConfig(use_spot=False))
+    config.overload_from_cli(vars(args))
+    assert config.gcp.use_spot is True
