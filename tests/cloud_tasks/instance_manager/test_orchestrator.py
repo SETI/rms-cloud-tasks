@@ -1178,3 +1178,59 @@ async def test_provision_creates_normally_when_the_instance_listing_fails(orches
 
     assert instance_ids == ["new-1"]
     orchestrator._instance_manager.restart_instance.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_terminate_all_instances_deletes_the_stopped_ones_too(orchestrator):
+    """A stopped instance keeps its disk, and its bill, until something deletes it."""
+    orchestrator.list_job_instances = AsyncMock(
+        return_value=[
+            _make_instance("running-1"),
+            _make_instance("starting-1", state="starting"),
+            _make_instance("stopping-1", state="stopping"),
+            _make_instance("stopped-1", state="stopped"),
+            _make_instance("reclaimed-1", state="terminated"),
+        ]
+    )
+    orchestrator._instance_manager.terminate_instance = AsyncMock()
+
+    await orchestrator.terminate_all_instances()
+
+    terminated = {
+        call.args[0] for call in orchestrator._instance_manager.terminate_instance.await_args_list
+    }
+    assert terminated == {
+        "running-1",
+        "starting-1",
+        "stopping-1",
+        "stopped-1",
+        "reclaimed-1",
+    }
+
+
+@pytest.mark.asyncio
+async def test_terminate_all_instances_survives_one_that_will_not_go(orchestrator):
+    """One instance refusing to be deleted must not leave the rest of them running."""
+    orchestrator.list_job_instances = AsyncMock(
+        return_value=[
+            _make_instance("running-1"),
+            _make_instance("stuck", state="terminated"),
+            _make_instance("running-2"),
+        ]
+    )
+
+    async def terminate(instance_id, zone=None):
+        if instance_id == "stuck":
+            raise RuntimeError("still deleting")
+
+    orchestrator._instance_manager.terminate_instance = AsyncMock(side_effect=terminate)
+
+    await orchestrator.terminate_all_instances()
+
+    terminated = {
+        call.args[0] for call in orchestrator._instance_manager.terminate_instance.await_args_list
+    }
+    assert terminated == {"running-1", "stuck", "running-2"}
+    # The ones that did go are off the books; the one that didn't is not
+    assert "running-1" in orchestrator._terminated_instances
+    assert "stuck" not in orchestrator._terminated_instances

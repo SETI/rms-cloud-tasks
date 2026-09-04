@@ -785,7 +785,9 @@ Examples:
 stop
 ~~~~
 
-Stop a job and terminate its instances.
+Stop a job and terminate its instances. Every instance the job still has is deleted,
+including any that are stopped rather than running: a stopped instance keeps its boot disk,
+and keeps being charged for it, until something deletes it.
 
 .. code-block:: none
 

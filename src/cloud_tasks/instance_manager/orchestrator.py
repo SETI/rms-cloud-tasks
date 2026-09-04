@@ -1643,7 +1643,14 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
         return [instance_id for instance_id in results if instance_id is not None]
 
     async def terminate_all_instances(self) -> None:
-        """Terminate all instances associated with this job."""
+        """Delete every instance associated with this job, running or not.
+
+        A stopped instance is still an instance: the provider keeps its boot disk, and keeps
+        charging for it, until something deletes it. Spot reclamation stops instances rather
+        than deleting them, and this orchestrator restarts them rather than replacing them,
+        so by the end of a long job there can be a good number of them sitting there. Ending
+        the job has to take those with it, or it leaves the user paying for the wreckage.
+        """
         self._logger.info("Terminating all instances")
 
         async with self._instance_creation_lock:
@@ -1667,13 +1674,19 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
                         )
                         return False
 
+            # Everything the provider still lists for this job, whatever state it is in.
+            # Stopped instances cost money for as long as they exist, and an instance that
+            # is on its way down has not gone yet.
             current_instances = await self.list_job_instances()
-            running_instances = [
-                i for i in current_instances if i["state"] in ("running", "starting")
-            ]
+            stopped = [i for i in current_instances if i["state"] in self._RESTARTABLE_STATES]
+            if stopped:
+                self._logger.info(
+                    f"{len(stopped)} of the {len(current_instances)} instance(s) are stopped "
+                    "rather than running; deleting them too so their disks stop costing money"
+                )
 
             # Create tasks for all instance terminations
-            tasks = [terminate_single_instance(instance) for instance in running_instances]
+            tasks = [terminate_single_instance(instance) for instance in current_instances]
 
             # Wait for all tasks to complete
             results = await asyncio.gather(*tasks)

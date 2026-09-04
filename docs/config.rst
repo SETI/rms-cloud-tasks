@@ -427,6 +427,10 @@ longer has the capacity to create anything new. So when the pool is short of ins
   to give it back - in which case it has no capacity for a new one of the same type either,
   and the creation goes to another zone instead.
 
+Stopped instances are kept only for as long as the job might want them back. When the job
+ends and its instances are terminated, they are deleted along with the running ones, since
+a stopped instance goes on being charged for its boot disk until something deletes it.
+
 Command Line Overrides
 ----------------------
 
