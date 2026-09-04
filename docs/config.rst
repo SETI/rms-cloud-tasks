@@ -501,7 +501,7 @@ total number of instances that will be started.
     provider: gcp
     gcp:
       job_id: my-processing-job
-      project_id: rfrench
+      project_id: my-project-id
       region: us-central1
       instance_types: ["^n2-.*", "^n3-.*", "^n4-.*"]
       min_cpu: 8
