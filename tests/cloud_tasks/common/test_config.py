@@ -2,6 +2,7 @@
 
 # Manually verified 5/7/2025
 
+import logging
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -312,6 +313,142 @@ def test_update_run_config_from_provider_config_defaults():
     assert c.run.retry_on_timeout is False
 
 
+# --- Announced defaults ---
+_ANNOUNCED_ATTRS = [name for name, *_ in config_mod._ANNOUNCED_DEFAULTS]
+
+
+def _fresh_config(provider: str = "GCP") -> Config:
+    """Build a config whose run section asks for nothing at all."""
+    return Config(
+        provider=provider,
+        aws=AWSConfig(),
+        gcp=GCPConfig(),
+        azure=AzureConfig(),
+        run=RunConfig(),
+    )
+
+
+def _override_warnings(mock_logger: MagicMock) -> list[str]:
+    """The warnings a mocked LOGGER was given about a provider value overriding a run value."""
+    return [
+        call.args[0]
+        for call in mock_logger.warning.call_args_list
+        if call.args and call.args[0].startswith("Overriding ")
+    ]
+
+
+def _warned_attrs(caplog: pytest.LogCaptureFixture) -> list[str]:
+    """The announced attributes named by a warning, in the order they were warned about."""
+    return [
+        name
+        for record in caplog.records
+        for name, *_ in config_mod._ANNOUNCED_DEFAULTS
+        if record.levelno == logging.WARNING and record.message.startswith(f"No {name} ")
+    ]
+
+
+@pytest.mark.parametrize("attr_name", _ANNOUNCED_ATTRS)
+def test_announced_default_warns_when_nothing_specifies_it(
+    attr_name: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Each constraining default is announced when neither config nor command line sets it."""
+    c = _fresh_config()
+    with caplog.at_level(logging.WARNING, logger="cloud_tasks.common.config"):
+        c.update_run_config_from_provider_config()
+    assert _warned_attrs(caplog).count(attr_name) == 1
+
+
+def test_announced_defaults_warn_once_each(caplog: pytest.LogCaptureFixture) -> None:
+    """A run that specifies nothing is warned about every announced default and no more."""
+    c = _fresh_config()
+    with caplog.at_level(logging.WARNING, logger="cloud_tasks.common.config"):
+        c.update_run_config_from_provider_config()
+    assert _warned_attrs(caplog) == _ANNOUNCED_ATTRS
+
+
+def test_announced_default_warning_names_its_value_and_option(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The warning says what the default is, what it does, and which option overrides it."""
+    c = _fresh_config()
+    with caplog.at_level(logging.WARNING, logger="cloud_tasks.common.config"):
+        c.update_run_config_from_provider_config()
+    messages = [r.message for r in caplog.records]
+    warning = next(m for m in messages if m.startswith("No max_instances "))
+    assert "10 instances" in warning
+    assert "caps the pool at 10 instances however many tasks are queued" in warning
+    assert "--max-instances" in warning
+
+
+@pytest.mark.parametrize("attr_name", _ANNOUNCED_ATTRS)
+def test_announced_default_silent_when_the_run_section_sets_it(
+    attr_name: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A value in the run section is an override, so its default is never applied."""
+    c = _fresh_config()
+    chosen = {name: value for name, value, *_ in config_mod._ANNOUNCED_DEFAULTS}[attr_name]
+    setattr(c.run, attr_name, "ARM64" if attr_name == "architecture" else chosen + 1)
+    with caplog.at_level(logging.WARNING, logger="cloud_tasks.common.config"):
+        c.update_run_config_from_provider_config()
+    assert attr_name not in _warned_attrs(caplog)
+
+
+@pytest.mark.parametrize("attr_name", _ANNOUNCED_ATTRS)
+def test_announced_default_silent_when_the_provider_section_sets_it(
+    attr_name: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A value in the provider section reaches the run section before the defaults do."""
+    c = _fresh_config()
+    chosen = {name: value for name, value, *_ in config_mod._ANNOUNCED_DEFAULTS}[attr_name]
+    setattr(c.gcp, attr_name, "ARM64" if attr_name == "architecture" else chosen + 1)
+    with caplog.at_level(logging.WARNING, logger="cloud_tasks.common.config"):
+        c.update_run_config_from_provider_config()
+    assert attr_name not in _warned_attrs(caplog)
+
+
+@pytest.mark.parametrize("attr_name", _ANNOUNCED_ATTRS)
+def test_announced_default_silent_when_the_command_line_sets_it(
+    attr_name: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A value passed on the command line is an override just as a configured one is."""
+    c = _fresh_config()
+    chosen = {name: value for name, value, *_ in config_mod._ANNOUNCED_DEFAULTS}[attr_name]
+    c.overload_from_cli({attr_name: "ARM64" if attr_name == "architecture" else chosen + 1})
+    with caplog.at_level(logging.WARNING, logger="cloud_tasks.common.config"):
+        c.update_run_config_from_provider_config()
+    assert attr_name not in _warned_attrs(caplog)
+
+
+def test_defaults_that_are_not_constraints_are_silent(caplog: pytest.LogCaptureFixture) -> None:
+    """A default that is the absence of a constraint, or a cadence, is applied without a word."""
+    c = _fresh_config()
+    with caplog.at_level(logging.WARNING, logger="cloud_tasks.common.config"):
+        c.update_run_config_from_provider_config()
+    messages = " ".join(r.message for r in caplog.records)
+    for attr_name in (
+        "min_instances",
+        "cpus_per_task",
+        "allow_cpu_wasting",
+        "scaling_check_interval",
+        "instance_termination_delay",
+        "local_ssd_base_size",
+        "boot_disk_base_size",
+    ):
+        assert attr_name not in messages
+
+
+def test_announced_defaults_are_still_applied(caplog: pytest.LogCaptureFixture) -> None:
+    """Announcing a default does not stop it from being the value the job runs under."""
+    c = _fresh_config()
+    with caplog.at_level(logging.WARNING, logger="cloud_tasks.common.config"):
+        c.update_run_config_from_provider_config()
+    assert c.run.max_instances == 10
+    assert c.run.max_total_price_per_hour == 10
+    assert c.run.max_runtime == 3600
+    assert c.run.architecture == "X86_64"
+    assert c.run.total_boot_disk_size == 10
+
+
 # --- ProviderConfig, AWSConfig, GCPConfig, AzureConfig ---
 def test_provider_config_fields():
     ProviderConfig(job_id="a-job", queue_name="a-queue", region="r", zone="z")
@@ -422,7 +559,7 @@ def test_config_update_run_config_from_provider_config(config_obj, provider):
     # Overload when nothing was there before
     with patch.object(config_mod, "LOGGER") as mock_logger:
         c.update_run_config_from_provider_config()
-        mock_logger.warning.assert_not_called()
+        assert _override_warnings(mock_logger) == []
     match provider:
         case "AWS":
             assert c.run.min_cpu == 6
@@ -440,7 +577,7 @@ def test_config_update_run_config_from_provider_config(config_obj, provider):
     # Overload when a value was already set
     with patch.object(config_mod, "LOGGER") as mock_logger:
         c.update_run_config_from_provider_config()
-        mock_logger.warning.assert_called()
+        assert len(_override_warnings(mock_logger)) == 1
     match provider:
         case "AWS":
             assert c.run.min_cpu == 1

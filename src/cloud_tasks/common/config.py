@@ -22,6 +22,55 @@ from pydantic import (
 LOGGER = logging.getLogger(__name__)
 
 
+# Defaults that constrain a job rather than leave it unconstrained. Each of these caps the
+# pool, bounds a task, or excludes instance types from selection, so a run naming none of
+# them is held to numbers it never chose -- and a pool that stops growing at ten instances
+# looks exactly like one that has hit a provider quota. Each is announced as it is applied,
+# so whatever bound the job is in the log beside the job it bound. Every other default is
+# either the absence of a constraint (a minimum of zero, a base size of zero) or a cadence
+# that does not change what runs, and is applied silently.
+#
+# Each entry is the attribute name, the value supplied, how to write that value in a
+# sentence, what the value does, and the command line option that overrides it.
+_ANNOUNCED_DEFAULTS: tuple[tuple[str, Any, str, str, str], ...] = (
+    (
+        "max_instances",
+        10,
+        "10 instances",
+        "caps the pool at 10 instances however many tasks are queued",
+        "--max-instances",
+    ),
+    (
+        "max_total_price_per_hour",
+        10,
+        "$10.00 per hour",
+        "caps the pool at what $10.00 an hour buys, however many tasks are queued",
+        "--max-total-price-per-hour",
+    ),
+    (
+        "max_runtime",
+        3600,
+        "3600 seconds",
+        "kills any task still running after an hour",
+        "--max-runtime",
+    ),
+    (
+        "architecture",
+        "X86_64",
+        "X86_64",
+        "excludes every ARM64 instance type from selection",
+        "--architecture",
+    ),
+    (
+        "total_boot_disk_size",
+        10,
+        "10 GB",
+        "gives each instance a 10 GB boot disk, unless a per-CPU or per-task size asks for more",
+        "--total-boot-disk-size",
+    ),
+)
+
+
 class RunConfig(BaseModel, validate_assignment=True):
     """Config options for selecting instances and running tasks"""
 
@@ -475,24 +524,25 @@ class Config(BaseModel, validate_assignment=True):
             self.run.allow_cpu_wasting = False
         if self.run.min_instances is None:
             self.run.min_instances = 0
-        if self.run.max_instances is None:
-            self.run.max_instances = 10
-        if self.run.max_total_price_per_hour is None:
-            self.run.max_total_price_per_hour = 10
         if self.run.scaling_check_interval is None:
             self.run.scaling_check_interval = 60
         if self.run.instance_termination_delay is None:
             self.run.instance_termination_delay = 60
-        if self.run.max_runtime is None:
-            self.run.max_runtime = 3600
-        if self.run.architecture is None:
-            self.run.architecture = "X86_64"
         if self.run.local_ssd_base_size is None:
             self.run.local_ssd_base_size = 0
-        if self.run.total_boot_disk_size is None:
-            self.run.total_boot_disk_size = 10
         if self.run.boot_disk_base_size is None:
             self.run.boot_disk_base_size = 0
+
+        # This runs after the provider section and the command line have both had their
+        # say, so an attribute still unset here is one nothing asked for
+        for attr_name, value, written, consequence, option in _ANNOUNCED_DEFAULTS:
+            if getattr(self.run, attr_name) is None:
+                setattr(self.run, attr_name, value)
+                LOGGER.warning(
+                    f"No {attr_name} in the configuration or on the command line; "
+                    f"defaulting to {written}, which {consequence}. Set {attr_name} in "
+                    f"the configuration, or pass {option}, to override it."
+                )
 
         # Set default database file based on job_id
         if self.run.db_file is None:

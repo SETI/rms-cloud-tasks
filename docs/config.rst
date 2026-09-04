@@ -239,11 +239,20 @@ and the resulting costs. By default, the maximum number of instances is set to 1
 excessive instance pool sizes, and the maximum price is set to $10 per hour to avoid
 runaway costs, but these can be overridden by specifying different values.
 
+Each of these defaults is a limit the job did not ask for, and a pool that stops growing
+because of one looks exactly like a pool that has run out of quota. So every constraining
+default that has to be supplied -- ``max_instances``, ``max_total_price_per_hour``,
+``max_runtime``, ``architecture`` and ``total_boot_disk_size`` -- is reported as a warning
+when the configuration and the command line have both left it unset, saying what the value
+is, what it does, and which option overrides it. Specifying the value, at any of the three
+levels, silences the warning for it. Defaults that are the absence of a constraint, such as
+a minimum of zero, are applied without comment.
+
 Note that depending on the provider and your account setup, you may have quotas for the
 creation of specific instance types, and Cloud Tasks may attempt to violate these quotas
 if you do not give it sufficient constraints.
 
-* ``min_instances``: The minimum number of instances to use (defaults to 1)
+* ``min_instances``: The minimum number of instances to use (defaults to 0)
 * ``max_instances``: The maximum number of instances to use (defaults to 10)
 * ``min_total_cpus``: The minimum total number of vCPUs to use
 * ``max_total_cpus``: The maximum total number of vCPUs to use
@@ -297,7 +306,7 @@ Options to specify the worker process and run process
 * ``instance_termination_delay``: The delay in seconds to wait before terminating instances
   once the task queue is empty (defaults to 60); this should be set to a value much greater
   than ``max_runtime`` to avoid terminating instances that are still working on tasks.
-* ``max_runtime``: The maximum runtime for a task in seconds (defaults to 60); this is used
+* ``max_runtime``: The maximum runtime for a task in seconds (defaults to 3600); this is used
   to set the retry timeout in the task queue such that any task that takes longer than this
   is assumed to have had an internal error and should be set to a value
   significantly greater than the longest runtime expected for a task
