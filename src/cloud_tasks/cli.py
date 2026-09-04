@@ -885,11 +885,18 @@ async def load_queue_common(
         logger.info(f"Deleting existing database '{db_file}'...")
         os.remove(db_file)
 
-    # Check existing queue depth before deletion
+    # These are the queue objects used for the rest of this function: the ones that delete the
+    # queues below are the ones that create them again afterwards. A queue object constructed
+    # after the deletion would have to ask the provider whether the queues exist, and the
+    # answer just after a deletion can still be the one from before it.
+    task_queue = await create_queue(config)
+    events_queue = await create_queue(config, queue_name=event_queue_name)
+
+    # Check existing queue depth before deletion. Reading the depth doesn't create the queue,
+    # so nothing here has to be torn down again below.
     queue_depth = None
     try:
-        temp_queue = await create_queue(config)
-        queue_depth = await temp_queue.get_queue_depth()
+        queue_depth = await task_queue.get_queue_depth()
     except Exception as e:
         logger.debug(f"Could not check queue depth (queue may not exist): {e}")
         queue_depth = None
@@ -907,14 +914,12 @@ async def load_queue_common(
     # Delete existing queues
     logger.info("Deleting existing queues if they exist...")
     try:
-        task_queue = await create_queue(config)
         await task_queue.delete_queue()
         logger.info(f"Deleted task queue '{queue_name}'")
     except Exception as e:
         logger.info(f"Task queue deletion: {e}")
 
     try:
-        events_queue = await create_queue(config, queue_name=event_queue_name)
         await events_queue.delete_queue()
         logger.info(f"Deleted event queue '{event_queue_name}'")
     except Exception as e:
@@ -922,12 +927,6 @@ async def load_queue_common(
 
     # Wait for queue deletion to propagate to the backend before creating new queues
     await asyncio.sleep(2)
-
-    # Create new queues
-    logger.info(f"Creating task queue '{queue_name}'...")
-    task_queue = await create_queue(config)
-    logger.info(f"Creating event queue '{event_queue_name}'...")
-    events_queue = await create_queue(config, queue_name=event_queue_name)
 
     task_db = TaskDatabase(db_file)
 
@@ -940,7 +939,13 @@ async def load_queue_common(
 
     logger.info(f"Loaded {num_tasks} tasks into database")
 
+    # Create the queues and wait for them to be ready before anything is published to them. A
+    # task published before its queue can receive it is dropped by the provider without an
+    # error, and the run then waits forever for tasks no worker will ever be given.
+    logger.info(f"Creating task queue '{queue_name}'...")
     await task_queue.ensure_queue_ready()
+    logger.info(f"Creating event queue '{event_queue_name}'...")
+    await events_queue.ensure_queue_ready()
 
     logger.info(f"Enqueueing tasks to cloud queue '{queue_name}'...")
     semaphore = asyncio.Semaphore(max_concurrent_queue_operations)
