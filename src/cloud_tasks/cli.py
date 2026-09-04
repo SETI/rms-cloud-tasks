@@ -890,12 +890,6 @@ async def load_queue_common(
     queue_name = provider_config.queue_name
     event_queue_name = f"{queue_name}-events"
 
-    # Delete existing database
-    db_path = Path(db_file)
-    if db_path.exists():
-        logger.info(f"Deleting existing database '{db_file}'...")
-        os.remove(db_file)
-
     # These are the queue objects used for the rest of this function: the ones that delete the
     # queues below are the ones that create them again afterwards. A queue object constructed
     # after the deletion would have to ask the provider whether the queues exist, and the
@@ -912,15 +906,44 @@ async def load_queue_common(
         logger.debug(f"Could not check queue depth (queue may not exist): {e}")
         queue_depth = None
 
-    if queue_depth is not None and queue_depth > 0 and not force:
-        logger.info(
-            f"WARNING: Task queue '{queue_name}' currently has at least {queue_depth} message(s)."
+    # Everything a fresh run is about to destroy, worked out before any of it is destroyed.
+    # Forgetting --continue is easy, and the database is the record of what has already run,
+    # so deleting it before asking made the confirmation pointless: by the time the question
+    # arrived the answer could no longer save anything.
+    db_path = Path(db_file)
+    doomed = []
+    if db_path.exists():
+        doomed.append(
+            f"the task database '{db_file}', which is this job's record of what has already run"
         )
-        logger.info("Starting a fresh run will DELETE the existing queue and all its messages.")
+    if queue_depth:
+        doomed.append(
+            f"the task queue '{queue_name}', which still holds at least {queue_depth} message(s)"
+        )
+
+    if doomed and not force:
+        logger.info("WARNING: starting a fresh run will DELETE:")
+        for item in doomed:
+            logger.info(f"  - {item}")
+        logger.info(
+            "Use --continue to resume the existing job instead, or --force to skip this check."
+        )
+        if not sys.stdin.isatty():
+            logger.error(
+                "Not running interactively, so there is nobody to confirm this; refusing to "
+                "delete anything. Pass --continue to resume the job, or --force to start a "
+                "fresh one."
+            )
+            sys.exit(1)
         confirm = input("Type 'YES' to confirm deletion: ")
         if confirm != "YES":
             logger.info("Operation cancelled.")
             sys.exit(0)
+
+    # Nothing above this line destroys anything
+    if db_path.exists():
+        logger.info(f"Deleting existing database '{db_file}'...")
+        os.remove(db_file)
 
     # Delete existing queues
     logger.info("Deleting existing queues if they exist...")
