@@ -525,60 +525,112 @@ async def test_check_keepalives_abort_terminates_starting_instances(orchestrator
     assert terminated == {"instance-1", "instance-2"}
 
 
-def _capture_instance_details(orchestrator, instances, caplog) -> list[str]:
-    """Run _log_instance_details and return the emitted lines."""
-    caplog.clear()
-    with caplog.at_level(logging.INFO, logger="cloud_tasks.instance_manager.orchestrator"):
-        orchestrator._log_instance_details(instances)
-    return [record.getMessage() for record in caplog.records]
+def _instance_table(orchestrator, instances) -> list[str]:
+    """Render the instance table and return its lines.
+
+    Parameters:
+        orchestrator: The orchestrator under test
+        instances: Instance dictionaries to render
+
+    Returns:
+        list[str]: The lines of the rendered table.
+    """
+    table, _num_running, _cpus, _price = orchestrator._build_instance_table(instances)
+    return table.split("\n")
 
 
 def _instance_rows(lines: list[str]) -> dict[str, str]:
     """Map each instance ID to its rendered row of the table.
 
     Parameters:
-        lines: Lines emitted by _log_instance_details
+        lines: Lines of the rendered table
 
     Returns:
-        dict[str, str]: Instance ID to the whole line of the table describing it, with the
-        border and header lines left out.
+        dict[str, str]: Instance ID to the whole line describing it, with the border, the
+        header and the totals row left out.
     """
     rows = {}
     for line in lines:
         if "\u2502" not in line:
             continue
         cells = [cell.strip() for cell in line.strip().strip("\u2502").split("\u2502")]
-        if not cells[0] or cells[0] == "Instance ID":
+        if not cells[0] or cells[0] == "Instance ID" or "running/starting" in cells[0]:
             continue
         rows[cells[0]] = line
     return rows
 
 
-def test_log_instance_details_logged_at_info(orchestrator, caplog) -> None:
-    """The table is part of the normal running commentary, not a debug-only aid."""
-    caplog.clear()
-    with caplog.at_level(logging.INFO, logger="cloud_tasks.instance_manager.orchestrator"):
-        orchestrator._log_instance_details([_make_instance("instance-1")])
-    assert "instance-1" in "\n".join(record.getMessage() for record in caplog.records)
-    assert all(record.levelno == logging.INFO for record in caplog.records)
+@pytest.mark.asyncio
+async def test_instance_table_is_the_summary_logged_by_a_run(orchestrator) -> None:
+    """There is one table, and it is what the run reports.
+
+    An instance table and a separate summary of the same instances by type meant reading
+    two tables against each other to answer one question.
+    """
+    instances = [_make_instance("instance-1")]
+    orchestrator.list_job_instances = AsyncMock(return_value=instances)
+    orchestrator._initialize_pricing_info = AsyncMock()
+    orchestrator._all_instance_info = {"n1-standard-2": {"vcpu": 2}}
+    orchestrator._pricing_info = {
+        "n1-standard-2": {"us-central1-a": {"pd-balanced": {"total_price": 1.0}}}
+    }
+
+    num_running, running_cpus, running_price, summary = await orchestrator.get_job_instances()
+
+    assert (num_running, running_cpus, running_price) == (1, 2, 1.0)
+    assert "instance-1" in summary
+    assert "$1.00" in summary
+    assert "1 running/starting" in summary
+    # Every column of the old summary is in this one table
+    for column in ("Boot Disk", "vCPUs", "Price/Hour", "Mode"):
+        assert column in summary
 
 
-def test_log_instance_details_no_instances(orchestrator, caplog) -> None:
-    """With no instances the table collapses to a single line, with no header."""
-    lines = _capture_instance_details(orchestrator, [], caplog)
-    assert lines == ["Instance details: no instances"]
+@pytest.mark.asyncio
+async def test_instance_table_totals_only_what_is_running(orchestrator) -> None:
+    """Terminated instances are listed but cost nothing and count for nothing."""
+    orchestrator._all_instance_info = {"n1-standard-2": {"vcpu": 2}}
+    orchestrator._pricing_info = {
+        "n1-standard-2": {"us-central1-a": {"pd-balanced": {"total_price": 1.0}}}
+    }
+    instances = [
+        _make_instance("alive", state="running"),
+        _make_instance("starting-up", state="starting"),
+        _make_instance("gone", state="terminated"),
+    ]
+
+    table, num_running, running_cpus, running_price = orchestrator._build_instance_table(instances)
+
+    assert (num_running, running_cpus, running_price) == (2, 4, 2.0)
+    rows = _instance_rows(table.split("\n"))
+    assert rows["gone"].endswith("- \u2502")
+    assert "$1.00" in rows["alive"]
+    assert "2 running/starting" in table
 
 
-def test_log_instance_details_rows_sorted_with_details(orchestrator, caplog) -> None:
+@pytest.mark.asyncio
+async def test_instance_table_prices_from_a_wildcard_zone(orchestrator) -> None:
+    """GCP prices per region, so a price may be recorded against a wildcard zone."""
+    orchestrator._all_instance_info = {"n1-standard-2": {"vcpu": 2}}
+    orchestrator._pricing_info = {
+        "n1-standard-2": {"us-central1-*": {"pd-balanced": {"total_price": 2.5}}}
+    }
+
+    table, _num, _cpus, price = orchestrator._build_instance_table([_make_instance("instance-1")])
+
+    assert price == 2.5
+    assert "$2.50" in table
+
+
+def test_instance_table_rows_sorted_with_details(orchestrator) -> None:
     """One row per instance, sorted by ID, carrying the instance's details."""
     orchestrator._running = True
     orchestrator._keepalive_startup_timeout = 600.0
     orchestrator._keepalive_timeout = 300.0
     instances = [_make_instance("instance-2"), _make_instance("instance-1", state="starting")]
 
-    lines = _capture_instance_details(orchestrator, instances, caplog)
+    lines = _instance_table(orchestrator, instances)
 
-    assert lines[0] == "Instance details:"
     header = next(line for line in lines if "Instance ID" in line)
     for column in ("Type", "State", "Zone", "Created", "Keep-Alive", "Mode"):
         assert column in header
@@ -586,35 +638,28 @@ def test_log_instance_details_rows_sorted_with_details(orchestrator, caplog) -> 
     rows = _instance_rows(lines)
     assert list(rows) == ["instance-1", "instance-2"]
     cells = [cell.strip() for cell in rows["instance-1"].strip().strip("\u2502").split("\u2502")]
-    assert cells[:6] == [
-        "instance-1",
-        "n1-standard-2",
-        "starting",
-        "us-central1-a",
-        "2026-01-01T00:00:00",
-        "never",
-    ]
-    assert cells[6].startswith("waiting for first keep-alive")
+    assert cells[0] == "instance-1"
+    assert cells[1] == "n1-standard-2"
+    assert cells[4] == "starting"
+    assert cells[5] == "us-central1-a"
+    assert cells[6] == "2026-01-01T00:00:00"
+    assert cells[8].startswith("waiting for first keep-alive")
 
 
-def test_log_instance_details_columns_size_to_content(orchestrator, caplog) -> None:
+def test_instance_table_columns_size_to_content(orchestrator) -> None:
     """Columns widen to fit their contents so long GCP instance names stay aligned."""
     orchestrator._running = True
     long_id = "rmscr-parallel-addition-job-1riovtucuu1o1dx9lotafw5pb"
-    instances = [
-        _make_instance(long_id),
-        _make_instance("short"),
-    ]
+    instances = [_make_instance(long_id), _make_instance("short")]
 
-    lines = _capture_instance_details(orchestrator, instances, caplog)
+    lines = _instance_table(orchestrator, instances)
 
-    table_lines = [line for line in lines if line != "Instance details:"]
-    assert long_id in "".join(table_lines)
+    assert long_id in "".join(lines)
     # Every line of the table is the same width, so the columns line up whatever is in them
-    assert len(set(len(line) for line in table_lines)) == 1
+    assert len(set(len(line) for line in lines)) == 1
 
 
-def test_log_instance_details_keepalive_states(orchestrator, caplog) -> None:
+def test_instance_table_keepalive_states(orchestrator) -> None:
     """Each keep-alive state - healthy, overdue, and never heard from - is reported."""
     import time
 
@@ -637,7 +682,7 @@ def test_log_instance_details_keepalive_states(orchestrator, caplog) -> None:
         "never-started": now - 900,
     }
 
-    rows = _instance_rows(_capture_instance_details(orchestrator, instances, caplog))
+    rows = _instance_rows(_instance_table(orchestrator, instances))
 
     assert "60s ago" in rows["healthy"]
     assert "waiting for next keep-alive (60s of 300s)" in rows["healthy"]
@@ -657,7 +702,7 @@ def test_log_instance_details_keepalive_states(orchestrator, caplog) -> None:
     assert "not active" in rows["gone"]
 
 
-def test_log_instance_details_not_monitored_when_not_running(orchestrator, caplog) -> None:
+def test_instance_table_not_monitored_when_not_running(orchestrator) -> None:
     """The status command builds an orchestrator that never receives keep-alives.
 
     It must not report every healthy worker as silent, so the keep-alive columns say
@@ -667,28 +712,28 @@ def test_log_instance_details_not_monitored_when_not_running(orchestrator, caplo
     orchestrator._keepalive_startup_timeout = 600.0
     orchestrator._keepalive_timeout = 300.0
 
-    row = _instance_rows(
-        _capture_instance_details(orchestrator, [_make_instance("instance-1")], caplog)
-    )["instance-1"]
+    row = _instance_rows(_instance_table(orchestrator, [_make_instance("instance-1")]))[
+        "instance-1"
+    ]
 
     assert "not monitored" in row
     assert "timed out" not in row
 
 
-def test_log_instance_details_not_monitored_when_timeouts_disabled(orchestrator, caplog) -> None:
+def test_instance_table_not_monitored_when_timeouts_disabled(orchestrator) -> None:
     """With both timeouts disabled there is nothing to be overdue against."""
     orchestrator._running = True
     orchestrator._keepalive_startup_timeout = 0.0
     orchestrator._keepalive_timeout = 0.0
 
-    row = _instance_rows(
-        _capture_instance_details(orchestrator, [_make_instance("instance-1")], caplog)
-    )["instance-1"]
+    row = _instance_rows(_instance_table(orchestrator, [_make_instance("instance-1")]))[
+        "instance-1"
+    ]
 
     assert "not monitored" in row
 
 
-def test_log_instance_details_azure_missing_fields(orchestrator, caplog) -> None:
+def test_instance_table_azure_missing_fields(orchestrator) -> None:
     """Azure instances report a location and no creation time; the row still renders."""
     orchestrator._running = True
     instance = {
@@ -698,26 +743,9 @@ def test_log_instance_details_azure_missing_fields(orchestrator, caplog) -> None
         "location": "eastus",
     }
 
-    row = _instance_rows(_capture_instance_details(orchestrator, [instance], caplog))["azure-vm-1"]
+    row = _instance_rows(_instance_table(orchestrator, [instance]))["azure-vm-1"]
 
     assert "eastus" in row
-
-
-@pytest.mark.asyncio
-async def test_get_job_instances_logs_instance_details(orchestrator) -> None:
-    """The instance summary is preceded by the per-instance table."""
-    instances = [_make_instance("instance-1")]
-    orchestrator.list_job_instances = AsyncMock(return_value=instances)
-    orchestrator._initialize_pricing_info = AsyncMock()
-    orchestrator._all_instance_info = {"n1-standard-2": {"vcpu": 2}}
-    orchestrator._pricing_info = {
-        "n1-standard-2": {"us-central1-a": {"pd-balanced": {"total_price": 1.0}}}
-    }
-
-    with patch.object(orchestrator, "_log_instance_details") as mock_log:
-        await orchestrator.get_job_instances()
-
-    mock_log.assert_called_once_with(instances)
 
 
 def test_keepalive_from_terminated_instance_is_ignored(orchestrator) -> None:

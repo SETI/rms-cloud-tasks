@@ -92,6 +92,8 @@ class InstanceManager(ABC):
         "AMD Turin": 26,  # EPYC 9005, Zen 5, ~2024 (expected)
         # Google Custom ARM
         "Google Axion": 27,  # Custom ARM, 2024 (early results)
+        # NVIDIA's Arm CPU, paired with its GPUs in the GB200 superchip
+        "NVIDIA Grace": 27,  # Arm Neoverse V2, the same generation as Axion
     }
 
     def __init__(self, config: ProviderConfig) -> None:

@@ -469,72 +469,80 @@ with CPU family and performance rank.
      -
      - X
      - X
-     - Intel Ice Lake
-     - 16
+     - Intel Sapphire Rapids
+     - 21
    * - c3d
      -
      - X
      -
      - X
      - X
-     - AMD Milan
-     - 17
+     - AMD Genoa
+     - 22
    * - c4
      -
      -
      -
      -
      - X
-     - Intel Ice Lake
-     - 16
+     - Intel Emerald Rapids
+     - 25
    * - c4a
      -
      -
      -
      -
      - X
-     - AMD Milan
-     - 17
+     - Google Axion
+     - 27
    * - c4d
      -
      -
      -
      -
+     - X
+     - AMD Turin
+     - 26
+   * - c4n
      -
-     - Intel Ice Lake
-     - 16
+     -
+     -
+     -
+     - X
+     - Intel Emerald Rapids
+     - 25
    * - e2
      - X
      - X
      - X
      - X
      -
-     - Intel Cascade Lake
-     - 12
+     - Intel Broadwell
+     - 7
    * - f1
      - X
      - X
      - X
      - X
      -
-     - Intel Cascade Lake
-     - 12
+     - Intel Haswell
+     - 6
    * - g1
      - X
      - X
      - X
      - X
      -
-     - Intel Cascade Lake
-     - 12
+     - Intel Haswell
+     - 6
    * - n1
      - X
      - X
      - X
      - X
      -
-     - Intel Skylake
-     - 11
+     - Intel Haswell
+     - 6
    * - n2
      - X
      - X
@@ -549,30 +557,30 @@ with CPU family and performance rank.
      - X
      - X
      - X
-     - AMD Rome
-     - 13
+     - AMD Milan
+     - 17
    * - n4
      -
      -
      -
      -
      - X
-     - Intel Ice Lake
-     - 16
+     - Intel Emerald Rapids
+     - 25
    * - n4a
      -
+     -
+     -
+     -
      - X
-     -
-     -
-     -
      - Google Axion
      - 27
    * - n4d
      -
+     -
+     -
+     -
      - X
-     -
-     -
-     -
      - AMD Turin
      - 26
    * - t2a
@@ -581,17 +589,16 @@ with CPU family and performance rank.
      - X
      - X
      -
-     - AMD Milan
-     - 17
+     - Ampere Altra
+     - 15
    * - t2d
      - X
      - X
      -
      - X
      -
-     - AMD Rome
-     - 13
-
+     - AMD Milan
+     - 17
    * - **Compute Optimized**
      -
      -
@@ -614,17 +621,24 @@ with CPU family and performance rank.
      - X
      - X
      -
-     - AMD Rome
-     - 13
+     - AMD Milan
+     - 17
    * - h3
      -
      - X
      -
      -
      - X
-     - Intel Ice Lake
-     - 16
-
+     - Intel Sapphire Rapids
+     - 21
+   * - h4d
+     -
+     -
+     -
+     -
+     - X
+     - AMD Turin
+     - 26
    * - **Memory Optimized**
      -
      -
@@ -663,17 +677,24 @@ with CPU family and performance rank.
      -
      -
      - X
-     - Intel Ice Lake
-     - 16
+     - Intel Emerald Rapids
+     - 25
+   * - m4n
+     -
+     -
+     -
+     -
+     - X
+     - Intel Emerald Rapids
+     - 25
    * - x4
      -
      -
      -
      -
      - X
-     - Intel Ice Lake
-     - 16
-
+     - Intel Sapphire Rapids
+     - 21
    * - **Storage Optimized**
      -
      -
@@ -688,9 +709,8 @@ with CPU family and performance rank.
      -
      - X
      - X
-     - Intel Ice Lake
-     - 16
-
+     - Intel Sapphire Rapids
+     - 21
    * - **Accelerator Optimized**
      -
      -
@@ -713,24 +733,72 @@ with CPU family and performance rank.
      -
      - X
      - X
-     - Intel Ice Lake
-     - 16
+     - Intel Sapphire Rapids
+     - 21
    * - a4
      -
      -
      -
      -
      - X
-     - Intel Ice Lake
-     - 16
+     - Intel Emerald Rapids
+     - 25
+   * - a4x
+     -
+     -
+     -
+     -
+     - X
+     - NVIDIA Grace
+     - 27
+   * - ct3
+     -
+     -
+     -
+     -
+     - X
+     - Unknown
+     - 0
+   * - ct3p
+     -
+     -
+     -
+     -
+     - X
+     - Unknown
+     - 0
+   * - ct5l
+     -
+     -
+     -
+     -
+     - X
+     - Unknown
+     - 0
+   * - ct5lp
+     -
+     -
+     -
+     -
+     - X
+     - Unknown
+     - 0
+   * - ct5p
+     -
+     -
+     -
+     -
+     - X
+     - Unknown
+     - 0
    * - ct6e
      -
      -
      -
      -
      - X
-     - Intel Ice Lake
-     - 16
+     - Unknown
+     - 0
    * - g2
      - X
      - X

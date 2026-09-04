@@ -5,6 +5,7 @@ import logging
 import pytest
 
 from cloud_tasks.instance_manager.gcp import GCPComputeInstanceManager
+from cloud_tasks.instance_manager.instance_manager import InstanceManager
 
 from .conftest import deepcopy_gcp_instance_manager
 
@@ -302,3 +303,50 @@ def test_nothing_is_reported_when_every_family_is_known(
         gcp_instance_manager_n1_n2._log_skipped_machine_families({}, {}, set())
 
     assert caplog.records == []
+
+
+def test_every_machine_family_has_both_kinds_of_information() -> None:
+    """A family known to one table must be known to the other.
+
+    An instance type is skipped if either its processor or its boot disk types are
+    missing, so a family added to one table and not the other is invisible for a reason
+    nobody would guess.
+    """
+    processors = set(GCPComputeInstanceManager._MACHINE_TYPE_FAMILY_TO_PROCESSOR_TYPE)
+    disk_types = set(GCPComputeInstanceManager._MACHINE_TYPE_FAMILY_TO_DISK_TYPES)
+
+    assert processors == disk_types
+
+
+def test_every_machine_family_processor_has_a_performance_rank() -> None:
+    """A processor with no rank is reported and ranked 0, which is worth not doing."""
+    for (
+        family,
+        processor,
+    ) in GCPComputeInstanceManager._MACHINE_TYPE_FAMILY_TO_PROCESSOR_TYPE.items():
+        assert processor in InstanceManager._PROCESSOR_FAMILY_TO_PERFORMANCE_RANKING, family
+
+
+@pytest.mark.parametrize(
+    "family,processor",
+    [
+        ("c4n", "Intel Emerald Rapids"),
+        ("h4d", "AMD Turin"),
+        ("m4n", "Intel Emerald Rapids"),
+        ("a4x", "NVIDIA Grace"),
+        ("ct3", "Unknown"),
+        ("ct3p", "Unknown"),
+        ("ct5l", "Unknown"),
+        ("ct5lp", "Unknown"),
+        ("ct5p", "Unknown"),
+    ],
+)
+def test_recently_added_machine_families_are_known(family: str, processor: str) -> None:
+    """The families a 2026 zone listing offers are usable rather than skipped.
+
+    These nine turned up as 47 skipped instance types in one region. The TPU host types
+    are ranked 0 because Google doesn't publish which CPU hosts a TPU.
+    """
+    assert GCPComputeInstanceManager._MACHINE_TYPE_FAMILY_TO_PROCESSOR_TYPE[family] == processor
+    # Every one of them is a fourth-generation family, which is Hyperdisk-only
+    assert GCPComputeInstanceManager._MACHINE_TYPE_FAMILY_TO_DISK_TYPES[family] == ["hd-balanced"]

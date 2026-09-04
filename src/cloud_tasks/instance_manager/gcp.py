@@ -71,6 +71,7 @@ class GCPComputeInstanceManager(InstanceManager):
         "c4": "Intel Emerald Rapids",
         "c4a": "Google Axion",
         "c4d": "AMD Turin",
+        "c4n": "Intel Emerald Rapids",
         "n4": "Intel Emerald Rapids",
         "n4a": "Google Axion",
         "n4d": "AMD Turin",
@@ -86,10 +87,12 @@ class GCPComputeInstanceManager(InstanceManager):
         "g1": "Intel Haswell",
         # Compute-optimized
         "h3": "Intel Sapphire Rapids",
+        "h4d": "AMD Turin",
         "c2": "Intel Cascade Lake",
         "c2d": "AMD Milan",
         # Memory-optimized
         "m4": "Intel Emerald Rapids",
+        "m4n": "Intel Emerald Rapids",
         "x4": "Intel Sapphire Rapids",
         "m3": "Intel Ice Lake",
         "m2": "Intel Cascade Lake",
@@ -97,10 +100,20 @@ class GCPComputeInstanceManager(InstanceManager):
         # Storage-optimized
         "z3": "Intel Sapphire Rapids",
         # Accelerator-optimized
+        "a4x": "NVIDIA Grace",  # GB200 superchip: Arm cores, not x86
         "a4": "Intel Emerald Rapids",
         "a3": "Intel Sapphire Rapids",
         "a2": "Intel Cascade Lake",
         "g2": "Intel Cascade Lake",
+        # TPU host machine types. Google doesn't publish which CPU hosts a TPU, so these
+        # rank 0, which keeps them out of any run that sets min_cpu_rank. They are also
+        # priced by the accelerator rather than the vCPU, so a run choosing on price per
+        # vCPU will not pick one.
+        "ct3": "Unknown",  # TPU v3
+        "ct3p": "Unknown",  # TPU v3 pod
+        "ct5l": "Unknown",  # TPU v5e
+        "ct5lp": "Unknown",  # TPU v5e pod
+        "ct5p": "Unknown",  # TPU v5p
         "ct6e": "Unknown",  # TPU v6e
     }
 
@@ -128,7 +141,11 @@ class GCPComputeInstanceManager(InstanceManager):
         "c3d": ["hd-balanced", "pd-balanced", "pd-ssd"],
         "c4": ["hd-balanced"],
         "c4a": ["hd-balanced"],
-        "c4d": [],
+        # C4D supports only Hyperdisk, and a Hyperdisk-only machine's boot disk has to be
+        # Hyperdisk Balanced. An empty list here made every c4d instance type unusable,
+        # because a type with no boot disk to put it on is dropped when prices are compared
+        "c4d": ["hd-balanced"],
+        "c4n": ["hd-balanced"],
         "e2": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd"],
         "f1": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd"],  #
         "g1": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd"],  #
@@ -144,11 +161,13 @@ class GCPComputeInstanceManager(InstanceManager):
         "c2": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd"],
         "c2d": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd"],
         "h3": ["pd-balanced", "hd-balanced"],
+        "h4d": ["hd-balanced"],
         # Memory-optimized
         "m1": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd", "hd-balanced"],
         "m2": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd", "hd-balanced"],
         "m3": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd", "hd-balanced"],
         "m4": ["hd-balanced"],
+        "m4n": ["hd-balanced"],
         "x4": ["hd-balanced"],
         # Storage-optimized
         "z3": ["pd-balanced", "pd-ssd", "hd-balanced"],
@@ -156,7 +175,14 @@ class GCPComputeInstanceManager(InstanceManager):
         "a2": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd"],
         "a3": ["pd-balanced", "pd-ssd", "hd-balanced"],
         "a4": ["hd-balanced"],
-        "ct6e": ["hd-balanced"],  # This is a guess
+        "a4x": ["hd-balanced"],
+        # TPU host machine types; Hyperdisk is what the TPU VM documentation shows
+        "ct3": ["hd-balanced"],
+        "ct3p": ["hd-balanced"],
+        "ct5l": ["hd-balanced"],
+        "ct5lp": ["hd-balanced"],
+        "ct5p": ["hd-balanced"],
+        "ct6e": ["hd-balanced"],
         "g2": ["pd-standard", "pd-balanced", "pd-ssd"],
     }
 

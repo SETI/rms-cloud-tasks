@@ -894,65 +894,137 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
             f"{self._keepalive_startup_timeout:.0f}s)"
         )
 
-    def _log_instance_details(self, instances: list[dict[str, Any]]) -> None:
-        """Log a table with one row per instance, including its keep-alive status.
+    def _instance_price(self, instance: dict[str, Any], boot_disk_type: str) -> float | None:
+        """Return the hourly price of one instance, or None if it isn't known.
+
+        Parameters:
+            instance: Instance dictionary from list_job_instances
+            boot_disk_type: The boot disk the instance was created with
+
+        Returns:
+            float | None: Price per hour, or None if there is no price for this instance
+            type on this boot disk in this zone.
+        """
+        if not self._pricing_info:
+            return None
+        zone = instance["zone"]
+        for zone_key in (zone, f"{zone[:-1]}*"):
+            # Pricing is per region, so it may be recorded against a wildcard zone
+            try:
+                price_info = self._pricing_info[instance["type"]][zone_key][boot_disk_type]
+            except KeyError:
+                continue
+            if price_info is None:
+                continue
+            price = price_info["total_price"]
+            return float(price) if price is not None else None
+        self._logger.debug(
+            f"No pricing info for instance type {instance['type']} ({boot_disk_type}) "
+            f"in zone {zone}"
+        )
+        return None
+
+    def _build_instance_table(self, instances: list[dict[str, Any]]) -> tuple[str, int, int, float]:
+        """Render one row per instance, ending with a total of what is running.
 
         Every instance is listed, not just a count by type, because when a job misbehaves
         the question is almost always which instance is doing what: an instance that never
-        reported in reads very differently from one that has gone quiet after working, and
-        neither is visible in a summary. The table is logged whenever the instance summary
-        is computed, at the same level as the summary itself.
+        reported in reads very differently from one that has gone quiet after working. What
+        each one is, what it costs, and what the keep-alive monitor makes of it are one row
+        rather than two tables to read against each other.
 
         Parameters:
             instances: Instance dictionaries from list_job_instances
-        """
-        if not instances:
-            self._logger.info("Instance details: no instances")
-            return
 
+        Returns:
+            tuple[str, int, int, float]: The rendered table, the number of running or
+            starting instances, their total vCPUs, and their total price per hour.
+        """
         now = time.time()
         table = PrettyTable()
         table.field_names = [
             "Instance ID",
             "Type",
+            "Boot Disk",
+            "vCPUs",
             "State",
             "Zone",
             "Created",
             "Keep-Alive",
             "Mode",
+            "Price/Hour",
         ]
         table.align = "l"
+        for column in ("vCPUs", "Price/Hour"):
+            table.align[column] = "r"
         table.set_style(TableStyle.SINGLE_BORDER)
+
+        num_running = 0
+        running_cpus = 0
+        running_price = 0.0
+        default_boot_disk = self._get_default_boot_disk_type()
+        all_instance_info = self._all_instance_info or {}
+
         for instance in sorted(instances, key=lambda i: str(i["id"])):
+            boot_disk_type = str(instance.get("boot_disk_type") or default_boot_disk)
+            instance_info = all_instance_info.get(instance["type"], {})
+            vcpu = instance_info.get("vcpu")
+            cpus = int(vcpu) if vcpu is not None else 0
+            price = self._instance_price(instance, boot_disk_type)
             # Azure instances don't report a zone, creation time, or boot disk type
             created = str(instance.get("creation_time") or "-")[:19]
             zone = str(instance.get("zone") or instance.get("location") or "-")
             last_keepalive, mode = self._keepalive_status(instance, now)
+
+            if instance["state"] in ("running", "starting"):
+                num_running += 1
+                running_cpus += cpus
+                running_price += price or 0.0
+                price_str = "N/A" if price is None else f"${price:.2f}"
+            else:
+                # Nothing is being paid for an instance that isn't there any more
+                price_str = "-"
+
             table.add_row(
                 [
                     str(instance["id"]),
                     str(instance["type"]),
+                    boot_disk_type,
+                    cpus or "-",
                     str(instance["state"]),
                     zone,
                     created,
                     last_keepalive,
                     mode,
+                    price_str,
                 ]
             )
 
-        self._logger.info("Instance details:")
-        for line in table.get_string().split("\n"):
-            self._logger.info(line)
+        table.add_divider()
+        table.add_row(
+            [
+                f"{num_running} running/starting",
+                "",
+                "",
+                running_cpus,
+                "",
+                "",
+                "",
+                "",
+                "",
+                f"${running_price:.2f}",
+            ]
+        )
+        return table.get_string(), num_running, running_cpus, running_price
 
     async def get_job_instances(self) -> tuple[int, int, float, str]:
-        """Return job instance counts and pricing summary.
+        """Return job instance counts and a table describing them.
 
         Returns:
             tuple[int, int, float, str]: (num_running, running_cpus, running_price,
-            summary). num_running is the number of running instances;
-            running_cpus is the total vCPUs in use; running_price is the total
-            (or per-instance) price as returned by pricing; summary is a
-            human-readable pricing/source summary string.
+            summary). num_running is the number of running or starting instances;
+            running_cpus is the total vCPUs in use; running_price is what they cost per
+            hour; summary is a table with a row per instance and a total.
 
         Side effects:
             Calls _initialize_pricing_info() to ensure pricing data is loaded.
@@ -966,82 +1038,13 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
             self._logger.error("Cannot make scaling decisions without instance information")
             return 0, 0, 0.0, "Error getting running instances"
 
-        self._log_instance_details(running_instances)
+        if not running_instances:
+            return 0, 0, 0.0, "No running instances found"
 
-        # Count the number of instances of each type and running status
-        # Also count by "state" and "zone" fields
-        running_instances_by_type = {}
-        default_boot_disk = self._get_default_boot_disk_type()
-        for instance in running_instances:
-            boot_disk_type = instance.get("boot_disk_type", default_boot_disk)
-            key = (
-                instance["type"],
-                boot_disk_type,
-                instance["state"],
-                instance["zone"],
-            )
-            if key not in running_instances_by_type:
-                running_instances_by_type[key] = 0
-            running_instances_by_type[key] += 1
-
-        num_running = 0
-        running_cpus: int = 0
-        running_price: float = 0.0
-        if len(running_instances_by_type) == 0:
-            summary = "No running instances found"
-            return num_running, running_cpus, running_price, summary
-
-        if self._all_instance_info is None:
-            raise RuntimeError("_all_instance_info is not set")
-        if self._pricing_info is None:
-            raise RuntimeError("_pricing_info is not set")
-        summary = ""
-        summary += "Running instance summary:\n"
-        summary += "  State       Instance Type             Boot Disk    vCPUs  Zone             Count  Total Price\n"
-        summary += "  ---------------------------------------------------------------------------------------------\n"
-
-        sorted_keys = sorted(running_instances_by_type.keys(), key=lambda x: (x[1], x[0], x[2]))
-        for type_, boot_disk_type, state, zone in sorted_keys:
-            count = running_instances_by_type[(type_, boot_disk_type, state, zone)]
-            instance = self._all_instance_info[type_]
-            cpus = int(instance["vcpu"]) if instance.get("vcpu") is not None else 0
-            try:
-                price_info = self._pricing_info[type_][zone][boot_disk_type]
-                if price_info is None:
-                    raise KeyError("No price info")
-                price_val = price_info["total_price"]
-                price = (float(price_val) if price_val is not None else 0) * count
-            except KeyError:
-                wildcard_zone = zone[:-1] + "*"
-                try:
-                    price_info = self._pricing_info[type_][wildcard_zone][boot_disk_type]
-                    if price_info is None:
-                        raise KeyError("No price info")
-                    pv = price_info["total_price"]
-                    price = (float(pv) if pv is not None else 0) * count
-                except KeyError:
-                    self._logger.warning(
-                        f"No pricing info for instance type {type_} ({boot_disk_type}) in "
-                        f"zone {zone}"
-                    )
-                    price = 0
-            price_str = "N/A"
-            if state in ["running", "starting"]:
-                price_str = f"${price:.2f}"
-                num_running += count
-                running_cpus += count * cpus
-                running_price += price
-            summary += f"  {state:<10}  {type_:<24}  "
-            summary += f"{str(boot_disk_type):<12} {cpus:>5}  "
-            summary += f"{zone:<15}  {count:>5}  "
-            summary += f"{price_str:>11}\n"
-
-        running_price_str = f"${running_price:.2f}"
-        summary += "  ---------------------------------------------------------------------------------------------\n"
-        summary += f"  Total running/starting:                            {running_cpus:>5} "
-        summary += f"(weighted)        {num_running:>5}  {running_price_str:>11}\n"
-
-        return num_running, running_cpus, running_price, summary
+        table, num_running, running_cpus, running_price = self._build_instance_table(
+            running_instances
+        )
+        return num_running, running_cpus, running_price, f"Instances:\n{table}"
 
     async def get_queue_depth(self) -> int | None:
         """
