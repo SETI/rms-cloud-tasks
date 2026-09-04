@@ -2608,6 +2608,10 @@ def add_instance_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--use-spot",
         action="store_true",
+        # Without this, argparse supplies False when the option is absent, and
+        # Config.overload_from_cli, which takes any value that isn't None as one the user
+        # asked for, overwrites use_spot in the configuration file on every run
+        default=None,
         help="Use spot/preemptible instances (cheaper but can be terminated)",
     )
 
