@@ -945,3 +945,45 @@ def test_runconfig_max_memory_allowed_per_task() -> None:
         RunConfig(max_memory_allowed_per_task=0)
     with pytest.raises(ValueError):
         RunConfig(max_memory_allowed_per_task=-1)
+
+
+def test_load_config_zone_str_to_list(tmp_path):
+    """One zone is as valid as several, and both arrive as a list."""
+    config_dict = {
+        "provider": "gcp",
+        "gcp": {"zone": "us-central1-a"},
+        "aws": {"zone": "us-east-1a"},
+        "azure": {"zone": "eastus-1"},
+        "run": {},
+    }
+    file_path = tmp_path / "config.yaml"
+    with open(file_path, "w") as f:
+        yaml.safe_dump(config_dict, f)
+    cfg = load_config(str(file_path))
+    assert cfg.gcp.zone == ["us-central1-a"]
+    assert cfg.aws.zone == ["us-east-1a"]
+    assert cfg.azure.zone == ["eastus-1"]
+
+
+def test_load_config_zone_list_is_left_alone(tmp_path):
+    """Several zones keep their configured order, which is the order they are tried in."""
+    config_dict = {
+        "provider": "gcp",
+        "gcp": {"zone": ["us-central1-c", "us-central1-a"]},
+        "run": {},
+    }
+    file_path = tmp_path / "config.yaml"
+    with open(file_path, "w") as f:
+        yaml.safe_dump(config_dict, f)
+    cfg = load_config(str(file_path))
+    assert cfg.gcp.zone == ["us-central1-c", "us-central1-a"]
+
+
+def test_load_config_zone_absent_stays_none(tmp_path):
+    """No zone means the whole region is available, which is not the same as an empty list."""
+    config_dict = {"provider": "gcp", "gcp": {}, "run": {}}
+    file_path = tmp_path / "config.yaml"
+    with open(file_path, "w") as f:
+        yaml.safe_dump(config_dict, f)
+    cfg = load_config(str(file_path))
+    assert cfg.gcp.zone is None

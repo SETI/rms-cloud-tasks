@@ -334,7 +334,12 @@ The available provider-specific options are:
     only use this in special circumstances
   * ``region``: The region to use, required for most operations; will be derived from the
     zone if not specified
-  * ``zone``: The zone to use; if not specified, all zones in the region will be used
+  * ``zone``: The zone to use, or a list of zones; if not specified, all zones in the region
+    will be used. When more than one zone is available, creating an instance moves on to the
+    next zone if the one it tried has no capacity for the instance type, and remembers which
+    zones refused so that the next instance doesn't start with them; once every zone has
+    refused, the record is cleared and they are all tried again. See
+    :ref:`config_zones` for how this interacts with restarting stopped instances.
   * ``exactly_once_queue``: If True, task messages and events are guaranteed to be delivered
     exactly once to any recipient. If False (the default), messages will be delivered at least
     once, but could be delivered multiple times. The specific implications of this flag are
@@ -362,6 +367,52 @@ The available provider-specific options are:
 
 In addition, all run options can be specified in a provider-specific section, in which
 case they will override the global run options, if any.
+
+.. _config_zones:
+
+Zones and Replacing Lost Instances
+----------------------------------
+
+``zone`` accepts one zone or a list of them:
+
+.. code-block:: yaml
+
+    gcp:
+      zone:
+        - us-central1-a
+        - us-central1-b
+        - us-central1-c
+
+or on the command line::
+
+    --zone us-central1-a us-central1-b us-central1-c
+
+All the zones must be in the same region, which is derived from them if ``region`` is not
+given. If no zone is given at all, every zone in the region is available.
+
+Giving more than one zone matters because the usual reason an instance can't be created is
+that one zone has run out of the machine type being asked for, which says nothing about the
+zone next door. When that happens:
+
+- Creation moves on to the next permitted zone, one at a time, until one of them works.
+
+- The zones that refused are remembered, so the next instance doesn't begin by asking them
+  again. Once every permitted zone has refused, there is nothing left to prefer: the record
+  is cleared and they all become available again, since capacity that was gone a while ago
+  may have come back. A zone that successfully creates an instance is forgiven immediately.
+
+Instances are also not always gone when they stop running. A spot instance that the provider
+reclaims is stopped rather than deleted: its boot disk and its name survive, and starting it
+again is faster and cheaper than building a replacement - and it can work in a zone that no
+longer has the capacity to create anything new. So when the pool is short of instances:
+
+- Stopped instances are started again first, and only whatever is still missing after that
+  is created.
+
+- No new instance is created of the same type, in the same zone, as a stopped instance that
+  is still there. Either that instance is about to come back, or the zone has just refused
+  to give it back - in which case it has no capacity for a new one of the same type either,
+  and the creation goes to another zone instead.
 
 Command Line Overrides
 ----------------------

@@ -264,7 +264,12 @@ class ProviderConfig(RunConfig, validate_assignment=True):
         Annotated[str, Field(min_length=1, max_length=24, pattern=r"^[a-z][-a-z0-9]{0,23}$")] | None
     ) = None
     region: Annotated[str, Field(min_length=1)] | None = None
-    zone: Annotated[str, Field(min_length=1)] | None = None
+    # One zone, or the zones an instance may be created in. Instance creation walks the
+    # list when a zone turns out to have no capacity, so giving more than one is the
+    # difference between a job that stalls and one that moves to where the capacity is.
+    zone: list[Annotated[str, Field(min_length=1)]] | Annotated[str, Field(min_length=1)] | None = (
+        None
+    )
     exactly_once_queue: bool | None = None
 
 
@@ -624,6 +629,14 @@ def load_config(config_file: str | None = None) -> Config:
         config.gcp.instance_types = [config.gcp.instance_types]
     if config.azure.instance_types is not None and isinstance(config.azure.instance_types, str):
         config.azure.instance_types = [config.azure.instance_types]
+
+    # Update the zone to always be a list
+    if config.aws.zone is not None and isinstance(config.aws.zone, str):
+        config.aws.zone = [config.aws.zone]
+    if config.gcp.zone is not None and isinstance(config.gcp.zone, str):
+        config.gcp.zone = [config.gcp.zone]
+    if config.azure.zone is not None and isinstance(config.azure.zone, str):
+        config.azure.zone = [config.azure.zone]
 
     # Update the boot_disk_type to always be a list
     if config.aws.boot_disk_types is not None and isinstance(config.aws.boot_disk_types, str):

@@ -7,6 +7,7 @@ import datetime
 import json
 import logging
 import re
+from collections.abc import Iterable
 from typing import Any, TypeAlias, cast
 
 import boto3  # type: ignore[import-not-found, import-untyped]
@@ -240,20 +241,29 @@ class AWSEC2InstanceManager(InstanceManager):
             "aws_secret_access_key": aws_config.secret_key,
         }
 
-        # Initialize with specified region
+        # Initialize with specified region; self._zones is normalized to a list by the base
+        # class, so one zone and several are the same thing from here on
         self._region = aws_config.region
-        self._zone = aws_config.zone
 
-        # If zone is provided but not region, extract region from zone
+        # If zones are provided but not the region, extract the region from them
         region_from_zone = None
-        if self._zone:
-            # Extract region from zone (e.g., us-central1-a -> us-central1)
-            region_from_zone = self._zone[:-1]
-            self._logger.debug(f"Extracted region {self._region} from zone {self._zone}")
+        for zone in self._zones:
+            # Extract region from zone (e.g., us-east-1a -> us-east-1)
+            zone_region = zone[:-1]
+            if region_from_zone is not None and zone_region != region_from_zone:
+                raise ValueError(
+                    f"Zones {', '.join(self._zones)} are not all in the same region "
+                    f"({region_from_zone} and {zone_region})"
+                )
+            region_from_zone = zone_region
+        if region_from_zone is not None:
+            self._logger.debug(
+                f"Extracted region {region_from_zone} from zone(s) {', '.join(self._zones)}"
+            )
             if self._region is not None and self._region != region_from_zone:
                 raise ValueError(
                     f"Region {self._region} does not match region {region_from_zone} extracted "
-                    f"from zone {self._zone}"
+                    f"from zone(s) {', '.join(self._zones)}"
                 )
         if self._region is None and region_from_zone is not None:
             self._region = region_from_zone
@@ -265,7 +275,10 @@ class AWSEC2InstanceManager(InstanceManager):
             "pricing", region_name=self._PRICING_REGION, **self._credentials
         )
 
-        self._logger.debug(f"Initialized AWS EC2: region '{self._region}', zone '{self._zone}'")
+        self._logger.debug(
+            f"Initialized AWS EC2: region '{self._region}', "
+            f"zone(s) '{', '.join(self._zones) or None}'"
+        )
 
     async def get_available_instance_types(
         self, constraints: dict[str, Any] | None = None
@@ -474,7 +487,7 @@ class AWSEC2InstanceManager(InstanceManager):
             )
             for price in spot_prices["SpotPriceHistory"]:
                 zone = price["AvailabilityZone"]
-                if self._zone is not None and self._zone != zone:
+                if self._zones and zone not in self._zones:
                     continue
                 inst_type = price["InstanceType"]
                 if inst_type not in ret:
@@ -648,8 +661,13 @@ class AWSEC2InstanceManager(InstanceManager):
         boot_disk_iops: int | None = None,
         boot_disk_throughput: int | None = None,
         zone: str | None = None,
+        exclude_zones: Iterable[str] | None = None,
     ) -> tuple[str, str]:
         """Start a new EC2 instance.
+
+        When more than one availability zone is permitted, each is tried in turn until one
+        of them launches the instance, because a launch that fails is nearly always a zone
+        that has run out of the instance type asked for.
 
         Parameters:
             instance_type: EC2 instance type (e.g., 't3.micro').
@@ -661,10 +679,18 @@ class AWSEC2InstanceManager(InstanceManager):
             boot_disk_size: Boot disk size in GB.
             boot_disk_iops: Boot disk IOPS (unused for AWS).
             boot_disk_throughput: Boot disk throughput (unused for AWS).
-            zone: Availability zone (optional).
+            zone: Preferred availability zone (optional); if no zone is configured, EC2
+                chooses one.
+            exclude_zones: Zones not to launch the instance in, whatever the configuration
+                permits.
 
         Returns:
             tuple[str, str]: The started instance ID and the zone it was started in.
+
+        Raises:
+            ValueError: If every permitted zone is excluded.
+            Exception: The failure from the last zone tried, if no zone would launch the
+                instance.
         """
         self._logger.info(
             f"Creating {'spot' if use_spot else 'on-demand'} instance of type {instance_type}"
@@ -706,26 +732,34 @@ class AWSEC2InstanceManager(InstanceManager):
         # Convert tags dictionary to AWS format
         aws_tags = [{"Key": "rms-cloud-tasks-job-id", "Value": job_id}]
 
-        # Prepare instance run parameters
-        run_params = {
-            "ImageId": ami_id,
-            "InstanceType": instance_type,
-            "MinCount": 1,
-            "MaxCount": 1,
-            "UserData": startup_script,
-            "TagSpecifications": [{"ResourceType": "instance", "Tags": aws_tags}],
-            "NetworkInterfaces": [
-                {"DeviceIndex": 0, "AssociatePublicIpAddress": True, "DeleteOnTermination": True}
-            ],
-        }
+        candidate_zones = self._zones_for_new_instance(zone, exclude_zones)
+        last_error: Exception | None = None
+        for zone_num, candidate_zone in enumerate(candidate_zones):
+            placement = {"AvailabilityZone": candidate_zone} if candidate_zone else {}
 
-        # Use spot instances if requested
-        if use_spot:
-            # Create spot instance request
-            spot_params = {
-                "InstanceCount": 1,
-                "Type": "one-time",
-                "LaunchSpecification": {
+            # Prepare instance run parameters
+            run_params: dict[str, Any] = {
+                "ImageId": ami_id,
+                "InstanceType": instance_type,
+                "MinCount": 1,
+                "MaxCount": 1,
+                "UserData": startup_script,
+                "TagSpecifications": [{"ResourceType": "instance", "Tags": aws_tags}],
+                "NetworkInterfaces": [
+                    {
+                        "DeviceIndex": 0,
+                        "AssociatePublicIpAddress": True,
+                        "DeleteOnTermination": True,
+                    }
+                ],
+            }
+            if placement:
+                run_params["Placement"] = placement
+
+            # Use spot instances if requested
+            if use_spot:
+                # Create spot instance request
+                launch_spec: dict[str, Any] = {
                     "ImageId": ami_id,
                     "InstanceType": instance_type,
                     "UserData": base64.b64encode(startup_script.encode()).decode("utf-8"),
@@ -736,49 +770,134 @@ class AWSEC2InstanceManager(InstanceManager):
                             "DeleteOnTermination": True,
                         }
                     ],
-                },
-            }
+                }
+                if placement:
+                    launch_spec["Placement"] = placement
+                spot_params = {
+                    "InstanceCount": 1,
+                    "Type": "one-time",
+                    "LaunchSpecification": launch_spec,
+                }
 
+                try:
+                    response = self._ec2_client.request_spot_instances(**spot_params)
+                    request_id = response["SpotInstanceRequests"][0]["SpotInstanceRequestId"]
+
+                    self._logger.info(
+                        f"Waiting for spot instance request {request_id} to be fulfilled"
+                    )
+
+                    # Wait for the spot request to be fulfilled
+                    waiter = self._ec2_client.get_waiter("spot_instance_request_fulfilled")
+                    waiter.wait(SpotInstanceRequestIds=[request_id])
+
+                    # Get the instance ID from the spot request
+                    response = self._ec2_client.describe_spot_instance_requests(
+                        SpotInstanceRequestIds=[request_id]
+                    )
+                    instance_id = response["SpotInstanceRequests"][0]["InstanceId"]
+
+                    # Apply tags to the instance
+                    self._ec2_client.create_tags(Resources=[instance_id], Tags=aws_tags)
+
+                    # Get the availability zone for the instance
+                    inst_response = self._ec2_client.describe_instances(InstanceIds=[instance_id])
+                    inst_zone = inst_response["Reservations"][0]["Instances"][0]["Placement"][
+                        "AvailabilityZone"
+                    ]
+                    self._logger.info(f"Created spot instance: {instance_id}")
+                    if candidate_zone:
+                        self.record_zone_success(candidate_zone)
+                    return instance_id, inst_zone
+
+                except Exception as e:
+                    self._logger.error(f"Failed to create spot instance: {e}")
+                    self._logger.info("Falling back to on-demand instance")
+                    # Fall back to on-demand if spot request fails
+
+            # Create on-demand instance
             try:
-                response = self._ec2_client.request_spot_instances(**spot_params)
-                request_id = response["SpotInstanceRequests"][0]["SpotInstanceRequestId"]
-
-                self._logger.info(f"Waiting for spot instance request {request_id} to be fulfilled")
-
-                # Wait for the spot request to be fulfilled
-                waiter = self._ec2_client.get_waiter("spot_instance_request_fulfilled")
-                waiter.wait(SpotInstanceRequestIds=[request_id])
-
-                # Get the instance ID from the spot request
-                response = self._ec2_client.describe_spot_instance_requests(
-                    SpotInstanceRequestIds=[request_id]
-                )
-                instance_id = response["SpotInstanceRequests"][0]["InstanceId"]
-
-                # Apply tags to the instance
-                self._ec2_client.create_tags(Resources=[instance_id], Tags=aws_tags)
-
-                # Get the availability zone for the instance
-                inst_response = self._ec2_client.describe_instances(InstanceIds=[instance_id])
-                inst_zone = inst_response["Reservations"][0]["Instances"][0]["Placement"][
-                    "AvailabilityZone"
-                ]
-                self._logger.info(f"Created spot instance: {instance_id}")
-                return instance_id, inst_zone
-
+                response = self._ec2_client.run_instances(**run_params)
             except Exception as e:
-                self._logger.error(f"Failed to create spot instance: {e}")
-                self._logger.info("Falling back to on-demand instance")
-                # Fall back to on-demand if spot request fails
+                last_error = e
+                remaining = len(candidate_zones) - zone_num - 1
+                if candidate_zone:
+                    self.record_zone_failure(candidate_zone)
+                if remaining:
+                    # The last failure is reported below, once there is nothing left to try
+                    self._logger.warning(
+                        f"Failed to create instance ({instance_type}) in zone "
+                        f"{candidate_zone}: {e}; trying {remaining} other zone(s)"
+                    )
+                continue
 
-        # Create on-demand instance
-        try:
-            response = self._ec2_client.run_instances(**run_params)
             instance_id = response["Instances"][0]["InstanceId"]
             self._logger.info(f"Created on-demand instance: {instance_id}")
+            if candidate_zone:
+                self.record_zone_success(candidate_zone)
             return instance_id, response["Instances"][0]["Placement"]["AvailabilityZone"]
+
+        assert last_error is not None  # candidate_zones is never empty
+        zone_names = [z for z in candidate_zones if z]
+        where = f" in {' or '.join(zone_names)}" if zone_names else ""
+        self._logger.error(f"Failed to create instance ({instance_type}){where}: {last_error}")
+        raise last_error
+
+    def _zones_for_new_instance(
+        self, zone: str | None = None, exclude_zones: Iterable[str] | None = None
+    ) -> list[str | None]:
+        """Work out which availability zones to try launching an instance in.
+
+        Parameters:
+            zone: The caller's preferred zone, or a wildcard from per-region pricing data.
+            exclude_zones: Zones the caller has ruled out.
+
+        Returns:
+            list[str | None]: The zones to try, most preferred first. A single None means
+            no zone is configured and EC2 should choose for itself.
+
+        Raises:
+            ValueError: If nothing is left to try once the exclusions are applied.
+        """
+        excluded = set(exclude_zones or ())
+        if zone is not None and zone.endswith("*"):
+            # Pricing may be recorded per region rather than per zone
+            zone = None
+
+        if not self._zones:
+            # No zone was configured, so EC2 picks the zone and there is nothing to walk
+            if zone is not None and zone not in excluded:
+                return [zone]
+            return [None]
+
+        permitted = [z for z in self._zones if z not in excluded]
+        if not permitted:
+            raise ValueError(
+                f"No zone is available to create an instance in: {', '.join(self._zones)} "
+                f"{'is' if len(self._zones) == 1 else 'are'} permitted but "
+                f"{'it has' if len(self._zones) == 1 else 'they have'} been excluded"
+            )
+        if zone is not None and zone in permitted:
+            permitted = [zone] + [z for z in permitted if z != zone]
+
+        return list(self.zones_to_try(permitted))
+
+    async def restart_instance(self, instance_id: str, zone: str | None = None) -> None:
+        """Start an EC2 instance that exists but is stopped.
+
+        Parameters:
+            instance_id: EC2 instance ID.
+            zone: Availability zone the instance is in; not used for AWS, which finds the
+                instance by ID.
+
+        Raises:
+            Exception: If the instance cannot be started.
+        """
+        self._logger.debug(f"Restarting instance {instance_id}")
+        try:
+            self._ec2_client.start_instances(InstanceIds=[instance_id])
         except Exception as e:
-            self._logger.error(f"Failed to create instance: {e}")
+            self._logger.warning(f"Failed to restart instance {instance_id}: {e}")
             raise
 
     async def terminate_instance(self, instance_id: str, zone: str | None = None) -> None:
@@ -925,7 +1044,8 @@ class AWSEC2InstanceManager(InstanceManager):
             constraints = {}
 
         self._logger.debug(
-            f"Getting optimal instance type in region {self._region} and zone {self._zone}"
+            f"Getting optimal instance type in region {self._region} and zone(s) "
+            f"{', '.join(self._zones) or None}"
         )
         self._logger.debug(f"Constraints: {constraints}")
 

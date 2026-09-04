@@ -99,6 +99,74 @@ class InstanceManager(ABC):
     def __init__(self, config: ProviderConfig) -> None:
         """Initialize the instance manager with configuration."""
         self.config = config
+        # The zones an instance may be created in, in the order they were configured. Empty
+        # means the config named none, and every zone in the region is fair game.
+        self._zones: list[str] = self.normalize_zones(config.zone)
+        # Zones that have already refused to create an instance. Capacity shortages are
+        # per-zone and last minutes to hours, so a zone that has just failed is the worst
+        # place to send the next instance.
+        self._failed_zones: set[str] = set()
+
+    @staticmethod
+    def normalize_zones(zone: str | list[str] | None) -> list[str]:
+        """Turn a zone configured as a string, a list, or nothing into a list.
+
+        Parameters:
+            zone: One zone name, several, or None.
+
+        Returns:
+            list[str]: The zones, in configuration order and without duplicates. Empty if
+            no zone was configured.
+        """
+        if zone is None:
+            return []
+        if isinstance(zone, str):
+            zone = [zone]
+        # dict.fromkeys keeps the configured order while dropping repeats
+        return list(dict.fromkeys(zone))
+
+    def zones_to_try(self, permitted: Iterable[str]) -> list[str]:
+        """Which of the permitted zones are worth trying, most preferred first.
+
+        A zone that has already failed to create an instance is left out entirely while any
+        other zone has not been tried, since sending the next instance to a zone that just
+        refused one is the least promising thing to do. Once every permitted zone has
+        failed there is nothing left to prefer: the record is forgotten and they all come
+        back, because capacity that was gone a while ago may have returned and trying again
+        beats not trying at all.
+
+        Parameters:
+            permitted: The zones an instance is allowed to be created in.
+
+        Returns:
+            list[str]: The zones to try, in order.
+        """
+        permitted = list(dict.fromkeys(permitted))
+        untried = [zone for zone in permitted if zone not in self._failed_zones]
+        if not untried and permitted:
+            self._logger.info(
+                f"Every permitted zone ({', '.join(permitted)}) has failed to create an "
+                "instance; forgetting which ones failed and trying them all again"
+            )
+            self._failed_zones.clear()
+            untried = permitted
+        return untried
+
+    def record_zone_failure(self, zone: str) -> None:
+        """Note that a zone would not create an instance, so it is passed over from now on.
+
+        Parameters:
+            zone: The zone that failed.
+        """
+        self._failed_zones.add(zone)
+
+    def record_zone_success(self, zone: str) -> None:
+        """Note that a zone created an instance, so whatever was wrong with it has cleared.
+
+        Parameters:
+            zone: The zone that worked.
+        """
+        self._failed_zones.discard(zone)
 
     def local_credential_warning(self) -> str | None:
         """Describe a problem with the credentials this process is running on, or None.
@@ -699,9 +767,14 @@ class InstanceManager(ABC):
         boot_disk_iops: int | None = None,
         boot_disk_throughput: int | None = None,  # MB/s
         zone: str | None = None,
+        exclude_zones: Iterable[str] | None = None,
     ) -> tuple[str, str]:
         """
         Start a new instance and return its ID.
+
+        If more than one zone is permitted, each is tried in turn until one creates the
+        instance, because the usual reason a creation fails is that the zone has run out of
+        the requested machine type and its neighbours have not.
 
         Args:
             instance_type: Type of instance to start
@@ -709,12 +782,33 @@ class InstanceManager(ABC):
             job_id: Job ID to use for the instance
             use_spot: Whether to use a spot instance
             image_uri: Image URI to use
-            zone: Zone to use for the instance; if not specified use the default zone,
-                or if none choose a random zone
+            zone: Preferred zone for the instance; if not specified use the configured
+                zones, or if none choose from the zones of the region
+            exclude_zones: Zones not to create the instance in, whatever the configuration
+                permits, because the caller knows something about them that this manager
+                does not
 
         Returns:
             A tuple containing the ID of the started instance and the zone it was started
             in
+        """
+        pass  # pragma: no cover
+
+    @abstractmethod
+    async def restart_instance(self, instance_id: str, zone: str | None = None) -> None:
+        """Start an instance that exists but is stopped.
+
+        A spot instance that the provider reclaims is stopped, not deleted: its disk and
+        its identity survive, so bringing it back is cheaper and faster than creating a
+        replacement, and it works in a zone that no longer has capacity to create one.
+
+        Args:
+            instance_id: Instance name
+            zone: The zone the instance is in; if not specified use the default zone
+
+        Raises:
+            Provider-specific exceptions if the instance cannot be started, which for a
+            reclaimed spot instance usually means the zone still has no capacity for it.
         """
         pass  # pragma: no cover
 

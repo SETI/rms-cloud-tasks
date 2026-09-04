@@ -71,10 +71,16 @@ Region and Zones
 - If the ``region`` configuration option is not provided, it will be extracted from the zone,
   if provided. If the ``zone`` configuration option is also not provided, it is an error.
 
-- If the ``zone`` configuration option is specified, operations such as listing running instances,
-  creating new instances, and terminating instances will be restricted to the specified zone.
-  Otherwise, all zones in the specified region will be used. For creation of compute instances,
-  that means each new instance will be randomly assigned to a zone.
+- The ``zone`` configuration option takes one zone or a list of them, which must all be in the
+  same region. Operations such as listing running instances, creating new instances, and
+  terminating instances are restricted to the zones given. If no zone is given, all zones in
+  the region are used, and each new instance is assigned to one of them at random.
+
+- When an instance can't be created in a zone - almost always because that zone has run out
+  of the machine type being asked for - the next permitted zone is tried, and zones that
+  have just refused are passed over until every one of them has. See :ref:`config_zones`
+  for the whole of that behaviour, including how stopped instances are restarted rather
+  than replaced.
 
 
 .. _gcp_service_account:
@@ -321,12 +327,13 @@ Compute Instances
 - Compute Engine instances are tagged with ``rmscr-<job_id>`` so that they can be identified.
 
 - Compute Engine instance types are per-zone, and thus listing available instance types
-  requires a specific zone. If a zone is not specified, the default zone for the region will
-  be used; this is the first zone returned by GCP for the region. When choosing an optimal
-  instance type, if the zone is not specified, it may be possible to get the available instance
-  types for the default zone, and then attempt to create that instance type in a different zone
-  that doesn't support it. Thus if you are planning to use a rare instance type, you should
-  specify a specific zone to use.
+  requires a specific zone. The first zone given in ``zone`` is used; if no zone is given,
+  the default zone for the region is used, which is the first zone returned by GCP for the
+  region. So the available instance types come from one zone, while a new instance may be
+  created in any zone that ``zone`` permits, and a rare machine type may not exist in all of
+  them. Creation then fails in the zones that don't have it and succeeds in one that does,
+  but if you are planning to use a rare instance type it is better to name only the zones
+  that offer it.
 
 - On the other hand, Compute Engine pricing (both on-demand and spot) is per-region, not
   per-zone. Thus it is irrelevant which zone within a region you specify when retrieving

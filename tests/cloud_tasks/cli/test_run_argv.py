@@ -1121,3 +1121,39 @@ def test_allow_cpu_wasting_is_not_set_unless_asked_for() -> None:
     config = Config(provider="GCP", run=RunConfig(allow_cpu_wasting=False))
     config.overload_from_cli(vars(args))
     assert config.run.allow_cpu_wasting is True
+
+
+def test_zone_accepts_more_than_one_zone() -> None:
+    """--zone takes a list, so a run can be told where else to go when a zone is full.
+
+    Returns:
+        None. Asserts one zone and several both reach the provider config as a list.
+    """
+    parser = build_parser()
+
+    args = parser.parse_args(
+        ["run", "--config", "/nonexistent", "--provider", "gcp", "--zone", "us-central1-a"]
+    )
+    assert args.zone == ["us-central1-a"]
+
+    config = Config(provider="GCP", gcp=GCPConfig())
+    config.overload_from_cli(vars(args))
+    assert config.gcp.zone == ["us-central1-a"]
+
+    args = parser.parse_args(
+        [
+            "run",
+            "--config",
+            "/nonexistent",
+            "--provider",
+            "gcp",
+            "--zone",
+            "us-central1-a",
+            "us-central1-b",
+        ]
+    )
+    assert args.zone == ["us-central1-a", "us-central1-b"]
+
+    config = Config(provider="GCP", gcp=GCPConfig(zone="us-central1-f"))
+    config.overload_from_cli(vars(args))
+    assert config.gcp.zone == ["us-central1-a", "us-central1-b"]

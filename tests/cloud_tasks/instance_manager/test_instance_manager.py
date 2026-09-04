@@ -6,8 +6,11 @@ from cloud_tasks.common.config import ProviderConfig
 from cloud_tasks.instance_manager.instance_manager import InstanceManager
 
 
-def _concrete_instance_manager() -> InstanceManager:
+def _concrete_instance_manager(**kwargs) -> InstanceManager:
     """Build an InstanceManager with the abstract methods stubbed out.
+
+    Parameters:
+        **kwargs: Fields to set on the ProviderConfig the manager is built with.
 
     Returns:
         InstanceManager: A concrete subclass whose provider methods do nothing, for
@@ -25,6 +28,9 @@ def _concrete_instance_manager() -> InstanceManager:
             pass
 
         async def start_instance(self, **kwargs):
+            pass
+
+        async def restart_instance(self, instance_id, zone=None):
             pass
 
         async def terminate_instance(self, instance_id, zone=None):
@@ -45,7 +51,7 @@ def _concrete_instance_manager() -> InstanceManager:
         async def get_available_regions(self):
             pass
 
-    return ConcreteInstanceManager(ProviderConfig())
+    return ConcreteInstanceManager(ProviderConfig(**kwargs))
 
 
 class TestInstanceManager:
@@ -676,3 +682,68 @@ class TestDescribeConstraintRelaxations:
         assert lines == [
             "architecture would have to accept X86_64, and 2 instance type(s) would match"
         ]
+
+
+class TestZoneSelection:
+    """Validates how the permitted zones are recorded and rotated through."""
+
+    @pytest.fixture
+    def instance_manager(self) -> InstanceManager:
+        """Create a concrete instance manager for testing."""
+        return _concrete_instance_manager()
+
+    def test_no_zone_configured_is_an_empty_list(self):
+        """Nothing configured means nothing is ruled out, not one nameless zone."""
+        assert InstanceManager.normalize_zones(None) == []
+
+    def test_one_zone_becomes_a_list_of_one(self):
+        """A config that names a single zone as a string still works."""
+        assert InstanceManager.normalize_zones("us-central1-a") == ["us-central1-a"]
+
+    def test_several_zones_keep_their_order_without_repeats(self):
+        """The configured order is the preference order, and saying one twice changes nothing."""
+        zones = ["us-central1-c", "us-central1-a", "us-central1-c"]
+        assert InstanceManager.normalize_zones(zones) == ["us-central1-c", "us-central1-a"]
+
+    def test_zones_configured_on_the_provider_are_picked_up(self):
+        """The manager takes its permitted zones from the config it was built with."""
+        manager = _concrete_instance_manager(zone=["us-central1-a", "us-central1-b"])
+
+        assert manager._zones == ["us-central1-a", "us-central1-b"]
+
+    def test_a_failed_zone_is_skipped_while_others_are_untried(self, instance_manager):
+        """A zone that just refused an instance is the worst place to send the next one."""
+        instance_manager.record_zone_failure("us-central1-a")
+
+        assert instance_manager.zones_to_try(["us-central1-a", "us-central1-b"]) == [
+            "us-central1-b"
+        ]
+
+    def test_all_zones_come_back_once_every_one_has_failed(self, instance_manager):
+        """With nothing left to prefer, the record is forgotten and they are all tried again."""
+        zones = ["us-central1-a", "us-central1-b"]
+        for zone in zones:
+            instance_manager.record_zone_failure(zone)
+
+        assert instance_manager.zones_to_try(zones) == zones
+        # The record really is cleared, not just ignored for this one call
+        assert instance_manager._failed_zones == set()
+
+    def test_a_zone_that_works_again_is_forgiven(self, instance_manager):
+        """Capacity comes back, and a zone that has just created an instance is fine again."""
+        instance_manager.record_zone_failure("us-central1-a")
+        instance_manager.record_zone_success("us-central1-a")
+
+        assert instance_manager.zones_to_try(["us-central1-a", "us-central1-b"]) == [
+            "us-central1-a",
+            "us-central1-b",
+        ]
+
+    def test_failures_in_zones_that_are_no_longer_permitted_dont_force_a_reset(
+        self, instance_manager
+    ):
+        """A zone dropped from the config has no say in whether the others are exhausted."""
+        instance_manager.record_zone_failure("us-central1-a")
+
+        assert instance_manager.zones_to_try(["us-central1-b"]) == ["us-central1-b"]
+        assert instance_manager._failed_zones == {"us-central1-a"}

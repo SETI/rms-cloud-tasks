@@ -53,7 +53,9 @@ specify job-related information. They override any options in the configuration 
 --queue-name QUEUE_NAME    The name of the task queue to use (derived from job ID if not provided;
                            only use this in special circumstances)
 --region REGION            The region to use (derived from zone if not provided)
---zone ZONE                The zone to use (if not specified, all zones in a region will be used)
+--zone ZONES               A single zone or list of zones to use (if not specified, all zones
+                           in a region will be used); with more than one, instance creation
+                           moves on to the next zone when one has no capacity
 --exactly-once-queue       If specified, task and event queue messages are guaranteed to be delivered
                             exactly once to any recipient
 --no-exactly-once-queue    If specified, task and event queue messages are delivered at least once,
@@ -571,27 +573,38 @@ Keep-alive events are not stored in the database and never appear in the log.
 - Exception summaries with counts
 - Spot termination tracking
 
-**Instance Detail Table**: With debug logging enabled (``-vv`` or more, e.g. ``-vvv``), each
-time the periodic scaling check computes the running-instance summary it first logs a table
-with one row per instance, giving the instance's ID, type, state, zone, creation time, how
-long ago its last keep-alive event arrived, and its keep-alive status. This makes it possible
-to see exactly which instance the manager considers overdue, and by how much, before it is
-terminated:
+**Instance Detail Table**: Every time the periodic scaling check looks at the pool it logs a
+table with one row per instance, giving the instance's ID, type, boot disk, vCPUs, how many
+tasks it can run at once, state, zone, creation time, how long ago its last keep-alive event
+arrived, what the keep-alive monitor is doing about it, and what it costs per hour. Rows are
+ordered by what the instance is doing - running first, then starting, stopping, stopped and
+terminated - so the instances doing the work are at the top and the ones on their way out
+explain why the pool is the size it is. The last row totals what is running:
 
 .. code-block:: none
 
-   Instance details:
-     Instance ID              Type            State     Zone           Created              Keep-Alive  Status
-     --------------------------------------------------------------------------------------------------------------------------------------------------------
-     my-job-1riovtucuu1o1dx9  n2-highcpu-4    running   us-central1-f  2026-08-18T13:47:46  45s ago     OK (255s until overdue)
-     my-job-2b77c9e4a1f0d3b8  n2-highcpu-4    starting  us-central1-f  2026-08-18T14:18:00  never       awaiting first keep-alive (120s of 600s)
-     my-job-8ad4013f9c22e7a5  n2-standard-16  running   us-central1-b  2026-08-18T13:58:00  never       OVERDUE by 600s for its first keep-alive (limit 600s)
-     my-job-c1902e77bb410fa6  n2-highcpu-4    running   us-central1-f  2026-08-18T13:28:00  900s ago    OVERDUE by 600s (limit 300s)
+   ┌─────────────────────────┬────────────────┬─────────────┬───────┬───────┬────────────┬───────────────┬─────────────────────┬────────────┬─────────────────────────────────────────────────────────────────┬────────────┐
+   │ Instance ID             │ Type           │ Boot Disk   │ vCPUs │ Tasks │ State      │ Zone          │ Created             │ Keep-Alive │ Mode                                                            │ Price/Hour │
+   ├─────────────────────────┼────────────────┼─────────────┼───────┼───────┼────────────┼───────────────┼─────────────────────┼────────────┼─────────────────────────────────────────────────────────────────┼────────────┤
+   │ my-job-1riovtucuu1o1dx9 │ n2-highcpu-4   │ pd-balanced │     4 │     2 │ running    │ us-central1-f │ 2026-08-18T13:47:46 │ 45s ago    │ keep-alive wait (45s of 300s)                                   │      $0.05 │
+   │ my-job-8ad4013f9c22e7a5 │ n2-standard-16 │ pd-balanced │    16 │     8 │ running    │ us-central1-b │ 2026-08-18T13:58:00 │ never      │ keep-alive timed out (first keep-alive overdue by 600s of 600s) │      $0.23 │
+   │ my-job-c1902e77bb410fa6 │ n2-highcpu-4   │ pd-balanced │     4 │     2 │ running    │ us-central1-f │ 2026-08-18T13:28:00 │ 900s ago   │ keep-alive timed out (overdue by 600s of 300s)                  │      $0.05 │
+   │ my-job-2b77c9e4a1f0d3b8 │ n2-highcpu-4   │ pd-balanced │     4 │     2 │ starting   │ us-central1-f │ 2026-08-18T14:18:00 │ never      │ waiting for first keep-alive (120s of 600s)                     │      $0.05 │
+   │ my-job-4f0b21c8ae93d517 │ n2-highcpu-4   │ pd-balanced │     4 │     2 │ terminated │ us-central1-b │ 2026-08-18T12:04:11 │ -          │ not active                                                      │          - │
+   ├─────────────────────────┼────────────────┼─────────────┼───────┼───────┼────────────┼───────────────┼─────────────────────┼────────────┼─────────────────────────────────────────────────────────────────┼────────────┤
+   │ 4 running/starting      │                │             │    28 │    14 │            │               │                     │            │                                                                 │      $0.38 │
+   └─────────────────────────┴────────────────┴─────────────┴───────┴───────┴────────────┴───────────────┴─────────────────────┴────────────┴─────────────────────────────────────────────────────────────────┴────────────┘
+   14 task(s) can run at once on the 4 running or starting instance(s), at 2 vCPU(s) per task
 
-The keep-alive columns read ``not monitored`` when keep-alive monitoring isn't running, which
-is the case when both keep-alive timeouts are disabled, during a ``--dry-run``, and for the
-:ref:`cli_status_cmd` command (which only queries instances and so never receives keep-alive
-events).
+The Keep-Alive and Mode columns read ``not monitored`` when keep-alive monitoring isn't
+running, which is the case when both keep-alive timeouts are disabled, during a
+``--dry-run``, and for the :ref:`cli_status_cmd` command (which only queries instances and so
+never receives keep-alive events). They read ``not active`` for an instance that is not
+running or starting.
+
+An instance in the table that is ``stopped`` or ``terminated`` has not necessarily gone for
+good: a spot instance the provider reclaims is stopped rather than deleted, and the next
+scaling check starts it again rather than building a replacement. See :ref:`config_zones`.
 
 Examples:
 
@@ -809,8 +822,8 @@ list_running_instances
 ~~~~~~~~~~~~~~~~~~~~~~
 
 List currently running instances. By default only active instances created by Cloud Tasks
-are shown. If only a region is specified, instances in all zones in that region are shown. If a
-zone is specified, only instances in that zone are shown.
+are shown. If only a region is specified, instances in all zones in that region are shown. If
+one or more zones are specified, only instances in those zones are shown.
 
 .. code-block:: none
 

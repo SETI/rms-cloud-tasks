@@ -64,27 +64,27 @@ async def test_start_instance_basic(
                         job_id=job_id,
                         use_spot=use_spot,
                         image_uri=image,
-                        zone=gcp_instance_manager_n1_n2._zone,
+                        zone=gcp_instance_manager_n1_n2._zones[0],
                     )
 
                     # Assert
                     assert instance_id.startswith(
                         f"{gcp_instance_manager_n1_n2._JOB_ID_TAG_PREFIX}{job_id}-"
                     )
-                    assert zone == gcp_instance_manager_n1_n2._zone
+                    assert zone == gcp_instance_manager_n1_n2._zones[0]
 
                     # Check that the compute client was called with the correct parameters
                     mock_compute_client.insert.assert_called_once()
                     call_args = mock_compute_client.insert.call_args
                     assert call_args[1]["project"] == gcp_instance_manager_n1_n2._project_id
-                    assert call_args[1]["zone"] == gcp_instance_manager_n1_n2._zone
+                    assert call_args[1]["zone"] == gcp_instance_manager_n1_n2._zones[0]
 
                     # Check instance resource configuration
                     instance_config = call_args[1]["instance_resource"]
                     assert instance_config.name == instance_id
                     assert (
                         instance_config.machine_type
-                        == f"zones/{gcp_instance_manager_n1_n2._zone}/machineTypes/{instance_type}"
+                        == f"zones/{gcp_instance_manager_n1_n2._zones[0]}/machineTypes/{instance_type}"
                     )
 
                     # Check metadata (startup script)
@@ -156,14 +156,14 @@ async def test_start_instance_spot(
                     job_id=job_id,
                     use_spot=use_spot,
                     image_uri=image,
-                    zone=gcp_instance_manager_n1_n2._zone,
+                    zone=gcp_instance_manager_n1_n2._zones[0],
                 )
 
                 # Assert
                 assert instance_id.startswith(
                     f"{gcp_instance_manager_n1_n2._JOB_ID_TAG_PREFIX}{job_id}-"
                 )
-                assert zone == gcp_instance_manager_n1_n2._zone
+                assert zone == gcp_instance_manager_n1_n2._zones[0]
 
                 # Check that the compute client was called with the correct parameters
                 mock_compute_client.insert.assert_called_once()
@@ -233,14 +233,14 @@ async def test_start_instance_with_service_account(
                     job_id=job_id,
                     use_spot=use_spot,
                     image_uri=image,
-                    zone=gcp_instance_manager_n1_n2._zone,
+                    zone=gcp_instance_manager_n1_n2._zones[0],
                 )
 
                 # Assert
                 assert instance_id.startswith(
                     f"{gcp_instance_manager_n1_n2._JOB_ID_TAG_PREFIX}{job_id}-"
                 )
-                assert zone == gcp_instance_manager_n1_n2._zone
+                assert zone == gcp_instance_manager_n1_n2._zones[0]
 
                 # Check that the service account was included in the instance configuration
                 call_args = mock_compute_client.insert.call_args
@@ -298,14 +298,14 @@ async def test_start_instance_with_custom_image_uri(
                 job_id=job_id,
                 use_spot=use_spot,
                 image_uri=custom_image,
-                zone=gcp_instance_manager_n1_n2._zone,
+                zone=gcp_instance_manager_n1_n2._zones[0],
             )
 
             # Assert
             assert instance_id.startswith(
                 f"{gcp_instance_manager_n1_n2._JOB_ID_TAG_PREFIX}{job_id}-"
             )
-            assert zone == gcp_instance_manager_n1_n2._zone
+            assert zone == gcp_instance_manager_n1_n2._zones[0]
 
             # Check that the image was set correctly in the instance configuration
             call_args = mock_compute_client.insert.call_args
@@ -331,12 +331,13 @@ async def test_start_instance_with_random_zone(
     image = "ubuntu-2404-lts"
     wildcard_zone = "us-central1-*"  # Wildcard zone
 
-    # Mock _get_random_zone to return a specific zone
+    # No zone is configured, so the whole region is fair game
+    gcp_instance_manager_n1_n2._zones = []
+    region_zones = ["us-central1-a", "us-central1-b", "us-central1-c"]
     with patch.object(
-        gcp_instance_manager_n1_n2, "_get_random_zone", new=AsyncMock()
-    ) as mock_get_random_zone:
-        random_zone = "us-central1-c"
-        mock_get_random_zone.return_value = random_zone
+        gcp_instance_manager_n1_n2, "_list_region_zones", new=AsyncMock()
+    ) as mock_list_region_zones:
+        mock_list_region_zones.return_value = list(region_zones)
 
         # Mock the UUID generation to have a predictable instance ID
         mock_uuid = _uuid.UUID("12345678-1234-5678-1234-567812345678")
@@ -383,14 +384,14 @@ async def test_start_instance_with_random_zone(
                     assert instance_id.startswith(
                         f"{gcp_instance_manager_n1_n2._JOB_ID_TAG_PREFIX}{job_id}-"
                     )
-                    assert zone == random_zone
+                    assert zone in region_zones
 
-                    # Verify that _get_random_zone was called to resolve the wildcard
-                    mock_get_random_zone.assert_called_once()
+                    # Verify that the region's zones were listed to resolve the wildcard
+                    mock_list_region_zones.assert_called_once_with("us-central1")
 
-                    # Check that the resolved random zone was used
+                    # Check that the resolved zone was used
                     call_args = mock_compute_client.insert.call_args
-                    assert call_args[1]["zone"] == random_zone
+                    assert call_args[1]["zone"] == zone
 
 
 @pytest.mark.asyncio
@@ -435,7 +436,7 @@ async def test_start_instance_error_handling(
                     job_id=job_id,
                     use_spot=use_spot,
                     image_uri=image,
-                    zone=gcp_instance_manager_n1_n2._zone,
+                    zone=gcp_instance_manager_n1_n2._zones[0],
                 )
 
 
@@ -474,7 +475,7 @@ async def test_terminate_instance_basic(
         # Check that the compute client was called with the correct parameters
         mock_compute_client.delete.assert_called_once_with(
             project=gcp_instance_manager_n1_n2._project_id,
-            zone=gcp_instance_manager_n1_n2._zone,
+            zone=gcp_instance_manager_n1_n2._zones[0],
             instance=instance_id,
         )
 
@@ -512,7 +513,7 @@ async def test_terminate_instance_not_found(
     # Check that the compute client was called with the correct parameters
     mock_compute_client.delete.assert_called_once_with(
         project=gcp_instance_manager_n1_n2._project_id,
-        zone=gcp_instance_manager_n1_n2._zone,
+        zone=gcp_instance_manager_n1_n2._zones[0],
         instance=instance_id,
     )
     # Note: No exception should be raised as the method handles NotFound gracefully
@@ -541,7 +542,7 @@ async def test_terminate_instance_error_handling(
     # Verify the method was called with correct parameters
     mock_compute_client.delete.assert_called_once_with(
         project=gcp_instance_manager_n1_n2._project_id,
-        zone=gcp_instance_manager_n1_n2._zone,
+        zone=gcp_instance_manager_n1_n2._zones[0],
         instance=instance_id,
     )
 
@@ -711,7 +712,7 @@ async def test_list_running_instances_region_based(
     gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
     mock_credentials = copy.deepcopy(mock_credentials)
     # Clear the zone to force region-based listing
-    gcp_instance_manager_n1_n2._zone = None
+    gcp_instance_manager_n1_n2._zones = []
 
     # Mock zones in the region
     mock_zone1 = MagicMock()
@@ -776,7 +777,7 @@ async def test_list_running_instances_zone_listing_error(
     # Arrange
     gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
     mock_credentials = copy.deepcopy(mock_credentials)
-    gcp_instance_manager_n1_n2._zone = None  # Force region-based listing
+    gcp_instance_manager_n1_n2._zones = []  # Force region-based listing
     error_msg = "Permission denied"
     gcp_instance_manager_n1_n2._zones_client.list = MagicMock(side_effect=RuntimeError(error_msg))
 
@@ -793,7 +794,7 @@ async def test_list_running_instances_instance_listing_error(
     # Arrange
     gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
     mock_credentials = copy.deepcopy(mock_credentials)
-    gcp_instance_manager_n1_n2._zone = None  # Force region-based listing
+    gcp_instance_manager_n1_n2._zones = []  # Force region-based listing
 
     # Mock zones in the region
     mock_zone1 = MagicMock()
@@ -1023,3 +1024,294 @@ async def test_wait_for_operation_cancellation(
     mock_operation.result.assert_called_once_with(
         timeout=gcp_instance_manager_n1_n2._DEFAULT_OPERATION_TIMEOUT
     )
+
+
+def _start_instance_kwargs(**overrides):
+    """Build the keyword arguments a plain instance creation needs.
+
+    Parameters:
+        **overrides: Values to change or add.
+
+    Returns:
+        dict: Keyword arguments for start_instance.
+    """
+    kwargs = {
+        "instance_type": "n1-standard-2",
+        "boot_disk_size": 20,
+        "boot_disk_type": "pd-balanced",
+        "startup_script": "#!/bin/bash\necho 'Hello World'",
+        "job_id": "test-job-123",
+        "use_spot": False,
+        "image_uri": "ubuntu-2404-lts",
+    }
+    kwargs.update(overrides)
+    return kwargs
+
+
+def _mock_compute_client(manager, insert_side_effect=None):
+    """Point the manager at a compute client whose insert can be made to fail.
+
+    Parameters:
+        manager: The instance manager to attach the client to.
+        insert_side_effect: Passed to the insert mock, so a test can fail some zones.
+
+    Returns:
+        MagicMock: The compute client the manager will use.
+    """
+    operation = MagicMock()
+    operation.name = "mock-operation-name"
+    operation.error_code = None
+    operation.warnings = None
+    operation.result.return_value = MagicMock()
+
+    compute_client = MagicMock()
+    if insert_side_effect is None:
+        compute_client.insert = MagicMock(return_value=operation)
+    else:
+        compute_client.insert = MagicMock(side_effect=insert_side_effect)
+    manager._get_compute_client = MagicMock(return_value=compute_client)
+    return compute_client
+
+
+@pytest.mark.asyncio
+async def test_start_instance_moves_to_the_next_zone_when_one_has_no_capacity(
+    gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
+) -> None:
+    """A zone that is out of capacity is not the end of the attempt; the next one is tried."""
+    manager = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
+    manager._zones = ["us-central1-a", "us-central1-b", "us-central1-c"]
+
+    def insert(**kwargs):
+        if kwargs["zone"] != "us-central1-c":
+            raise RuntimeError(f"ZONE_RESOURCE_POOL_EXHAUSTED in {kwargs['zone']}")
+        operation = MagicMock()
+        operation.name = "mock-operation-name"
+        operation.error_code = None
+        operation.warnings = None
+        return operation
+
+    compute_client = _mock_compute_client(manager, insert_side_effect=insert)
+    with patch.object(manager, "_wait_for_operation", new=AsyncMock()):
+        instance_id, zone = await manager.start_instance(**_start_instance_kwargs())
+
+    assert zone == "us-central1-c"
+    assert instance_id.startswith(f"{manager._JOB_ID_TAG_PREFIX}test-job-123-")
+    assert [call[1]["zone"] for call in compute_client.insert.call_args_list] == [
+        "us-central1-a",
+        "us-central1-b",
+        "us-central1-c",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_start_instance_skips_zones_that_just_failed(
+    gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
+) -> None:
+    """The zone that refused the last instance is not asked again while others are untried."""
+    manager = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
+    manager._zones = ["us-central1-a", "us-central1-b"]
+    manager.record_zone_failure("us-central1-a")
+
+    compute_client = _mock_compute_client(manager)
+    with patch.object(manager, "_wait_for_operation", new=AsyncMock()):
+        _, zone = await manager.start_instance(**_start_instance_kwargs())
+
+    assert zone == "us-central1-b"
+    assert [call[1]["zone"] for call in compute_client.insert.call_args_list] == ["us-central1-b"]
+
+
+@pytest.mark.asyncio
+async def test_start_instance_starts_over_when_every_zone_has_failed(
+    gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
+) -> None:
+    """Once every zone has been tried, the record is forgotten and they come round again."""
+    manager = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
+    manager._zones = ["us-central1-a", "us-central1-b"]
+    manager.record_zone_failure("us-central1-a")
+    manager.record_zone_failure("us-central1-b")
+
+    compute_client = _mock_compute_client(manager)
+    with patch.object(manager, "_wait_for_operation", new=AsyncMock()):
+        _, zone = await manager.start_instance(**_start_instance_kwargs())
+
+    assert zone == "us-central1-a"
+    assert compute_client.insert.call_args_list[0][1]["zone"] == "us-central1-a"
+    # The creation worked, so nothing is being held against any zone now
+    assert manager._failed_zones == set()
+
+
+@pytest.mark.asyncio
+async def test_start_instance_raises_the_last_failure_when_no_zone_works(
+    gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
+) -> None:
+    """When every permitted zone refuses, the caller hears about it rather than getting None."""
+    manager = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
+    manager._zones = ["us-central1-a", "us-central1-b"]
+
+    compute_client = _mock_compute_client(
+        manager, insert_side_effect=RuntimeError("ZONE_RESOURCE_POOL_EXHAUSTED")
+    )
+    with patch.object(manager, "_wait_for_operation", new=AsyncMock()):
+        with pytest.raises(RuntimeError, match="ZONE_RESOURCE_POOL_EXHAUSTED"):
+            await manager.start_instance(**_start_instance_kwargs())
+
+    assert compute_client.insert.call_count == 2
+    assert manager._failed_zones == {"us-central1-a", "us-central1-b"}
+
+
+@pytest.mark.asyncio
+async def test_start_instance_honours_zones_the_caller_excludes(
+    gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
+) -> None:
+    """A zone the orchestrator has ruled out is not used even though the config permits it."""
+    manager = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
+    manager._zones = ["us-central1-a", "us-central1-b"]
+
+    compute_client = _mock_compute_client(manager)
+    with patch.object(manager, "_wait_for_operation", new=AsyncMock()):
+        _, zone = await manager.start_instance(
+            **_start_instance_kwargs(exclude_zones={"us-central1-a"})
+        )
+
+    assert zone == "us-central1-b"
+    assert [call[1]["zone"] for call in compute_client.insert.call_args_list] == ["us-central1-b"]
+
+
+@pytest.mark.asyncio
+async def test_start_instance_refuses_when_every_zone_is_excluded(
+    gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
+) -> None:
+    """Excluding everything leaves nowhere to go, which is an error rather than a silent no-op."""
+    manager = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
+    manager._zones = ["us-central1-a"]
+
+    compute_client = _mock_compute_client(manager)
+    with pytest.raises(ValueError, match="No zone is available"):
+        await manager.start_instance(**_start_instance_kwargs(exclude_zones={"us-central1-a"}))
+
+    compute_client.insert.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_start_instance_prefers_the_requested_zone_then_the_rest_of_the_region(
+    gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
+) -> None:
+    """With no zone configured, the priced zone is tried first and the region backs it up."""
+    manager = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
+    manager._zones = []
+
+    compute_client = _mock_compute_client(
+        manager, insert_side_effect=RuntimeError("ZONE_RESOURCE_POOL_EXHAUSTED")
+    )
+    with (
+        patch.object(manager, "_list_region_zones", new=AsyncMock()) as mock_list_region_zones,
+        patch.object(manager, "_wait_for_operation", new=AsyncMock()),
+    ):
+        mock_list_region_zones.return_value = ["us-central1-a", "us-central1-b", "us-central1-c"]
+        with pytest.raises(RuntimeError):
+            await manager.start_instance(**_start_instance_kwargs(zone="us-central1-c"))
+
+    tried = [call[1]["zone"] for call in compute_client.insert.call_args_list]
+    assert tried[0] == "us-central1-c"
+    assert sorted(tried) == ["us-central1-a", "us-central1-b", "us-central1-c"]
+
+
+@pytest.mark.asyncio
+async def test_start_instance_ignores_a_requested_zone_the_config_does_not_permit(
+    gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
+) -> None:
+    """The config is the authority on where instances may go, not the pricing data."""
+    manager = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
+    manager._zones = ["us-central1-b"]
+
+    compute_client = _mock_compute_client(manager)
+    with patch.object(manager, "_wait_for_operation", new=AsyncMock()):
+        _, zone = await manager.start_instance(**_start_instance_kwargs(zone="us-central1-f"))
+
+    assert zone == "us-central1-b"
+    assert [call[1]["zone"] for call in compute_client.insert.call_args_list] == ["us-central1-b"]
+
+
+@pytest.mark.asyncio
+async def test_restart_instance_starts_a_stopped_vm(
+    gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
+) -> None:
+    """A reclaimed spot instance is stopped, not deleted, so it can simply be started."""
+    manager = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
+
+    operation = MagicMock()
+    operation.name = "mock-operation-name"
+    compute_client = MagicMock()
+    compute_client.start = MagicMock(return_value=operation)
+    manager._get_compute_client = MagicMock(return_value=compute_client)
+
+    with patch.object(manager, "_wait_for_operation", new=AsyncMock()) as mock_wait:
+        await manager.restart_instance("worker-1", "us-central1-b")
+
+    compute_client.start.assert_called_once_with(
+        project=manager._project_id, zone="us-central1-b", instance="worker-1"
+    )
+    mock_wait.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_restart_instance_falls_back_to_the_configured_zone(
+    gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
+) -> None:
+    """An instance listing without a zone still restarts if the config names one."""
+    manager = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
+    manager._zones = ["us-central1-a"]
+
+    compute_client = MagicMock()
+    compute_client.start = MagicMock(return_value=MagicMock())
+    manager._get_compute_client = MagicMock(return_value=compute_client)
+
+    with patch.object(manager, "_wait_for_operation", new=AsyncMock()):
+        await manager.restart_instance("worker-1")
+
+    assert compute_client.start.call_args[1]["zone"] == "us-central1-a"
+
+
+@pytest.mark.asyncio
+async def test_restart_instance_needs_a_zone(
+    gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
+) -> None:
+    """With no zone from either the instance or the config there is nothing to address."""
+    manager = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
+    manager._zones = []
+
+    with pytest.raises(ValueError, match="Zone is required"):
+        await manager.restart_instance("worker-1")
+
+
+@pytest.mark.asyncio
+async def test_restart_instance_reports_a_zone_that_will_not_give_the_instance_back(
+    gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
+) -> None:
+    """A restart that fails is the caller's signal that the zone has no capacity."""
+    manager = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
+
+    compute_client = MagicMock()
+    compute_client.start = MagicMock(side_effect=RuntimeError("ZONE_RESOURCE_POOL_EXHAUSTED"))
+    manager._get_compute_client = MagicMock(return_value=compute_client)
+
+    with pytest.raises(RuntimeError, match="ZONE_RESOURCE_POOL_EXHAUSTED"):
+        await manager.restart_instance("worker-1", "us-central1-a")
+
+
+@pytest.mark.asyncio
+async def test_list_running_instances_covers_every_configured_zone(
+    gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
+) -> None:
+    """A job spread over several zones is listed from all of them, not just the first."""
+    manager = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
+    manager._zones = ["us-central1-a", "us-central1-b"]
+
+    compute_client = MagicMock()
+    compute_client.list = MagicMock(return_value=[])
+    manager._get_compute_client = MagicMock(return_value=compute_client)
+
+    await manager.list_running_instances(job_id="test-job")
+
+    listed = [call[1]["request"].zone for call in compute_client.list.call_args_list]
+    assert listed == ["us-central1-a", "us-central1-b"]

@@ -700,6 +700,17 @@ class AzureVMInstanceManager(InstanceManager):
             logger.error(f"Error creating VM: {e}")
             raise
 
+    async def restart_instance(self, instance_id: str, zone: str | None = None) -> None:
+        """
+        Start an Azure VM that exists but is stopped.
+
+        Args:
+            instance_id: VM name
+            zone: Availability zone the VM is in; not used for Azure, which finds the VM by
+                name within the resource group
+        """
+        self.compute_client.virtual_machines.begin_start(self.resource_group, instance_id).wait()
+
     async def terminate_instance(self, instance_id: str) -> None:
         """
         Terminate an Azure VM by ID.

@@ -2324,7 +2324,12 @@ def add_common_args(
             "--region", help="Specific region to use (derived from zone if not provided)"
         )
     if include_zone:
-        parser.add_argument("--zone", help="Specific zone to use")
+        parser.add_argument(
+            "--zone",
+            nargs="+",
+            help="Specific zone(s) to use; if more than one is given, instance creation "
+            "moves on to the next zone when one has no capacity",
+        )
     parser.add_argument(
         "--exactly-once-queue",
         action="store_true",

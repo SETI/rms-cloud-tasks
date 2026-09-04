@@ -114,6 +114,10 @@ def orchestrator(mock_config):
     }
     orchestrator._optimal_instance_boot_disk_size = 20
     orchestrator._optimal_instance_num_tasks = 2
+    orchestrator._image_uri = (
+        "https://compute.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/"
+        "ubuntu-2404-lts"
+    )
 
     # Override start_instance_max_threads for testing
     orchestrator._start_instance_max_threads = 3
@@ -295,13 +299,18 @@ async def test_dry_run_prevents_instance_creation(orchestrator):
     assert orchestrator._scaling_task is None
 
 
-def _make_instance(instance_id: str, state: str = "running") -> dict:
+def _make_instance(
+    instance_id: str,
+    state: str = "running",
+    zone: str = "us-central1-a",
+    instance_type: str = "n1-standard-2",
+) -> dict:
     """Build a minimal instance dict as returned by list_job_instances."""
     return {
         "id": instance_id,
-        "type": "n1-standard-2",
+        "type": instance_type,
         "state": state,
-        "zone": "us-central1-a",
+        "zone": zone,
         "creation_time": "2026-01-01T00:00:00+00:00",
     }
 
@@ -623,11 +632,11 @@ async def test_instance_table_prices_from_a_wildcard_zone(orchestrator) -> None:
 
 
 def test_instance_table_rows_sorted_with_details(orchestrator) -> None:
-    """One row per instance, sorted by ID, carrying the instance's details."""
+    """One row per instance, sorted by state then ID, carrying the instance's details."""
     orchestrator._running = True
     orchestrator._keepalive_startup_timeout = 600.0
     orchestrator._keepalive_timeout = 300.0
-    instances = [_make_instance("instance-2"), _make_instance("instance-1", state="starting")]
+    instances = [_make_instance("instance-2", state="starting"), _make_instance("instance-1")]
 
     lines = _instance_table(orchestrator, instances)
 
@@ -637,13 +646,29 @@ def test_instance_table_rows_sorted_with_details(orchestrator) -> None:
 
     rows = _instance_rows(lines)
     assert list(rows) == ["instance-1", "instance-2"]
-    cells = [cell.strip() for cell in rows["instance-1"].strip().strip("\u2502").split("\u2502")]
-    assert cells[0] == "instance-1"
+    cells = [cell.strip() for cell in rows["instance-2"].strip().strip("\u2502").split("\u2502")]
+    assert cells[0] == "instance-2"
     assert cells[1] == "n1-standard-2"
     assert cells[5] == "starting"
     assert cells[6] == "us-central1-a"
     assert cells[7] == "2026-01-01T00:00:00"
     assert cells[9].startswith("waiting for first keep-alive")
+
+
+def test_instance_table_orders_by_what_instances_are_doing(orchestrator) -> None:
+    """Instances doing the work come first; the ones on their way out come last."""
+    orchestrator._running = True
+    instances = [
+        _make_instance("d", state="terminated"),
+        _make_instance("e", state="tortoise"),  # A state this code doesn't know about
+        _make_instance("b", state="starting"),
+        _make_instance("c", state="stopping"),
+        _make_instance("a"),
+    ]
+
+    rows = _instance_rows(_instance_table(orchestrator, instances))
+
+    assert list(rows) == ["a", "b", "c", "d", "e"]
 
 
 def test_instance_table_columns_size_to_content(orchestrator) -> None:
@@ -687,7 +712,7 @@ def test_instance_table_keepalive_states(orchestrator) -> None:
     rows = _instance_rows(_instance_table(orchestrator, instances))
 
     assert "60s ago" in rows["healthy"]
-    assert "waiting for next keep-alive (60s of 300s)" in rows["healthy"]
+    assert "keep-alive wait (60s of 300s)" in rows["healthy"]
 
     assert "400s ago" in rows["silent"]
     assert "keep-alive timed out (overdue by 100s of 300s)" in rows["silent"]
@@ -957,3 +982,177 @@ def test_instance_table_says_when_cpus_per_task_was_raised_for_memory(orchestrat
     assert "8 task(s) can run at once" in table
     assert "at 4 vCPU(s) per task" in table
     assert "cpus_per_task is 1" in table
+
+
+@pytest.mark.asyncio
+async def test_provision_restarts_stopped_instances_before_creating_new_ones(orchestrator):
+    """A stopped instance is cheaper and faster to bring back than a replacement for it."""
+    orchestrator.list_job_instances = AsyncMock(
+        return_value=[
+            _make_instance("running-1"),
+            _make_instance("stopped-1", state="terminated"),
+            _make_instance("stopped-2", state="stopped"),
+        ]
+    )
+    orchestrator._instance_manager.restart_instance = AsyncMock()
+    orchestrator._instance_manager.start_instance = AsyncMock(
+        return_value=("new-1", "us-central1-a")
+    )
+    orchestrator._generate_worker_startup_script = MagicMock(return_value="#!/bin/bash\n")
+
+    instance_ids = await orchestrator._provision_instances(3)
+
+    assert instance_ids == ["stopped-1", "stopped-2", "new-1"]
+    assert [
+        call.args[0] for call in orchestrator._instance_manager.restart_instance.await_args_list
+    ] == ["stopped-1", "stopped-2"]
+    # Only the one instance the restarts couldn't supply is created
+    orchestrator._instance_manager.start_instance.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_provision_creates_nothing_when_restarts_cover_the_shortfall(orchestrator):
+    """Restarting is provisioning; it isn't done on top of creating the same instances again."""
+    orchestrator.list_job_instances = AsyncMock(
+        return_value=[_make_instance("stopped-1", state="terminated")]
+    )
+    orchestrator._instance_manager.restart_instance = AsyncMock()
+    orchestrator._instance_manager.start_instance = AsyncMock()
+    orchestrator._generate_worker_startup_script = MagicMock(return_value="#!/bin/bash\n")
+
+    instance_ids = await orchestrator._provision_instances(1)
+
+    assert instance_ids == ["stopped-1"]
+    orchestrator._instance_manager.start_instance.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_provision_restarts_no_more_than_the_pool_is_short_by(orchestrator):
+    """Restarting everything that is stopped would grow the pool past what was asked for."""
+    orchestrator.list_job_instances = AsyncMock(
+        return_value=[
+            _make_instance("stopped-1", state="terminated"),
+            _make_instance("stopped-2", state="terminated"),
+            _make_instance("stopped-3", state="terminated"),
+        ]
+    )
+    orchestrator._instance_manager.restart_instance = AsyncMock()
+    orchestrator._instance_manager.start_instance = AsyncMock()
+    orchestrator._generate_worker_startup_script = MagicMock(return_value="#!/bin/bash\n")
+
+    instance_ids = await orchestrator._provision_instances(2)
+
+    assert instance_ids == ["stopped-1", "stopped-2"]
+    assert orchestrator._instance_manager.restart_instance.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_provision_does_not_create_where_a_stopped_instance_would_not_restart(orchestrator):
+    """A zone that won't give an instance back has no capacity for a new one either."""
+    orchestrator.list_job_instances = AsyncMock(
+        return_value=[_make_instance("stopped-1", state="terminated", zone="us-central1-a")]
+    )
+    orchestrator._instance_manager.restart_instance = AsyncMock(
+        side_effect=RuntimeError("ZONE_RESOURCE_POOL_EXHAUSTED")
+    )
+    orchestrator._instance_manager.start_instance = AsyncMock(
+        return_value=("new-1", "us-central1-b")
+    )
+    orchestrator._generate_worker_startup_script = MagicMock(return_value="#!/bin/bash\n")
+
+    instance_ids = await orchestrator._provision_instances(1)
+
+    assert instance_ids == ["new-1"]
+    assert orchestrator._instance_manager.start_instance.await_args[1]["exclude_zones"] == {
+        "us-central1-a"
+    }
+
+
+@pytest.mark.asyncio
+async def test_provision_only_excludes_zones_holding_the_type_it_would_create(orchestrator):
+    """A stopped instance of some other type says nothing about the type this job creates."""
+    orchestrator.list_job_instances = AsyncMock(
+        return_value=[
+            _make_instance(
+                "other-type", state="terminated", zone="us-central1-a", instance_type="n2-highmem-4"
+            )
+        ]
+    )
+    orchestrator._instance_manager.restart_instance = AsyncMock(side_effect=RuntimeError("no"))
+    orchestrator._instance_manager.start_instance = AsyncMock(
+        return_value=("new-1", "us-central1-a")
+    )
+    orchestrator._generate_worker_startup_script = MagicMock(return_value="#!/bin/bash\n")
+
+    await orchestrator._provision_instances(1)
+
+    assert orchestrator._instance_manager.start_instance.await_args[1]["exclude_zones"] == set()
+
+
+@pytest.mark.asyncio
+async def test_provision_excludes_zones_of_stopped_instances_it_had_no_room_to_restart(
+    orchestrator,
+):
+    """A zone already holding a stopped instance gets that one back before it gets a new one."""
+    orchestrator.list_job_instances = AsyncMock(
+        return_value=[
+            _make_instance("stopped-a", state="terminated", zone="us-central1-a"),
+            _make_instance("stopped-b", state="terminated", zone="us-central1-b"),
+        ]
+    )
+
+    async def restart(instance_id, zone=None):
+        if instance_id == "stopped-a":
+            raise RuntimeError("ZONE_RESOURCE_POOL_EXHAUSTED")
+
+    orchestrator._instance_manager.restart_instance = AsyncMock(side_effect=restart)
+    orchestrator._instance_manager.start_instance = AsyncMock(
+        return_value=("new-1", "us-central1-c")
+    )
+    orchestrator._generate_worker_startup_script = MagicMock(return_value="#!/bin/bash\n")
+
+    instance_ids = await orchestrator._provision_instances(2)
+
+    assert instance_ids == ["stopped-b", "new-1"]
+    assert orchestrator._instance_manager.start_instance.await_args[1]["exclude_zones"] == {
+        "us-central1-a"
+    }
+
+
+@pytest.mark.asyncio
+async def test_restarted_instance_is_alive_again_for_keep_alive_purposes(orchestrator):
+    """An instance that comes back must have its keep-alives counted again, not ignored."""
+    orchestrator.record_spot_termination("stopped-1")
+    assert "stopped-1" in orchestrator._terminated_instances
+
+    orchestrator.list_job_instances = AsyncMock(
+        return_value=[_make_instance("stopped-1", state="terminated")]
+    )
+    orchestrator._instance_manager.restart_instance = AsyncMock()
+    orchestrator._instance_manager.start_instance = AsyncMock()
+    orchestrator._generate_worker_startup_script = MagicMock(return_value="#!/bin/bash\n")
+
+    await orchestrator._provision_instances(1)
+
+    assert "stopped-1" not in orchestrator._terminated_instances
+    assert "stopped-1" not in orchestrator._spot_terminated_instances
+    orchestrator.record_keepalive("stopped-1")
+    assert "stopped-1" in orchestrator._keepalive_last_heard
+    # The reclamation still counts towards what happened over the job as a whole
+    assert orchestrator._spot_termination_count == 1
+
+
+@pytest.mark.asyncio
+async def test_provision_creates_normally_when_the_instance_listing_fails(orchestrator):
+    """Not knowing what is stopped is no reason to stop growing the pool."""
+    orchestrator.list_job_instances = AsyncMock(side_effect=RuntimeError("API is down"))
+    orchestrator._instance_manager.restart_instance = AsyncMock()
+    orchestrator._instance_manager.start_instance = AsyncMock(
+        return_value=("new-1", "us-central1-a")
+    )
+    orchestrator._generate_worker_startup_script = MagicMock(return_value="#!/bin/bash\n")
+
+    instance_ids = await orchestrator._provision_instances(1)
+
+    assert instance_ids == ["new-1"]
+    orchestrator._instance_manager.restart_instance.assert_not_awaited()

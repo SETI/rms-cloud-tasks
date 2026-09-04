@@ -63,6 +63,16 @@ class InstanceOrchestrator:
     # instances, so this is kept coarse (the timeouts are minutes) to limit the extra
     # provider API load on top of the scaling loop's own instance listing
     _KEEPALIVE_CHECK_INTERVAL = 60.0
+    # The order instances are listed in, from the ones doing the work to the ones that have
+    # stopped doing it. A table read while a job is running is nearly always being read to
+    # find out what is working now, so that goes at the top; anything on its way out is
+    # context for why the pool is the size it is. States a provider reports that aren't
+    # listed here sort last, in name order.
+    _INSTANCE_STATE_ORDER = ("running", "starting", "stopping", "stopped", "terminated")
+    # States in which an instance still exists and can be started again rather than
+    # replaced. GCP leaves a reclaimed spot instance TERMINATED, which is a stopped VM and
+    # not a deleted one.
+    _RESTARTABLE_STATES = ("stopped", "terminated")
 
     def __init__(
         self,
@@ -116,9 +126,10 @@ class InstanceOrchestrator:
         # self._scale_up_threshold = 10  # Default or fetch from config if added
         # self._scale_down_threshold = 2  # Default or fetch from config if added
 
-        # Region/Location
+        # Region/Location. The config allows one zone or several; normalizing here means
+        # the rest of the orchestrator only ever deals with a list.
         self._region = provider_config.region
-        self._zone = provider_config.zone
+        self._zones = InstanceManager.normalize_zones(provider_config.zone)
 
         # Will be initialized in start()
         self._instance_manager: InstanceManager | None = None
@@ -162,10 +173,14 @@ class InstanceOrchestrator:
         # health monitor's books and, worse, make _keepalive_ever_heard true on the
         # strength of an instance that no longer exists.
         self._terminated_instances: set[str] = set()
-        # Instances known to have been reclaimed by the provider as spot capacity. The
-        # scaling loop replaces them like any other missing instance; this is kept so it
-        # can say why the pool shrank.
+        # Instances currently known to have been reclaimed by the provider as spot
+        # capacity. The scaling loop replaces them like any other missing instance; an
+        # instance leaves this set if it is later restarted, so that a second reclamation of
+        # the same instance is noticed rather than swallowed as a duplicate.
         self._spot_terminated_instances: set[str] = set()
+        # How many reclamations have happened over the whole job, which is what explains a
+        # pool that keeps shrinking; the set above only holds the ones outstanding now.
+        self._spot_termination_count = 0
 
         # Initialize lock for instance creation
         self._instance_creation_lock = asyncio.Lock()
@@ -195,7 +210,7 @@ class InstanceOrchestrator:
         self._logger.info("Provider configuration:")
         self._logger.info(f"  Provider: {self._provider}")
         self._logger.info(f"  Region: {self._region}")
-        self._logger.info(f"  Zone: {self._zone}")
+        self._logger.info(f"  Zone(s): {', '.join(self._zones) or None}")
         self._logger.info(f"  Job ID: {self._job_id}")
         self._logger.info(f"  Queue: {self._queue_name}")
         self._logger.info("Instance type selection constraints:")
@@ -351,9 +366,10 @@ class InstanceOrchestrator:
         if instance_id in self._spot_terminated_instances:
             return
         self._logger.info(
-            f"Instance '{instance_id}' is being reclaimed as spot capacity; a replacement "
-            "will be started on the next scaling cycle"
+            f"Instance '{instance_id}' is being reclaimed as spot capacity; it will be "
+            "restarted, or replaced, on the next scaling cycle"
         )
+        self._spot_termination_count += 1
         self._spot_terminated_instances.add(instance_id)
         self._terminated_instances.add(instance_id)
         self._keepalive_first_seen.pop(instance_id, None)
@@ -889,7 +905,7 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
             silent_for = now - last_heard
             last_str = f"{silent_for:.0f}s ago"
             if self._keepalive_timeout <= 0:
-                return last_str, "waiting for next keep-alive (no timeout)"
+                return last_str, "keep-alive wait (no timeout)"
             if silent_for > self._keepalive_timeout:
                 return last_str, (
                     f"keep-alive timed out (overdue by "
@@ -897,7 +913,7 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
                     f"{self._keepalive_timeout:.0f}s)"
                 )
             return last_str, (
-                f"waiting for next keep-alive ({silent_for:.0f}s of {self._keepalive_timeout:.0f}s)"
+                f"keep-alive wait ({silent_for:.0f}s of {self._keepalive_timeout:.0f}s)"
             )
 
         first_seen = self._keepalive_first_seen.get(instance_id)
@@ -949,6 +965,24 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
         )
         return None
 
+    @classmethod
+    def _instance_sort_key(cls, instance: dict[str, Any]) -> tuple[int, str, str]:
+        """Order instances by what they are doing, then by name.
+
+        Parameters:
+            instance: Instance dictionary from list_job_instances
+
+        Returns:
+            tuple[int, str, str]: Sort key placing running instances first and unrecognized
+            states last.
+        """
+        state = str(instance["state"])
+        try:
+            rank = cls._INSTANCE_STATE_ORDER.index(state)
+        except ValueError:
+            rank = len(cls._INSTANCE_STATE_ORDER)
+        return rank, state, str(instance["id"])
+
     def _build_instance_table(self, instances: list[dict[str, Any]]) -> tuple[str, int, int, float]:
         """Render one row per instance, ending with a total of what is running.
 
@@ -992,7 +1026,7 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
         default_boot_disk = self._get_default_boot_disk_type()
         all_instance_info = self._all_instance_info or {}
 
-        for instance in sorted(instances, key=lambda i: str(i["id"])):
+        for instance in sorted(instances, key=self._instance_sort_key):
             boot_disk_type = str(instance.get("boot_disk_type") or default_boot_disk)
             instance_info = all_instance_info.get(instance["type"], {})
             vcpu = instance_info.get("vcpu")
@@ -1352,10 +1386,11 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
                     f"{min_tasks} simultaneous tasks"
                 )
             else:
-                if self._spot_terminated_instances:
+                if self._spot_termination_count:
                     self._logger.info(
-                        f"{len(self._spot_terminated_instances)} instance(s) have been reclaimed "
-                        "as spot capacity so far in this job and are replaced as capacity allows"
+                        f"{self._spot_termination_count} instance(s) have been reclaimed "
+                        "as spot capacity so far in this job and are restarted, or replaced, "
+                        "as capacity allows"
                     )
                 if self._dry_run:
                     self._logger.info(
@@ -1420,13 +1455,19 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
 
     async def _provision_instances(self, count: int) -> list[str]:
         """
-        Provision new instances for the job.
+        Provision more instances for the job, restarting stopped ones before creating new.
+
+        A stopped instance is quicker and cheaper to bring back than a new one, keeps the
+        boot disk it already paid to fill, and can come back in a zone that no longer has
+        the capacity to create anything - which is exactly the situation a reclaimed spot
+        instance leaves behind. So stopped instances are started again first, and only
+        whatever is still missing is created.
 
         Parameters:
-            count: Number of instances to provision
+            count: Number of instances to add to the pool
 
         Returns:
-            List of instance IDs
+            List of instance IDs, both restarted and newly created
         """
         if count <= 0:
             return []
@@ -1440,47 +1481,173 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
             # Create a semaphore to limit concurrent instance creations
             semaphore = asyncio.Semaphore(self._start_instance_max_threads)
 
-            # Define the synchronous function to start a single instance
-            async def start_single_instance():
-                async with semaphore:
-                    try:
-                        # Run the async operation
-                        instance_id, zone = await self._instance_manager.start_instance(
-                            instance_type=self._optimal_instance_info["name"],
-                            boot_disk_size=self._optimal_instance_boot_disk_size,
-                            boot_disk_type=self._optimal_instance_info["boot_disk_type"],
-                            boot_disk_iops=self._optimal_instance_info["boot_disk_iops"],
-                            boot_disk_throughput=self._optimal_instance_info[
-                                "boot_disk_throughput"
-                            ],
-                            startup_script=startup_script,
-                            job_id=self._job_id,
-                            use_spot=self._run_config.use_spot,
-                            image_uri=self._image_uri,
-                            zone=self._optimal_instance_info["zone"],
-                        )
-                        self._logger.info(
-                            f"Started {'spot' if self._run_config.use_spot else 'on-demand'} "
-                            f"instance '{instance_id}' in zone '{zone}'"
-                        )
-                        return instance_id
-                    except Exception as e:
-                        self._logger.error(f"Failed to start instance: {e}", exc_info=True)
-                        return None
-
-            # Create tasks for all instance creations
-            tasks = [start_single_instance() for _ in range(count)]
-
-            # Wait for all tasks to complete
-            results = await asyncio.gather(*tasks)
-
-            # Filter out None results (failed instance creations)
-            instance_ids = [instance_id for instance_id in results if instance_id is not None]
+            restarted_ids, exclude_zones = await self._restart_stopped_instances(count, semaphore)
+            created_ids = await self._create_instances(
+                count - len(restarted_ids), startup_script, semaphore, exclude_zones
+            )
+            instance_ids = restarted_ids + created_ids
 
             self._logger.info(
                 f"Successfully provisioned {len(instance_ids)} of {count} requested instances"
+                + (f" ({len(restarted_ids)} restarted)" if restarted_ids else "")
             )
             return instance_ids
+
+    async def _restart_stopped_instances(
+        self, count: int, semaphore: asyncio.Semaphore
+    ) -> tuple[list[str], set[str]]:
+        """Start up to `count` of the job's stopped instances again.
+
+        Parameters:
+            count: The most instances to restart, being the number the pool is short by
+            semaphore: Limits how many provider calls are in flight at once
+
+        Returns:
+            tuple[list[str], set[str]]: The IDs of the instances that restarted, and the
+            zones that should not have a new instance created in them. A stopped instance
+            that will not restart is evidence about its zone: the zone would not give that
+            instance type back, so asking it for a brand new one of the same type is asking
+            for the same capacity that was just refused.
+        """
+        assert self._instance_manager is not None
+
+        # The caller listed the instances too, but that was before it worked out how many to
+        # add and an instance can stop at any moment. Deciding which ones to restart from a
+        # stale list means restarting one that is already back, or missing one that isn't.
+        try:
+            instances = await self.list_job_instances()
+        except Exception as e:
+            self._logger.error(
+                f"Failed to list instances before provisioning; creating new instances "
+                f"without trying to restart any: {e}",
+                exc_info=True,
+            )
+            return [], set()
+
+        stopped = [
+            instance for instance in instances if instance["state"] in self._RESTARTABLE_STATES
+        ]
+        if not stopped:
+            return [], set()
+
+        self._logger.info(
+            f"{len(stopped)} instance(s) are stopped rather than gone; restarting up to "
+            f"{count} of them before creating anything new"
+        )
+
+        async def restart_single_instance(instance: dict[str, Any]) -> str | None:
+            async with semaphore:
+                instance_id = instance["id"]
+                described = f"{instance['type']} in {instance.get('zone') or 'an unknown zone'}"
+                try:
+                    assert self._instance_manager is not None
+                    await self._instance_manager.restart_instance(instance_id, instance.get("zone"))
+                except Exception as e:
+                    self._logger.warning(
+                        f"Could not restart stopped instance '{instance_id}' ({described}): {e}"
+                    )
+                    return None
+                self._logger.info(f"Restarted instance '{instance_id}' ({described})")
+                # It is a live instance again, so its keep-alives count once more and its
+                # startup clock starts from scratch
+                self._terminated_instances.discard(instance_id)
+                self._spot_terminated_instances.discard(instance_id)
+                self._keepalive_first_seen.pop(instance_id, None)
+                self._keepalive_last_heard.pop(instance_id, None)
+                return instance_id
+
+        results = await asyncio.gather(
+            *[restart_single_instance(instance) for instance in stopped[:count]]
+        )
+        restarted_ids = [instance_id for instance_id in results if instance_id is not None]
+
+        optimal_type = self._optimal_instance_info["name"] if self._optimal_instance_info else None
+        restarted = set(restarted_ids)
+        exclude_zones = {
+            instance["zone"]
+            for instance in stopped
+            if instance["id"] not in restarted
+            and instance["type"] == optimal_type
+            and instance.get("zone")
+        }
+        if exclude_zones:
+            self._logger.info(
+                f"Not creating new {optimal_type} instances in "
+                f"{', '.join(sorted(exclude_zones))}: a stopped instance of that type is "
+                "already there and did not come back, so the capacity a new one needs is "
+                "not there either"
+            )
+        return restarted_ids, exclude_zones
+
+    async def _create_instances(
+        self,
+        count: int,
+        startup_script: str,
+        semaphore: asyncio.Semaphore,
+        exclude_zones: set[str],
+    ) -> list[str]:
+        """Create `count` brand new instances of the job's chosen type.
+
+        Parameters:
+            count: Number of instances to create; zero or fewer creates nothing
+            startup_script: The script the new instances boot into
+            semaphore: Limits how many provider calls are in flight at once
+            exclude_zones: Zones not to create anything in
+
+        Returns:
+            list[str]: The IDs of the instances that were created
+        """
+        if count <= 0:
+            return []
+
+        instance_manager = self._instance_manager
+        optimal = self._optimal_instance_info
+        boot_disk_size = self._optimal_instance_boot_disk_size
+        image_uri = self._image_uri
+        if (
+            instance_manager is None
+            or optimal is None
+            or boot_disk_size is None
+            or image_uri is None
+        ):
+            raise RuntimeError("Orchestrator is not fully initialized. Call start() first.")
+        use_spot = bool(self._run_config.use_spot)
+
+        # Define the synchronous function to start a single instance
+        async def start_single_instance() -> str | None:
+            async with semaphore:
+                try:
+                    # Run the async operation
+                    instance_id, zone = await instance_manager.start_instance(
+                        instance_type=optimal["name"],
+                        boot_disk_size=boot_disk_size,
+                        boot_disk_type=optimal["boot_disk_type"],
+                        boot_disk_iops=optimal["boot_disk_iops"],
+                        boot_disk_throughput=optimal["boot_disk_throughput"],
+                        startup_script=startup_script,
+                        job_id=self._job_id,
+                        use_spot=use_spot,
+                        image_uri=image_uri,
+                        zone=optimal["zone"],
+                        exclude_zones=exclude_zones,
+                    )
+                    self._logger.info(
+                        f"Started {'spot' if use_spot else 'on-demand'} "
+                        f"instance '{instance_id}' in zone '{zone}'"
+                    )
+                    return instance_id
+                except Exception as e:
+                    self._logger.error(f"Failed to start instance: {e}", exc_info=True)
+                    return None
+
+        # Create tasks for all instance creations
+        tasks = [start_single_instance() for _ in range(count)]
+
+        # Wait for all tasks to complete
+        results = await asyncio.gather(*tasks)
+
+        # Filter out None results (failed instance creations)
+        return [instance_id for instance_id in results if instance_id is not None]
 
     async def terminate_all_instances(self) -> None:
         """Terminate all instances associated with this job."""
