@@ -367,12 +367,16 @@ class GCPComputeInstanceManager(InstanceManager):
     # What the account running the job has to be allowed to do, and why. Listed in the
     # warning about credentials that won't last a job, since the answer to that warning is
     # to create a service account, and the next question is always what to grant it.
+    # Choosing an instance type reads prices from the Cloud Billing Catalog API, which
+    # needs no role of any kind: that data is public, and the API only has to be enabled.
     _REQUIRED_ROLES = (
         ("roles/compute.instanceAdmin.v1", "create, list and terminate instances"),
-        ("roles/iam.serviceAccountUser", "attach the workers' service account to them"),
+        (
+            "roles/iam.serviceAccountUser",
+            "on the workers' service account, to attach it to instances",
+        ),
         ("roles/pubsub.editor", "create and use the task and event queues"),
         ("roles/monitoring.viewer", "read the task queue depth"),
-        ("roles/billing.viewer", "read instance pricing to choose an instance type"),
     )
 
     def local_credential_warning(self) -> str | None:
@@ -396,7 +400,10 @@ class GCPComputeInstanceManager(InstanceManager):
             "To run unattended, put a service account key in the GCP configuration's "
             '"credentials_file", or start the job from a machine that has one.\n'
             f'That service account needs these roles in project "{self._project_id}":\n'
-            f"{roles}"
+            f"{roles}\n"
+            "Instance prices are read from the Cloud Billing Catalog API, which needs no "
+            "role because that data is public, but the Cloud Billing API does have to be "
+            "enabled on the project."
         )
 
     async def get_available_instance_types(

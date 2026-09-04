@@ -52,6 +52,13 @@ def test_personal_credentials_are_reported(config: GCPConfig) -> None:
     assert warning is not None
     assert "service account" in warning
     assert "TERMINATE" in warning
+    # The warning says what to grant the service account it recommends
+    assert "roles/compute.instanceAdmin.v1" in warning
+    assert "roles/pubsub.editor" in warning
+    # Reading prices from the Cloud Billing Catalog API needs no role at all, so there is
+    # none to name; a billing role would also be granted on a billing account rather than
+    # on the project the rest of these are granted on
+    assert "roles/billing" not in warning
 
 
 def test_service_account_credentials_are_not_reported(config: GCPConfig) -> None:
