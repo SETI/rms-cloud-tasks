@@ -262,9 +262,10 @@ class InstanceManager(ABC):
         check_min("min_local_ssd_per_task", local_ssd_per_task)
         check_max("max_local_ssd_per_task", local_ssd_per_task)
 
-        # Naming use_spot at all, even as False, restricts the choice to instance types
-        # that can be run as spot instances
-        if constraints.get("use_spot") is not None:
+        # Only asking for spot instances requires an instance type that offers them. Asking
+        # for on-demand instances says nothing about spot, and requiring spot support for a
+        # run that will never use it throws away instance types that would do the job
+        if constraints.get("use_spot"):
             supports_spot = bool(instance_info["supports_spot"])
             check(
                 "use_spot",

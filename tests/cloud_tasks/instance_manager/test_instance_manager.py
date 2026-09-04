@@ -310,9 +310,9 @@ class TestInstanceManager:
         assert instance_manager._instance_matches_constraints(spot_instance, {})
         # No spot constraint for non-spot-supporting instance
         assert instance_manager._instance_matches_constraints(non_spot_instance, {})
-        # False use_spot still requires spot support
+        # Asking for on-demand instances says nothing about whether spot is supported
         assert instance_manager._instance_matches_constraints(spot_instance, {"use_spot": False})
-        assert not instance_manager._instance_matches_constraints(
+        assert instance_manager._instance_matches_constraints(
             non_spot_instance, {"use_spot": False}
         )
 
@@ -536,3 +536,46 @@ class TestDescribeUnmetConstraints:
             instance_types, {"min_cpu": 8, "max_total_memory": 4}
         )
         assert lines == []
+
+
+class TestSpotConstraint:
+    """Validates that spot support is only required by a run that asks for spot."""
+
+    @pytest.fixture
+    def instance_manager(self) -> InstanceManager:
+        """A concrete instance manager; only the base class methods are exercised."""
+        return _concrete_instance_manager()
+
+    @pytest.fixture
+    def on_demand_only(self) -> dict:
+        """An instance type the provider does not offer as spot capacity."""
+        return {
+            "name": "m5.large",
+            "vcpu": 2,
+            "mem_gb": 8,
+            "local_ssd_gb": 0,
+            "architecture": "X86_64",
+            "supports_spot": False,
+        }
+
+    def test_on_demand_run_accepts_a_type_without_spot(self, instance_manager, on_demand_only):
+        """use_spot=False must not throw away instance types that never offer spot.
+
+        AWS reports which usage classes an instance type supports, so requiring spot
+        support for a run that will never buy spot capacity excludes instance types that
+        would do the job perfectly well.
+        """
+        assert instance_manager._instance_matches_constraints(on_demand_only, {"use_spot": False})
+
+    def test_spot_run_still_requires_spot(self, instance_manager, on_demand_only):
+        """A run that asks for spot instances can only use types that offer them."""
+        assert not instance_manager._instance_matches_constraints(
+            on_demand_only, {"use_spot": True}
+        )
+
+    def test_unmet_spot_constraint_is_reported(self, instance_manager, on_demand_only):
+        """A spot run with nothing spot-capable to run on is told that's the problem."""
+        lines = instance_manager.describe_unmet_constraints([on_demand_only], {"use_spot": True})
+        assert lines == [
+            "use_spot: needs an instance type that supports spot, available: not supported"
+        ]
