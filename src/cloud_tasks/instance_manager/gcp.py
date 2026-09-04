@@ -478,6 +478,13 @@ class GCPComputeInstanceManager(InstanceManager):
         machine_types = self._machine_type_client.list(request=request)
 
         instance_types = {}
+        # Machine families this version has no information for are reported once each,
+        # after the loop. A family holds dozens of instance types, and a line per type
+        # buries everything else the run has to say
+        families_without_processor: dict[str, int] = {}
+        families_without_disk_types: dict[str, int] = {}
+        unranked_processors: set[str] = set()
+
         for machine_type in machine_types:
             if constraints.get("instance_types") is not None:
                 match_ok = False
@@ -506,15 +513,10 @@ class GCPComputeInstanceManager(InstanceManager):
                         processor_family
                     ]
                 else:
-                    self._logger.warning(
-                        f"Processor family '{processor_family}' is not in the processor type "
-                        "ranking; ranking will be 0"
-                    )
+                    unranked_processors.add(processor_family)
             else:
-                self._logger.warning(
-                    f"Instance type {machine_type.name} with family "
-                    f"'{machine_type_family}' is not in the processor family mapping; "
-                    "skipping this type"
+                families_without_processor[machine_type_family] = (
+                    families_without_processor.get(machine_type_family, 0) + 1
                 )
                 continue
 
@@ -529,10 +531,8 @@ class GCPComputeInstanceManager(InstanceManager):
                     machine_type_family
                 ]
             else:
-                self._logger.warning(
-                    f"Instance type {machine_type.name} with family "
-                    f"'{machine_type_family}' is not in the machine type family mapping; "
-                    "skipping this instance type"
+                families_without_disk_types[machine_type_family] = (
+                    families_without_disk_types.get(machine_type_family, 0) + 1
                 )
                 continue
             boot_disk_types = constraints.get("boot_disk_types")
@@ -574,7 +574,53 @@ class GCPComputeInstanceManager(InstanceManager):
             if self._instance_matches_constraints(instance_info, constraints):
                 instance_types[machine_type.name] = instance_info
 
+        self._log_skipped_machine_families(
+            families_without_processor, families_without_disk_types, unranked_processors
+        )
+
         return instance_types
+
+    def _log_skipped_machine_families(
+        self,
+        families_without_processor: dict[str, int],
+        families_without_disk_types: dict[str, int],
+        unranked_processors: set[str],
+    ) -> None:
+        """Report the machine families that were passed over, a line for each reason.
+
+        Google adds machine families faster than this table is updated, and each new one
+        arrives with dozens of instance types. Naming the families, with how many instance
+        types each cost, says the same thing in one line as a line per instance type did.
+
+        Parameters:
+            families_without_processor: Machine family to the number of instance types
+                skipped because the family has no entry in the processor table
+            families_without_disk_types: Machine family to the number of instance types
+                skipped because the family has no entry in the boot disk table
+            unranked_processors: Processor families with no performance ranking
+        """
+
+        def describe(families: dict[str, int]) -> str:
+            """Render the families and their instance type counts for a log line."""
+            return ", ".join(f"{family} ({count})" for family, count in sorted(families.items()))
+
+        if families_without_processor:
+            self._logger.warning(
+                f"Skipped {sum(families_without_processor.values())} instance type(s) in "
+                "machine families this version has no processor information for: "
+                f"{describe(families_without_processor)}"
+            )
+        if families_without_disk_types:
+            self._logger.warning(
+                f"Skipped {sum(families_without_disk_types.values())} instance type(s) in "
+                "machine families this version has no boot disk information for: "
+                f"{describe(families_without_disk_types)}"
+            )
+        for processor_family in sorted(unranked_processors):
+            self._logger.warning(
+                f"Processor family '{processor_family}' is not in the processor type "
+                "ranking; ranking will be 0"
+            )
 
     async def _get_billing_compute_skus(self) -> list[billing.Sku]:
         """Get and cache the billing compute SKUs."""

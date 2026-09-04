@@ -5,6 +5,7 @@ from collections.abc import Iterable
 from typing import Any, NamedTuple
 
 from ..common.config import ProviderConfig
+from ..common.logging_config import wrap_log_text
 
 
 class ConstraintCheck(NamedTuple):
@@ -360,6 +361,115 @@ class InstanceManager(ABC):
             )
         return lines
 
+    def describe_constraint_relaxations(
+        self,
+        instance_infos: Iterable[dict[str, Any]],
+        constraints: dict[str, Any] | None = None,
+        limit: int = 3,
+    ) -> list[str]:
+        """Say which constraints have to give, and by how far, to allow any instance type.
+
+        Every constraint being satisfiable on its own is no help when they are not
+        satisfiable together: what the user needs to know is the smallest change that makes
+        the configuration workable. Each instance type is scored by the set of constraints
+        it fails, and the smallest of those sets are the smallest groups of constraints that
+        have to be relaxed together, with the value each would have to reach.
+
+        Parameters:
+            instance_infos: Every instance type that was considered
+            constraints: The constraints they were tested against
+            limit: How many alternatives to describe
+
+        Returns:
+            list[str]: One line per alternative, each naming the constraints to relax
+            together, the value each would have to reach, and how many instance types would
+            then match. Empty if some instance type already matches.
+        """
+        # The instance types that come closest, grouped by the set of constraints they
+        # fail: the smallest of those sets are the smallest groups of constraints that have
+        # to give way together
+        failures: dict[frozenset[str], list[list[ConstraintCheck]]] = {}
+        for instance_info in instance_infos:
+            checks = self._check_instance_constraints(instance_info, constraints)
+            failed = [check for check in checks if not check.satisfied]
+            if not failed:
+                # Something matches after all, so there is nothing to relax
+                return []
+            failures.setdefault(frozenset(check.name for check in failed), []).append(failed)
+
+        if not failures:
+            return []
+
+        def shortfall(check: ConstraintCheck) -> float:
+            """How far this instance type is from the constraint, as a ratio of 1 or more.
+
+            Parameters:
+                check: A constraint this instance type failed
+
+            Returns:
+                float: limit/actual for a minimum, actual/limit for a maximum, and 1 for a
+                constraint with no ordering, so that the alternatives can be compared by
+                how much of a change they ask for rather than by absolute size.
+            """
+            if check.prefer_larger is None:
+                return 1.0
+            try:
+                if check.prefer_larger:
+                    return (
+                        float(check.limit) / float(check.actual) if check.actual else float("inf")
+                    )
+                return float(check.actual) / float(check.limit) if check.limit else float("inf")
+            except (TypeError, ValueError, ZeroDivisionError):  # pragma: no cover - defensive
+                return float("inf")
+
+        def closest(group: list[list[ConstraintCheck]]) -> list[ConstraintCheck]:
+            """Return the failed checks of the instance type asking for the least change."""
+            return min(group, key=lambda failed: max(shortfall(check) for check in failed))
+
+        def admitted(group: list[list[ConstraintCheck]], targets: dict[str, Any]) -> int:
+            """Count the instance types that these relaxed limits would let in."""
+            total = 0
+            for failed in group:
+                if all(
+                    check.prefer_larger is None
+                    or (check.actual >= targets[check.name]) == bool(check.prefer_larger)
+                    or check.actual == targets[check.name]
+                    for check in failed
+                ):
+                    total += 1
+            return total
+
+        fewest = min(len(key) for key in failures)
+        # Prefer the alternatives that let in the most instance types
+        candidates = sorted(
+            (key for key in failures if len(key) == fewest),
+            key=lambda key: (-len(failures[key]), sorted(key)),
+        )[:limit]
+
+        lines = []
+        for key in candidates:
+            group = failures[key]
+            # Quote one instance type's numbers rather than the best of each constraint
+            # separately, which can describe a machine that doesn't exist
+            reference = {check.name: check for check in closest(group)}
+            targets = {name: check.actual for name, check in reference.items()}
+            parts = []
+            for name in sorted(key):
+                check = reference[name]
+                if check.prefer_larger is None:
+                    parts.append(f"{name} would have to accept {check.actual}")
+                elif check.prefer_larger:
+                    parts.append(
+                        f"{name} would have to come down from {check.limit:g} to {check.actual:g}"
+                    )
+                else:
+                    parts.append(
+                        f"{name} would have to go up from {check.limit:g} to {check.actual:g}"
+                    )
+            count = admitted(group, targets)
+            lines.append(f"{' and '.join(parts)}, and {count} instance type(s) would match")
+        return lines
+
     async def _report_no_instance_types(self, constraints: dict[str, Any] | None) -> None:
         """Log why the constraints left no instance type to start.
 
@@ -377,20 +487,42 @@ class InstanceManager(ABC):
             self._logger.debug(f"Could not list unconstrained instance types: {e}")
             return
 
-        self._logger.error(
+        def report(text: str, indent: str = "") -> None:
+            """Log one paragraph, wrapped, with continuations indented under it."""
+            for line in wrap_log_text(text, indent="  "):
+                self._logger.error(f"{indent}{line}")
+
+        report(
             f"No instance type meets the requirements. Of the {len(all_instance_types)} "
             "instance types offered here:"
         )
         unmet = self.describe_unmet_constraints(all_instance_types.values(), constraints)
         if unmet:
-            self._logger.error("  these constraints are met by none of them:")
+            report("these constraints are met by none of them:", indent="  ")
             for line in unmet:
-                self._logger.error(f"    {line}")
-        else:
-            self._logger.error(
-                "  every constraint is met by some instance type, but no single instance "
-                "type meets all of them at once; the constraints have to be relaxed "
-                "against each other"
+                report(line, indent="    ")
+
+        relaxations = self.describe_constraint_relaxations(all_instance_types.values(), constraints)
+        if relaxations:
+            if unmet:
+                report("the fewest changes that would allow an instance type:", indent="  ")
+            else:
+                report(
+                    "every constraint is met by some instance type, but no single instance "
+                    "type meets all of them at once. The fewest changes that would allow "
+                    "one:",
+                    indent="  ",
+                )
+            for line in relaxations:
+                report(line, indent="    ")
+        elif not unmet:
+            # Every instance type passes every constraint, so the constraints are not what
+            # emptied the list: the provider passed these types over for a reason of its
+            # own, such as a machine family this version has no information for
+            report(
+                "no constraint rules them out, so they were passed over for another "
+                "reason; see the warnings above about skipped machine families",
+                indent="  ",
             )
 
     def _get_boot_disk_size(

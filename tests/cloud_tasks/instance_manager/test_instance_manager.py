@@ -579,3 +579,100 @@ class TestSpotConstraint:
         assert lines == [
             "use_spot: needs an instance type that supports spot, available: not supported"
         ]
+
+
+class TestDescribeConstraintRelaxations:
+    """Validates the advice given when the constraints conflict with each other."""
+
+    @pytest.fixture
+    def instance_manager(self) -> InstanceManager:
+        """A concrete instance manager; only the base class methods are exercised."""
+        return _concrete_instance_manager()
+
+    @pytest.fixture
+    def instance_types(self) -> list[dict]:
+        """Instance types with opposite strengths: one big, one small, one in between."""
+        return [
+            {
+                "name": "small",
+                "vcpu": 2,
+                "mem_gb": 4,
+                "local_ssd_gb": 0,
+                "architecture": "X86_64",
+                "supports_spot": True,
+            },
+            {
+                "name": "large",
+                "vcpu": 32,
+                "mem_gb": 128,
+                "local_ssd_gb": 0,
+                "architecture": "X86_64",
+                "supports_spot": True,
+            },
+        ]
+
+    def test_nothing_to_relax_when_something_matches(self, instance_manager, instance_types):
+        """Advice is only given when the configuration really does select nothing."""
+        assert (
+            instance_manager.describe_constraint_relaxations(instance_types, {"min_cpu": 2}) == []
+        )
+
+    def test_names_the_single_constraint_and_the_value_it_must_reach(
+        self, instance_manager, instance_types
+    ):
+        """One constraint too tight is reported with the value that would let a type in."""
+        lines = instance_manager.describe_constraint_relaxations(instance_types, {"min_cpu": 64})
+        assert lines == [
+            "min_cpu would have to come down from 64 to 32, and 1 instance type(s) would match"
+        ]
+
+    def test_reports_each_way_out_when_types_fail_different_constraints(
+        self, instance_manager, instance_types
+    ):
+        """Constraints that are only satisfiable apart give one alternative each.
+
+        Each of these is met by one of the two instance types and neither type meets both,
+        which is exactly the case where "the constraints conflict" helps nobody.
+        """
+        lines = instance_manager.describe_constraint_relaxations(
+            instance_types, {"min_cpu": 32, "max_total_memory": 8}
+        )
+        assert sorted(lines) == [
+            "max_total_memory would have to go up from 8 to 128, and 1 instance type(s) would match",
+            "min_cpu would have to come down from 32 to 2, and 1 instance type(s) would match",
+        ]
+
+    def test_reports_constraints_that_have_to_be_relaxed_together(
+        self, instance_manager, instance_types
+    ):
+        """When the closest type falls short on two counts, both are named together."""
+        lines = instance_manager.describe_constraint_relaxations(
+            instance_types, {"min_cpu": 64, "min_total_memory": 256}
+        )
+        assert lines == [
+            "min_cpu would have to come down from 64 to 32 and min_total_memory would have to "
+            "come down from 256 to 128, and 1 instance type(s) would match"
+        ]
+
+    def test_puts_the_most_useful_relaxation_first(self, instance_manager, instance_types):
+        """The alternative that admits the most instance types is reported first."""
+        instance_types.append(dict(instance_types[1], name="large-2"))
+        instance_types.append(dict(instance_types[0], name="arm", architecture="ARM64"))
+
+        lines = instance_manager.describe_constraint_relaxations(
+            instance_types, {"architecture": "ARM64", "min_cpu": 32}
+        )
+
+        # Two x86 types fail only the architecture; one ARM type fails only min_cpu
+        assert "architecture" in lines[0]
+        assert "2 instance type(s)" in lines[0]
+        assert "min_cpu" in lines[1]
+
+    def test_equality_constraints_say_what_is_available(self, instance_manager, instance_types):
+        """There is no "closer" architecture, so the report says what there is instead."""
+        lines = instance_manager.describe_constraint_relaxations(
+            instance_types, {"architecture": "ARM64"}
+        )
+        assert lines == [
+            "architecture would have to accept X86_64, and 2 instance type(s) would match"
+        ]

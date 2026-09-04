@@ -403,7 +403,7 @@ async def test_get_optimal_instance_type_reports_the_constraints_that_excluded_e
         with pytest.raises(ValueError, match="No instance type meets requirements"):
             await gcp_instance_manager_n1_n2.get_optimal_instance_type(constraints)
 
-    reported = "\n".join(record.getMessage() for record in caplog.records)
+    reported = " ".join(" ".join(record.getMessage().split()) for record in caplog.records)
     assert "min_cpu: needs >= 64" in reported
     assert "architecture: needs ARM64" in reported
     assert "min_total_memory" not in reported
@@ -425,5 +425,9 @@ async def test_get_optimal_instance_type_reports_conflicting_constraints(
         with pytest.raises(ValueError, match="No instance type meets requirements"):
             await gcp_instance_manager_n1_n2.get_optimal_instance_type(constraints)
 
-    reported = "\n".join(record.getMessage() for record in caplog.records)
+    # The report is wrapped for the log, so compare against it as one run of text
+    reported = " ".join(" ".join(record.getMessage().split()) for record in caplog.records)
     assert "no single instance type meets all of them" in reported
+    # Saying that they conflict is no help on its own; it has to say what to change
+    assert "would have to" in reported
+    assert "instance type(s) would match" in reported

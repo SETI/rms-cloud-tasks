@@ -1,5 +1,7 @@
 """Unit tests for the GCP Compute Engine instance manager."""
 
+import logging
+
 import pytest
 
 from cloud_tasks.instance_manager.gcp import GCPComputeInstanceManager
@@ -266,3 +268,37 @@ async def test_get_available_instance_types_with_memory_per_cpu_constraints(
     assert len(result) == 1
     assert "n1-standard-2" in result
     assert "n2-standard-4-lssd" not in result  # Has 4 GB/CPU
+
+
+def test_skipped_machine_families_are_reported_once_each(
+    gcp_instance_manager_n1_n2: GCPComputeInstanceManager, caplog
+) -> None:
+    """A family this version doesn't know is one line, not one line per instance type.
+
+    Google adds machine families faster than the tables here are updated, and each family
+    arrives with dozens of instance types; a warning per type buried everything else the
+    run had to say.
+    """
+    with caplog.at_level(logging.WARNING, logger="cloud_tasks.instance_manager.gcp"):
+        gcp_instance_manager_n1_n2._log_skipped_machine_families(
+            {"c4n": 24, "a4x": 1}, {"ct5p": 1}, {"Some New Processor"}
+        )
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert len(messages) == 3
+    processor_line = next(m for m in messages if "no processor information" in m)
+    assert "25 instance type(s)" in processor_line
+    assert "a4x (1), c4n (24)" in processor_line
+    disk_line = next(m for m in messages if "no boot disk information" in m)
+    assert "ct5p (1)" in disk_line
+    assert any("Some New Processor" in m for m in messages)
+
+
+def test_nothing_is_reported_when_every_family_is_known(
+    gcp_instance_manager_n1_n2: GCPComputeInstanceManager, caplog
+) -> None:
+    """A run whose machine families are all known says nothing about them."""
+    with caplog.at_level(logging.WARNING, logger="cloud_tasks.instance_manager.gcp"):
+        gcp_instance_manager_n1_n2._log_skipped_machine_families({}, {}, set())
+
+    assert caplog.records == []

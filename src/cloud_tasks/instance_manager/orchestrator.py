@@ -13,6 +13,7 @@ from typing import Any, TypedDict, cast
 from prettytable import PrettyTable, TableStyle
 
 from ..common.config import Config
+from ..common.logging_config import LOG_TEXT_WIDTH, wrap_log_text
 from ..queue_manager import QueueManager, create_queue
 from . import create_instance_manager
 from .instance_manager import InstanceManager
@@ -629,10 +630,15 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
         if warning is None:
             return
 
-        banner = "*" * 88
+        # Wrap the prose and box it. Lines that are already laid out, like the table of
+        # roles, come back untouched, so the box has to be as wide as the widest of them
+        lines = wrap_log_text(warning)
+        width = max([LOG_TEXT_WIDTH, *(len(line) for line in lines)])
+
+        banner = "*" * (width + 4)
         self._logger.warning(banner)
-        for line in warning.split("\n"):
-            self._logger.warning(f"* {line}")
+        for line in lines:
+            self._logger.warning(f"* {line:<{width}} *")
         self._logger.warning(banner)
 
         if self._dry_run:
