@@ -37,6 +37,15 @@ Authentication to GCP
   using the Application Default Credentials (which are initialized with
   ``gcloud auth application-default login``).
 
+- Application Default Credentials created by ``gcloud auth application-default login``
+  belong to a person, not to a service, and expire; in many organizations within 16 hours
+  or less. A job outlives the command that starts it, and once its credentials have expired
+  it can no longer start, monitor or *terminate* its instances, which then keep running,
+  and costing money, until someone shuts them down by hand. ``cloud_tasks run`` warns about
+  this before it starts any instances and, when run interactively, asks whether to
+  continue. For a job that will run unattended, give it a service account instead by
+  setting ``credentials_file``.
+
 - A Project ID is required to access many GCP features. It may be specified with the
   ``project_id`` configuration option. If the Project ID is not provided and Application
   Default Credentials are being used, the Project ID will be extracted from the Application

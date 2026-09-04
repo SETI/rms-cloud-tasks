@@ -52,6 +52,11 @@ class RunConfig(BaseModel, validate_assignment=True):
         return self
 
     cpus_per_task: NonNegativeFloat | None = None
+    # When the memory a task needs can't be had at cpus_per_task vCPUs per task, give each
+    # task more vCPUs than it asked for and leave the surplus idle, rather than rejecting
+    # the instance type. An instance type is sized in vCPUs, so on a machine with little
+    # memory per vCPU this is the only way to give a task the memory it needs.
+    allow_cpu_wasting: bool | None = None
     min_tasks_per_instance: PositiveInt | None = None
     max_tasks_per_instance: PositiveInt | None = None
 
@@ -455,6 +460,8 @@ class Config(BaseModel, validate_assignment=True):
         # Set defaults for missing values
         if self.run.cpus_per_task is None:
             self.run.cpus_per_task = 1
+        if self.run.allow_cpu_wasting is None:
+            self.run.allow_cpu_wasting = False
         if self.run.min_instances is None:
             self.run.min_instances = 0
         if self.run.max_instances is None:

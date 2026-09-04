@@ -935,6 +935,7 @@ class AWSEC2InstanceManager(InstanceManager):
         )
 
         if not avail_instance_types:
+            await self._report_no_instance_types(constraints)
             raise ValueError("No instance type meets requirements")
 
         pricing_data = await self.get_instance_pricing(

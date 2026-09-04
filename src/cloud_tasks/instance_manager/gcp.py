@@ -18,6 +18,7 @@ import shortuuid
 from google.api_core.exceptions import NotFound  # type: ignore[import-not-found, import-untyped]
 from google.auth import default as get_default_credentials
 from google.cloud import billing, compute_v1  # type: ignore[import-not-found, import-untyped]
+from google.oauth2 import credentials as oauth2_credentials
 from google.oauth2 import service_account
 
 from ..common.config import GCPConfig
@@ -186,6 +187,7 @@ class GCPComputeInstanceManager(InstanceManager):
         self._thread_local = threading.local()
 
         # Handle credentials - use provided service account file or default application credentials
+        self._credentials_are_personal = False
         if gcp_config.credentials_file:
             try:
                 self._credentials = service_account.Credentials.from_service_account_file(
@@ -212,6 +214,13 @@ class GCPComputeInstanceManager(InstanceManager):
                     "Please ensure you're authenticated with 'gcloud auth application-default "
                     "login' or provide a credentials_file entry in the GCP configuration."
                 )
+            # Application Default Credentials are a person's own login when they come from
+            # "gcloud auth application-default login"; every other kind (a service account
+            # key, the metadata server on a GCE instance, workload identity federation)
+            # belongs to a service and keeps working unattended.
+            self._credentials_are_personal = isinstance(
+                self._credentials, oauth2_credentials.Credentials
+            )
 
         if self._project_id is None:
             raise RuntimeError("Missing required GCP configuration 'project_id'")
@@ -354,6 +363,27 @@ class GCPComputeInstanceManager(InstanceManager):
                     os.remove(temp_path)
                 except OSError:
                     pass
+
+    def local_credential_warning(self) -> str | None:
+        """Warn when this process is running on a person's own Google credentials.
+
+        Returns:
+            A warning if the credentials came from "gcloud auth application-default login",
+            which expire while a long job is still running; None for a service account,
+            which does not.
+        """
+        if not self._credentials_are_personal:
+            return None
+        return (
+            "This job is running on your personal Google credentials from "
+            '"gcloud auth application-default login", not on a service account.\n'
+            "Those credentials expire, in many organizations within 16 hours or less. "
+            "When they do, this run can no longer start, monitor or TERMINATE its "
+            "instances, and instances left running keep costing money until someone "
+            "shuts them down by hand.\n"
+            "To run unattended, put a service account key in the GCP configuration's "
+            '"credentials_file", or start the job from a machine that has one.'
+        )
 
     async def get_available_instance_types(
         self, constraints: dict[str, Any] | None = None
@@ -1331,6 +1361,7 @@ class GCPComputeInstanceManager(InstanceManager):
         )
 
         if not avail_instance_types:
+            await self._report_no_instance_types(constraints)
             raise ValueError("No instance type meets requirements")
 
         use_spot = constraints.get("use_spot")

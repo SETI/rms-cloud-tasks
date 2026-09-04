@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 import pytest
 
 from cloud_tasks.common.config import Config
+from cloud_tasks.instance_manager.instance_manager import InstanceManager
 from cloud_tasks.instance_manager.orchestrator import InstanceOrchestrator
 
 
@@ -76,6 +77,18 @@ def orchestrator(mock_config):
 
     # Setup orchestrator for testing
     orchestrator._instance_manager = AsyncMock()
+    # local_credential_warning and effective_cpus_per_task are synchronous on the real
+    # interface. The credentials are fine by default; the vCPUs each task gets is worked
+    # out by the real implementation, since what the orchestrator derives from it is what
+    # these tests are about
+    orchestrator._instance_manager.local_credential_warning = Mock(return_value=None)
+    orchestrator._instance_manager.effective_cpus_per_task = Mock(
+        side_effect=lambda instance_info, constraints=None: (
+            InstanceManager.effective_cpus_per_task(
+                orchestrator._instance_manager, instance_info, constraints
+            )
+        )
+    )
     orchestrator._task_queue = AsyncMock()
     orchestrator._optimal_instance_info = {
         "name": "n1-standard-2",
@@ -502,19 +515,41 @@ async def test_check_keepalives_abort_terminates_starting_instances(orchestrator
 
 
 def _capture_instance_details(orchestrator, instances, caplog) -> list[str]:
-    """Run _log_instance_details at DEBUG level and return the emitted lines."""
+    """Run _log_instance_details and return the emitted lines."""
     caplog.clear()
-    with caplog.at_level(logging.DEBUG, logger="cloud_tasks.instance_manager.orchestrator"):
+    with caplog.at_level(logging.INFO, logger="cloud_tasks.instance_manager.orchestrator"):
         orchestrator._log_instance_details(instances)
     return [record.getMessage() for record in caplog.records]
 
 
-def test_log_instance_details_skipped_without_debug(orchestrator, caplog) -> None:
-    """The instance table costs a line per instance, so it is only emitted at DEBUG."""
+def _instance_rows(lines: list[str]) -> dict[str, str]:
+    """Map each instance ID to its rendered row of the table.
+
+    Parameters:
+        lines: Lines emitted by _log_instance_details
+
+    Returns:
+        dict[str, str]: Instance ID to the whole line of the table describing it, with the
+        border and header lines left out.
+    """
+    rows = {}
+    for line in lines:
+        if "\u2502" not in line:
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("\u2502").split("\u2502")]
+        if not cells[0] or cells[0] == "Instance ID":
+            continue
+        rows[cells[0]] = line
+    return rows
+
+
+def test_log_instance_details_logged_at_info(orchestrator, caplog) -> None:
+    """The table is part of the normal running commentary, not a debug-only aid."""
     caplog.clear()
     with caplog.at_level(logging.INFO, logger="cloud_tasks.instance_manager.orchestrator"):
         orchestrator._log_instance_details([_make_instance("instance-1")])
-    assert caplog.records == []
+    assert "instance-1" in "\n".join(record.getMessage() for record in caplog.records)
+    assert all(record.levelno == logging.INFO for record in caplog.records)
 
 
 def test_log_instance_details_no_instances(orchestrator, caplog) -> None:
@@ -533,23 +568,22 @@ def test_log_instance_details_rows_sorted_with_details(orchestrator, caplog) -> 
     lines = _capture_instance_details(orchestrator, instances, caplog)
 
     assert lines[0] == "Instance details:"
-    assert "Instance ID" in lines[1] and "Keep-Alive" in lines[1] and "Status" in lines[1]
-    # The separator spans the whole table, including rows wider than the header
-    assert set(lines[2].strip()) == {"-"}
-    assert len(lines[2]) == max(len(line) for line in lines[1:])
-    assert len(lines) == 5
-    assert lines[3].split() == [
+    header = next(line for line in lines if "Instance ID" in line)
+    for column in ("Type", "State", "Zone", "Created", "Keep-Alive", "Mode"):
+        assert column in header
+
+    rows = _instance_rows(lines)
+    assert list(rows) == ["instance-1", "instance-2"]
+    cells = [cell.strip() for cell in rows["instance-1"].strip().strip("\u2502").split("\u2502")]
+    assert cells[:6] == [
         "instance-1",
         "n1-standard-2",
         "starting",
         "us-central1-a",
         "2026-01-01T00:00:00",
         "never",
-        "awaiting",
-        "first",
-        "keep-alive",
     ]
-    assert lines[4].startswith("  instance-2 ")
+    assert cells[6].startswith("waiting for first keep-alive")
 
 
 def test_log_instance_details_columns_size_to_content(orchestrator, caplog) -> None:
@@ -563,25 +597,10 @@ def test_log_instance_details_columns_size_to_content(orchestrator, caplog) -> N
 
     lines = _capture_instance_details(orchestrator, instances, caplog)
 
-    header, rows = lines[1], lines[3:]
-    assert long_id in rows[0]
-    # Every column of every row starts at the same offset as its header
-    for column in ("Type", "State", "Zone", "Created", "Keep-Alive", "Status"):
-        offset = header.index(column)
-        for row in rows:
-            assert row[offset - 1] == " "
-            assert row[offset] != " "
-
-
-def test_log_instance_details_columns_never_narrower_than_headers(orchestrator, caplog) -> None:
-    """Short values don't squeeze a column below the width of its own header."""
-    orchestrator._running = True
-
-    lines = _capture_instance_details(orchestrator, [_make_instance("i-0abc")], caplog)
-
-    header, row = lines[1], lines[3]
-    assert header.index("Type") == row.index("n1-standard-2")
-    assert header.index("State") == row.index("running")
+    table_lines = [line for line in lines if line != "Instance details:"]
+    assert long_id in "".join(table_lines)
+    # Every line of the table is the same width, so the columns line up whatever is in them
+    assert len(set(len(line) for line in table_lines)) == 1
 
 
 def test_log_instance_details_keepalive_states(orchestrator, caplog) -> None:
@@ -607,22 +626,21 @@ def test_log_instance_details_keepalive_states(orchestrator, caplog) -> None:
         "never-started": now - 900,
     }
 
-    rows = {
-        line.split()[0]: line
-        for line in _capture_instance_details(orchestrator, instances, caplog)[3:]
-    }
+    rows = _instance_rows(_capture_instance_details(orchestrator, instances, caplog))
 
     assert "60s ago" in rows["healthy"]
-    assert "OK" in rows["healthy"] and "OVERDUE" not in rows["healthy"]
+    assert "waiting for next keep-alive (60s of 300s)" in rows["healthy"]
 
     assert "400s ago" in rows["silent"]
-    assert "OVERDUE by 100s (limit 300s)" in rows["silent"]
+    assert "keep-alive timed out (overdue by 100s of 300s)" in rows["silent"]
 
     assert "never" in rows["young"]
-    assert "awaiting first keep-alive (120s of 600s)" in rows["young"]
+    assert "waiting for first keep-alive (120s of 600s)" in rows["young"]
 
     assert "never" in rows["never-started"]
-    assert "OVERDUE by 300s for its first keep-alive (limit 600s)" in rows["never-started"]
+    assert (
+        "keep-alive timed out (first keep-alive overdue by 300s of 600s)" in rows["never-started"]
+    )
 
     # Terminated instances aren't monitored, so they get no keep-alive verdict
     assert "not active" in rows["gone"]
@@ -638,10 +656,12 @@ def test_log_instance_details_not_monitored_when_not_running(orchestrator, caplo
     orchestrator._keepalive_startup_timeout = 600.0
     orchestrator._keepalive_timeout = 300.0
 
-    lines = _capture_instance_details(orchestrator, [_make_instance("instance-1")], caplog)
+    row = _instance_rows(
+        _capture_instance_details(orchestrator, [_make_instance("instance-1")], caplog)
+    )["instance-1"]
 
-    assert "not monitored" in lines[3]
-    assert "OVERDUE" not in lines[3]
+    assert "not monitored" in row
+    assert "timed out" not in row
 
 
 def test_log_instance_details_not_monitored_when_timeouts_disabled(orchestrator, caplog) -> None:
@@ -650,9 +670,11 @@ def test_log_instance_details_not_monitored_when_timeouts_disabled(orchestrator,
     orchestrator._keepalive_startup_timeout = 0.0
     orchestrator._keepalive_timeout = 0.0
 
-    lines = _capture_instance_details(orchestrator, [_make_instance("instance-1")], caplog)
+    row = _instance_rows(
+        _capture_instance_details(orchestrator, [_make_instance("instance-1")], caplog)
+    )["instance-1"]
 
-    assert "not monitored" in lines[3]
+    assert "not monitored" in row
 
 
 def test_log_instance_details_azure_missing_fields(orchestrator, caplog) -> None:
@@ -665,15 +687,14 @@ def test_log_instance_details_azure_missing_fields(orchestrator, caplog) -> None
         "location": "eastus",
     }
 
-    lines = _capture_instance_details(orchestrator, [instance], caplog)
+    row = _instance_rows(_capture_instance_details(orchestrator, [instance], caplog))["azure-vm-1"]
 
-    assert "azure-vm-1" in lines[3]
-    assert "eastus" in lines[3]
+    assert "eastus" in row
 
 
 @pytest.mark.asyncio
 async def test_get_job_instances_logs_instance_details(orchestrator) -> None:
-    """The instance summary is preceded by the per-instance debug table."""
+    """The instance summary is preceded by the per-instance table."""
     instances = [_make_instance("instance-1")]
     orchestrator.list_job_instances = AsyncMock(return_value=instances)
     orchestrator._initialize_pricing_info = AsyncMock()
@@ -686,3 +707,155 @@ async def test_get_job_instances_logs_instance_details(orchestrator) -> None:
         await orchestrator.get_job_instances()
 
     mock_log.assert_called_once_with(instances)
+
+
+def test_keepalive_from_terminated_instance_is_ignored(orchestrator) -> None:
+    """A keep-alive that arrives after we terminated an instance doesn't revive it.
+
+    Workers send keep-alives on a timer, so one can be in flight when its instance is
+    terminated. Believing it would put a dead instance back into the health monitor's
+    books, and would make the "no instance has ever checked in" abort think the startup
+    script works.
+    """
+    orchestrator._terminated_instances.add("instance-1")
+
+    orchestrator.record_keepalive("instance-1")
+
+    assert "instance-1" not in orchestrator._keepalive_last_heard
+    assert orchestrator._keepalive_ever_heard is False
+
+
+def test_keepalive_from_live_instance_is_recorded(orchestrator) -> None:
+    """Instances we haven't terminated are still tracked."""
+    orchestrator._terminated_instances.add("instance-1")
+
+    orchestrator.record_keepalive("instance-2")
+
+    assert "instance-2" in orchestrator._keepalive_last_heard
+    assert orchestrator._keepalive_ever_heard is True
+
+
+@pytest.mark.asyncio
+async def test_terminating_an_instance_stops_its_keepalives_counting(orchestrator) -> None:
+    """An instance terminated for being unresponsive is remembered as gone."""
+    orchestrator.record_keepalive("instance-1")
+
+    await orchestrator._terminate_keepalive_instance(_make_instance("instance-1"))
+    orchestrator.record_keepalive("instance-1")
+
+    assert "instance-1" in orchestrator._terminated_instances
+    assert "instance-1" not in orchestrator._keepalive_last_heard
+
+
+def test_record_spot_termination_forgets_the_instance(orchestrator, caplog) -> None:
+    """A reclaimed instance stops being watched for keep-alives and is counted."""
+    orchestrator.record_keepalive("instance-1")
+
+    with caplog.at_level(logging.INFO, logger="cloud_tasks.instance_manager.orchestrator"):
+        orchestrator.record_spot_termination("instance-1")
+        # A second report of the same instance says nothing more
+        orchestrator.record_spot_termination("instance-1")
+
+    assert orchestrator._spot_terminated_instances == {"instance-1"}
+    assert "instance-1" not in orchestrator._keepalive_last_heard
+    assert "instance-1" not in orchestrator._keepalive_first_seen
+    reclaimed = [r for r in caplog.records if "reclaimed as spot capacity" in r.getMessage()]
+    assert len(reclaimed) == 1
+
+    # A keep-alive still in flight from the reclaimed instance is ignored
+    orchestrator.record_keepalive("instance-1")
+    assert "instance-1" not in orchestrator._keepalive_last_heard
+
+
+@pytest.mark.asyncio
+async def test_scaling_refills_a_pool_that_lost_instances(orchestrator) -> None:
+    """Losing an instance to a spot reclamation is made good on the next cycle.
+
+    The minimum constraints describe the pool, so they are compared against the pool the
+    job would have. Comparing them against the number of instances being added means a
+    pool that has lost one is never refilled, because one replacement is fewer than the
+    minimum size of the whole pool.
+    """
+    orchestrator._running = True
+    orchestrator._min_instances = 4
+    orchestrator._max_instances = 4
+    orchestrator._run_config.min_total_cpus = None
+    orchestrator._run_config.min_total_price_per_hour = None
+    orchestrator._run_config.min_simultaneous_tasks = None
+    orchestrator._run_config.max_simultaneous_tasks = None
+    orchestrator._run_config.max_total_cpus = None
+    orchestrator._run_config.max_total_price_per_hour = None
+    orchestrator._get_remaining_task_count = lambda: 100
+    # Three of the four instances are up; one was reclaimed
+    orchestrator.get_job_instances = AsyncMock(return_value=(3, 6, 17.25, "summary"))
+    orchestrator.record_spot_termination("instance-gone")
+
+    with patch.object(orchestrator, "_provision_instances", new=AsyncMock()) as provision:
+        await orchestrator._check_scaling()
+
+    provision.assert_awaited_once_with(1)
+
+
+@pytest.mark.asyncio
+async def test_scaling_still_refuses_a_pool_below_the_minimum(orchestrator) -> None:
+    """The minimum is still enforced against the pool the job would end up with."""
+    orchestrator._running = True
+    orchestrator._min_instances = 4
+    orchestrator._max_instances = 2
+    orchestrator._run_config.min_total_cpus = None
+    orchestrator._run_config.min_total_price_per_hour = None
+    orchestrator._run_config.min_simultaneous_tasks = None
+    orchestrator._run_config.max_simultaneous_tasks = None
+    orchestrator._run_config.max_total_cpus = None
+    orchestrator._run_config.max_total_price_per_hour = None
+    orchestrator._get_remaining_task_count = lambda: 100
+    orchestrator.get_job_instances = AsyncMock(return_value=(0, 0, 0.0, "summary"))
+
+    with patch.object(orchestrator, "_provision_instances", new=AsyncMock()) as provision:
+        await orchestrator._check_scaling()
+
+    provision.assert_not_awaited()
+
+
+def test_local_credentials_warning_is_shown_and_can_be_declined(orchestrator, caplog) -> None:
+    """A credential that won't last the job is called out before any instance is started."""
+    orchestrator._instance_manager.local_credential_warning = Mock(
+        return_value="These credentials expire.\nUse a service account."
+    )
+
+    with patch("sys.stdin.isatty", return_value=True), patch("builtins.input", return_value="no"):
+        with caplog.at_level(logging.WARNING, logger="cloud_tasks.instance_manager.orchestrator"):
+            with pytest.raises(RuntimeError, match="will not last the job"):
+                orchestrator._check_local_credentials()
+
+    logged = "\n".join(record.getMessage() for record in caplog.records)
+    assert "These credentials expire." in logged
+    assert "Use a service account." in logged
+
+
+def test_local_credentials_warning_can_be_accepted(orchestrator) -> None:
+    """Answering yes gets on with the job."""
+    orchestrator._instance_manager.local_credential_warning = Mock(return_value="expiring")
+
+    with patch("sys.stdin.isatty", return_value=True), patch("builtins.input", return_value="yes"):
+        orchestrator._check_local_credentials()
+
+
+def test_local_credentials_warning_does_not_block_a_non_interactive_run(orchestrator) -> None:
+    """Nothing is there to answer the question when the job is started by a script."""
+    orchestrator._instance_manager.local_credential_warning = Mock(return_value="expiring")
+
+    with patch("sys.stdin.isatty", return_value=False), patch("builtins.input") as mock_input:
+        orchestrator._check_local_credentials()
+
+    mock_input.assert_not_called()
+
+
+def test_no_credentials_warning_asks_nothing(orchestrator) -> None:
+    """Credentials that will last the job are not worth interrupting anyone about."""
+    orchestrator._instance_manager.local_credential_warning = Mock(return_value=None)
+
+    with patch("sys.stdin.isatty", return_value=True), patch("builtins.input") as mock_input:
+        orchestrator._check_local_credentials()
+
+    mock_input.assert_not_called()

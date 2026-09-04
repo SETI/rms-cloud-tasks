@@ -132,6 +132,15 @@ Memory
   * ``min_memory_per_task``: The minimum amount of memory in GB per task
   * ``max_memory_per_task``: The maximum amount of memory in GB per task
 
+* ``allow_cpu_wasting``: If True, give each task more vCPUs than ``cpus_per_task`` asks for
+  when that is the only way to satisfy ``min_memory_per_task``, leaving the surplus vCPUs
+  idle (defaults to False). An instance type is sold in fixed combinations of vCPUs and
+  memory, so on a machine with little memory per vCPU the only way to give one task more
+  memory is to run fewer tasks and leave some vCPUs unused. Without this, such an instance
+  type is rejected instead, and a job whose tasks need more memory per task than any
+  available instance type provides per vCPU has no instance type to run on at all. The
+  number of tasks per instance is reduced to match, and is reported when the job starts.
+
 SSD Storage
 +++++++++++
 
@@ -242,7 +251,11 @@ Options to specify the type of VM
 
 * ``use_spot``: Use spot instances instead of on-demand instances; spot instances
   are cheaper but may be terminated by the cloud provider with little notice and should only
-  be used for fault-tolerant jobs
+  be used for fault-tolerant jobs. An instance reclaimed this way leaves the pool short, and
+  the scaling loop starts a replacement for it on its next cycle, for as long as there are
+  tasks left to run and the configured maximums allow it. Tasks that were running on the
+  reclaimed instance return to the queue when their visibility timeout expires and are
+  picked up by another worker.
 
 .. _config_boot_options:
 

@@ -4,10 +4,13 @@ Instance Orchestrator core module.
 
 import asyncio
 import logging
+import sys
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, TypedDict, cast
+
+from prettytable import PrettyTable, TableStyle
 
 from ..common.config import Config
 from ..queue_manager import QueueManager, create_queue
@@ -152,6 +155,16 @@ class InstanceOrchestrator:
         self._keepalive_task: asyncio.Task[None] | None = None
         # Set when keep-alive monitoring determined no instance ever started properly
         self._keepalive_abort_reason: str | None = None
+        # Instances this orchestrator has terminated. A worker can send a keep-alive
+        # moments before its instance goes away, and that event can arrive after the
+        # termination; taking it at face value would put a dead instance back into the
+        # health monitor's books and, worse, make _keepalive_ever_heard true on the
+        # strength of an instance that no longer exists.
+        self._terminated_instances: set[str] = set()
+        # Instances known to have been reclaimed by the provider as spot capacity. The
+        # scaling loop replaces them like any other missing instance; this is kept so it
+        # can say why the pool shrank.
+        self._spot_terminated_instances: set[str] = set()
 
         # Initialize lock for instance creation
         self._instance_creation_lock = asyncio.Lock()
@@ -308,11 +321,42 @@ class InstanceOrchestrator:
                 (informational only; the local receive time is used for timeouts so
                 clock skew between machines doesn't matter).
         """
+        if instance_id in self._terminated_instances:
+            # In flight when we terminated the instance, or sent by a worker that hadn't
+            # noticed yet. Either way the instance is gone and must not be counted as alive.
+            self._logger.debug(
+                f"Ignoring keep-alive from terminated instance '{instance_id}' "
+                f"(sent at {timestamp})"
+            )
+            return
         if instance_id not in self._keepalive_last_heard:
             self._logger.info(f"Received first keep-alive event from instance '{instance_id}'")
         self._logger.debug(f"Keep-alive from instance '{instance_id}' (sent at {timestamp})")
         self._keepalive_last_heard[instance_id] = time.time()
         self._keepalive_ever_heard = True
+
+    def record_spot_termination(self, instance_id: str) -> None:
+        """Record that an instance is being reclaimed as spot capacity.
+
+        The instance is on its way out, so it is treated as terminated for keep-alive
+        purposes: its remaining keep-alives, if any, describe an instance that will not be
+        there on the next pass. The scaling loop notices the missing capacity and starts a
+        replacement on its next cycle.
+
+        Parameters:
+            instance_id: The ID of the instance being reclaimed, as reported by the
+                instance manager (GCP/Azure: instance name; AWS: instance ID).
+        """
+        if instance_id in self._spot_terminated_instances:
+            return
+        self._logger.info(
+            f"Instance '{instance_id}' is being reclaimed as spot capacity; a replacement "
+            "will be started on the next scaling cycle"
+        )
+        self._spot_terminated_instances.add(instance_id)
+        self._terminated_instances.add(instance_id)
+        self._keepalive_first_seen.pop(instance_id, None)
+        self._keepalive_last_heard.pop(instance_id, None)
 
     def _generate_worker_startup_script(self) -> str:
         """
@@ -436,6 +480,8 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
 
         await self.initialize()
 
+        self._check_local_credentials()
+
         if self._run_config.startup_script is None:
             raise RuntimeError("startup_script is required")
 
@@ -521,10 +567,19 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
 
         # Derive the number of tasks per instance from the constraints and the number of vCPUs in the
         # optimal instance
-        if self._run_config.cpus_per_task is None:
-            num_tasks = vcpu  # Default to one task per vCPU
-        else:
-            num_tasks = int(vcpu // self._run_config.cpus_per_task)
+        cpus_per_task = self._instance_manager.effective_cpus_per_task(
+            optimal_instance_info, vars(self._run_config)
+        )
+        configured_cpus_per_task = self._run_config.cpus_per_task or 1
+        if cpus_per_task > configured_cpus_per_task:
+            # allow_cpu_wasting is on and this instance type doesn't have enough memory per
+            # vCPU to give a task its memory at the configured number of vCPUs
+            self._logger.info(
+                f"|| Giving each task {cpus_per_task:g} vCPUs instead of "
+                f"{configured_cpus_per_task:g} so that it has the "
+                f"{self._run_config.min_memory_per_task} GB of memory it requires"
+            )
+        num_tasks = int(vcpu // cpus_per_task)
         # Enforce min/max constraints
         if self._run_config.min_tasks_per_instance is not None:
             num_tasks = max(num_tasks, self._run_config.min_tasks_per_instance)
@@ -544,6 +599,52 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
             self._scaling_task = asyncio.create_task(self._scaling_loop())
             if self._keepalive_startup_timeout > 0 or self._keepalive_timeout > 0:
                 self._keepalive_task = asyncio.create_task(self._keepalive_monitor_loop())
+
+    def _effective_cpus_per_task(self) -> float:
+        """Return the vCPUs each task gets on the selected instance type.
+
+        This is cpus_per_task unless allow_cpu_wasting has raised it to satisfy
+        min_memory_per_task on the instance type that was chosen; see
+        InstanceManager.effective_cpus_per_task.
+
+        Returns:
+            float: vCPUs per task, at least 1.
+        """
+        configured = self._run_config.cpus_per_task or 1
+        if self._instance_manager is None or self._optimal_instance_info is None:
+            return float(configured)
+        return self._instance_manager.effective_cpus_per_task(
+            self._optimal_instance_info, vars(self._run_config)
+        )
+
+    def _check_local_credentials(self) -> None:
+        """Warn, and ask whether to go on, if the local credentials will not last the job.
+
+        Raises:
+            RuntimeError: If the user answers that they don't want to continue.
+        """
+        if self._instance_manager is None:
+            raise RuntimeError("Instance manager not initialized. Call initialize() first.")
+        warning = self._instance_manager.local_credential_warning()
+        if warning is None:
+            return
+
+        banner = "*" * 88
+        self._logger.warning(banner)
+        for line in warning.split("\n"):
+            self._logger.warning(f"* {line}")
+        self._logger.warning(banner)
+
+        if self._dry_run:
+            return
+        if not sys.stdin.isatty():
+            # Nothing is there to answer the question; a job started from a script or a
+            # scheduler must not block on it
+            self._logger.warning("Not running interactively, so continuing with these credentials")
+            return
+        answer = input("Continue with these credentials? Type 'yes' to continue: ")
+        if answer.strip().lower() not in ("y", "yes"):
+            raise RuntimeError("Aborted because the local credentials will not last the job")
 
     async def _scaling_loop(self) -> None:
         """Background task to periodically check scaling."""
@@ -698,6 +799,7 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
                 f"Failed to terminate unresponsive instance '{instance_id}': {e}", exc_info=True
             )
             return
+        self._terminated_instances.add(instance_id)
         self._keepalive_first_seen.pop(instance_id, None)
         self._keepalive_last_heard.pop(instance_id, None)
 
@@ -731,7 +833,7 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
         )
 
     def _keepalive_status(self, instance: dict[str, Any], now: float) -> tuple[str, str]:
-        """Describe an instance's keep-alive state for the debug instance table.
+        """Describe an instance's keep-alive state for the instance table.
 
         Parameters:
             instance: Instance dictionary from list_job_instances
@@ -739,7 +841,10 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
                 described relative to the same instant
 
         Returns:
-            tuple[str, str]: (last keep-alive column, status column)
+            tuple[str, str]: (last keep-alive column, mode column). The mode says what the
+            keep-alive monitor is doing about this instance right now: waiting for its first
+            keep-alive, waiting for the next one, or treating it as timed out, in each case
+            with the seconds elapsed and the limit being applied.
         """
         if instance["state"] not in ("running", "starting"):
             return "-", "not active"
@@ -753,58 +858,71 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
             silent_for = now - last_heard
             last_str = f"{silent_for:.0f}s ago"
             if self._keepalive_timeout <= 0:
-                return last_str, "OK (timeout disabled)"
+                return last_str, "waiting for next keep-alive (no timeout)"
             if silent_for > self._keepalive_timeout:
                 return last_str, (
-                    f"OVERDUE by {silent_for - self._keepalive_timeout:.0f}s "
-                    f"(limit {self._keepalive_timeout:.0f}s)"
+                    f"keep-alive timed out (overdue by "
+                    f"{silent_for - self._keepalive_timeout:.0f}s of "
+                    f"{self._keepalive_timeout:.0f}s)"
                 )
-            return last_str, f"OK ({self._keepalive_timeout - silent_for:.0f}s until overdue)"
+            return last_str, (
+                f"waiting for next keep-alive ({silent_for:.0f}s of {self._keepalive_timeout:.0f}s)"
+            )
 
         first_seen = self._keepalive_first_seen.get(instance_id)
         if first_seen is None:
             # The keep-alive monitor hasn't seen this instance yet; it will start its
             # startup clock on its next pass
-            return "never", "awaiting first keep-alive"
+            return "never", "waiting for first keep-alive (not yet timed)"
         waiting_for = now - first_seen
         if self._keepalive_startup_timeout <= 0:
-            return "never", f"awaiting first keep-alive ({waiting_for:.0f}s, timeout disabled)"
+            return "never", f"waiting for first keep-alive ({waiting_for:.0f}s, no timeout)"
         if waiting_for > self._keepalive_startup_timeout:
             return "never", (
-                f"OVERDUE by {waiting_for - self._keepalive_startup_timeout:.0f}s for its first "
-                f"keep-alive (limit {self._keepalive_startup_timeout:.0f}s)"
+                f"keep-alive timed out (first keep-alive overdue by "
+                f"{waiting_for - self._keepalive_startup_timeout:.0f}s of "
+                f"{self._keepalive_startup_timeout:.0f}s)"
             )
         return "never", (
-            f"awaiting first keep-alive ({waiting_for:.0f}s of "
+            f"waiting for first keep-alive ({waiting_for:.0f}s of "
             f"{self._keepalive_startup_timeout:.0f}s)"
         )
 
     def _log_instance_details(self, instances: list[dict[str, Any]]) -> None:
         """Log a table with one row per instance, including its keep-alive status.
 
-        This is a diagnostic aid that adds a line of output per instance every time the
-        instance summary is computed, so it is only emitted when debug logging is
-        enabled (-vv or higher).
+        Every instance is listed, not just a count by type, because when a job misbehaves
+        the question is almost always which instance is doing what: an instance that never
+        reported in reads very differently from one that has gone quiet after working, and
+        neither is visible in a summary. The table is logged whenever the instance summary
+        is computed, at the same level as the summary itself.
 
         Parameters:
             instances: Instance dictionaries from list_job_instances
         """
-        if not self._logger.isEnabledFor(logging.DEBUG):
-            return
-
         if not instances:
-            self._logger.debug("Instance details: no instances")
+            self._logger.info("Instance details: no instances")
             return
 
         now = time.time()
-        headers = ["Instance ID", "Type", "State", "Zone", "Created", "Keep-Alive", "Status"]
-        rows = []
+        table = PrettyTable()
+        table.field_names = [
+            "Instance ID",
+            "Type",
+            "State",
+            "Zone",
+            "Created",
+            "Keep-Alive",
+            "Mode",
+        ]
+        table.align = "l"
+        table.set_style(TableStyle.SINGLE_BORDER)
         for instance in sorted(instances, key=lambda i: str(i["id"])):
             # Azure instances don't report a zone, creation time, or boot disk type
             created = str(instance.get("creation_time") or "-")[:19]
             zone = str(instance.get("zone") or instance.get("location") or "-")
-            last_keepalive, status = self._keepalive_status(instance, now)
-            rows.append(
+            last_keepalive, mode = self._keepalive_status(instance, now)
+            table.add_row(
                 [
                     str(instance["id"]),
                     str(instance["type"]),
@@ -812,29 +930,13 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
                     zone,
                     created,
                     last_keepalive,
-                    status,
+                    mode,
                 ]
             )
 
-        # Size each column to its widest value, since instance IDs, types, and zones
-        # vary a lot in length between providers. The final column isn't padded because
-        # nothing follows it.
-        widths = [
-            max(len(header), *(len(row[col]) for row in rows))
-            for col, header in enumerate(headers[:-1])
-        ]
-
-        def format_row(cells: list[str]) -> str:
-            padded = [cell.ljust(width) for cell, width in zip(cells, widths)]
-            return "  " + "  ".join([*padded, cells[-1]])
-
-        table = [format_row(headers), *(format_row(row) for row in rows)]
-        separator = "  " + "-" * (max(len(line) for line in table) - 2)
-        self._logger.debug("Instance details:")
-        self._logger.debug(table[0])
-        self._logger.debug(separator)
-        for line in table[1:]:
-            self._logger.debug(line)
+        self._logger.info("Instance details:")
+        for line in table.get_string().split("\n"):
+            self._logger.info(line)
 
     async def get_job_instances(self) -> tuple[int, int, float, str]:
         """Return job instance counts and pricing summary.
@@ -1041,7 +1143,7 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
                     self._logger.info(f"Current queue depth: {remaining_tasks}")
 
         # Calculate desired number of instances based on remaining tasks and tasks per instance
-        cpus_per_task = self._run_config.cpus_per_task or 1
+        cpus_per_task = self._effective_cpus_per_task()
         desired_instances = int((remaining_tasks + cpus_per_task - 1) // cpus_per_task)
         if self._min_instances is not None:
             desired_instances = max(desired_instances, self._min_instances)
@@ -1070,7 +1172,6 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
         # in the optimal instance
         if self._optimal_instance_num_tasks is None:
             raise RuntimeError("optimal instance num tasks not set")
-        cpus_per_task = self._run_config.cpus_per_task or 1
         tasks_per_instance = self._optimal_instance_num_tasks
         tasks_running = int(running_cpus // cpus_per_task)
         if self._run_config.max_simultaneous_tasks is not None:
@@ -1164,35 +1265,44 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
                 )
 
         if instances_to_add > 0:
-            # Now see if we violated the minimum constraints
+            # Check the minimum constraints against what the job will have once these
+            # instances are running, not against the number being added. They are minimums
+            # for the pool as a whole, and comparing them to an increment means a pool that
+            # has lost instances - reclaimed as spot capacity, or terminated for failing
+            # their keep-alive checks - is never refilled, because topping a pool up adds
+            # fewer instances than the minimum size of the whole pool.
             min_inst = self._min_instances
+            min_cpus = self._run_config.min_total_cpus
+            min_price = self._run_config.min_total_price_per_hour
+            min_tasks = self._run_config.min_simultaneous_tasks
+            total_instances = num_running + instances_to_add
+            total_cpus = running_cpus + instances_to_add * opt_vcpu
+            total_price = running_price + instances_to_add * opt_price
+            total_tasks = tasks_running + instances_to_add * tasks_per_instance
             if (
-                (min_inst is not None and instances_to_add < min_inst)
-                or (
-                    self._run_config.min_total_cpus is not None
-                    and instances_to_add * opt_vcpu < self._run_config.min_total_cpus
-                )
-                or (
-                    self._run_config.min_total_price_per_hour is not None
-                    and instances_to_add * opt_price < self._run_config.min_total_price_per_hour
-                )
-                or (
-                    self._run_config.min_simultaneous_tasks is not None
-                    and tasks_running + instances_to_add * tasks_per_instance
-                    < self._run_config.min_simultaneous_tasks
-                )
+                (min_inst is not None and total_instances < min_inst)
+                or (min_cpus is not None and total_cpus < min_cpus)
+                or (min_price is not None and total_price < min_price)
+                or (min_tasks is not None and total_tasks < min_tasks)
             ):
+                # Any of these minimums can be unset, so none of them can be formatted
+                # as a number
+                min_price_str = "None" if min_price is None else f"${min_price:.2f}"
                 self._logger.warning(
-                    f"Violated minimum constraints: Max instances we can add is "
-                    f"{instances_to_add} at "
-                    f"${instances_to_add * opt_price:.2f}/hour "
-                    f"giving a total of {tasks_running + instances_to_add * tasks_per_instance} "
-                    f"simultaneous tasks, but minimums are {min_inst} instances, "
-                    f"{self._run_config.min_total_cpus} vCPUs, "
-                    f"${self._run_config.min_total_price_per_hour:.2f}/hour, "
-                    f"{self._run_config.min_simultaneous_tasks} simultaneous tasks"
+                    f"Violated minimum constraints: the most we can run is {total_instances} "
+                    f"instances with {total_cpus} vCPUs at ${total_price:.2f}/hour "
+                    f"giving a total of {total_tasks} simultaneous tasks, "
+                    f"but minimums are {min_inst} instances, "
+                    f"{min_cpus} vCPUs, "
+                    f"{min_price_str}/hour, "
+                    f"{min_tasks} simultaneous tasks"
                 )
             else:
+                if self._spot_terminated_instances:
+                    self._logger.info(
+                        f"{len(self._spot_terminated_instances)} instance(s) have been reclaimed "
+                        "as spot capacity so far in this job and are replaced as capacity allows"
+                    )
                 if self._dry_run:
                     self._logger.info(
                         f"Dry run mode - would start {instances_to_add} new instances for an "
@@ -1335,6 +1445,7 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
                             instance["id"], instance["zone"]
                         )
                         self._logger.info(f"Terminated instance: {instance['id']}")
+                        self._terminated_instances.add(instance["id"])
                         return True
                     except Exception as e:
                         self._logger.error(

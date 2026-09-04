@@ -108,6 +108,9 @@ in the configuration file (see :ref:`config_compute_instance_options`).
 --cpus-per-task N             The number of vCPUs per task; this is also used to configure
                               the worker process to limit the number of tasks that can be run
                               simultaneously on a single instance
+--allow-cpu-wasting           Give each task more vCPUs than ``--cpus-per-task`` asks for, and
+                              leave the surplus idle, when that is the only way to give the task
+                              the memory required by ``--min-memory-per-task``
 --min-tasks-per-instance N    The minimum number of tasks per instance
 --max-tasks-per-instance N    The maximum number of tasks per instance
 --min-total-memory N          The minimum amount of memory in GB per instance
@@ -147,6 +150,9 @@ in the configuration file (see :ref:`config_number_of_instances_options`).
 --cpus-per-task N             The number of vCPUs per task; this is also used to configure
                               the worker process to limit the number of tasks that can be run
                               simultaneously on a single instance
+--allow-cpu-wasting           Give each task more vCPUs than ``--cpus-per-task`` asks for, and
+                              leave the surplus idle, when that is the only way to give the task
+                              the memory required by ``--min-memory-per-task``
 --min-tasks-per-instance N    The minimum number of tasks per instance
 --max-tasks-per-instance N    The maximum number of tasks per instance
 --min-simultaneous-tasks N    The minimum number of tasks to run simultaneously

@@ -1,6 +1,7 @@
 """Unit tests for the GCP Compute Engine instance manager."""
 
 import copy
+import logging
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -378,3 +379,51 @@ async def test_get_optimal_instance_type_all_missing_pricing(
     # Act & Assert
     with pytest.raises(ValueError, match="No pricing data found for any instance types"):
         await gcp_instance_manager_n1_n2.get_optimal_instance_type(constraints)
+
+
+@pytest.mark.asyncio
+async def test_get_optimal_instance_type_reports_the_constraints_that_excluded_everything(
+    gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
+    mock_instance_types_n1_n2: dict[str, dict[str, Any]],
+    caplog,
+) -> None:
+    """Being left with nothing says which constraint to relax, not just that nothing fits."""
+    gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
+
+    constraints = {
+        # No instance type in the fixture has this many vCPUs, and none is ARM
+        "min_cpu": 64,
+        "architecture": "ARM64",
+        # This one every instance type satisfies, so it must not be reported
+        "min_total_memory": 1,
+        "use_spot": False,
+    }
+
+    with caplog.at_level(logging.ERROR, logger="cloud_tasks.instance_manager.gcp"):
+        with pytest.raises(ValueError, match="No instance type meets requirements"):
+            await gcp_instance_manager_n1_n2.get_optimal_instance_type(constraints)
+
+    reported = "\n".join(record.getMessage() for record in caplog.records)
+    assert "min_cpu: needs >= 64" in reported
+    assert "architecture: needs ARM64" in reported
+    assert "min_total_memory" not in reported
+
+
+@pytest.mark.asyncio
+async def test_get_optimal_instance_type_reports_conflicting_constraints(
+    gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
+    mock_instance_types_n1_n2: dict[str, dict[str, Any]],
+    caplog,
+) -> None:
+    """Constraints that only conflict in combination are called out as such."""
+    gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
+
+    # Each of these is satisfied by some instance type, but not by the same one
+    constraints = {"min_cpu": 4, "max_total_memory": 8, "use_spot": False}
+
+    with caplog.at_level(logging.ERROR, logger="cloud_tasks.instance_manager.gcp"):
+        with pytest.raises(ValueError, match="No instance type meets requirements"):
+            await gcp_instance_manager_n1_n2.get_optimal_instance_type(constraints)
+
+    reported = "\n".join(record.getMessage() for record in caplog.records)
+    assert "no single instance type meets all of them" in reported

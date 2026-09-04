@@ -6,6 +6,48 @@ from cloud_tasks.common.config import ProviderConfig
 from cloud_tasks.instance_manager.instance_manager import InstanceManager
 
 
+def _concrete_instance_manager() -> InstanceManager:
+    """Build an InstanceManager with the abstract methods stubbed out.
+
+    Returns:
+        InstanceManager: A concrete subclass whose provider methods do nothing, for
+        exercising the constraint logic the base class implements.
+    """
+
+    class ConcreteInstanceManager(InstanceManager):
+        async def get_available_instance_types(self, constraints=None):
+            pass
+
+        async def get_instance_pricing(self, instance_types, use_spot=False):
+            pass
+
+        async def get_optimal_instance_type(self, constraints=None):
+            pass
+
+        async def start_instance(self, **kwargs):
+            pass
+
+        async def terminate_instance(self, instance_id, zone=None):
+            pass
+
+        async def list_running_instances(self, job_id=None, include_non_job=False):
+            pass
+
+        async def get_image_from_family(self, family_name):
+            pass
+
+        async def get_default_image(self):
+            pass
+
+        async def list_available_images(self):
+            pass
+
+        async def get_available_regions(self):
+            pass
+
+    return ConcreteInstanceManager(ProviderConfig())
+
+
 class TestInstanceManager:
     """Validates InstanceManager constraint matching and factory behavior."""
 
@@ -23,39 +65,7 @@ class TestInstanceManager:
     @pytest.fixture
     def instance_manager(self) -> InstanceManager:
         """Create a concrete instance manager for testing."""
-
-        class ConcreteInstanceManager(InstanceManager):
-            async def get_available_instance_types(self, constraints=None):
-                pass
-
-            async def get_instance_pricing(self, instance_types, use_spot=False):
-                pass
-
-            async def get_optimal_instance_type(self, constraints=None):
-                pass
-
-            async def start_instance(self, **kwargs):
-                pass
-
-            async def terminate_instance(self, instance_id, zone=None):
-                pass
-
-            async def list_running_instances(self, job_id=None, include_non_job=False):
-                pass
-
-            async def get_image_from_family(self, family_name):
-                pass
-
-            async def get_default_image(self):
-                pass
-
-            async def list_available_images(self):
-                pass
-
-            async def get_available_regions(self):
-                pass
-
-        return ConcreteInstanceManager(ProviderConfig())
+        return _concrete_instance_manager()
 
     def test_instance_matches_constraints_no_constraints(
         self, instance_manager: InstanceManager, base_instance_info: dict
@@ -367,3 +377,162 @@ class TestInstanceManager:
                 "max_cpu": 6,  # Irrelevant as min_tasks already exceeds instance CPUs
             },
         )
+
+
+class TestEffectiveCpusPerTask:
+    """Validates how allow_cpu_wasting changes the vCPUs a task is given."""
+
+    @pytest.fixture
+    def instance_manager(self) -> InstanceManager:
+        """A concrete instance manager; only the base class methods are exercised."""
+        return _concrete_instance_manager()
+
+    @pytest.fixture
+    def low_memory_instance(self) -> dict:
+        """An instance type with 1 GB of memory per vCPU."""
+        return {
+            "name": "c2-highcpu-8",
+            "vcpu": 8,
+            "mem_gb": 8,
+            "local_ssd_gb": 0,
+            "architecture": "X86_64",
+            "supports_spot": True,
+        }
+
+    def test_unset_leaves_cpus_per_task_alone(self, instance_manager, low_memory_instance):
+        """Without allow_cpu_wasting a task gets exactly what it asked for."""
+        constraints = {"cpus_per_task": 1, "min_memory_per_task": 4}
+        assert instance_manager.effective_cpus_per_task(low_memory_instance, constraints) == 1
+
+    def test_raises_cpus_to_supply_the_memory_a_task_needs(
+        self, instance_manager, low_memory_instance
+    ):
+        """A task needing 4 GB on a 1 GB-per-vCPU machine is given 4 vCPUs."""
+        constraints = {
+            "cpus_per_task": 1,
+            "min_memory_per_task": 4,
+            "allow_cpu_wasting": True,
+        }
+        assert instance_manager.effective_cpus_per_task(low_memory_instance, constraints) == 4
+
+    def test_never_lowers_cpus_per_task(self, instance_manager, low_memory_instance):
+        """Memory that is already satisfied doesn't take vCPUs away from a task."""
+        constraints = {
+            "cpus_per_task": 4,
+            "min_memory_per_task": 2,
+            "allow_cpu_wasting": True,
+        }
+        assert instance_manager.effective_cpus_per_task(low_memory_instance, constraints) == 4
+
+    def test_capped_at_the_size_of_the_instance(self, instance_manager, low_memory_instance):
+        """A task can't be given more vCPUs than the instance has.
+
+        The whole instance still has less memory than the task needs, so the instance type
+        has to fail the memory constraint rather than be made to look adequate.
+        """
+        constraints = {
+            "cpus_per_task": 1,
+            "min_memory_per_task": 32,
+            "allow_cpu_wasting": True,
+        }
+        assert instance_manager.effective_cpus_per_task(low_memory_instance, constraints) == 8
+        assert not instance_manager._instance_matches_constraints(low_memory_instance, constraints)
+
+    def test_memory_constraint_is_satisfied_by_wasting_cpus(
+        self, instance_manager, low_memory_instance
+    ):
+        """An instance type rejected for memory per task is accepted with cpu wasting."""
+        constraints = {"cpus_per_task": 1, "min_memory_per_task": 4}
+        assert not instance_manager._instance_matches_constraints(low_memory_instance, constraints)
+
+        constraints["allow_cpu_wasting"] = True
+        assert instance_manager._instance_matches_constraints(low_memory_instance, constraints)
+
+    def test_tasks_per_instance_constraints_use_the_raised_cpus_per_task(
+        self, instance_manager, low_memory_instance
+    ):
+        """Wasting vCPUs means fewer tasks fit, and min_tasks_per_instance knows it."""
+        constraints = {
+            "cpus_per_task": 1,
+            "min_memory_per_task": 4,
+            "allow_cpu_wasting": True,
+            # 8 vCPUs at 4 per task is 2 tasks, so 3 is out of reach
+            "min_tasks_per_instance": 3,
+        }
+        assert not instance_manager._instance_matches_constraints(low_memory_instance, constraints)
+
+        constraints["min_tasks_per_instance"] = 2
+        assert instance_manager._instance_matches_constraints(low_memory_instance, constraints)
+
+
+class TestDescribeUnmetConstraints:
+    """Validates the report produced when the constraints select no instance type."""
+
+    @pytest.fixture
+    def instance_manager(self) -> InstanceManager:
+        """A concrete instance manager; only the base class methods are exercised."""
+        return _concrete_instance_manager()
+
+    @pytest.fixture
+    def instance_types(self) -> list[dict]:
+        """Two instance types with different amounts of memory."""
+        return [
+            {
+                "name": "small",
+                "vcpu": 2,
+                "mem_gb": 4,
+                "local_ssd_gb": 0,
+                "architecture": "X86_64",
+                "supports_spot": True,
+            },
+            {
+                "name": "large",
+                "vcpu": 8,
+                "mem_gb": 32,
+                "local_ssd_gb": 0,
+                "architecture": "X86_64",
+                "supports_spot": False,
+            },
+        ]
+
+    def test_reports_only_constraints_no_instance_type_meets(
+        self, instance_manager, instance_types
+    ):
+        """A constraint some instance type satisfies is not the one to change."""
+        lines = instance_manager.describe_unmet_constraints(
+            instance_types, {"min_cpu": 4, "min_total_memory": 64}
+        )
+        # min_cpu is met by "large", so only the memory constraint is reported
+        assert lines == ["min_total_memory: needs >= 64, closest available 32"]
+
+    def test_reports_the_closest_value_available(self, instance_manager, instance_types):
+        """The report says how close the best instance type came, in its own units."""
+        lines = instance_manager.describe_unmet_constraints(instance_types, {"max_total_memory": 2})
+        assert lines == ["max_total_memory: needs <= 2, closest available 4"]
+
+    def test_reports_the_values_available_for_an_equality_constraint(
+        self, instance_manager, instance_types
+    ):
+        """For architecture there is no 'closest', so the available values are listed."""
+        lines = instance_manager.describe_unmet_constraints(
+            instance_types, {"architecture": "ARM64"}
+        )
+        assert lines == ["architecture: needs ARM64, available: X86_64"]
+
+    def test_reports_an_instance_type_name_filter_that_matches_nothing(
+        self, instance_manager, instance_types
+    ):
+        """A name filter that excludes everything is itself a constraint to relax."""
+        lines = instance_manager.describe_unmet_constraints(
+            instance_types, {"instance_types": ["^n2-"]}
+        )
+        assert lines[0].startswith("instance_types: needs ^n2-, available: ")
+
+    def test_no_report_when_every_constraint_is_met_by_something(
+        self, instance_manager, instance_types
+    ):
+        """Constraints that conflict only in combination leave nothing to single out."""
+        lines = instance_manager.describe_unmet_constraints(
+            instance_types, {"min_cpu": 8, "max_total_memory": 4}
+        )
+        assert lines == []

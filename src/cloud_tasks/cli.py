@@ -492,6 +492,7 @@ class EventMonitor:
         print_events: bool = True,
         print_summary: bool = True,
         keepalive_callback: Callable[[str, str | None], None] | None = None,
+        spot_termination_callback: Callable[[str], None] | None = None,
         backfill_output_file: bool = False,
     ) -> None:
         """
@@ -506,6 +507,10 @@ class EventMonitor:
             keepalive_callback: Optional callback invoked with (instance_id, timestamp)
                 for each keep-alive event; keep-alive events are intercepted and never
                 printed, written to the output file, or stored in the database
+            spot_termination_callback: Optional callback invoked with the instance_id of
+                each spot termination event, so the orchestrator can stop expecting
+                keep-alives from an instance the provider is taking away and replace it.
+                Unlike keep-alives, these events are also printed and stored
             backfill_output_file: Whether to seed a newly created output file with the
                 events already recorded in the database. Used when attaching to a job
                 that is already under way so the file is a complete log of the job
@@ -519,6 +524,7 @@ class EventMonitor:
         self.print_events = print_events
         self.print_summary = print_summary
         self.keepalive_callback = keepalive_callback
+        self.spot_termination_callback = spot_termination_callback
         self.backfill_output_file = backfill_output_file
         self.output_file = None
         self.something_changed = True
@@ -650,6 +656,11 @@ class EventMonitor:
                             if instance_id and self.keepalive_callback:
                                 self.keepalive_callback(instance_id, data.get("timestamp"))
                             continue
+
+                        if data.get("event_type") == "spot_termination":
+                            instance_id = data.get("instance_id") or data.get("hostname")
+                            if instance_id and self.spot_termination_callback:
+                                self.spot_termination_callback(instance_id)
 
                         self.something_changed = True
 
@@ -1238,6 +1249,7 @@ async def run_cmd(args: argparse.Namespace, config: Config) -> None:
             print_events=False,  # Don't print individual events
             print_summary=True,
             keepalive_callback=orchestrator.record_keepalive,
+            spot_termination_callback=orchestrator.record_spot_termination,
             # A fresh run starts with an empty database, so there is nothing to seed
             backfill_output_file=args.continue_run,
         )
@@ -2376,6 +2388,15 @@ def add_instance_pool_args(parser: argparse.ArgumentParser) -> None:
         help="Filter instance types by maximum total number of vCPUs",
     )
     parser.add_argument("--cpus-per-task", type=int, help="Number of vCPUs per task")
+    parser.add_argument(
+        "--allow-cpu-wasting",
+        action="store_true",
+        # Absent must mean "not specified" so that it doesn't override the configuration
+        # file on every run
+        default=None,
+        help="Give each task more vCPUs than --cpus-per-task, leaving the surplus idle, "
+        "when that is the only way to satisfy --min-memory-per-task",
+    )
     parser.add_argument(
         "--min-tasks-per-instance", type=int, help="Minimum number of tasks per instance"
     )

@@ -14,7 +14,7 @@ from cloud_tasks.cli import (
     print_final_report,
     run_argv,
 )
-from cloud_tasks.common.config import Config, GCPConfig
+from cloud_tasks.common.config import Config, GCPConfig, RunConfig
 from cloud_tasks.common.task_db import TaskDatabase
 
 
@@ -1091,3 +1091,33 @@ def test_use_spot_is_not_set_unless_asked_for() -> None:
     config = Config(provider="GCP", gcp=GCPConfig(use_spot=False))
     config.overload_from_cli(vars(args))
     assert config.gcp.use_spot is True
+
+
+def test_allow_cpu_wasting_is_not_set_unless_asked_for() -> None:
+    """Leaving --allow-cpu-wasting off must leave the configured value alone.
+
+    argparse's store_true supplies False for an option that isn't given, and
+    overload_from_cli takes any value that isn't None as one the user asked for, so
+    without default=None every run that didn't name the flag would turn the setting off.
+
+    Returns:
+        None. Asserts the configured value survives a command line that doesn't mention
+        the flag, and that the flag still turns it on.
+    """
+    parser = build_parser()
+
+    args = parser.parse_args(["run", "--config", "/nonexistent", "--provider", "gcp"])
+    assert args.allow_cpu_wasting is None
+
+    config = Config(provider="GCP", run=RunConfig(allow_cpu_wasting=True))
+    config.overload_from_cli(vars(args))
+    assert config.run.allow_cpu_wasting is True
+
+    args = parser.parse_args(
+        ["run", "--config", "/nonexistent", "--provider", "gcp", "--allow-cpu-wasting"]
+    )
+    assert args.allow_cpu_wasting is True
+
+    config = Config(provider="GCP", run=RunConfig(allow_cpu_wasting=False))
+    config.overload_from_cli(vars(args))
+    assert config.run.allow_cpu_wasting is True

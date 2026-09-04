@@ -1,7 +1,31 @@
+import logging
+import re
 from abc import ABC, abstractmethod
-from typing import Any
+from collections.abc import Iterable
+from typing import Any, NamedTuple
 
 from ..common.config import ProviderConfig
+
+
+class ConstraintCheck(NamedTuple):
+    """The result of testing one configured constraint against one instance type.
+
+    Attributes:
+        name: The configuration option the constraint comes from, so a report can name
+            the thing the user has to change.
+        limit: The value the configuration asks for.
+        actual: What this instance type provides.
+        satisfied: Whether this instance type meets the constraint.
+        prefer_larger: True when a larger `actual` is closer to meeting `limit`, False when
+            a smaller one is, None when the constraint is an equality and neither is.
+    """
+
+    name: str
+    limit: Any
+    actual: Any
+    satisfied: bool
+    prefer_larger: bool | None
+
 
 # Type aliases for get_instance_pricing return structure (instance_type -> region -> zone -> pricing_info)
 # PricingInfo may contain mixed metadata (prices, strings, etc.) so values are Any.
@@ -13,6 +37,9 @@ InstancePricingResult = dict[str, RegionPricing]
 
 class InstanceManager(ABC):
     """Base interface for instance management operations."""
+
+    #: Replaced by each provider with its own module logger
+    _logger: logging.Logger = logging.getLogger(__name__)
 
     # These rankings are valid across all providers
     _PROCESSOR_FAMILY_TO_PERFORMANCE_RANKING = {
@@ -70,6 +97,185 @@ class InstanceManager(ABC):
         """Initialize the instance manager with configuration."""
         self.config = config
 
+    def local_credential_warning(self) -> str | None:
+        """Describe a problem with the credentials this process is running on, or None.
+
+        A job outlives the command that starts it: instances are created, monitored and
+        terminated for as long as there are tasks left, which can be days. Credentials that
+        belong to a person rather than to a service account stop working partway through
+        that, and the run then cannot even terminate the instances it is paying for.
+
+        Returns:
+            A warning to show the user before the job starts, or None if the credentials
+            are suitable for a long run. The base implementation returns None; providers
+            that can tell the difference override it.
+        """
+        return None
+
+    def effective_cpus_per_task(
+        self, instance_info: dict[str, Any], constraints: dict[str, Any] | None = None
+    ) -> float:
+        """Return the vCPUs each task gets on this instance type.
+
+        This is normally just cpus_per_task. With allow_cpu_wasting set, a task is given
+        more vCPUs than it asked for when that is the only way to give it the memory it
+        asked for: an instance type is sized in vCPUs, so the only way to give one task
+        more memory is to leave some of the vCPUs it comes with unused. The result is
+        capped at the size of the instance, so an instance type too small to run even one
+        task still fails the memory constraint rather than appearing to satisfy it.
+
+        Parameters:
+            instance_info: Instance type attributes; "vcpu" and "mem_gb" are used
+            constraints: Constraint dict; cpus_per_task, min_memory_per_task and
+                allow_cpu_wasting are used
+
+        Returns:
+            float: vCPUs per task, never more than the instance's vCPU count.
+        """
+        if constraints is None:
+            constraints = {}
+        cpus_per_task = constraints.get("cpus_per_task")
+        if not cpus_per_task:
+            cpus_per_task = 1
+        if not constraints.get("allow_cpu_wasting"):
+            return float(cpus_per_task)
+
+        min_memory_per_task = constraints.get("min_memory_per_task")
+        if not min_memory_per_task:
+            return float(cpus_per_task)
+
+        num_cpus = instance_info["vcpu"]
+        memory_per_cpu = instance_info["mem_gb"] / num_cpus
+        if memory_per_cpu <= 0:
+            return float(cpus_per_task)
+
+        cpus_for_memory = min_memory_per_task / memory_per_cpu
+        return float(min(max(cpus_per_task, cpus_for_memory), num_cpus))
+
+    def _check_instance_constraints(
+        self, instance_info: dict[str, Any], constraints: dict[str, Any] | None = None
+    ) -> list[ConstraintCheck]:
+        """Test every configured constraint against one instance type.
+
+        Every constraint is reported, whether or not it is met, so that a caller left with
+        no instance types at all can say which constraints did the excluding instead of
+        only that nothing was left.
+
+        Parameters:
+            instance_info: Dict of instance attributes. Keys used: "name", "vcpu",
+                "mem_gb", "local_ssd_gb", "architecture", "cpu_rank", "supports_spot".
+            constraints: Optional dict of constraints. Missing keys mean "no constraint".
+
+        Returns:
+            list[ConstraintCheck]: One entry per constraint that the configuration
+            actually sets. Empty if constraints is None or sets nothing.
+        """
+        if constraints is None:
+            return []
+
+        checks: list[ConstraintCheck] = []
+
+        def check(name: str, limit: Any, actual: Any, satisfied: bool, prefer_larger: bool | None):
+            checks.append(ConstraintCheck(name, limit, actual, satisfied, prefer_larger))
+
+        def check_min(name: str, actual: Any, limit: Any = None, as_name: str | None = None):
+            if limit is None:
+                limit = constraints.get(name)
+            if limit is None:
+                return
+            check(as_name or name, limit, actual, actual >= limit, True)
+
+        def check_max(name: str, actual: Any, limit: Any = None, as_name: str | None = None):
+            if limit is None:
+                limit = constraints.get(name)
+            if limit is None:
+                return
+            check(as_name or name, limit, actual, actual <= limit, False)
+
+        instance_types = constraints.get("instance_types")
+        if instance_types:
+            if isinstance(instance_types, str):
+                instance_types = [instance_types]
+            name = str(instance_info.get("name", ""))
+            matched = any(re.match(pattern, name) for pattern in instance_types)
+            check("instance_types", ", ".join(instance_types), name, matched, None)
+
+        cpus_per_task = self.effective_cpus_per_task(instance_info, constraints)
+        min_tasks_per_instance = constraints.get("min_tasks_per_instance")
+        max_tasks_per_instance = constraints.get("max_tasks_per_instance")
+
+        num_cpus = instance_info["vcpu"]
+        memory_per_cpu = instance_info["mem_gb"] / num_cpus
+        memory_per_task = memory_per_cpu * cpus_per_task
+
+        local_ssd_base_size = constraints.get("local_ssd_base_size")
+        if local_ssd_base_size is None:
+            local_ssd_base_size = 0
+        local_ssd_per_cpu = (instance_info["local_ssd_gb"] - local_ssd_base_size) / num_cpus
+        local_ssd_per_task = local_ssd_per_cpu * cpus_per_task
+
+        if constraints.get("architecture") is not None:
+            check(
+                "architecture",
+                constraints["architecture"],
+                instance_info["architecture"],
+                instance_info["architecture"] == constraints["architecture"],
+                None,
+            )
+
+        # cpu_rank is only read when something asks about it, so an instance type that
+        # doesn't report one can still be matched against the other constraints
+        if constraints.get("min_cpu_rank") is not None:
+            check_min("min_cpu_rank", instance_info["cpu_rank"])
+        if constraints.get("max_cpu_rank") is not None:
+            check_max("max_cpu_rank", instance_info["cpu_rank"])
+
+        # min/max_tasks_per_instance are constraints on the number of vCPUs once the vCPUs
+        # each task needs is known, so they are reported under their own names
+        check_min("min_cpu", num_cpus)
+        check_max("max_cpu", num_cpus)
+        if min_tasks_per_instance is not None:
+            check_min(
+                "min_tasks_per_instance",
+                num_cpus,
+                limit=cpus_per_task * min_tasks_per_instance,
+                as_name="min_tasks_per_instance (vCPUs needed)",
+            )
+        if max_tasks_per_instance is not None:
+            check_max(
+                "max_tasks_per_instance",
+                num_cpus,
+                limit=cpus_per_task * max_tasks_per_instance,
+                as_name="max_tasks_per_instance (vCPUs allowed)",
+            )
+
+        check_min("min_total_memory", instance_info["mem_gb"])
+        check_max("max_total_memory", instance_info["mem_gb"])
+        check_min("min_memory_per_cpu", memory_per_cpu)
+        check_max("max_memory_per_cpu", memory_per_cpu)
+        check_min("min_memory_per_task", memory_per_task)
+        check_max("max_memory_per_task", memory_per_task)
+        check_min("min_local_ssd", instance_info["local_ssd_gb"])
+        check_max("max_local_ssd", instance_info["local_ssd_gb"])
+        check_min("min_local_ssd_per_cpu", local_ssd_per_cpu)
+        check_max("max_local_ssd_per_cpu", local_ssd_per_cpu)
+        check_min("min_local_ssd_per_task", local_ssd_per_task)
+        check_max("max_local_ssd_per_task", local_ssd_per_task)
+
+        # Naming use_spot at all, even as False, restricts the choice to instance types
+        # that can be run as spot instances
+        if constraints.get("use_spot") is not None:
+            supports_spot = bool(instance_info["supports_spot"])
+            check(
+                "use_spot",
+                "an instance type that supports spot",
+                "supported" if supports_spot else "not supported",
+                supports_spot,
+                None,
+            )
+
+        return checks
+
     def _instance_matches_constraints(
         self, instance_info: dict[str, Any], constraints: dict[str, Any] | None = None
     ) -> bool:
@@ -100,112 +306,91 @@ class InstanceManager(ABC):
                 non-dict). KeyError may be raised if instance_info is missing
                 required keys used in the implementation.
         """
-        if constraints is None:
-            return True
-
-        cpus_per_task = constraints.get("cpus_per_task")
-        if cpus_per_task is None:
-            cpus_per_task = 1
-        min_tasks_per_instance = constraints.get("min_tasks_per_instance")
-        max_tasks_per_instance = constraints.get("max_tasks_per_instance")
-
-        # Derive min/max_cpu from cpus_per_task and min/max_tasks_per_instance
-        # if needed
-        min_cpu = constraints.get("min_cpu")
-        max_cpu = constraints.get("max_cpu")
-
-        if min_tasks_per_instance is not None:
-            min_cpu_from_tasks = cpus_per_task * min_tasks_per_instance
-            if min_cpu is None:
-                min_cpu = min_cpu_from_tasks
-            else:
-                min_cpu = max(min_cpu, min_cpu_from_tasks)
-        if max_tasks_per_instance is not None:
-            max_cpu_from_tasks = cpus_per_task * max_tasks_per_instance
-            if max_cpu is None:
-                max_cpu = max_cpu_from_tasks
-            else:
-                max_cpu = min(max_cpu, max_cpu_from_tasks)
-
-        num_cpus = instance_info["vcpu"]
-        memory_per_cpu = instance_info["mem_gb"] / num_cpus
-        memory_per_task = memory_per_cpu * cpus_per_task
-
-        local_ssd_base_size = constraints.get("local_ssd_base_size")
-        if local_ssd_base_size is None:
-            local_ssd_base_size = 0
-        local_ssd_per_cpu = (instance_info["local_ssd_gb"] - local_ssd_base_size) / num_cpus
-        local_ssd_per_task = local_ssd_per_cpu * cpus_per_task
-
-        return (
-            (
-                constraints.get("architecture") is None
-                or instance_info["architecture"] == constraints["architecture"]
-            )
-            and (
-                constraints.get("min_cpu_rank") is None
-                or instance_info["cpu_rank"] >= constraints["min_cpu_rank"]
-            )
-            and (
-                constraints.get("max_cpu_rank") is None
-                or instance_info["cpu_rank"] <= constraints["max_cpu_rank"]
-            )
-            and (min_cpu is None or instance_info["vcpu"] >= min_cpu)
-            and (max_cpu is None or instance_info["vcpu"] <= max_cpu)
-            and (
-                constraints.get("min_total_memory") is None
-                or instance_info["mem_gb"] >= constraints["min_total_memory"]
-            )
-            and (
-                constraints.get("max_total_memory") is None
-                or instance_info["mem_gb"] <= constraints["max_total_memory"]
-            )
-            and (
-                constraints.get("min_memory_per_cpu") is None
-                or memory_per_cpu >= constraints["min_memory_per_cpu"]
-            )
-            and (
-                constraints.get("max_memory_per_cpu") is None
-                or memory_per_cpu <= constraints["max_memory_per_cpu"]
-            )
-            and (
-                constraints.get("min_memory_per_task") is None
-                or memory_per_task >= constraints["min_memory_per_task"]
-            )
-            and (
-                constraints.get("max_memory_per_task") is None
-                or memory_per_task <= constraints["max_memory_per_task"]
-            )
-            and (
-                constraints.get("min_local_ssd") is None
-                or instance_info["local_ssd_gb"] >= constraints["min_local_ssd"]
-            )
-            and (
-                constraints.get("max_local_ssd") is None
-                or instance_info["local_ssd_gb"] <= constraints["max_local_ssd"]
-            )
-            and (
-                constraints.get("min_local_ssd_per_cpu") is None
-                or local_ssd_per_cpu >= constraints["min_local_ssd_per_cpu"]
-            )
-            and (
-                constraints.get("max_local_ssd_per_cpu") is None
-                or local_ssd_per_cpu <= constraints["max_local_ssd_per_cpu"]
-            )
-            and (
-                constraints.get("min_local_ssd_per_task") is None
-                or local_ssd_per_task >= constraints["min_local_ssd_per_task"]
-            )
-            and (
-                constraints.get("max_local_ssd_per_task") is None
-                or local_ssd_per_task <= constraints["max_local_ssd_per_task"]
-            )
-            and (
-                "use_spot" not in constraints
-                or constraints["use_spot"] is None
-                or instance_info["supports_spot"]
-            )
+        return all(
+            check.satisfied
+            for check in self._check_instance_constraints(instance_info, constraints)
         )
+
+    def describe_unmet_constraints(
+        self,
+        instance_infos: Iterable[dict[str, Any]],
+        constraints: dict[str, Any] | None = None,
+    ) -> list[str]:
+        """Describe the constraints that not one of these instance types satisfies.
+
+        Meant for the case where the configuration selects nothing at all: knowing that
+        no instance type was left says nothing about which of a dozen constraints to
+        relax, and a constraint that some type met is not the one to change.
+
+        Parameters:
+            instance_infos: Every instance type that was considered
+            constraints: The constraints they were tested against
+
+        Returns:
+            list[str]: One line per constraint that every instance type failed, naming the
+            configuration option, what it asks for, and the closest any instance type
+            came. Empty if no constraint was failed by all of them.
+        """
+        satisfied_by_any: set[str] = set()
+        failures: dict[str, list[ConstraintCheck]] = {}
+        for instance_info in instance_infos:
+            for check in self._check_instance_constraints(instance_info, constraints):
+                if check.satisfied:
+                    satisfied_by_any.add(check.name)
+                else:
+                    failures.setdefault(check.name, []).append(check)
+
+        lines = []
+        for name, checks in failures.items():
+            if name in satisfied_by_any:
+                continue
+            first = checks[0]
+            if first.prefer_larger is None:
+                available = sorted({str(check.actual) for check in checks})
+                if len(available) > 4:
+                    available = available[:4] + ["..."]
+                lines.append(f"{name}: needs {first.limit}, available: {', '.join(available)}")
+                continue
+            actuals = [check.actual for check in checks]
+            closest = max(actuals) if first.prefer_larger else min(actuals)
+            comparison = ">=" if first.prefer_larger else "<="
+            lines.append(
+                f"{name}: needs {comparison} {first.limit:g}, closest available {closest:g}"
+            )
+        return lines
+
+    async def _report_no_instance_types(self, constraints: dict[str, Any] | None) -> None:
+        """Log why the constraints left no instance type to start.
+
+        Every instance type the provider offers is tested again here, without the
+        constraints, so the report can say which constraints not one of them satisfies.
+        That is the only part of the configuration worth changing: a constraint that some
+        instance type meets is not what emptied the list.
+
+        Parameters:
+            constraints: The constraints that selected nothing
+        """
+        try:
+            all_instance_types = await self.get_available_instance_types()
+        except Exception as e:  # pragma: no cover - diagnosis must not mask the real error
+            self._logger.debug(f"Could not list unconstrained instance types: {e}")
+            return
+
+        self._logger.error(
+            f"No instance type meets the requirements. Of the {len(all_instance_types)} "
+            "instance types offered here:"
+        )
+        unmet = self.describe_unmet_constraints(all_instance_types.values(), constraints)
+        if unmet:
+            self._logger.error("  these constraints are met by none of them:")
+            for line in unmet:
+                self._logger.error(f"    {line}")
+        else:
+            self._logger.error(
+                "  every constraint is met by some instance type, but no single instance "
+                "type meets all of them at once; the constraints have to be relaxed "
+                "against each other"
+            )
 
     def _get_boot_disk_size(
         self, instance_info: dict[str, Any], boot_disk_constraints: dict[str, Any]
