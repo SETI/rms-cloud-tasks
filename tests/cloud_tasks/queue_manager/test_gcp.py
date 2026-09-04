@@ -31,8 +31,9 @@ warnings.filterwarnings("ignore", message="coroutine .* was never awaited")
 
 
 def make_subscription(
-    topic="projects/test-project/topics/test-queue-topic", ack_deadline_seconds=60
-):
+    topic: str = "projects/test-project/topics/test-queue-topic",
+    ack_deadline_seconds: int = 60,
+) -> MagicMock:
     """Build a stand-in for a Pub/Sub Subscription as get_subscription returns it.
 
     Parameters:
@@ -757,7 +758,9 @@ async def test_initialization_with_project_id_kwarg(mock_pubsub_client):
 
 
 @pytest.mark.asyncio
-async def test_topic_read_error(gcp_queue, mock_pubsub_client):
+async def test_topic_read_error(
+    gcp_queue: GCPPubSubQueue, mock_pubsub_client: tuple[MagicMock, MagicMock]
+) -> None:
     """An error other than NotFound while reading the topic is propagated."""
     mock_publisher, mock_subscriber = mock_pubsub_client
     mock_publisher.get_topic.side_effect = gcp_exceptions.PermissionDenied("Permission denied")
@@ -768,7 +771,9 @@ async def test_topic_read_error(gcp_queue, mock_pubsub_client):
 
 
 @pytest.mark.asyncio
-async def test_subscription_read_error(gcp_queue, mock_pubsub_client):
+async def test_subscription_read_error(
+    gcp_queue: GCPPubSubQueue, mock_pubsub_client: tuple[MagicMock, MagicMock]
+) -> None:
     """An error other than NotFound while reading the subscription is propagated."""
     mock_publisher, mock_subscriber = mock_pubsub_client
     mock_subscriber.get_subscription.side_effect = gcp_exceptions.PermissionDenied(
@@ -975,7 +980,9 @@ async def test_delete_queue_error_handling(gcp_queue, mock_pubsub_client):
 
 
 @pytest.mark.asyncio
-async def test_construction_does_not_read_pubsub(mock_pubsub_client):
+async def test_construction_does_not_read_pubsub(
+    mock_pubsub_client: tuple[MagicMock, MagicMock],
+) -> None:
     """Constructing a queue must not ask Pub/Sub whether the queue already exists.
 
     A get_topic/get_subscription probe made moments after the queue was deleted can still
@@ -1062,8 +1069,8 @@ async def test_initialization_with_explicit_queue_name(mock_pubsub_client, gcp_c
 
 @pytest.mark.asyncio
 async def test_ensure_queue_ready_creates_subscription_reported_as_deleted(
-    gcp_queue, mock_pubsub_client
-):
+    gcp_queue: GCPPubSubQueue, mock_pubsub_client: tuple[MagicMock, MagicMock]
+) -> None:
     """A queue whose deletion Pub/Sub has not caught up with is still created.
 
     This is the failure in issue #56: the subscription had just been deleted, Pub/Sub still
@@ -1235,8 +1242,10 @@ async def test_receive_messages_acknowledge_error(gcp_queue, mock_pubsub_client)
 
 @pytest.mark.asyncio
 async def test_ensure_queue_ready_retries_until_subscription_can_be_created(
-    gcp_queue, mock_pubsub_client, monkeypatch
-):
+    gcp_queue: GCPPubSubQueue,
+    mock_pubsub_client: tuple[MagicMock, MagicMock],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """AlreadyExists is not believed while the subscription cannot be read back.
 
     Pub/Sub can answer create_subscription with AlreadyExists from a replica that has not yet
@@ -1265,8 +1274,11 @@ async def test_ensure_queue_ready_retries_until_subscription_can_be_created(
 
 @pytest.mark.asyncio
 async def test_ensure_queue_ready_recreates_orphaned_subscription(
-    gcp_queue, mock_pubsub_client, monkeypatch, caplog
-):
+    gcp_queue: GCPPubSubQueue,
+    mock_pubsub_client: tuple[MagicMock, MagicMock],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """A subscription left attached to a deleted topic is deleted and created again."""
     mock_publisher, mock_subscriber = mock_pubsub_client
     monkeypatch.setattr(GCPPubSubQueue, "_PROPAGATION_POLL_INTERVAL", 0)
@@ -1301,7 +1313,9 @@ async def test_ensure_queue_ready_recreates_orphaned_subscription(
 
 
 @pytest.mark.asyncio
-async def test_receive_refuses_orphaned_subscription(gcp_queue, mock_pubsub_client):
+async def test_receive_refuses_orphaned_subscription(
+    gcp_queue: GCPPubSubQueue, mock_pubsub_client: tuple[MagicMock, MagicMock]
+) -> None:
     """A consumer will not silently use a subscription whose topic has been deleted."""
     mock_publisher, mock_subscriber = mock_pubsub_client
     mock_subscriber.create_subscription.side_effect = gcp_exceptions.AlreadyExists(
@@ -1319,7 +1333,9 @@ async def test_receive_refuses_orphaned_subscription(gcp_queue, mock_pubsub_clie
 
 
 @pytest.mark.asyncio
-async def test_subscription_attached_to_another_topic_is_refused(gcp_queue, mock_pubsub_client):
+async def test_subscription_attached_to_another_topic_is_refused(
+    gcp_queue: GCPPubSubQueue, mock_pubsub_client: tuple[MagicMock, MagicMock]
+) -> None:
     """A subscription of the right name on the wrong topic is an error, not a queue."""
     mock_publisher, mock_subscriber = mock_pubsub_client
     mock_subscriber.create_subscription.side_effect = gcp_exceptions.AlreadyExists(
@@ -1336,8 +1352,10 @@ async def test_subscription_attached_to_another_topic_is_refused(gcp_queue, mock
 
 @pytest.mark.asyncio
 async def test_ensure_queue_ready_fails_if_subscription_never_appears(
-    gcp_queue, mock_pubsub_client, monkeypatch
-):
+    gcp_queue: GCPPubSubQueue,
+    mock_pubsub_client: tuple[MagicMock, MagicMock],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Enqueueing must not start when the subscription cannot be confirmed to be live."""
     mock_publisher, mock_subscriber = mock_pubsub_client
     monkeypatch.setattr(GCPPubSubQueue, "_PROPAGATION_TIMEOUT", 0.01)
@@ -1355,8 +1373,10 @@ async def test_ensure_queue_ready_fails_if_subscription_never_appears(
 
 @pytest.mark.asyncio
 async def test_delete_subscription_waits_for_deletion_to_be_visible(
-    gcp_queue, mock_pubsub_client, monkeypatch
-):
+    gcp_queue: GCPPubSubQueue,
+    mock_pubsub_client: tuple[MagicMock, MagicMock],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Deletion returns only once Pub/Sub stops reporting the subscription."""
     mock_publisher, mock_subscriber = mock_pubsub_client
     monkeypatch.setattr(GCPPubSubQueue, "_PROPAGATION_POLL_INTERVAL", 0)
@@ -1379,7 +1399,9 @@ async def test_delete_subscription_waits_for_deletion_to_be_visible(
 
 
 @pytest.mark.asyncio
-async def test_get_queue_depth_does_not_create_the_queue(gcp_queue, mock_pubsub_client):
+async def test_get_queue_depth_does_not_create_the_queue(
+    gcp_queue: GCPPubSubQueue, mock_pubsub_client: tuple[MagicMock, MagicMock]
+) -> None:
     """The depth of a queue that doesn't exist is unknown, and asking must not create it."""
     mock_publisher, mock_subscriber = mock_pubsub_client
 
@@ -1390,7 +1412,9 @@ async def test_get_queue_depth_does_not_create_the_queue(gcp_queue, mock_pubsub_
 
 
 @pytest.mark.asyncio
-async def test_existing_subscription_ack_deadline_is_updated(mock_pubsub_client, gcp_config):
+async def test_existing_subscription_ack_deadline_is_updated(
+    mock_pubsub_client: tuple[MagicMock, MagicMock], gcp_config: MagicMock
+) -> None:
     """An existing subscription is brought to the requested visibility timeout."""
     mock_publisher, mock_subscriber = mock_pubsub_client
     mock_subscriber.create_subscription.side_effect = gcp_exceptions.AlreadyExists(
@@ -1415,8 +1439,8 @@ async def test_existing_subscription_ack_deadline_is_updated(mock_pubsub_client,
 
 @pytest.mark.asyncio
 async def test_existing_subscription_ack_deadline_left_alone_when_unchanged(
-    mock_pubsub_client, gcp_config
-):
+    mock_pubsub_client: tuple[MagicMock, MagicMock], gcp_config: MagicMock
+) -> None:
     """A subscription that already has the requested visibility timeout is not modified."""
     mock_publisher, mock_subscriber = mock_pubsub_client
     mock_subscriber.create_subscription.side_effect = gcp_exceptions.AlreadyExists(
@@ -1433,8 +1457,10 @@ async def test_existing_subscription_ack_deadline_left_alone_when_unchanged(
 
 @pytest.mark.asyncio
 async def test_subscription_creation_recreates_a_topic_that_is_not_there(
-    gcp_queue, mock_pubsub_client, monkeypatch
-):
+    gcp_queue: GCPPubSubQueue,
+    mock_pubsub_client: tuple[MagicMock, MagicMock],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A topic that turns out not to exist when the subscription is created is created again.
 
     create_topic can be answered with AlreadyExists by a topic of the same name whose deletion
@@ -1472,8 +1498,11 @@ async def test_subscription_creation_recreates_a_topic_that_is_not_there(
 
 @pytest.mark.asyncio
 async def test_delete_queue_warns_when_deletion_is_never_visible(
-    gcp_queue, mock_pubsub_client, monkeypatch, caplog
-):
+    gcp_queue: GCPPubSubQueue,
+    mock_pubsub_client: tuple[MagicMock, MagicMock],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """A deletion Pub/Sub never confirms is reported instead of being waited on forever."""
     mock_publisher, mock_subscriber = mock_pubsub_client
     monkeypatch.setattr(GCPPubSubQueue, "_PROPAGATION_TIMEOUT", 0)
@@ -1492,3 +1521,48 @@ async def test_delete_queue_warns_when_deletion_is_never_visible(
 
     warnings = [record for record in caplog.records if "after it was deleted" in record.message]
     assert len(warnings) == 2
+
+
+@pytest.mark.asyncio
+async def test_delete_queue_waits_for_a_creation_in_progress(
+    gcp_queue: GCPPubSubQueue, mock_pubsub_client: tuple[MagicMock, MagicMock]
+) -> None:
+    """Deleting must not cut in on a creation sequence that has not finished.
+
+    A publisher completes its readiness check under the admin lock and then publishes. A
+    deletion that ran between those two steps would take away the subscription the message
+    was about to be delivered to, and Pub/Sub drops such a message without an error.
+    """
+    mock_publisher, mock_subscriber = mock_pubsub_client
+
+    async with gcp_queue._admin_lock:
+        deletion = asyncio.create_task(gcp_queue.delete_queue())
+        # Give the task every chance to get in; it must be waiting on the lock instead
+        for _ in range(3):
+            await asyncio.sleep(0)
+        assert not deletion.done()
+        assert not mock_subscriber.delete_subscription.called
+
+    await asyncio.wait_for(deletion, timeout=5)
+    assert mock_subscriber.delete_subscription.called
+    assert mock_publisher.delete_topic.called
+
+
+@pytest.mark.asyncio
+async def test_purge_queue_holds_the_lock_across_delete_and_recreate(
+    gcp_queue: GCPPubSubQueue, mock_pubsub_client: tuple[MagicMock, MagicMock]
+) -> None:
+    """Purging leaves no window in which the queue has no subscription to deliver to."""
+    mock_publisher, mock_subscriber = mock_pubsub_client
+
+    async with gcp_queue._admin_lock:
+        purge = asyncio.create_task(gcp_queue.purge_queue())
+        for _ in range(3):
+            await asyncio.sleep(0)
+        assert not purge.done()
+
+    await asyncio.wait_for(purge, timeout=5)
+    # The subscription is there again by the time purging returns
+    assert mock_subscriber.delete_subscription.called
+    assert mock_subscriber.create_subscription.called
+    assert mock_subscriber.get_subscription(request={}) is not None

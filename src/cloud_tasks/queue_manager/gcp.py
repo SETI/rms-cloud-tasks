@@ -351,7 +351,7 @@ class GCPPubSubQueue(QueueManager):
         and AlreadyExists is only accepted once the subscription that already exists has been
         read back and found attached to this queue's topic.
 
-        Args:
+        Parameters:
             repair_orphaned: If True, a subscription whose topic has been deleted is deleted and
                 created again. Such a subscription can never receive anything published to the
                 current topic, but recreating it discards whatever it still holds, so only
@@ -466,7 +466,6 @@ class GCPPubSubQueue(QueueManager):
                 break
             else:
                 # TODO https://cloud.google.com/pubsub/docs/exactly-once-delivery#python
-                time.sleep(2)
                 self._logger.info(f'Subscription "{self._subscription_name}" created successfully')
                 break
 
@@ -476,7 +475,7 @@ class GCPPubSubQueue(QueueManager):
     async def _create_topic_and_subscription(self, repair_orphaned: bool = False) -> None:
         """Create the Pub/Sub topic and subscription if they don't exist.
 
-        Args:
+        Parameters:
             repair_orphaned: Passed to _create_subscription.
         """
         # One creation sequence at a time: a task must not be published while another coroutine
@@ -1056,11 +1055,18 @@ class GCPPubSubQueue(QueueManager):
     async def purge_queue(self) -> None:
         """Remove all messages from the queue by deleting the subscription."""
         self._logger.debug(f"Purging queue '{self._queue_name}'")
-        await self._delete_subscription()
-        await self._create_topic_and_subscription()
+        # Under the lock for the whole sequence: between the delete and the recreation there
+        # is no subscription, and anything published in that window is dropped by Pub/Sub
+        # without an error. The topic and subscription are created through the helpers rather
+        # than _create_topic_and_subscription, which takes this lock itself.
+        async with self._admin_lock:
+            await self._delete_subscription()
+            await self._create_topic()
+            await self._create_subscription()
 
     async def delete_queue(self) -> None:
         """Delete both the Pub/Sub subscription and topic entirely."""
         self._logger.debug(f"Deleting queue '{self._queue_name}'")
-        await self._delete_subscription()
-        await self._delete_topic()
+        async with self._admin_lock:
+            await self._delete_subscription()
+            await self._delete_topic()
