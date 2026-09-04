@@ -1086,22 +1086,29 @@ class AWSEC2InstanceManager(InstanceManager):
             (machine_type, zone, boot_disk_type, price_info)
             for (machine_type, zone, boot_disk_type), price_info in zone_pricing_data.items()
         ]
-        # Sort by price per vCPU, then by decreasing vCPU (this gives us the cheapest
-        # instance type with the most vCPUs). We round the price to 2 decimal places so
-        # that small differences in price don't make us choose an instance with fewer
-        # vCPUs that would otherwise cost the same.
+        # Sort by what it costs to run one task, then by the most tasks and the most vCPUs
+        # (this gives us the cheapest instance type that gets the most done per instance).
+        # The price of a vCPU is not the price of the work: when a task can't use a whole
+        # vCPU's worth of memory, or cpus_per_task doesn't divide the vCPU count, some of
+        # the vCPUs are paid for and left idle, and the type with the cheapest vCPUs is the
+        # one that wastes the most of them. We round the price to 2 decimal places so that
+        # small differences in price don't make us choose an instance that runs fewer tasks
+        # and would otherwise cost the same.
         priced_instances.sort(
             key=lambda x: (
-                round(cast(float, x[3]["total_price_per_cpu"]), 2),
+                round(self.price_per_task(x[3], constraints), 2),
+                -self.tasks_per_instance(x[3], constraints),
                 -cast(int, x[3]["vcpu"]),
             )
         )
 
-        self._logger.debug("Instance types sorted by price (cheapest and most vCPUs first):")
+        self._logger.debug("Instance types sorted by price (cheapest and most tasks first):")
         for i, (machine_type, zone, boot_disk_type, price_info) in enumerate(priced_instances):
             self._logger.debug(
                 f"  [{i + 1:3d}] {machine_type:20s} in {zone:15s}: "
-                f"${price_info['total_price']:10.6f}/hour"
+                f"${price_info['total_price']:10.6f}/hour = "
+                f"${self.price_per_task(price_info, constraints):10.6f}/task/hour "
+                f"({self.tasks_per_instance(price_info, constraints)} task(s))"
             )
 
         selected_type, selected_zone, selected_boot_disk_type, selected_price_info = (
@@ -1110,7 +1117,9 @@ class AWSEC2InstanceManager(InstanceManager):
         total_price = cast(float, selected_price_info["total_price"])
         self._logger.debug(
             f"Selected {selected_type} ({selected_boot_disk_type}) in {selected_zone} at "
-            f"${total_price:.6f}/hour {' (spot)' if constraints.get('use_spot') else '(on demand)'}"
+            f"${total_price:.6f}/hour "
+            f"(${self.price_per_task(selected_price_info, constraints):.6f} per task per hour) "
+            f"{' (spot)' if constraints.get('use_spot') else '(on demand)'}"
         )
         result: dict[str, float | str | None] = dict(selected_price_info)
         result["boot_disk_type"] = selected_boot_disk_type

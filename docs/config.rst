@@ -56,15 +56,28 @@ Options to select a compute instance type
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Generally speaking, within the constraints provided, the system will attempt to use the
-instance type with the lowest cost per vCPU with the maximum number of vCPUs per instance.
-This results in needing the fewest instances to get the job done, since each instance can
-do maximal work; this may or may not be an appropriate choice for your workload (for
-example, having a large number of vCPUs, and thus simultaneosly running tasks, may result
-in the tasks being throttled by the network or disk bandwidth). With no constraints, the
+instance type with the lowest cost *per task*, and among equals the one that runs the most
+tasks per instance. This results in needing the fewest instances to get the job done, since
+each instance can do maximal work; this may or may not be an appropriate choice for your
+workload (for example, having a large number of simultaneously running tasks may result in
+the tasks being throttled by the network or disk bandwidth). With no constraints, the
 system will tend to choose the cheapest (and probably worst-performing) instance type with
 the least memory, the least disk space, and the slowest disk type. *Thus, while no
 constraints are required, it is recommended to specify at least some minimal constraints
 to avoid selecting the worst possible instance type.*
+
+The cost of a task, rather than the cost of a vCPU, is what decides this, because a vCPU
+that can't be put to work is still paid for. The two are the same whenever every vCPU on
+the instance runs a task, and they part company when some can't:
+
+- ``min_memory_per_task`` with ``allow_cpu_wasting`` means a task takes as many vCPUs as it
+  needs to get its memory. The cheapest vCPUs are sold on the instance types with the least
+  memory per vCPU, which are exactly the types where the most vCPUs then sit idle, so
+  ranking by the price of a vCPU reliably picks the worst machine for the job. An
+  ``n2-highcpu-32`` (32 GB) and an ``n2-highmem-32`` (256 GB) both have 32 vCPUs, but with
+  ``min_memory_per_task: 16`` the first runs 2 tasks and the second runs 16.
+- ``max_tasks_per_instance`` caps how many tasks run whatever the vCPU count allows.
+- ``cpus_per_task`` need not divide the vCPU count evenly, and the remainder runs nothing.
 
 If you need specific performance, specify the instance types you are willing to accept as
 a regular expression. For example, to allow all GCP "N2" instances, specify

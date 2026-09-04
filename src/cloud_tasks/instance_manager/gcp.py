@@ -1501,28 +1501,35 @@ class GCPComputeInstanceManager(InstanceManager):
             (machine_type, zone, boot_disk_type, price_info)
             for (machine_type, zone, boot_disk_type), price_info in zone_pricing_data.items()
         ]
-        # Sort by price per vCPU, then by decreasing vCPU (this gives us the cheapest
-        # instance type with the most vCPUs). Instead of using the price_per_vcpu field,
-        # we use the total_price field and divide by the number of vCPUs. This gives us a
-        # more accurate comparison of the cost of the instance including memory and disk.
-        # We round the price to 4 decimal places so that small differences in price don't
-        # make us choose an instance with fewer vCPUs that would otherwise cost the same.
+        # Sort by what it costs to run one task, then by the most tasks and the most vCPUs
+        # (this gives us the cheapest instance type that gets the most done per instance).
+        # The price of a vCPU is not the price of the work: when a task can't use a whole
+        # vCPU's worth of memory, or cpus_per_task doesn't divide the vCPU count, some of
+        # the vCPUs are paid for and left idle, and the type with the cheapest vCPUs is the
+        # one that wastes the most of them. We use total_price rather than the per-vCPU
+        # field so the comparison includes memory and disk. We round the price to 4 decimal
+        # places so that small differences in price don't make us choose an instance that
+        # runs fewer tasks and would otherwise cost the same.
         priced_instances.sort(
             key=lambda x: (
-                round(cast(float, x[3]["total_price"]) / cast(int, x[3]["vcpu"]), 4),
+                round(self.price_per_task(x[3], constraints), 4),
+                -self.tasks_per_instance(x[3], constraints),
                 -cast(int, x[3]["vcpu"]),
             )
         )
 
-        self._logger.debug("Instance types sorted by price (cheapest and most vCPUs first):")
+        self._logger.debug("Instance types sorted by price (cheapest and most tasks first):")
         for i, (machine_type, zone, boot_disk_type, price_info) in enumerate(priced_instances):
             total_p = cast(float, price_info["total_price"])
             vcpu = cast(int, price_info["vcpu"])
+            num_tasks = self.tasks_per_instance(price_info, constraints)
             self._logger.debug(
                 f"  [{i + 1:3d}] {machine_type:20s} ({boot_disk_type:12s}) "
                 f"in {zone:15s}: "
                 f"${total_p:10.6f}/hour = "
-                f"${total_p / vcpu:10.6f}/vCPU/hour"
+                f"${total_p / vcpu:10.6f}/vCPU/hour = "
+                f"${self.price_per_task(price_info, constraints):10.6f}/task/hour "
+                f"({num_tasks} task(s))"
             )
 
         selected_type, selected_zone, selected_boot_disk_type, selected_price_info = (
@@ -1532,6 +1539,7 @@ class GCPComputeInstanceManager(InstanceManager):
         self._logger.debug(
             f"Selected {selected_type} ({selected_boot_disk_type:12s}) in "
             f"{selected_zone} at ${total_price:.6f} per hour "
+            f"(${self.price_per_task(selected_price_info, constraints):.6f} per task per hour) "
             f"{' (spot)' if use_spot else '(on demand)'}"
         )
 

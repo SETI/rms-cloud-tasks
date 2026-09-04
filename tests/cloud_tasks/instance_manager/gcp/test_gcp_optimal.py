@@ -303,7 +303,7 @@ async def test_get_optimal_instance_type_logs_sorted_instances(
         await gcp_instance_manager_n1_n2.get_optimal_instance_type(constraints)
     # Assert: log should contain the sorted instance types by price
     assert any(
-        "Instance types sorted by price (cheapest and most vCPUs first):" in record.message
+        "Instance types sorted by price (cheapest and most tasks first):" in record.message
         for record in caplog.records
     )
     # Also check that the log contains the expected instance type names
@@ -431,3 +431,102 @@ async def test_get_optimal_instance_type_reports_conflicting_constraints(
     # Saying that they conflict is no help on its own; it has to say what to change
     assert "would have to" in reported
     assert "instance type(s) would match" in reported
+
+
+def _priced(name: str, vcpu: int, mem_gb: float, total_price: float) -> dict[str, Any]:
+    """Build the pricing entry get_optimal_instance_type ranks instance types from.
+
+    Parameters:
+        name: Machine type name.
+        vcpu: vCPU count.
+        mem_gb: Memory in GB.
+        total_price: Whole-instance price per hour.
+
+    Returns:
+        dict[str, Any]: A price_info dict carrying the attributes the ranking reads.
+    """
+    return {
+        "name": name,
+        "vcpu": vcpu,
+        "mem_gb": mem_gb,
+        "local_ssd_gb": 0,
+        "total_price": total_price,
+        "total_price_per_cpu": total_price / vcpu,
+        "boot_disk_gb": 10,
+        "boot_disk_type": "pd-balanced",
+        "boot_disk_iops": None,
+        "boot_disk_throughput": None,
+        "available_boot_disk_types": ["pd-balanced"],
+        "zone": "us-central1-*",
+    }
+
+
+@pytest.mark.asyncio
+async def test_get_optimal_instance_type_ranks_by_the_cost_of_a_task(
+    gcp_instance_manager_n1_n2: GCPComputeInstanceManager, mocker
+) -> None:
+    """The cheapest vCPUs are no bargain when a memory floor leaves most of them idle.
+
+    Both types have 32 vCPUs and the high-CPU one is cheaper outright and per vCPU, but a
+    16 GB task needs 16 of its cores and only 2 of the high-memory machine's, so it runs 2
+    tasks where the other runs 16.
+    """
+    manager = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
+    constraints = {
+        "boot_disk_types": ["pd-balanced"],
+        "use_spot": False,
+        "cpus_per_task": 1,
+        "min_memory_per_task": 16,
+        "allow_cpu_wasting": True,
+    }
+    highcpu = _priced("n2-highcpu-32", 32, 32, 0.69)
+    highmem = _priced("n2-highmem-32", 32, 256, 1.55)
+    mocker.patch.object(
+        manager,
+        "get_available_instance_types",
+        return_value={"n2-highcpu-32": highcpu, "n2-highmem-32": highmem},
+    )
+    mocker.patch.object(
+        manager,
+        "get_instance_pricing",
+        return_value={
+            "n2-highcpu-32": {"us-central1-*": {"pd-balanced": highcpu}},
+            "n2-highmem-32": {"us-central1-*": {"pd-balanced": highmem}},
+        },
+    )
+
+    selected = await manager.get_optimal_instance_type(constraints)
+
+    assert selected["name"] == "n2-highmem-32"
+
+
+@pytest.mark.asyncio
+async def test_get_optimal_instance_type_still_takes_the_cheaper_type_without_a_memory_floor(
+    gcp_instance_manager_n1_n2: GCPComputeInstanceManager, mocker
+) -> None:
+    """With every vCPU usable, the cheapest vCPU is the cheapest task and nothing changes."""
+    manager = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
+    constraints = {
+        "boot_disk_types": ["pd-balanced"],
+        "use_spot": False,
+        "cpus_per_task": 1,
+    }
+    highcpu = _priced("n2-highcpu-32", 32, 32, 0.69)
+    highmem = _priced("n2-highmem-32", 32, 256, 1.55)
+    mocker.patch.object(
+        manager,
+        "get_available_instance_types",
+        return_value={"n2-highcpu-32": highcpu, "n2-highmem-32": highmem},
+    )
+    mocker.patch.object(
+        manager,
+        "get_instance_pricing",
+        return_value={
+            "n2-highcpu-32": {"us-central1-*": {"pd-balanced": highcpu}},
+            "n2-highmem-32": {"us-central1-*": {"pd-balanced": highmem}},
+        },
+    )
+
+    selected = await manager.get_optimal_instance_type(constraints)
+
+    assert selected["name"] == "n2-highcpu-32"

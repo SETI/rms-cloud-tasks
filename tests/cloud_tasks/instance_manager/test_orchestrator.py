@@ -77,29 +77,10 @@ def orchestrator(mock_config):
 
     # Setup orchestrator for testing
     orchestrator._instance_manager = AsyncMock()
-    # local_credential_warning and effective_cpus_per_task are synchronous on the real
-    # interface. The credentials are fine by default; the vCPUs each task gets is worked
-    # out by the real implementation, since what the orchestrator derives from it is what
-    # these tests are about
+    # local_credential_warning is synchronous on the real interface, and the credentials
+    # are fine by default
     orchestrator._instance_manager.local_credential_warning = Mock(return_value=None)
-
-    def effective_cpus_per_task(instance_info, constraints=None):
-        """Work out the vCPUs per task the way a real instance manager would.
-
-        Parameters:
-            instance_info: Instance type attributes
-            constraints: Constraint dict, or None
-
-        Returns:
-            float: vCPUs per task, from the real InstanceManager implementation.
-        """
-        return InstanceManager.effective_cpus_per_task(
-            orchestrator._instance_manager, instance_info, constraints
-        )
-
-    orchestrator._instance_manager.effective_cpus_per_task = Mock(
-        side_effect=effective_cpus_per_task
-    )
+    _wire_sync_instance_manager_methods(orchestrator)
     orchestrator._task_queue = AsyncMock()
     orchestrator._optimal_instance_info = {
         "name": "n1-standard-2",
@@ -935,11 +916,52 @@ def _configure_run(orchestrator, **fields) -> None:
         **fields: RunConfig fields to set
     """
     orchestrator._run_config = RunConfig(**fields)
-    orchestrator._instance_manager.effective_cpus_per_task = Mock(
-        side_effect=lambda instance_info, constraints=None: InstanceManager.effective_cpus_per_task(
+    _wire_sync_instance_manager_methods(orchestrator)
+
+
+def _wire_sync_instance_manager_methods(orchestrator) -> None:
+    """Give the mocked instance manager the real synchronous capacity calculations.
+
+    effective_cpus_per_task and tasks_per_instance are synchronous on the real interface,
+    so an AsyncMock would hand back coroutines. What the orchestrator derives from them is
+    what these tests are about, so they run the real implementations.
+
+    Parameters:
+        orchestrator: The orchestrator under test
+    """
+
+    def effective_cpus_per_task(instance_info, constraints=None):
+        """Work out the vCPUs per task the way a real instance manager would.
+
+        Parameters:
+            instance_info: Instance type attributes
+            constraints: Constraint dict, or None
+
+        Returns:
+            float: vCPUs per task, from the real InstanceManager implementation.
+        """
+        return InstanceManager.effective_cpus_per_task(
             orchestrator._instance_manager, instance_info, constraints
         )
+
+    def tasks_per_instance(instance_info, constraints=None):
+        """Work out the tasks per instance the way a real instance manager would.
+
+        Parameters:
+            instance_info: Instance type attributes
+            constraints: Constraint dict, or None
+
+        Returns:
+            int: Tasks per instance, from the real InstanceManager implementation.
+        """
+        return InstanceManager.tasks_per_instance(
+            orchestrator._instance_manager, instance_info, constraints
+        )
+
+    orchestrator._instance_manager.effective_cpus_per_task = Mock(
+        side_effect=effective_cpus_per_task
     )
+    orchestrator._instance_manager.tasks_per_instance = Mock(side_effect=tasks_per_instance)
 
 
 def test_instance_table_counts_the_tasks_the_instances_can_run(orchestrator) -> None:

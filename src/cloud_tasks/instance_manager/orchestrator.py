@@ -613,13 +613,13 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
                 self._keepalive_task = asyncio.create_task(self._keepalive_monitor_loop())
 
     def _tasks_per_instance(self, instance_info: dict[str, Any]) -> int:
-        """How many tasks an instance of this type can run at once.
+        """How many tasks an instance of this type runs at once.
 
-        The vCPUs each task gets can be more than cpus_per_task asks for when
-        allow_cpu_wasting is on and the instance type has too little memory per vCPU; see
-        InstanceManager.effective_cpus_per_task. min_tasks_per_instance and
-        max_tasks_per_instance then bound the result, as they do for the instance type the
-        job was started with.
+        The same count the instance manager ranks instance types by, so what the table
+        reports an instance will do and what the job was costed on cannot drift apart. The
+        vCPUs each task gets can be more than cpus_per_task asks for when allow_cpu_wasting
+        is on and the instance type has too little memory per vCPU; see
+        InstanceManager.tasks_per_instance.
 
         Parameters:
             instance_info: Instance type attributes; "vcpu" and "mem_gb" are used
@@ -630,17 +630,10 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
         vcpu = instance_info.get("vcpu")
         if not vcpu:
             return 0
-        cpus_per_task = self._run_config.cpus_per_task or 1
-        if self._instance_manager is not None:
-            cpus_per_task = self._instance_manager.effective_cpus_per_task(
-                instance_info, vars(self._run_config)
-            )
-        num_tasks = int(int(vcpu) // cpus_per_task)
-        if self._run_config.min_tasks_per_instance is not None:
-            num_tasks = max(num_tasks, self._run_config.min_tasks_per_instance)
-        if self._run_config.max_tasks_per_instance is not None:
-            num_tasks = min(num_tasks, self._run_config.max_tasks_per_instance)
-        return num_tasks
+        if self._instance_manager is None:
+            cpus_per_task = self._run_config.cpus_per_task or 1
+            return int(int(vcpu) // cpus_per_task)
+        return self._instance_manager.tasks_per_instance(instance_info, vars(self._run_config))
 
     def _effective_cpus_per_task(self) -> float:
         """Return the vCPUs each task gets on the selected instance type.

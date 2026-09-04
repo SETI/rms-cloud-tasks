@@ -223,6 +223,67 @@ class InstanceManager(ABC):
         cpus_for_memory = min_memory_per_task / memory_per_cpu
         return float(min(max(cpus_per_task, cpus_for_memory), num_cpus))
 
+    def tasks_per_instance(
+        self, instance_info: dict[str, Any], constraints: dict[str, Any] | None = None
+    ) -> int:
+        """How many tasks run at once on one instance of this type.
+
+        This is the instance's vCPUs divided by the vCPUs each task actually gets, which is
+        not always what cpus_per_task asks for; see effective_cpus_per_task.
+        max_tasks_per_instance caps the result, because tasks above that cap are not run
+        however many vCPUs there are. min_tasks_per_instance is not applied: it is a
+        constraint on which instance types may be chosen, not a claim about what a machine
+        can do, and forcing the count up to it would report a capacity the instance
+        hasn't got.
+
+        Parameters:
+            instance_info: Instance type attributes; "vcpu" and "mem_gb" are used
+            constraints: Constraint dict; cpus_per_task, min_memory_per_task,
+                allow_cpu_wasting and max_tasks_per_instance are used
+
+        Returns:
+            int: Tasks per instance, 0 if the instance type reports no vCPUs.
+        """
+        vcpu = instance_info.get("vcpu")
+        if not vcpu:
+            return 0
+        if constraints is None:
+            constraints = {}
+        cpus_per_task = self.effective_cpus_per_task(instance_info, constraints)
+        num_tasks = int(int(vcpu) // cpus_per_task)
+        max_tasks_per_instance = constraints.get("max_tasks_per_instance")
+        if max_tasks_per_instance is not None:
+            num_tasks = min(num_tasks, max_tasks_per_instance)
+        return num_tasks
+
+    def price_per_task(
+        self, price_info: dict[str, Any], constraints: dict[str, Any] | None = None
+    ) -> float:
+        """What one task costs per hour on this instance type.
+
+        This, not the price of a vCPU, is what an instance type costs to use: the vCPU is
+        what is sold, but the task is what the job needs to run. The two only differ when
+        some of an instance's vCPUs can't be put to work - because a task needs more memory
+        than one vCPU's share provides, because max_tasks_per_instance caps how many run, or
+        simply because the vCPU count isn't a whole multiple of cpus_per_task - and it is
+        exactly then that ranking by the price of a vCPU picks the wrong machine. The
+        cheapest vCPUs are on the instance type with the least memory per vCPU, which under
+        a per-task memory floor is the type that leaves the most of them idle.
+
+        Parameters:
+            price_info: Pricing entry for one instance type, which also carries that type's
+                attributes ("total_price", "vcpu" and "mem_gb" are used)
+            constraints: Constraint dict, as for tasks_per_instance
+
+        Returns:
+            float: Price per task per hour, or infinity if this instance type can't run a
+            task at all, so that it sorts behind every type that can.
+        """
+        num_tasks = self.tasks_per_instance(price_info, constraints)
+        if num_tasks <= 0:
+            return float("inf")
+        return float(price_info["total_price"]) / num_tasks
+
     def _check_instance_constraints(
         self, instance_info: dict[str, Any], constraints: dict[str, Any] | None = None
     ) -> list[ConstraintCheck]:

@@ -747,3 +747,115 @@ class TestZoneSelection:
 
         assert instance_manager.zones_to_try(["us-central1-b"]) == ["us-central1-b"]
         assert instance_manager._failed_zones == {"us-central1-a"}
+
+
+class TestTasksPerInstance:
+    """Validates the capacity figure the table reports and the selection is ranked by."""
+
+    @pytest.fixture
+    def instance_manager(self) -> InstanceManager:
+        """Create a concrete instance manager for testing."""
+        return _concrete_instance_manager()
+
+    def test_vcpus_divided_by_cpus_per_task(self, instance_manager):
+        """With no memory floor, capacity is just how many tasks the vCPUs divide into."""
+        assert instance_manager.tasks_per_instance({"vcpu": 32, "mem_gb": 128}, {}) == 32
+        assert (
+            instance_manager.tasks_per_instance({"vcpu": 32, "mem_gb": 128}, {"cpus_per_task": 4})
+            == 8
+        )
+
+    def test_leftover_vcpus_do_not_make_a_task(self, instance_manager):
+        """Three vCPUs left over from a task that needs four run nothing."""
+        assert (
+            instance_manager.tasks_per_instance({"vcpu": 31, "mem_gb": 128}, {"cpus_per_task": 4})
+            == 7
+        )
+
+    def test_max_tasks_per_instance_caps_it(self, instance_manager):
+        """Tasks above the cap aren't run, however many vCPUs there are."""
+        assert (
+            instance_manager.tasks_per_instance(
+                {"vcpu": 32, "mem_gb": 128}, {"cpus_per_task": 1, "max_tasks_per_instance": 3}
+            )
+            == 3
+        )
+
+    def test_min_tasks_per_instance_does_not_inflate_it(self, instance_manager):
+        """A machine that can only run two tasks runs two, whatever the config demands."""
+        assert (
+            instance_manager.tasks_per_instance(
+                {"vcpu": 4, "mem_gb": 16}, {"cpus_per_task": 2, "min_tasks_per_instance": 8}
+            )
+            == 2
+        )
+
+    def test_a_memory_floor_costs_vcpus(self, instance_manager):
+        """Wasting vCPUs to give each task its memory means fewer tasks fit."""
+        constraints = {
+            "cpus_per_task": 1,
+            "min_memory_per_task": 16,
+            "allow_cpu_wasting": True,
+        }
+        # 1 GB per vCPU, so a 16 GB task needs 16 of them
+        assert instance_manager.tasks_per_instance({"vcpu": 32, "mem_gb": 32}, constraints) == 2
+
+    def test_no_vcpus_means_no_tasks(self, instance_manager):
+        """An instance type the provider gave us nothing about carries nothing."""
+        assert instance_manager.tasks_per_instance({}, {}) == 0
+
+
+class TestPricePerTask:
+    """Validates ranking instance types by what the work costs rather than what a vCPU costs."""
+
+    @pytest.fixture
+    def instance_manager(self) -> InstanceManager:
+        """Create a concrete instance manager for testing."""
+        return _concrete_instance_manager()
+
+    def test_price_divided_by_the_tasks_that_fit(self, instance_manager):
+        """The whole instance price, including memory and disk, spread over its tasks."""
+        price_info = {"vcpu": 32, "mem_gb": 128, "total_price": 0.64}
+        assert instance_manager.price_per_task(price_info, {"cpus_per_task": 4}) == 0.08
+
+    def test_a_type_that_cannot_run_a_task_sorts_last(self, instance_manager):
+        """Infinity rather than a division error, so it goes behind everything usable."""
+        price_info = {"vcpu": 2, "mem_gb": 8, "total_price": 0.10}
+        assert instance_manager.price_per_task(price_info, {"cpus_per_task": 4}) == float("inf")
+
+    def test_cheap_vcpus_can_be_the_expensive_way_to_run_a_task(self, instance_manager):
+        """The type with the cheapest vCPUs is the one a memory floor wastes the most of.
+
+        Both machines have 32 vCPUs, and the high-CPU one is cheaper outright and cheaper
+        per vCPU. But a 16 GB task needs 16 of its 1 GB-per-vCPU cores and only 2 of the
+        high-memory machine's, so it runs 2 tasks against 16 and costs far more per task.
+        """
+        constraints = {
+            "cpus_per_task": 1,
+            "min_memory_per_task": 16,
+            "allow_cpu_wasting": True,
+        }
+        highcpu = {"vcpu": 32, "mem_gb": 32, "total_price": 0.69}
+        highmem = {"vcpu": 32, "mem_gb": 256, "total_price": 1.55}
+
+        assert instance_manager.tasks_per_instance(highcpu, constraints) == 2
+        assert instance_manager.tasks_per_instance(highmem, constraints) == 16
+
+        # The high-CPU machine wins on both of the figures the old ranking used
+        assert highcpu["total_price"] < highmem["total_price"]
+        assert highcpu["total_price"] / highcpu["vcpu"] < highmem["total_price"] / highmem["vcpu"]
+        # ... and loses badly on the one that decides what the job costs
+        assert instance_manager.price_per_task(highcpu, constraints) == pytest.approx(0.345)
+        assert instance_manager.price_per_task(highmem, constraints) == pytest.approx(0.096875)
+
+    def test_ranking_is_unchanged_when_no_vcpus_are_wasted(self, instance_manager):
+        """Where cpus_per_task divides the vCPUs evenly, this ranks exactly as before."""
+        constraints = {"cpus_per_task": 2}
+        types = [
+            {"name": "a", "vcpu": 8, "mem_gb": 32, "total_price": 0.40},
+            {"name": "b", "vcpu": 16, "mem_gb": 64, "total_price": 0.64},
+            {"name": "c", "vcpu": 4, "mem_gb": 16, "total_price": 0.24},
+        ]
+        by_task = sorted(types, key=lambda t: instance_manager.price_per_task(t, constraints))
+        by_vcpu = sorted(types, key=lambda t: t["total_price"] / t["vcpu"])
+        assert [t["name"] for t in by_task] == [t["name"] for t in by_vcpu]
