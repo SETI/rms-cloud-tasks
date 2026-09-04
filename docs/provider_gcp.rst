@@ -75,9 +75,20 @@ Service Accounts
 ----------------
 
 For GCP, the permissions granted to compute instances are determined by an optional
-"service account". This account can be specified with the ``service_account`` configuration
-option. If not provided, the compute instances will not have any credentials and thus will
-have limited to no access to GCP resources.
+"service account". This account can be specified with the ``worker_service_account``
+configuration option. If not provided, the compute instances will not have any credentials
+and thus will have limited to no access to GCP resources.
+
+``cloud_tasks`` itself can also run as a service account, named with the
+``runner_service_account`` configuration option (or ``--runner-service-account``). The
+local credentials then impersonate that account and every call this program makes is made
+as it, so what a run may do is decided by that account rather than by whoever is logged in.
+Impersonating an account requires the role ``roles/iam.serviceAccountTokenCreator`` on it.
+This is not a way to escape the expiry described above: the impersonated token is refreshed
+using the credentials underneath it, so a personal login that expires takes the
+impersonation with it. The two accounts can be the same one, but they need not be; the
+runner needs to create instances and use the queues, while the workers only need whatever
+the tasks themselves reach.
 
 Here is the basic process for creating a service account using the Google Cloud
 web interface:
@@ -87,8 +98,8 @@ web interface:
 3. Click on `Create service account`.
 4. Enter a name for the service account.
 5. Note the email address of the service account. This is the value to use for the
-   ``service_account`` configuration option or the ``--service-account`` command line
-   option.
+   ``worker_service_account`` configuration option or the ``--worker-service-account``
+   command line option.
 6. Click on `Create and continue`.
 7. Grant the role "Pub/Sub Editor" (this is required for the Cloud Tasks system to work)
 8. Grant other roles as needed, for example "Storage Object User" (if the tasks need to read

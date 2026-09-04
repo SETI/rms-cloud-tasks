@@ -316,7 +316,7 @@ def test_update_run_config_from_provider_config_defaults():
 def test_provider_config_fields():
     ProviderConfig(job_id="a-job", queue_name="a-queue", region="r", zone="z")
     AWSConfig(access_key="a", secret_key="b")
-    GCPConfig(project_id="pid", credentials_file="cf", service_account="sa")
+    GCPConfig(project_id="pid", credentials_file="cf", worker_service_account="sa")
     AzureConfig(subscription_id="sid", tenant_id="tid", client_id="cid", client_secret="cs")
 
 
@@ -325,7 +325,7 @@ def config_obj():
     return Config(
         provider="GCP",
         aws=AWSConfig(),
-        gcp=GCPConfig(project_id="pid", credentials_file="cf", service_account="sa"),
+        gcp=GCPConfig(project_id="pid", credentials_file="cf", worker_service_account="sa"),
         azure=AzureConfig(),
         run=RunConfig(),
     )
@@ -581,7 +581,7 @@ def test_config_get_provider_config_queue_name(config_obj, provider):
 def test_load_config_file_gcp(tmp_path):
     config_dict = {
         "provider": "gcp",
-        "gcp": {"project_id": "pid", "credentials_file": "cf", "service_account": "sa"},
+        "gcp": {"project_id": "pid", "credentials_file": "cf", "worker_service_account": "sa"},
         "aws": {},
         "azure": {},
         "run": {"architecture": "x86_64"},
@@ -666,7 +666,7 @@ def test_load_config_relative_paths(tmp_path, provider):
         "gcp": {
             "project_id": "pid",
             "credentials_file": "cf",
-            "service_account": "sa",
+            "worker_service_account": "sa",
             "startup_script_file": "script-GCP.sh",
         },
         "aws": {

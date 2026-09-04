@@ -284,7 +284,13 @@ class GCPConfig(ProviderConfig, validate_assignment=True):
 
     project_id: Annotated[str, Field(min_length=1)] | None = None
     credentials_file: Annotated[str, Field(min_length=1)] | None = None
-    service_account: Annotated[str, Field(min_length=1)] | None = None
+    # The service account the worker instances run as, which decides what the tasks
+    # themselves are allowed to reach
+    worker_service_account: Annotated[str, Field(min_length=1)] | None = None
+    # The service account this command runs as. The local credentials impersonate it, so
+    # that what the runner is allowed to do is decided by this account rather than by
+    # whoever happens to be logged in
+    runner_service_account: Annotated[str, Field(min_length=1)] | None = None
 
 
 class AzureConfig(ProviderConfig, validate_assignment=True):

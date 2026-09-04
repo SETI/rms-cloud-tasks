@@ -2351,8 +2351,14 @@ def add_common_args(
         help="GCP only: Path to credentials file",
     )
     parser.add_argument(
-        "--service-account",
-        help="GCP only: The service account to use for the worker",
+        "--worker-service-account",
+        help="The service account the worker instances run as, which decides what the tasks "
+        "themselves are allowed to reach",
+    )
+    parser.add_argument(
+        "--runner-service-account",
+        help="The service account this command runs as; the local credentials impersonate it, "
+        "so that what this command is allowed to do is decided by that account",
     )
 
     # TODO Add Azure-specific arguments here

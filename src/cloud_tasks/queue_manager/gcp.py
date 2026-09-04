@@ -20,6 +20,7 @@ from google.cloud.pubsub_v1.subscriber import exceptions as sub_exceptions
 from google.cloud.pubsub_v1.subscriber.message import Message as PubSubMessage
 
 from ..common.config import GCPConfig
+from ..common.gcp_credentials import load_runner_credentials
 from .queue_manager import QueueManager
 
 
@@ -151,15 +152,16 @@ class GCPPubSubQueue(QueueManager):
             f'"{self._project_id}"'
         )
 
-        credentials_file = gcp_config.credentials_file if gcp_config is not None else None
-
-        # If credentials file provided, use it
-        if credentials_file:
-            self._logger.info(f'Using credentials from "{credentials_file}"')
-            self._publisher = PublisherClient.from_service_account_file(credentials_file)
-            self._subscriber = SubscriberClient.from_service_account_file(credentials_file)
+        # The queue is reached as whatever the runner is running as, so that naming a
+        # runner_service_account governs the queues as well as the instances. A queue built
+        # from a name alone belongs to a worker on an instance, which is authenticated by
+        # the instance it runs on and has no configuration to consult.
+        self._credentials = None
+        if gcp_config is not None:
+            self._credentials = load_runner_credentials(gcp_config).credentials
+            self._publisher = PublisherClient(credentials=self._credentials)
+            self._subscriber = SubscriberClient(credentials=self._credentials)
         else:
-            # Use default credentials
             self._logger.info("Using default application credentials")
             self._publisher = PublisherClient()
             self._subscriber = SubscriberClient()
@@ -955,7 +957,7 @@ class GCPPubSubQueue(QueueManager):
         # Our first attempt is to use the Monitor API, but it's not always reliable
         for _ in range(3):
             # Get undelivered message count from Cloud Monitoring
-            client = monitoring_v3.MetricServiceClient()
+            client = monitoring_v3.MetricServiceClient(credentials=self._credentials)
             result = query.Query(
                 client,
                 self._project_id,

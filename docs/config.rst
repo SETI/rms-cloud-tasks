@@ -350,7 +350,14 @@ The available provider-specific options are:
   * ``project_id``: The ID of the project to use; required for most operations
   * ``credentials_file``: The path to a file containing the credentials to use; if not
     specified, the default credentials will be used
-  * ``service_account``: The service account to use; required for worker processes
+  * ``worker_service_account``: The service account the worker instances run as, which
+    decides what the tasks themselves are allowed to reach; required for worker processes
+  * ``runner_service_account``: The service account this command runs as. The local
+    credentials impersonate it, so what the command may do is decided by that account
+    rather than by whoever is logged in. Impersonating an account requires the role
+    ``roles/iam.serviceAccountTokenCreator`` on it. Note that this does not make a personal
+    login last longer: the impersonated token is refreshed with the credentials underneath
+    it, so a login that expires takes the impersonation with it
     on cloud-based instances to have access to system resources
 
 In addition, all run options can be specified in a provider-specific section, in which

@@ -16,12 +16,10 @@ from typing import Any, cast
 
 import shortuuid
 from google.api_core.exceptions import NotFound  # type: ignore[import-not-found, import-untyped]
-from google.auth import default as get_default_credentials
 from google.cloud import billing, compute_v1  # type: ignore[import-not-found, import-untyped]
-from google.oauth2 import credentials as oauth2_credentials
-from google.oauth2 import service_account
 
 from ..common.config import GCPConfig
+from ..common.gcp_credentials import load_runner_credentials
 from .instance_manager import InstanceManager
 
 shortuuid.set_alphabet("abcdefghijklmnopqrstuvwxyz0123456789")
@@ -186,41 +184,16 @@ class GCPComputeInstanceManager(InstanceManager):
         # Add thread-local storage for compute client
         self._thread_local = threading.local()
 
-        # Handle credentials - use provided service account file or default application credentials
-        self._credentials_are_personal = False
-        if gcp_config.credentials_file:
-            try:
-                self._credentials = service_account.Credentials.from_service_account_file(
-                    gcp_config.credentials_file
-                )
-                self._logger.debug(f"Using credentials from file: {gcp_config.credentials_file}")
-            except Exception as e:
-                raise RuntimeError(
-                    f"Error loading credentials file: {gcp_config.credentials_file}: {e}"
-                )
-        else:
-            # Use default credentials from environment
-            try:
-                self._credentials, project_id = get_default_credentials()
-                self._logger.debug("Using default application credentials")
-                if not self._project_id and project_id:
-                    self._project_id = project_id
-                    self._logger.info(
-                        f"Using project ID from default credentials: {self._project_id}"
-                    )
-            except Exception as e:
-                raise RuntimeError(
-                    f"Error getting default credentials: {e}. "
-                    "Please ensure you're authenticated with 'gcloud auth application-default "
-                    "login' or provide a credentials_file entry in the GCP configuration."
-                )
-            # Application Default Credentials are a person's own login when they come from
-            # "gcloud auth application-default login"; every other kind (a service account
-            # key, the metadata server on a GCE instance, workload identity federation)
-            # belongs to a service and keeps working unattended.
-            self._credentials_are_personal = isinstance(
-                self._credentials, oauth2_credentials.Credentials
-            )
+        # Credentials for this process's own calls: a credentials file if one is given,
+        # the Application Default Credentials otherwise, impersonating
+        # runner_service_account if one is named
+        runner_credentials = load_runner_credentials(gcp_config)
+        self._credentials = runner_credentials.credentials
+        self._credentials_are_personal = runner_credentials.source_is_personal
+        self._runner_service_account = runner_credentials.impersonated_service_account
+        if not self._project_id and runner_credentials.project_id:
+            self._project_id = runner_credentials.project_id
+            self._logger.info(f"Using project ID from default credentials: {self._project_id}")
 
         if self._project_id is None:
             raise RuntimeError("Missing required GCP configuration 'project_id'")
@@ -248,7 +221,7 @@ class GCPComputeInstanceManager(InstanceManager):
         # It's OK for there to be no specific zone
 
         # Service account for authorization on worker instances
-        self._service_account = gcp_config.service_account
+        self._worker_service_account = gcp_config.worker_service_account
 
         # Initialize clients
         self._zones_client = compute_v1.ZonesClient(credentials=self._credentials)
@@ -389,17 +362,26 @@ class GCPComputeInstanceManager(InstanceManager):
         """
         if not self._credentials_are_personal:
             return None
+        whose = (
+            f'the service account "{self._runner_service_account}" it impersonates'
+            if self._runner_service_account
+            else "a service account"
+        )
         roles = "\n".join(f"    {role:<32}{purpose}" for role, purpose in self._REQUIRED_ROLES)
         return (
             "This job is running on your personal Google credentials from "
-            '"gcloud auth application-default login", not on a service account.\n'
+            f'"gcloud auth application-default login", and refreshes the token for {whose} '
+            "with them.\n"
             "Those credentials expire, in many organizations within 16 hours or less. "
             "When they do, this run can no longer start, monitor or TERMINATE its "
             "instances, and instances left running keep costing money until someone "
             "shuts them down by hand.\n"
             "To run unattended, put a service account key in the GCP configuration's "
-            '"credentials_file", or start the job from a machine that has one.\n'
-            f'That service account needs these roles in project "{self._project_id}":\n'
+            '"credentials_file", or start the job from a machine that has one. Naming a '
+            '"runner_service_account" to impersonate is not enough on its own, because the '
+            "impersonated token is refreshed with the credentials underneath it.\n"
+            f"The account this ends up running as needs these roles in project "
+            f'"{self._project_id}":\n'
             f"{roles}\n"
             "Instance prices are read from the Cloud Billing Catalog API, which needs no "
             "role because that data is public, but the Cloud Billing API does have to be "
@@ -1630,10 +1612,10 @@ class GCPComputeInstanceManager(InstanceManager):
             }
 
         service_accounts = []
-        if self._service_account:
+        if self._worker_service_account:
             service_accounts.append(
                 {
-                    "email": self._service_account,
+                    "email": self._worker_service_account,
                     # Using the cloud-platform scope allows the instance to access
                     # all GCP services that are available to the service account
                     "scopes": ["https://www.googleapis.com/auth/cloud-platform"],

@@ -81,7 +81,11 @@ GCP
 --project-id PROJECT_ID                The ID of the project to use [Required for most operations]
 --credentials-file CREDENTIALS_FILE    The path to a file containing the credentials to use; if not
                                        specified, the default credentials will be used
---service-account SERVICE_ACCOUNT      The service account to use; required for worker processes
+--worker-service-account SERVICE_ACCOUNT  The service account the worker instances run as;
+                                       required for worker processes
+--runner-service-account SERVICE_ACCOUNT  The service account this command runs as; the local
+                                       credentials impersonate it, which requires the role
+                                       ``roles/iam.serviceAccountTokenCreator`` on it
                                        on cloud-based instances to have access to system resources [Required when creating
                                        instances]
 

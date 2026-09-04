@@ -22,7 +22,7 @@ def _make_manager(gcp_config: GCPConfig, credentials) -> GCPComputeInstanceManag
     """
     with (
         patch(
-            "cloud_tasks.instance_manager.gcp.get_default_credentials",
+            "cloud_tasks.common.gcp_credentials.get_default_credentials",
             return_value=(credentials, "test-project"),
         ),
         patch("google.cloud.compute_v1.ZonesClient", return_value=MagicMock()),

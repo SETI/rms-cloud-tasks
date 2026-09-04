@@ -193,7 +193,7 @@ async def test_start_instance_with_service_account(
 
     # Set a service account for the instance
     service_account = "test-service-account@test-project.iam.gserviceaccount.com"
-    gcp_instance_manager_n1_n2._service_account = service_account
+    gcp_instance_manager_n1_n2._worker_service_account = service_account
 
     # Mock the UUID generation to have a predictable instance ID
     mock_uuid = _uuid.UUID("12345678-1234-5678-1234-567812345678")

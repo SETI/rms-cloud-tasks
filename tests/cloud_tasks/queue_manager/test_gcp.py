@@ -65,6 +65,12 @@ def mock_pubsub_client():
     with (
         patch("cloud_tasks.queue_manager.gcp.PublisherClient") as mock_publisher_cls,
         patch("cloud_tasks.queue_manager.gcp.SubscriberClient") as mock_subscriber_cls,
+        # The queue is reached as whatever the runner runs as, so building one asks for
+        # the runner's credentials
+        patch(
+            "cloud_tasks.common.gcp_credentials.get_default_credentials",
+            return_value=(MagicMock(), "test-project"),
+        ),
         patch(
             "cloud_tasks.queue_manager.gcp.time.sleep"
         ),  # Avoid real 2s sleep while creating a topic or subscription
@@ -995,7 +1001,11 @@ async def test_construction_does_not_read_pubsub(
     mock_publisher.get_topic.side_effect = gcp_exceptions.ServerError("Internal error")
     mock_subscriber.get_subscription.side_effect = gcp_exceptions.ServerError("Internal error")
 
-    queue = GCPPubSubQueue(gcp_config=MagicMock(queue_name="test-queue", project_id="test-project"))
+    queue = GCPPubSubQueue(
+        gcp_config=MagicMock(
+            queue_name="test-queue", project_id="test-project", credentials_file=None
+        )
+    )
 
     assert not mock_publisher.get_topic.called
     assert not mock_subscriber.get_subscription.called
