@@ -364,6 +364,17 @@ class GCPComputeInstanceManager(InstanceManager):
                 except OSError:
                     pass
 
+    # What the account running the job has to be allowed to do, and why. Listed in the
+    # warning about credentials that won't last a job, since the answer to that warning is
+    # to create a service account, and the next question is always what to grant it.
+    _REQUIRED_ROLES = (
+        ("roles/compute.instanceAdmin.v1", "create, list and terminate instances"),
+        ("roles/iam.serviceAccountUser", "attach the workers' service account to them"),
+        ("roles/pubsub.editor", "create and use the task and event queues"),
+        ("roles/monitoring.viewer", "read the task queue depth"),
+        ("roles/billing.viewer", "read instance pricing to choose an instance type"),
+    )
+
     def local_credential_warning(self) -> str | None:
         """Warn when this process is running on a person's own Google credentials.
 
@@ -374,6 +385,7 @@ class GCPComputeInstanceManager(InstanceManager):
         """
         if not self._credentials_are_personal:
             return None
+        roles = "\n".join(f"    {role:<32}{purpose}" for role, purpose in self._REQUIRED_ROLES)
         return (
             "This job is running on your personal Google credentials from "
             '"gcloud auth application-default login", not on a service account.\n'
@@ -382,7 +394,9 @@ class GCPComputeInstanceManager(InstanceManager):
             "instances, and instances left running keep costing money until someone "
             "shuts them down by hand.\n"
             "To run unattended, put a service account key in the GCP configuration's "
-            '"credentials_file", or start the job from a machine that has one.'
+            '"credentials_file", or start the job from a machine that has one.\n'
+            f'That service account needs these roles in project "{self._project_id}":\n'
+            f"{roles}"
         )
 
     async def get_available_instance_types(

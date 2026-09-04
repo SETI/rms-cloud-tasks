@@ -82,12 +82,23 @@ def orchestrator(mock_config):
     # out by the real implementation, since what the orchestrator derives from it is what
     # these tests are about
     orchestrator._instance_manager.local_credential_warning = Mock(return_value=None)
-    orchestrator._instance_manager.effective_cpus_per_task = Mock(
-        side_effect=lambda instance_info, constraints=None: (
-            InstanceManager.effective_cpus_per_task(
-                orchestrator._instance_manager, instance_info, constraints
-            )
+
+    def effective_cpus_per_task(instance_info, constraints=None):
+        """Work out the vCPUs per task the way a real instance manager would.
+
+        Parameters:
+            instance_info: Instance type attributes
+            constraints: Constraint dict, or None
+
+        Returns:
+            float: vCPUs per task, from the real InstanceManager implementation.
+        """
+        return InstanceManager.effective_cpus_per_task(
+            orchestrator._instance_manager, instance_info, constraints
         )
+
+    orchestrator._instance_manager.effective_cpus_per_task = Mock(
+        side_effect=effective_cpus_per_task
     )
     orchestrator._task_queue = AsyncMock()
     orchestrator._optimal_instance_info = {
