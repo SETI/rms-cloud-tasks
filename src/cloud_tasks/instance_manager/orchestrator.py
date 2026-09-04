@@ -580,12 +580,7 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
                 f"{configured_cpus_per_task:g} so that it has the "
                 f"{self._run_config.min_memory_per_task} GB of memory it requires"
             )
-        num_tasks = int(vcpu // cpus_per_task)
-        # Enforce min/max constraints
-        if self._run_config.min_tasks_per_instance is not None:
-            num_tasks = max(num_tasks, self._run_config.min_tasks_per_instance)
-        if self._run_config.max_tasks_per_instance is not None:
-            num_tasks = min(num_tasks, self._run_config.max_tasks_per_instance)
+        num_tasks = self._tasks_per_instance(optimal_instance_info)
         self._logger.info(f"|| Derived number of tasks per instance: {num_tasks}")
         self._optimal_instance_num_tasks = num_tasks
 
@@ -600,6 +595,36 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
             self._scaling_task = asyncio.create_task(self._scaling_loop())
             if self._keepalive_startup_timeout > 0 or self._keepalive_timeout > 0:
                 self._keepalive_task = asyncio.create_task(self._keepalive_monitor_loop())
+
+    def _tasks_per_instance(self, instance_info: dict[str, Any]) -> int:
+        """How many tasks an instance of this type can run at once.
+
+        The vCPUs each task gets can be more than cpus_per_task asks for when
+        allow_cpu_wasting is on and the instance type has too little memory per vCPU; see
+        InstanceManager.effective_cpus_per_task. min_tasks_per_instance and
+        max_tasks_per_instance then bound the result, as they do for the instance type the
+        job was started with.
+
+        Parameters:
+            instance_info: Instance type attributes; "vcpu" and "mem_gb" are used
+
+        Returns:
+            int: Tasks per instance, 0 if the instance type reports no vCPUs.
+        """
+        vcpu = instance_info.get("vcpu")
+        if not vcpu:
+            return 0
+        cpus_per_task = self._run_config.cpus_per_task or 1
+        if self._instance_manager is not None:
+            cpus_per_task = self._instance_manager.effective_cpus_per_task(
+                instance_info, vars(self._run_config)
+            )
+        num_tasks = int(int(vcpu) // cpus_per_task)
+        if self._run_config.min_tasks_per_instance is not None:
+            num_tasks = max(num_tasks, self._run_config.min_tasks_per_instance)
+        if self._run_config.max_tasks_per_instance is not None:
+            num_tasks = min(num_tasks, self._run_config.max_tasks_per_instance)
+        return num_tasks
 
     def _effective_cpus_per_task(self) -> float:
         """Return the vCPUs each task gets on the selected instance type.
@@ -947,6 +972,7 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
             "Type",
             "Boot Disk",
             "vCPUs",
+            "Tasks",
             "State",
             "Zone",
             "Created",
@@ -955,12 +981,13 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
             "Price/Hour",
         ]
         table.align = "l"
-        for column in ("vCPUs", "Price/Hour"):
+        for column in ("vCPUs", "Tasks", "Price/Hour"):
             table.align[column] = "r"
         table.set_style(TableStyle.SINGLE_BORDER)
 
         num_running = 0
         running_cpus = 0
+        running_tasks = 0
         running_price = 0.0
         default_boot_disk = self._get_default_boot_disk_type()
         all_instance_info = self._all_instance_info or {}
@@ -970,6 +997,7 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
             instance_info = all_instance_info.get(instance["type"], {})
             vcpu = instance_info.get("vcpu")
             cpus = int(vcpu) if vcpu is not None else 0
+            tasks = self._tasks_per_instance(instance_info)
             price = self._instance_price(instance, boot_disk_type)
             # Azure instances don't report a zone, creation time, or boot disk type
             created = str(instance.get("creation_time") or "-")[:19]
@@ -979,6 +1007,7 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
             if instance["state"] in ("running", "starting"):
                 num_running += 1
                 running_cpus += cpus
+                running_tasks += tasks
                 running_price += price or 0.0
                 price_str = "N/A" if price is None else f"${price:.2f}"
             else:
@@ -991,6 +1020,7 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
                     str(instance["type"]),
                     boot_disk_type,
                     cpus or "-",
+                    tasks or "-",
                     str(instance["state"]),
                     zone,
                     created,
@@ -1007,6 +1037,7 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
                 "",
                 "",
                 running_cpus,
+                running_tasks,
                 "",
                 "",
                 "",
@@ -1015,7 +1046,21 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
                 f"${running_price:.2f}",
             ]
         )
-        return table.get_string(), num_running, running_cpus, running_price
+
+        # What the Tasks column is counting, since it follows from the memory and vCPU
+        # constraints rather than from anything visible in the row
+        cpus_per_task = self._effective_cpus_per_task()
+        configured = self._run_config.cpus_per_task or 1
+        caption = (
+            f"{running_tasks} task(s) can run at once on the {num_running} running or "
+            f"starting instance(s), at {cpus_per_task:g} vCPU(s) per task"
+        )
+        if cpus_per_task > configured:
+            caption += (
+                f" (cpus_per_task is {configured:g}, raised to give each task the "
+                f"{self._run_config.min_memory_per_task} GB it requires)"
+            )
+        return f"{table.get_string()}\n{caption}", num_running, running_cpus, running_price
 
     async def get_job_instances(self) -> tuple[int, int, float, str]:
         """Return job instance counts and a table describing them.

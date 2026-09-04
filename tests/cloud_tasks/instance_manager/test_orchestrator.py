@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 
-from cloud_tasks.common.config import Config
+from cloud_tasks.common.config import Config, RunConfig
 from cloud_tasks.instance_manager.instance_manager import InstanceManager
 from cloud_tasks.instance_manager.orchestrator import InstanceOrchestrator
 
@@ -640,10 +640,10 @@ def test_instance_table_rows_sorted_with_details(orchestrator) -> None:
     cells = [cell.strip() for cell in rows["instance-1"].strip().strip("\u2502").split("\u2502")]
     assert cells[0] == "instance-1"
     assert cells[1] == "n1-standard-2"
-    assert cells[4] == "starting"
-    assert cells[5] == "us-central1-a"
-    assert cells[6] == "2026-01-01T00:00:00"
-    assert cells[8].startswith("waiting for first keep-alive")
+    assert cells[5] == "starting"
+    assert cells[6] == "us-central1-a"
+    assert cells[7] == "2026-01-01T00:00:00"
+    assert cells[9].startswith("waiting for first keep-alive")
 
 
 def test_instance_table_columns_size_to_content(orchestrator) -> None:
@@ -655,8 +655,10 @@ def test_instance_table_columns_size_to_content(orchestrator) -> None:
     lines = _instance_table(orchestrator, instances)
 
     assert long_id in "".join(lines)
-    # Every line of the table is the same width, so the columns line up whatever is in them
-    assert len(set(len(line) for line in lines)) == 1
+    # Every line of the table proper is the same width, so the columns line up whatever is
+    # in them; the caption underneath is prose and is not part of the table
+    table_lines = [line for line in lines if line[:1] in "\u250c\u2502\u251c\u2514"]
+    assert len(set(len(line) for line in table_lines)) == 1
 
 
 def test_instance_table_keepalive_states(orchestrator) -> None:
@@ -898,3 +900,60 @@ def test_no_credentials_warning_asks_nothing(orchestrator) -> None:
         orchestrator._check_local_credentials()
 
     mock_input.assert_not_called()
+
+
+def _configure_run(orchestrator, **fields) -> None:
+    """Give the orchestrator a real RunConfig, since vars() of a mock has no fields.
+
+    Parameters:
+        orchestrator: The orchestrator under test
+        **fields: RunConfig fields to set
+    """
+    orchestrator._run_config = RunConfig(**fields)
+    orchestrator._instance_manager.effective_cpus_per_task = Mock(
+        side_effect=lambda instance_info, constraints=None: InstanceManager.effective_cpus_per_task(
+            orchestrator._instance_manager, instance_info, constraints
+        )
+    )
+
+
+def test_instance_table_counts_the_tasks_the_instances_can_run(orchestrator) -> None:
+    """Each row says how many tasks that instance can run, and the total is the capacity."""
+    _configure_run(orchestrator, cpus_per_task=4)
+    orchestrator._all_instance_info = {"n1-standard-2": {"vcpu": 32, "mem_gb": 128}}
+
+    table, _num, cpus, _price = orchestrator._build_instance_table(
+        [_make_instance("one"), _make_instance("two")]
+    )
+
+    rows = _instance_rows(table.split("\n"))
+    # 32 vCPUs at 4 per task is 8 tasks on each of the two instances
+    assert [cell.strip() for cell in rows["one"].strip().strip("│").split("│")][4] == "8"
+    totals = next(line for line in table.split("\n") if "running/starting" in line)
+    assert "16" in totals
+    assert "16 task(s) can run at once" in table
+    assert "at 4 vCPU(s) per task" in table
+
+
+def test_instance_table_task_count_respects_tasks_per_instance_limits(orchestrator) -> None:
+    """max_tasks_per_instance bounds the capacity the table reports."""
+    _configure_run(orchestrator, cpus_per_task=1, max_tasks_per_instance=3)
+    orchestrator._all_instance_info = {"n1-standard-2": {"vcpu": 32, "mem_gb": 128}}
+
+    table, _num, _cpus, _price = orchestrator._build_instance_table([_make_instance("one")])
+
+    assert "3 task(s) can run at once" in table
+
+
+def test_instance_table_says_when_cpus_per_task_was_raised_for_memory(orchestrator) -> None:
+    """With allow_cpu_wasting the vCPUs per task is not what the configuration asked for."""
+    _configure_run(orchestrator, cpus_per_task=1, min_memory_per_task=32, allow_cpu_wasting=True)
+    # 8 GB per vCPU, so a 32 GB task needs 4 vCPUs and only 8 tasks fit
+    orchestrator._all_instance_info = {"n1-standard-2": {"vcpu": 32, "mem_gb": 256}}
+    orchestrator._optimal_instance_info = {"vcpu": 32, "mem_gb": 256}
+
+    table, _num, _cpus, _price = orchestrator._build_instance_table([_make_instance("one")])
+
+    assert "8 task(s) can run at once" in table
+    assert "at 4 vCPU(s) per task" in table
+    assert "cpus_per_task is 1" in table
