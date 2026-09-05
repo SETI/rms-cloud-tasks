@@ -1948,13 +1948,25 @@ class GCPComputeInstanceManager(InstanceManager):
         # The URL structure implies: projects/PROJECT_ID/zones/ZONE/disks/DISK_NAME
         disk_zone = disk_url_parts[-3]
 
-        # Get full disk details
+        # Get full disk details. A boot disk can be gone by the time it is asked
+        # about: an instance deleted between the listing and this call takes its
+        # disk with it, and the 404 that follows is about one row of a table. The
+        # size and type are descriptive, the caller already renders them as unknown
+        # when they are missing, and losing the whole listing over them is what let
+        # a routine deletion race stop the orchestrator from seeing its own pool.
         disk_request = compute_v1.GetDiskRequest(
             project=self._project_id,
             zone=disk_zone,
             disk=disk_name,
         )
-        full_disk_details = self._disks_client.get(request=disk_request)
+        try:
+            full_disk_details = self._disks_client.get(request=disk_request)
+        except NotFound:
+            self._logger.warning(
+                f"Boot disk '{disk_name}' of instance '{instance.name}' no longer exists; "
+                "reporting its disk details as unknown"
+            )
+            return None, None, None, None
 
         # Extract human-readable disk type from the URL
         disk_type = full_disk_details.type.split("/")[-1]

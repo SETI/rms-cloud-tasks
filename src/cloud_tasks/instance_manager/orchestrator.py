@@ -1098,6 +1098,13 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
             running_cpus is the total vCPUs in use; running_price is what they cost per
             hour; summary is a table with a row per instance and a total.
 
+        Raises:
+            Exception: Whatever listing the instances raised. A failure to see the
+                pool is not the same fact as a pool with nothing in it, and this
+                cannot report it as one: zeros here read downstream as "no instances
+                are running", which is the reading that starts a whole second pool
+                on top of the one the caller could not see.
+
         Side effects:
             Calls _initialize_pricing_info() to ensure pricing data is loaded.
         """
@@ -1107,8 +1114,7 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
             running_instances = await self.list_job_instances()
         except Exception as e:
             self._logger.error(f"Failed to get running instances: {e}", exc_info=True)
-            self._logger.error("Cannot make scaling decisions without instance information")
-            return 0, 0, 0.0, "Error getting running instances"
+            raise
 
         if not running_instances:
             return 0, 0, 0.0, "No running instances found"
@@ -1231,7 +1237,19 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
         if self._max_instances is not None:
             desired_instances = min(desired_instances, self._max_instances)
 
-        num_running, running_cpus, running_price, summary = await self.get_job_instances()
+        try:
+            num_running, running_cpus, running_price, summary = await self.get_job_instances()
+        except Exception:
+            # Every budget below is the configured maximum less what is already
+            # running, so a pool this pass cannot see is a pool it would size from
+            # zero and duplicate -- and would duplicate again on the pass after
+            # that, for as long as the listing keeps failing. Skipping the pass
+            # costs one scaling interval; guessing costs a second pool.
+            self._logger.error(
+                "Cannot make scaling decisions without instance information; "
+                "starting no instances this cycle"
+            )
+            return
         for summary_line in summary.split("\n"):
             self._logger.info(summary_line)
 

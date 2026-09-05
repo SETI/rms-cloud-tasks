@@ -132,17 +132,19 @@ def test_orchestrator_init_missing_run_config(mock_config: Mock) -> None:
 
 @pytest.mark.asyncio
 async def test_get_job_instances_list_raises(orchestrator: InstanceOrchestrator) -> None:
-    """get_job_instances returns error tuple when list_job_instances raises."""
+    """A listing that fails raises rather than reporting a pool of zero instances.
+
+    Zeros would be indistinguishable from a job with nothing running, which is the
+    reading that sizes a whole new pool on top of the one that could not be seen.
+    """
     assert orchestrator._instance_manager is not None
     with patch.object(orchestrator, "_initialize_pricing_info", new_callable=AsyncMock):
         orchestrator._instance_manager.list_running_instances = AsyncMock(
             side_effect=RuntimeError("api error")
         )
-        num_running, running_cpus, running_price, summary = await orchestrator.get_job_instances()
-    assert num_running == 0
-    assert running_cpus == 0
-    assert running_price == 0.0
-    assert "error" in summary.lower()
+        with pytest.raises(RuntimeError) as exc_info:
+            await orchestrator.get_job_instances()
+    assert "api error" in str(exc_info.value)
 
 
 @pytest.mark.asyncio
@@ -862,6 +864,47 @@ async def test_scaling_still_refuses_a_pool_below_the_minimum(orchestrator) -> N
         await orchestrator._check_scaling()
 
     provision.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_scaling_starts_nothing_when_the_instance_listing_fails(orchestrator) -> None:
+    """A pass that cannot see the pool provisions nothing at all.
+
+    Every budget the pass computes is the configured maximum less what is already
+    running, so an unreadable pool is one it would size from zero and duplicate --
+    and duplicate again every interval the listing keeps failing.
+    """
+    orchestrator._running = True
+    orchestrator._min_instances = 0
+    orchestrator._max_instances = 25
+    orchestrator._run_config.min_total_cpus = None
+    orchestrator._run_config.min_total_price_per_hour = None
+    orchestrator._run_config.min_simultaneous_tasks = None
+    orchestrator._run_config.max_simultaneous_tasks = None
+    orchestrator._run_config.max_total_cpus = None
+    orchestrator._run_config.max_total_price_per_hour = None
+    orchestrator._get_remaining_task_count = lambda: 10_000
+    orchestrator.get_job_instances = AsyncMock(side_effect=RuntimeError("404 disk not found"))
+
+    with patch.object(orchestrator, "_provision_instances", new=AsyncMock()) as provision:
+        await orchestrator._check_scaling()
+
+    provision.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_scaling_says_why_it_started_nothing(orchestrator, caplog) -> None:
+    """The skipped pass is reported, so a pool that stops growing has a reason in the log."""
+    orchestrator._running = True
+    orchestrator._max_instances = 25
+    orchestrator._get_remaining_task_count = lambda: 10_000
+    orchestrator.get_job_instances = AsyncMock(side_effect=RuntimeError("404 disk not found"))
+
+    with caplog.at_level(logging.ERROR):
+        with patch.object(orchestrator, "_provision_instances", new=AsyncMock()):
+            await orchestrator._check_scaling()
+
+    assert any("without instance information" in record.message for record in caplog.records)
 
 
 def test_local_credentials_warning_is_shown_and_can_be_declined(orchestrator, caplog) -> None:
