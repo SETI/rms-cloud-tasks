@@ -186,16 +186,18 @@ def test_get_boot_disk_info_uses_first_boot_disk_when_multiple_disks(
     assert call_request.disk == "main-boot"
 
 
-def test_get_boot_disk_info_propagates_disks_client_error(
+def test_get_boot_disk_info_reports_a_deleted_disk_as_unknown(
     gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
 ) -> None:
-    """_get_boot_disk_info propagates exceptions from _disks_client.get.
+    """A boot disk that no longer exists leaves its details unknown, not the caller empty-handed.
+
+    An instance deleted between the listing and this call takes its boot disk with
+    it. The disk's size and type describe one row of a table, and the caller renders
+    them as unknown when they are missing, so a 404 here must not cost the caller
+    the listing it asked for.
 
     Parameters:
         gcp_instance_manager_n1_n2: GCPComputeInstanceManager fixture.
-
-    Returns:
-        None.
     """
     boot_disk = MagicMock()
     boot_disk.boot = True
@@ -207,7 +209,31 @@ def test_get_boot_disk_info_propagates_disks_client_error(
     )
     manager._disks_client.get.side_effect = NotFound("disk not found")
 
-    with pytest.raises(NotFound) as exc_info:
+    assert manager._get_boot_disk_info(mock_instance) == (None, None, None, None)
+
+
+def test_get_boot_disk_info_propagates_a_disks_client_error(
+    gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
+) -> None:
+    """An error that is not a missing disk still propagates.
+
+    Only the deletion race is expected and answerable; anything else is a fault the
+    caller should see rather than read as a disk with no details.
+
+    Parameters:
+        gcp_instance_manager_n1_n2: GCPComputeInstanceManager fixture.
+    """
+    boot_disk = MagicMock()
+    boot_disk.boot = True
+    boot_disk.source = (
+        "https://www.googleapis.com/compute/v1/projects/p/zones/us-central1-a/disks/my-disk"
+    )
+    manager, mock_instance = setup_mocked_instance_manager(
+        gcp_instance_manager_n1_n2, disks=[boot_disk]
+    )
+    manager._disks_client.get.side_effect = RuntimeError("compute API is unwell")
+
+    with pytest.raises(RuntimeError) as exc_info:
         manager._get_boot_disk_info(mock_instance)
 
-    assert "disk not found" in str(exc_info.value)
+    assert "compute API is unwell" in str(exc_info.value)

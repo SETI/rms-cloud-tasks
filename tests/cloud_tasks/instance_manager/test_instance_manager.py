@@ -6,6 +6,54 @@ from cloud_tasks.common.config import ProviderConfig
 from cloud_tasks.instance_manager.instance_manager import InstanceManager
 
 
+def _concrete_instance_manager(**kwargs) -> InstanceManager:
+    """Build an InstanceManager with the abstract methods stubbed out.
+
+    Parameters:
+        **kwargs: Fields to set on the ProviderConfig the manager is built with.
+
+    Returns:
+        InstanceManager: A concrete subclass whose provider methods do nothing, for
+        exercising the constraint logic the base class implements.
+    """
+
+    class ConcreteInstanceManager(InstanceManager):
+        async def get_available_instance_types(self, constraints=None):
+            pass
+
+        async def get_instance_pricing(self, instance_types, use_spot=False):
+            pass
+
+        async def get_optimal_instance_type(self, constraints=None):
+            pass
+
+        async def start_instance(self, **kwargs):
+            pass
+
+        async def restart_instance(self, instance_id, zone=None):
+            pass
+
+        async def terminate_instance(self, instance_id, zone=None):
+            pass
+
+        async def list_running_instances(self, job_id=None, include_non_job=False):
+            pass
+
+        async def get_image_from_family(self, family_name):
+            pass
+
+        async def get_default_image(self):
+            pass
+
+        async def list_available_images(self):
+            pass
+
+        async def get_available_regions(self):
+            pass
+
+    return ConcreteInstanceManager(ProviderConfig(**kwargs))
+
+
 class TestInstanceManager:
     """Validates InstanceManager constraint matching and factory behavior."""
 
@@ -23,39 +71,7 @@ class TestInstanceManager:
     @pytest.fixture
     def instance_manager(self) -> InstanceManager:
         """Create a concrete instance manager for testing."""
-
-        class ConcreteInstanceManager(InstanceManager):
-            async def get_available_instance_types(self, constraints=None):
-                pass
-
-            async def get_instance_pricing(self, instance_types, use_spot=False):
-                pass
-
-            async def get_optimal_instance_type(self, constraints=None):
-                pass
-
-            async def start_instance(self, **kwargs):
-                pass
-
-            async def terminate_instance(self, instance_id, zone=None):
-                pass
-
-            async def list_running_instances(self, job_id=None, include_non_job=False):
-                pass
-
-            async def get_image_from_family(self, family_name):
-                pass
-
-            async def get_default_image(self):
-                pass
-
-            async def list_available_images(self):
-                pass
-
-            async def get_available_regions(self):
-                pass
-
-        return ConcreteInstanceManager(ProviderConfig())
+        return _concrete_instance_manager()
 
     def test_instance_matches_constraints_no_constraints(
         self, instance_manager: InstanceManager, base_instance_info: dict
@@ -300,9 +316,9 @@ class TestInstanceManager:
         assert instance_manager._instance_matches_constraints(spot_instance, {})
         # No spot constraint for non-spot-supporting instance
         assert instance_manager._instance_matches_constraints(non_spot_instance, {})
-        # False use_spot still requires spot support
+        # Asking for on-demand instances says nothing about whether spot is supported
         assert instance_manager._instance_matches_constraints(spot_instance, {"use_spot": False})
-        assert not instance_manager._instance_matches_constraints(
+        assert instance_manager._instance_matches_constraints(
             non_spot_instance, {"use_spot": False}
         )
 
@@ -367,3 +383,479 @@ class TestInstanceManager:
                 "max_cpu": 6,  # Irrelevant as min_tasks already exceeds instance CPUs
             },
         )
+
+
+class TestEffectiveCpusPerTask:
+    """Validates how allow_cpu_wasting changes the vCPUs a task is given."""
+
+    @pytest.fixture
+    def instance_manager(self) -> InstanceManager:
+        """A concrete instance manager; only the base class methods are exercised."""
+        return _concrete_instance_manager()
+
+    @pytest.fixture
+    def low_memory_instance(self) -> dict:
+        """An instance type with 1 GB of memory per vCPU."""
+        return {
+            "name": "c2-highcpu-8",
+            "vcpu": 8,
+            "mem_gb": 8,
+            "local_ssd_gb": 0,
+            "architecture": "X86_64",
+            "supports_spot": True,
+        }
+
+    def test_unset_leaves_cpus_per_task_alone(self, instance_manager, low_memory_instance):
+        """Without allow_cpu_wasting a task gets exactly what it asked for."""
+        constraints = {"cpus_per_task": 1, "min_memory_per_task": 4}
+        assert instance_manager.effective_cpus_per_task(low_memory_instance, constraints) == 1
+
+    def test_raises_cpus_to_supply_the_memory_a_task_needs(
+        self, instance_manager, low_memory_instance
+    ):
+        """A task needing 4 GB on a 1 GB-per-vCPU machine is given 4 vCPUs."""
+        constraints = {
+            "cpus_per_task": 1,
+            "min_memory_per_task": 4,
+            "allow_cpu_wasting": True,
+        }
+        assert instance_manager.effective_cpus_per_task(low_memory_instance, constraints) == 4
+
+    def test_never_lowers_cpus_per_task(self, instance_manager, low_memory_instance):
+        """Memory that is already satisfied doesn't take vCPUs away from a task."""
+        constraints = {
+            "cpus_per_task": 4,
+            "min_memory_per_task": 2,
+            "allow_cpu_wasting": True,
+        }
+        assert instance_manager.effective_cpus_per_task(low_memory_instance, constraints) == 4
+
+    def test_capped_at_the_size_of_the_instance(self, instance_manager, low_memory_instance):
+        """A task can't be given more vCPUs than the instance has.
+
+        The whole instance still has less memory than the task needs, so the instance type
+        has to fail the memory constraint rather than be made to look adequate.
+        """
+        constraints = {
+            "cpus_per_task": 1,
+            "min_memory_per_task": 32,
+            "allow_cpu_wasting": True,
+        }
+        assert instance_manager.effective_cpus_per_task(low_memory_instance, constraints) == 8
+        assert not instance_manager._instance_matches_constraints(low_memory_instance, constraints)
+
+    def test_memory_constraint_is_satisfied_by_wasting_cpus(
+        self, instance_manager, low_memory_instance
+    ):
+        """An instance type rejected for memory per task is accepted with cpu wasting."""
+        constraints = {"cpus_per_task": 1, "min_memory_per_task": 4}
+        assert not instance_manager._instance_matches_constraints(low_memory_instance, constraints)
+
+        constraints["allow_cpu_wasting"] = True
+        assert instance_manager._instance_matches_constraints(low_memory_instance, constraints)
+
+    def test_tasks_per_instance_constraints_use_the_raised_cpus_per_task(
+        self, instance_manager, low_memory_instance
+    ):
+        """Wasting vCPUs means fewer tasks fit, and min_tasks_per_instance knows it."""
+        constraints = {
+            "cpus_per_task": 1,
+            "min_memory_per_task": 4,
+            "allow_cpu_wasting": True,
+            # 8 vCPUs at 4 per task is 2 tasks, so 3 is out of reach
+            "min_tasks_per_instance": 3,
+        }
+        assert not instance_manager._instance_matches_constraints(low_memory_instance, constraints)
+
+        constraints["min_tasks_per_instance"] = 2
+        assert instance_manager._instance_matches_constraints(low_memory_instance, constraints)
+
+
+class TestDescribeUnmetConstraints:
+    """Validates the report produced when the constraints select no instance type."""
+
+    @pytest.fixture
+    def instance_manager(self) -> InstanceManager:
+        """A concrete instance manager; only the base class methods are exercised."""
+        return _concrete_instance_manager()
+
+    @pytest.fixture
+    def instance_types(self) -> list[dict]:
+        """Two instance types with different amounts of memory."""
+        return [
+            {
+                "name": "small",
+                "vcpu": 2,
+                "mem_gb": 4,
+                "local_ssd_gb": 0,
+                "architecture": "X86_64",
+                "supports_spot": True,
+            },
+            {
+                "name": "large",
+                "vcpu": 8,
+                "mem_gb": 32,
+                "local_ssd_gb": 0,
+                "architecture": "X86_64",
+                "supports_spot": False,
+            },
+        ]
+
+    def test_reports_only_constraints_no_instance_type_meets(
+        self, instance_manager, instance_types
+    ):
+        """A constraint some instance type satisfies is not the one to change."""
+        lines = instance_manager.describe_unmet_constraints(
+            instance_types, {"min_cpu": 4, "min_total_memory": 64}
+        )
+        # min_cpu is met by "large", so only the memory constraint is reported
+        assert lines == ["min_total_memory: needs >= 64, closest available 32"]
+
+    def test_reports_the_closest_value_available(self, instance_manager, instance_types):
+        """The report says how close the best instance type came, in its own units."""
+        lines = instance_manager.describe_unmet_constraints(instance_types, {"max_total_memory": 2})
+        assert lines == ["max_total_memory: needs <= 2, closest available 4"]
+
+    def test_reports_the_values_available_for_an_equality_constraint(
+        self, instance_manager, instance_types
+    ):
+        """For architecture there is no 'closest', so the available values are listed."""
+        lines = instance_manager.describe_unmet_constraints(
+            instance_types, {"architecture": "ARM64"}
+        )
+        assert lines == ["architecture: needs ARM64, available: X86_64"]
+
+    def test_reports_an_instance_type_name_filter_that_matches_nothing(
+        self, instance_manager, instance_types
+    ):
+        """A name filter that excludes everything is itself a constraint to relax."""
+        lines = instance_manager.describe_unmet_constraints(
+            instance_types, {"instance_types": ["^n2-"]}
+        )
+        assert lines[0].startswith("instance_types: needs ^n2-, available: ")
+
+    def test_no_report_when_every_constraint_is_met_by_something(
+        self, instance_manager, instance_types
+    ):
+        """Constraints that conflict only in combination leave nothing to single out."""
+        lines = instance_manager.describe_unmet_constraints(
+            instance_types, {"min_cpu": 8, "max_total_memory": 4}
+        )
+        assert lines == []
+
+
+class TestSpotConstraint:
+    """Validates that spot support is only required by a run that asks for spot."""
+
+    @pytest.fixture
+    def instance_manager(self) -> InstanceManager:
+        """A concrete instance manager; only the base class methods are exercised."""
+        return _concrete_instance_manager()
+
+    @pytest.fixture
+    def on_demand_only(self) -> dict:
+        """An instance type the provider does not offer as spot capacity."""
+        return {
+            "name": "m5.large",
+            "vcpu": 2,
+            "mem_gb": 8,
+            "local_ssd_gb": 0,
+            "architecture": "X86_64",
+            "supports_spot": False,
+        }
+
+    def test_on_demand_run_accepts_a_type_without_spot(self, instance_manager, on_demand_only):
+        """use_spot=False must not throw away instance types that never offer spot.
+
+        AWS reports which usage classes an instance type supports, so requiring spot
+        support for a run that will never buy spot capacity excludes instance types that
+        would do the job perfectly well.
+        """
+        assert instance_manager._instance_matches_constraints(on_demand_only, {"use_spot": False})
+
+    def test_spot_run_still_requires_spot(self, instance_manager, on_demand_only):
+        """A run that asks for spot instances can only use types that offer them."""
+        assert not instance_manager._instance_matches_constraints(
+            on_demand_only, {"use_spot": True}
+        )
+
+    def test_unmet_spot_constraint_is_reported(self, instance_manager, on_demand_only):
+        """A spot run with nothing spot-capable to run on is told that's the problem."""
+        lines = instance_manager.describe_unmet_constraints([on_demand_only], {"use_spot": True})
+        assert lines == [
+            "use_spot: needs an instance type that supports spot, available: not supported"
+        ]
+
+
+class TestDescribeConstraintRelaxations:
+    """Validates the advice given when the constraints conflict with each other."""
+
+    @pytest.fixture
+    def instance_manager(self) -> InstanceManager:
+        """A concrete instance manager; only the base class methods are exercised."""
+        return _concrete_instance_manager()
+
+    @pytest.fixture
+    def instance_types(self) -> list[dict]:
+        """Instance types with opposite strengths: one big, one small, one in between."""
+        return [
+            {
+                "name": "small",
+                "vcpu": 2,
+                "mem_gb": 4,
+                "local_ssd_gb": 0,
+                "architecture": "X86_64",
+                "supports_spot": True,
+            },
+            {
+                "name": "large",
+                "vcpu": 32,
+                "mem_gb": 128,
+                "local_ssd_gb": 0,
+                "architecture": "X86_64",
+                "supports_spot": True,
+            },
+        ]
+
+    def test_nothing_to_relax_when_something_matches(self, instance_manager, instance_types):
+        """Advice is only given when the configuration really does select nothing."""
+        assert (
+            instance_manager.describe_constraint_relaxations(instance_types, {"min_cpu": 2}) == []
+        )
+
+    def test_names_the_single_constraint_and_the_value_it_must_reach(
+        self, instance_manager, instance_types
+    ):
+        """One constraint too tight is reported with the value that would let a type in."""
+        lines = instance_manager.describe_constraint_relaxations(instance_types, {"min_cpu": 64})
+        assert lines == [
+            "min_cpu would have to come down from 64 to 32, and 1 instance type(s) would match"
+        ]
+
+    def test_reports_each_way_out_when_types_fail_different_constraints(
+        self, instance_manager, instance_types
+    ):
+        """Constraints that are only satisfiable apart give one alternative each.
+
+        Each of these is met by one of the two instance types and neither type meets both,
+        which is exactly the case where "the constraints conflict" helps nobody.
+        """
+        lines = instance_manager.describe_constraint_relaxations(
+            instance_types, {"min_cpu": 32, "max_total_memory": 8}
+        )
+        assert sorted(lines) == [
+            "max_total_memory would have to go up from 8 to 128, and 1 instance type(s) would match",
+            "min_cpu would have to come down from 32 to 2, and 1 instance type(s) would match",
+        ]
+
+    def test_reports_constraints_that_have_to_be_relaxed_together(
+        self, instance_manager, instance_types
+    ):
+        """When the closest type falls short on two counts, both are named together."""
+        lines = instance_manager.describe_constraint_relaxations(
+            instance_types, {"min_cpu": 64, "min_total_memory": 256}
+        )
+        assert lines == [
+            "min_cpu would have to come down from 64 to 32 and min_total_memory would have to "
+            "come down from 256 to 128, and 1 instance type(s) would match"
+        ]
+
+    def test_puts_the_most_useful_relaxation_first(self, instance_manager, instance_types):
+        """The alternative that admits the most instance types is reported first."""
+        instance_types.append(dict(instance_types[1], name="large-2"))
+        instance_types.append(dict(instance_types[0], name="arm", architecture="ARM64"))
+
+        lines = instance_manager.describe_constraint_relaxations(
+            instance_types, {"architecture": "ARM64", "min_cpu": 32}
+        )
+
+        # Two x86 types fail only the architecture; one ARM type fails only min_cpu
+        assert "architecture" in lines[0]
+        assert "2 instance type(s)" in lines[0]
+        assert "min_cpu" in lines[1]
+
+    def test_equality_constraints_say_what_is_available(self, instance_manager, instance_types):
+        """There is no "closer" architecture, so the report says what there is instead."""
+        lines = instance_manager.describe_constraint_relaxations(
+            instance_types, {"architecture": "ARM64"}
+        )
+        assert lines == [
+            "architecture would have to accept X86_64, and 2 instance type(s) would match"
+        ]
+
+
+class TestZoneSelection:
+    """Validates how the permitted zones are recorded and rotated through."""
+
+    @pytest.fixture
+    def instance_manager(self) -> InstanceManager:
+        """Create a concrete instance manager for testing."""
+        return _concrete_instance_manager()
+
+    def test_no_zone_configured_is_an_empty_list(self):
+        """Nothing configured means nothing is ruled out, not one nameless zone."""
+        assert InstanceManager.normalize_zones(None) == []
+
+    def test_one_zone_becomes_a_list_of_one(self):
+        """A config that names a single zone as a string still works."""
+        assert InstanceManager.normalize_zones("us-central1-a") == ["us-central1-a"]
+
+    def test_several_zones_keep_their_order_without_repeats(self):
+        """The configured order is the preference order, and saying one twice changes nothing."""
+        zones = ["us-central1-c", "us-central1-a", "us-central1-c"]
+        assert InstanceManager.normalize_zones(zones) == ["us-central1-c", "us-central1-a"]
+
+    def test_zones_configured_on_the_provider_are_picked_up(self):
+        """The manager takes its permitted zones from the config it was built with."""
+        manager = _concrete_instance_manager(zone=["us-central1-a", "us-central1-b"])
+
+        assert manager._zones == ["us-central1-a", "us-central1-b"]
+
+    def test_a_failed_zone_is_skipped_while_others_are_untried(self, instance_manager):
+        """A zone that just refused an instance is the worst place to send the next one."""
+        instance_manager.record_zone_failure("us-central1-a")
+
+        assert instance_manager.zones_to_try(["us-central1-a", "us-central1-b"]) == [
+            "us-central1-b"
+        ]
+
+    def test_all_zones_come_back_once_every_one_has_failed(self, instance_manager):
+        """With nothing left to prefer, the record is forgotten and they are all tried again."""
+        zones = ["us-central1-a", "us-central1-b"]
+        for zone in zones:
+            instance_manager.record_zone_failure(zone)
+
+        assert instance_manager.zones_to_try(zones) == zones
+        # The record really is cleared, not just ignored for this one call
+        assert instance_manager._failed_zones == set()
+
+    def test_a_zone_that_works_again_is_forgiven(self, instance_manager):
+        """Capacity comes back, and a zone that has just created an instance is fine again."""
+        instance_manager.record_zone_failure("us-central1-a")
+        instance_manager.record_zone_success("us-central1-a")
+
+        assert instance_manager.zones_to_try(["us-central1-a", "us-central1-b"]) == [
+            "us-central1-a",
+            "us-central1-b",
+        ]
+
+    def test_failures_in_zones_that_are_no_longer_permitted_dont_force_a_reset(
+        self, instance_manager
+    ):
+        """A zone dropped from the config has no say in whether the others are exhausted."""
+        instance_manager.record_zone_failure("us-central1-a")
+
+        assert instance_manager.zones_to_try(["us-central1-b"]) == ["us-central1-b"]
+        assert instance_manager._failed_zones == {"us-central1-a"}
+
+
+class TestTasksPerInstance:
+    """Validates the capacity figure the table reports and the selection is ranked by."""
+
+    @pytest.fixture
+    def instance_manager(self) -> InstanceManager:
+        """Create a concrete instance manager for testing."""
+        return _concrete_instance_manager()
+
+    def test_vcpus_divided_by_cpus_per_task(self, instance_manager):
+        """With no memory floor, capacity is just how many tasks the vCPUs divide into."""
+        assert instance_manager.tasks_per_instance({"vcpu": 32, "mem_gb": 128}, {}) == 32
+        assert (
+            instance_manager.tasks_per_instance({"vcpu": 32, "mem_gb": 128}, {"cpus_per_task": 4})
+            == 8
+        )
+
+    def test_leftover_vcpus_do_not_make_a_task(self, instance_manager):
+        """Three vCPUs left over from a task that needs four run nothing."""
+        assert (
+            instance_manager.tasks_per_instance({"vcpu": 31, "mem_gb": 128}, {"cpus_per_task": 4})
+            == 7
+        )
+
+    def test_max_tasks_per_instance_caps_it(self, instance_manager):
+        """Tasks above the cap aren't run, however many vCPUs there are."""
+        assert (
+            instance_manager.tasks_per_instance(
+                {"vcpu": 32, "mem_gb": 128}, {"cpus_per_task": 1, "max_tasks_per_instance": 3}
+            )
+            == 3
+        )
+
+    def test_min_tasks_per_instance_does_not_inflate_it(self, instance_manager):
+        """A machine that can only run two tasks runs two, whatever the config demands."""
+        assert (
+            instance_manager.tasks_per_instance(
+                {"vcpu": 4, "mem_gb": 16}, {"cpus_per_task": 2, "min_tasks_per_instance": 8}
+            )
+            == 2
+        )
+
+    def test_a_memory_floor_costs_vcpus(self, instance_manager):
+        """Wasting vCPUs to give each task its memory means fewer tasks fit."""
+        constraints = {
+            "cpus_per_task": 1,
+            "min_memory_per_task": 16,
+            "allow_cpu_wasting": True,
+        }
+        # 1 GB per vCPU, so a 16 GB task needs 16 of them
+        assert instance_manager.tasks_per_instance({"vcpu": 32, "mem_gb": 32}, constraints) == 2
+
+    def test_no_vcpus_means_no_tasks(self, instance_manager):
+        """An instance type the provider gave us nothing about carries nothing."""
+        assert instance_manager.tasks_per_instance({}, {}) == 0
+
+
+class TestPricePerTask:
+    """Validates ranking instance types by what the work costs rather than what a vCPU costs."""
+
+    @pytest.fixture
+    def instance_manager(self) -> InstanceManager:
+        """Create a concrete instance manager for testing."""
+        return _concrete_instance_manager()
+
+    def test_price_divided_by_the_tasks_that_fit(self, instance_manager):
+        """The whole instance price, including memory and disk, spread over its tasks."""
+        price_info = {"vcpu": 32, "mem_gb": 128, "total_price": 0.64}
+        assert instance_manager.price_per_task(price_info, {"cpus_per_task": 4}) == 0.08
+
+    def test_a_type_that_cannot_run_a_task_sorts_last(self, instance_manager):
+        """Infinity rather than a division error, so it goes behind everything usable."""
+        price_info = {"vcpu": 2, "mem_gb": 8, "total_price": 0.10}
+        assert instance_manager.price_per_task(price_info, {"cpus_per_task": 4}) == float("inf")
+
+    def test_cheap_vcpus_can_be_the_expensive_way_to_run_a_task(self, instance_manager):
+        """The type with the cheapest vCPUs is the one a memory floor wastes the most of.
+
+        Both machines have 32 vCPUs, and the high-CPU one is cheaper outright and cheaper
+        per vCPU. But a 16 GB task needs 16 of its 1 GB-per-vCPU cores and only 2 of the
+        high-memory machine's, so it runs 2 tasks against 16 and costs far more per task.
+        """
+        constraints = {
+            "cpus_per_task": 1,
+            "min_memory_per_task": 16,
+            "allow_cpu_wasting": True,
+        }
+        highcpu = {"vcpu": 32, "mem_gb": 32, "total_price": 0.69}
+        highmem = {"vcpu": 32, "mem_gb": 256, "total_price": 1.55}
+
+        assert instance_manager.tasks_per_instance(highcpu, constraints) == 2
+        assert instance_manager.tasks_per_instance(highmem, constraints) == 16
+
+        # The high-CPU machine wins on both of the figures the old ranking used
+        assert highcpu["total_price"] < highmem["total_price"]
+        assert highcpu["total_price"] / highcpu["vcpu"] < highmem["total_price"] / highmem["vcpu"]
+        # ... and loses badly on the one that decides what the job costs
+        assert instance_manager.price_per_task(highcpu, constraints) == pytest.approx(0.345)
+        assert instance_manager.price_per_task(highmem, constraints) == pytest.approx(0.096875)
+
+    def test_ranking_is_unchanged_when_no_vcpus_are_wasted(self, instance_manager):
+        """Where cpus_per_task divides the vCPUs evenly, this ranks exactly as before."""
+        constraints = {"cpus_per_task": 2}
+        types = [
+            {"name": "a", "vcpu": 8, "mem_gb": 32, "total_price": 0.40},
+            {"name": "b", "vcpu": 16, "mem_gb": 64, "total_price": 0.64},
+            {"name": "c", "vcpu": 4, "mem_gb": 16, "total_price": 0.24},
+        ]
+        by_task = sorted(types, key=lambda t: instance_manager.price_per_task(t, constraints))
+        by_vcpu = sorted(types, key=lambda t: t["total_price"] / t["vcpu"])
+        assert [t["name"] for t in by_task] == [t["name"] for t in by_vcpu]

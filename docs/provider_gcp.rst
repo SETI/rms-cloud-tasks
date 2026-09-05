@@ -26,6 +26,14 @@ Setup
   page in the Google Cloud console. To verify that the API is enabled, visit
   https://console.cloud.google.com/apis/library/pubsub.googleapis.com
 
+- The Cloud Billing API must also be enabled, because instance prices are read from the
+  Cloud Billing Catalog API when choosing an instance type. No permission has to be granted
+  for it, as the pricing data it returns is public, but the API itself has to be on:
+  https://console.cloud.google.com/apis/library/cloudbilling.googleapis.com
+
+- Compute Engine must be enabled to create instances:
+  https://console.cloud.google.com/apis/library/compute.googleapis.com
+
 
 .. _gcp_authentication:
 
@@ -36,6 +44,15 @@ Authentication to GCP
   explicit credentials file (using the ``credentials_file`` configuration option) or by
   using the Application Default Credentials (which are initialized with
   ``gcloud auth application-default login``).
+
+- Application Default Credentials created by ``gcloud auth application-default login``
+  belong to a person, not to a service, and expire; in many organizations within 16 hours
+  or less. A job outlives the command that starts it, and once its credentials have expired
+  it can no longer start, monitor or *terminate* its instances, which then keep running,
+  and costing money, until someone shuts them down by hand. ``cloud_tasks run`` warns about
+  this before it starts any instances and, when run interactively, asks whether to
+  continue. For a job that will run unattended, give it a service account instead; see
+  :ref:`gcp_service_account`.
 
 - A Project ID is required to access many GCP features. It may be specified with the
   ``project_id`` configuration option. If the Project ID is not provided and Application
@@ -54,10 +71,16 @@ Region and Zones
 - If the ``region`` configuration option is not provided, it will be extracted from the zone,
   if provided. If the ``zone`` configuration option is also not provided, it is an error.
 
-- If the ``zone`` configuration option is specified, operations such as listing running instances,
-  creating new instances, and terminating instances will be restricted to the specified zone.
-  Otherwise, all zones in the specified region will be used. For creation of compute instances,
-  that means each new instance will be randomly assigned to a zone.
+- The ``zone`` configuration option takes one zone or a list of them, which must all be in the
+  same region. Operations such as listing running instances, creating new instances, and
+  terminating instances are restricted to the zones given. If no zone is given, all zones in
+  the region are used, and each new instance is assigned to one of them at random.
+
+- When an instance can't be created in a zone - almost always because that zone has run out
+  of the machine type being asked for - the next permitted zone is tried, and zones that
+  have just refused are passed over until every one of them has. See :ref:`config_zones`
+  for the whole of that behaviour, including how stopped instances are restarted rather
+  than replaced.
 
 
 .. _gcp_service_account:
@@ -65,30 +88,205 @@ Region and Zones
 Service Accounts
 ----------------
 
-For GCP, the permissions granted to compute instances are determined by an optional
-"service account". This account can be specified with the ``service_account`` configuration
-option. If not provided, the compute instances will not have any credentials and thus will
-have limited to no access to GCP resources.
+There are two identities involved in a job, and they do different things:
 
-Here is the basic process for creating a service account using the Google Cloud
-web interface:
+- The **runner** is ``cloud_tasks`` itself, wherever you run it. It chooses an instance
+  type, creates and terminates instances, and creates and uses the task and event queues.
+
+- The **workers** are the compute instances the runner creates. They receive tasks from
+  the queue, report events back to it, and do whatever the tasks themselves do, such as
+  reading and writing buckets.
+
+The two can be the same service account, but they need not be, and giving the workers only
+what the tasks need is the safer arrangement: worker instances run code from your startup
+script on a machine anyone with instance access can reach.
+
+Three configuration options select these identities:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 30 45
+
+   * - Option
+     - Identity
+     - How it authenticates
+   * - ``credentials_file``
+     - the runner
+     - a service account key file on the machine running ``cloud_tasks``
+   * - ``runner_service_account``
+     - the runner
+     - impersonation from whatever credentials are already available; no file
+   * - ``worker_service_account``
+     - the worker instances
+     - the instance metadata server; no file, and nothing to distribute
+
+``credentials_file`` and ``runner_service_account`` are two answers to the same question,
+and only the first survives a personal login expiring. See
+:ref:`gcp_runner_authentication` below.
+
+If ``worker_service_account`` is not specified, the compute instances have no credentials
+at all and can reach little or nothing in GCP, including the event queue.
+
+
+Creating a service account
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+With the ``gcloud`` command line, where ``<PROJECT_ID>`` is your project:
+
+.. code-block:: bash
+
+    gcloud iam service-accounts create cloud-tasks-runner \
+        --project=<PROJECT_ID> --display-name="cloud_tasks runner"
+    gcloud iam service-accounts create cloud-tasks-worker \
+        --project=<PROJECT_ID> --display-name="cloud_tasks worker"
+
+That gives two accounts named
+``cloud-tasks-runner@<PROJECT_ID>.iam.gserviceaccount.com`` and
+``cloud-tasks-worker@<PROJECT_ID>.iam.gserviceaccount.com``. The email address is what the
+configuration options take.
+
+The same thing through the Google Cloud web interface:
 
 1. Go to the `IAM & Admin` page in the Google Cloud console.
 2. Click on `Service Accounts` in the left sidebar.
 3. Click on `Create service account`.
 4. Enter a name for the service account.
 5. Note the email address of the service account. This is the value to use for the
-   ``service_account`` configuration option or the ``--service-account`` command line
-   option.
+   ``runner_service_account`` or ``worker_service_account`` configuration option, or for
+   the ``--runner-service-account`` or ``--worker-service-account`` command line option.
 6. Click on `Create and continue`.
-7. Grant the role "Pub/Sub Editor" (this is required for the Cloud Tasks system to work)
-8. Grant other roles as needed, for example "Storage Object User" (if the tasks need to read
-   and write buckets).
-9. Click on `Done` to save the changes.
+7. Grant the roles described below.
+8. Click on `Done` to save the changes.
 
 See the
 `Google Cloud documentation <https://cloud.google.com/iam/docs/service-account-overview>`_
-for information on creating and managing them.
+for information on creating and managing service accounts.
+
+
+What the runner has to be allowed to do
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. list-table::
+   :header-rows: 1
+   :widths: 40 60
+
+   * - Role
+     - Why
+   * - ``roles/compute.instanceAdmin.v1``
+     - create, list and terminate instances, and read machine types and images
+   * - ``roles/iam.serviceAccountUser``
+     - attach the worker service account to the instances it creates; granted **on the
+       worker service account**, not on the project
+   * - ``roles/pubsub.editor``
+     - create and use the task and event queues
+   * - ``roles/monitoring.viewer``
+     - read the task queue depth
+
+Attaching a service account to a new instance is a permission in its own right
+(``iam.serviceAccounts.actAs``), and ``roles/compute.instanceAdmin.v1`` does not include
+it. It is easy to miss, because the basic `Owner` and `Editor` roles do include it, so a
+person who has either of those never notices; a service account created for the runner
+alone does, and instance creation fails with a permission error naming ``actAs``.
+
+Reading instance prices needs no role of any kind: the Cloud Billing Catalog API returns
+public data, and only has to be enabled on the project as described under `Setup`_.
+
+.. code-block:: bash
+
+    RUNNER=cloud-tasks-runner@<PROJECT_ID>.iam.gserviceaccount.com
+    WORKER=cloud-tasks-worker@<PROJECT_ID>.iam.gserviceaccount.com
+
+    for ROLE in roles/compute.instanceAdmin.v1 roles/pubsub.editor roles/monitoring.viewer
+    do
+        gcloud projects add-iam-policy-binding <PROJECT_ID> \
+            --member="serviceAccount:$RUNNER" --role="$ROLE"
+    done
+
+    gcloud iam service-accounts add-iam-policy-binding "$WORKER" \
+        --project=<PROJECT_ID> --member="serviceAccount:$RUNNER" \
+        --role=roles/iam.serviceAccountUser
+
+If the runner is not running as a service account at all, these are the roles the person
+running it needs instead.
+
+
+What the workers have to be allowed to do
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The worker service account needs ``roles/pubsub.editor``, which is what lets a worker
+receive tasks and report events, plus whatever the tasks themselves reach - for example
+``roles/storage.objectUser`` on a bucket the tasks read and write.
+
+.. code-block:: bash
+
+    gcloud projects add-iam-policy-binding <PROJECT_ID> \
+        --member="serviceAccount:$WORKER" --role=roles/pubsub.editor
+
+
+.. _gcp_runner_authentication:
+
+How the runner authenticates
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+There are three ways to run ``cloud_tasks`` as a service account, and one way to run it as
+yourself.
+
+**A key file.** Create a key for the runner account and point the configuration at it:
+
+.. code-block:: bash
+
+    gcloud iam service-accounts keys create /path/to/runner-key.json \
+        --iam-account="$RUNNER" --project=<PROJECT_ID>
+    chmod 600 /path/to/runner-key.json
+
+.. code-block:: yaml
+
+    gcp:
+      project_id: <PROJECT_ID>
+      credentials_file: /path/to/runner-key.json
+      worker_service_account: cloud-tasks-worker@<PROJECT_ID>.iam.gserviceaccount.com
+
+That file *is* the credential: anyone who has it is that service account until the key is
+deleted. Keep it outside your repository, readable only by you, and never commit it. This
+is the only option that keeps working when the person who started the job is not logged in
+any more, so it is the one to use for a long unattended run.
+
+Many organizations forbid service account keys through the
+``iam.disableServiceAccountKeyCreation`` policy, in which case ``keys create`` fails and
+one of the other options is needed.
+
+**Impersonation.** Name the account instead of holding a key for it:
+
+.. code-block:: bash
+
+    gcloud iam service-accounts add-iam-policy-binding "$RUNNER" \
+        --project=<PROJECT_ID> --member="user:<YOUR_LOGIN>" \
+        --role=roles/iam.serviceAccountTokenCreator
+
+.. code-block:: yaml
+
+    gcp:
+      project_id: <PROJECT_ID>
+      runner_service_account: cloud-tasks-runner@<PROJECT_ID>.iam.gserviceaccount.com
+      worker_service_account: cloud-tasks-worker@<PROJECT_ID>.iam.gserviceaccount.com
+
+Every call ``cloud_tasks`` makes is then made as the runner account, so what a run may do
+is decided by that account rather than by whoever is logged in. You still authenticate
+first with ``gcloud auth application-default login``.
+
+Impersonation does **not** make a personal login last longer. The impersonated token is
+refreshed with the credentials underneath it, so a login that expires takes the
+impersonation with it, and ``cloud_tasks run`` still warns about it.
+
+**A machine that is already the service account.** Run ``cloud_tasks`` from a Compute
+Engine instance created with the runner service account attached to it. The metadata server
+issues tokens for as long as the instance exists: no key to protect, no expiry, and nothing
+to configure beyond ``project_id`` and ``worker_service_account``.
+
+**As yourself.** With none of these set, ``cloud_tasks`` runs on your own Application
+Default Credentials and needs the roles listed above granted to you. This is convenient for
+short interactive runs and is the case the expiry warning in :ref:`gcp_authentication` is
+about.
 
 
 .. _gcp_queues:
@@ -129,12 +327,13 @@ Compute Instances
 - Compute Engine instances are tagged with ``rmscr-<job_id>`` so that they can be identified.
 
 - Compute Engine instance types are per-zone, and thus listing available instance types
-  requires a specific zone. If a zone is not specified, the default zone for the region will
-  be used; this is the first zone returned by GCP for the region. When choosing an optimal
-  instance type, if the zone is not specified, it may be possible to get the available instance
-  types for the default zone, and then attempt to create that instance type in a different zone
-  that doesn't support it. Thus if you are planning to use a rare instance type, you should
-  specify a specific zone to use.
+  requires a specific zone. The first zone given in ``zone`` is used; if no zone is given,
+  the default zone for the region is used, which is the first zone returned by GCP for the
+  region. So the available instance types come from one zone, while a new instance may be
+  created in any zone that ``zone`` permits, and a rare machine type may not exist in all of
+  them. Creation then fails in the zones that don't have it and succeeds in one that does,
+  but if you are planning to use a rare instance type it is better to name only the zones
+  that offer it.
 
 - On the other hand, Compute Engine pricing (both on-demand and spot) is per-region, not
   per-zone. Thus it is irrelevant which zone within a region you specify when retrieving
@@ -277,72 +476,80 @@ with CPU family and performance rank.
      -
      - X
      - X
-     - Intel Ice Lake
-     - 16
+     - Intel Sapphire Rapids
+     - 21
    * - c3d
      -
      - X
      -
      - X
      - X
-     - AMD Milan
-     - 17
+     - AMD Genoa
+     - 22
    * - c4
      -
      -
      -
      -
      - X
-     - Intel Ice Lake
-     - 16
+     - Intel Emerald Rapids
+     - 25
    * - c4a
      -
      -
      -
      -
      - X
-     - AMD Milan
-     - 17
+     - Google Axion
+     - 27
    * - c4d
      -
      -
      -
      -
+     - X
+     - AMD Turin
+     - 26
+   * - c4n
      -
-     - Intel Ice Lake
-     - 16
+     -
+     -
+     -
+     - X
+     - Intel Emerald Rapids
+     - 25
    * - e2
      - X
      - X
      - X
      - X
      -
-     - Intel Cascade Lake
-     - 12
+     - Intel Broadwell
+     - 7
    * - f1
      - X
      - X
      - X
      - X
      -
-     - Intel Cascade Lake
-     - 12
+     - Intel Haswell
+     - 6
    * - g1
      - X
      - X
      - X
      - X
      -
-     - Intel Cascade Lake
-     - 12
+     - Intel Haswell
+     - 6
    * - n1
      - X
      - X
      - X
      - X
      -
-     - Intel Skylake
-     - 11
+     - Intel Haswell
+     - 6
    * - n2
      - X
      - X
@@ -357,30 +564,30 @@ with CPU family and performance rank.
      - X
      - X
      - X
-     - AMD Rome
-     - 13
+     - AMD Milan
+     - 17
    * - n4
      -
      -
      -
      -
      - X
-     - Intel Ice Lake
-     - 16
+     - Intel Emerald Rapids
+     - 25
    * - n4a
      -
+     -
+     -
+     -
      - X
-     -
-     -
-     -
      - Google Axion
      - 27
    * - n4d
      -
+     -
+     -
+     -
      - X
-     -
-     -
-     -
      - AMD Turin
      - 26
    * - t2a
@@ -389,17 +596,16 @@ with CPU family and performance rank.
      - X
      - X
      -
-     - AMD Milan
-     - 17
+     - Ampere Altra
+     - 15
    * - t2d
      - X
      - X
      -
      - X
      -
-     - AMD Rome
-     - 13
-
+     - AMD Milan
+     - 17
    * - **Compute Optimized**
      -
      -
@@ -422,17 +628,24 @@ with CPU family and performance rank.
      - X
      - X
      -
-     - AMD Rome
-     - 13
+     - AMD Milan
+     - 17
    * - h3
      -
      - X
      -
      -
      - X
-     - Intel Ice Lake
-     - 16
-
+     - Intel Sapphire Rapids
+     - 21
+   * - h4d
+     -
+     -
+     -
+     -
+     - X
+     - AMD Turin
+     - 26
    * - **Memory Optimized**
      -
      -
@@ -471,17 +684,24 @@ with CPU family and performance rank.
      -
      -
      - X
-     - Intel Ice Lake
-     - 16
+     - Intel Emerald Rapids
+     - 25
+   * - m4n
+     -
+     -
+     -
+     -
+     - X
+     - Intel Emerald Rapids
+     - 25
    * - x4
      -
      -
      -
      -
      - X
-     - Intel Ice Lake
-     - 16
-
+     - Intel Sapphire Rapids
+     - 21
    * - **Storage Optimized**
      -
      -
@@ -496,9 +716,8 @@ with CPU family and performance rank.
      -
      - X
      - X
-     - Intel Ice Lake
-     - 16
-
+     - Intel Sapphire Rapids
+     - 21
    * - **Accelerator Optimized**
      -
      -
@@ -521,24 +740,72 @@ with CPU family and performance rank.
      -
      - X
      - X
-     - Intel Ice Lake
-     - 16
+     - Intel Sapphire Rapids
+     - 21
    * - a4
      -
      -
      -
      -
      - X
-     - Intel Ice Lake
-     - 16
+     - Intel Emerald Rapids
+     - 25
+   * - a4x
+     -
+     -
+     -
+     -
+     - X
+     - NVIDIA Grace
+     - 27
+   * - ct3
+     -
+     -
+     -
+     -
+     - X
+     - Unknown
+     - 0
+   * - ct3p
+     -
+     -
+     -
+     -
+     - X
+     - Unknown
+     - 0
+   * - ct5l
+     -
+     -
+     -
+     -
+     - X
+     - Unknown
+     - 0
+   * - ct5lp
+     -
+     -
+     -
+     -
+     - X
+     - Unknown
+     - 0
+   * - ct5p
+     -
+     -
+     -
+     -
+     - X
+     - Unknown
+     - 0
    * - ct6e
      -
      -
      -
      -
      - X
-     - Intel Ice Lake
-     - 16
+     - Unknown
+     - 0
    * - g2
      - X
      - X

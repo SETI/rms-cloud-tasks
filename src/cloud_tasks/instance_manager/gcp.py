@@ -11,16 +11,16 @@ import random
 import re
 import tempfile
 import threading
+from collections.abc import Iterable
 from datetime import datetime, timezone
 from typing import Any, cast
 
 import shortuuid
 from google.api_core.exceptions import NotFound  # type: ignore[import-not-found, import-untyped]
-from google.auth import default as get_default_credentials
 from google.cloud import billing, compute_v1  # type: ignore[import-not-found, import-untyped]
-from google.oauth2 import service_account
 
 from ..common.config import GCPConfig
+from ..common.gcp_credentials import load_runner_credentials
 from .instance_manager import InstanceManager
 
 shortuuid.set_alphabet("abcdefghijklmnopqrstuvwxyz0123456789")
@@ -72,6 +72,7 @@ class GCPComputeInstanceManager(InstanceManager):
         "c4": "Intel Emerald Rapids",
         "c4a": "Google Axion",
         "c4d": "AMD Turin",
+        "c4n": "Intel Emerald Rapids",
         "n4": "Intel Emerald Rapids",
         "n4a": "Google Axion",
         "n4d": "AMD Turin",
@@ -87,10 +88,12 @@ class GCPComputeInstanceManager(InstanceManager):
         "g1": "Intel Haswell",
         # Compute-optimized
         "h3": "Intel Sapphire Rapids",
+        "h4d": "AMD Turin",
         "c2": "Intel Cascade Lake",
         "c2d": "AMD Milan",
         # Memory-optimized
         "m4": "Intel Emerald Rapids",
+        "m4n": "Intel Emerald Rapids",
         "x4": "Intel Sapphire Rapids",
         "m3": "Intel Ice Lake",
         "m2": "Intel Cascade Lake",
@@ -98,10 +101,20 @@ class GCPComputeInstanceManager(InstanceManager):
         # Storage-optimized
         "z3": "Intel Sapphire Rapids",
         # Accelerator-optimized
+        "a4x": "NVIDIA Grace",  # GB200 superchip: Arm cores, not x86
         "a4": "Intel Emerald Rapids",
         "a3": "Intel Sapphire Rapids",
         "a2": "Intel Cascade Lake",
         "g2": "Intel Cascade Lake",
+        # TPU host machine types. Google doesn't publish which CPU hosts a TPU, so these
+        # rank 0, which keeps them out of any run that sets min_cpu_rank. They are also
+        # priced by the accelerator rather than the vCPU, so a run choosing on price per
+        # vCPU will not pick one.
+        "ct3": "Unknown",  # TPU v3
+        "ct3p": "Unknown",  # TPU v3 pod
+        "ct5l": "Unknown",  # TPU v5e
+        "ct5lp": "Unknown",  # TPU v5e pod
+        "ct5p": "Unknown",  # TPU v5p
         "ct6e": "Unknown",  # TPU v6e
     }
 
@@ -129,7 +142,11 @@ class GCPComputeInstanceManager(InstanceManager):
         "c3d": ["hd-balanced", "pd-balanced", "pd-ssd"],
         "c4": ["hd-balanced"],
         "c4a": ["hd-balanced"],
-        "c4d": [],
+        # C4D supports only Hyperdisk, and a Hyperdisk-only machine's boot disk has to be
+        # Hyperdisk Balanced. An empty list here made every c4d instance type unusable,
+        # because a type with no boot disk to put it on is dropped when prices are compared
+        "c4d": ["hd-balanced"],
+        "c4n": ["hd-balanced"],
         "e2": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd"],
         "f1": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd"],  #
         "g1": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd"],  #
@@ -145,11 +162,13 @@ class GCPComputeInstanceManager(InstanceManager):
         "c2": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd"],
         "c2d": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd"],
         "h3": ["pd-balanced", "hd-balanced"],
+        "h4d": ["hd-balanced"],
         # Memory-optimized
         "m1": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd", "hd-balanced"],
         "m2": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd", "hd-balanced"],
         "m3": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd", "hd-balanced"],
         "m4": ["hd-balanced"],
+        "m4n": ["hd-balanced"],
         "x4": ["hd-balanced"],
         # Storage-optimized
         "z3": ["pd-balanced", "pd-ssd", "hd-balanced"],
@@ -157,7 +176,14 @@ class GCPComputeInstanceManager(InstanceManager):
         "a2": ["pd-standard", "pd-balanced", "pd-extreme", "pd-ssd"],
         "a3": ["pd-balanced", "pd-ssd", "hd-balanced"],
         "a4": ["hd-balanced"],
-        "ct6e": ["hd-balanced"],  # This is a guess
+        "a4x": ["hd-balanced"],
+        # TPU host machine types; Hyperdisk is what the TPU VM documentation shows
+        "ct3": ["hd-balanced"],
+        "ct3p": ["hd-balanced"],
+        "ct5l": ["hd-balanced"],
+        "ct5lp": ["hd-balanced"],
+        "ct5p": ["hd-balanced"],
+        "ct6e": ["hd-balanced"],
         "g2": ["pd-standard", "pd-balanced", "pd-ssd"],
     }
 
@@ -185,51 +211,43 @@ class GCPComputeInstanceManager(InstanceManager):
         # Add thread-local storage for compute client
         self._thread_local = threading.local()
 
-        # Handle credentials - use provided service account file or default application credentials
-        if gcp_config.credentials_file:
-            try:
-                self._credentials = service_account.Credentials.from_service_account_file(
-                    gcp_config.credentials_file
-                )
-                self._logger.debug(f"Using credentials from file: {gcp_config.credentials_file}")
-            except Exception as e:
-                raise RuntimeError(
-                    f"Error loading credentials file: {gcp_config.credentials_file}: {e}"
-                )
-        else:
-            # Use default credentials from environment
-            try:
-                self._credentials, project_id = get_default_credentials()
-                self._logger.debug("Using default application credentials")
-                if not self._project_id and project_id:
-                    self._project_id = project_id
-                    self._logger.info(
-                        f"Using project ID from default credentials: {self._project_id}"
-                    )
-            except Exception as e:
-                raise RuntimeError(
-                    f"Error getting default credentials: {e}. "
-                    "Please ensure you're authenticated with 'gcloud auth application-default "
-                    "login' or provide a credentials_file entry in the GCP configuration."
-                )
+        # Credentials for this process's own calls: a credentials file if one is given,
+        # the Application Default Credentials otherwise, impersonating
+        # runner_service_account if one is named
+        runner_credentials = load_runner_credentials(gcp_config)
+        self._credentials = runner_credentials.credentials
+        self._credentials_are_personal = runner_credentials.source_is_personal
+        self._runner_service_account = runner_credentials.impersonated_service_account
+        if not self._project_id and runner_credentials.project_id:
+            self._project_id = runner_credentials.project_id
+            self._logger.info(f"Using project ID from default credentials: {self._project_id}")
 
         if self._project_id is None:
             raise RuntimeError("Missing required GCP configuration 'project_id'")
 
-        # Initialize region/zone from config if provided
+        # Initialize region/zone from config if provided; self._zones is normalized to a
+        # list by the base class, so one zone and several are the same thing from here on
         self._region = gcp_config.region
-        self._zone = gcp_config.zone
 
-        # If zone is provided but not region, extract region from zone
+        # If zones are provided but not the region, extract the region from them
         region_from_zone = None
-        if self._zone:
+        for zone in self._zones:
             # Extract region from zone (e.g., us-central1-a -> us-central1)
-            region_from_zone = self._zone.rsplit("-", 1)[0]
-            self._logger.debug(f"Extracted region {self._region} from zone {self._zone}")
+            zone_region = zone.rsplit("-", 1)[0]
+            if region_from_zone is not None and zone_region != region_from_zone:
+                raise ValueError(
+                    f"Zones {', '.join(self._zones)} are not all in the same region "
+                    f"({region_from_zone} and {zone_region})"
+                )
+            region_from_zone = zone_region
+        if region_from_zone is not None:
+            self._logger.debug(
+                f"Extracted region {region_from_zone} from zone(s) {', '.join(self._zones)}"
+            )
             if self._region is not None and self._region != region_from_zone:
                 raise ValueError(
                     f"Region {self._region} does not match region {region_from_zone} extracted "
-                    f"from zone {self._zone}"
+                    f"from zone(s) {', '.join(self._zones)}"
                 )
         if self._region is None and region_from_zone is not None:
             self._region = region_from_zone
@@ -239,7 +257,7 @@ class GCPComputeInstanceManager(InstanceManager):
         # It's OK for there to be no specific zone
 
         # Service account for authorization on worker instances
-        self._service_account = gcp_config.service_account
+        self._worker_service_account = gcp_config.worker_service_account
 
         # Initialize clients
         self._zones_client = compute_v1.ZonesClient(credentials=self._credentials)
@@ -258,7 +276,7 @@ class GCPComputeInstanceManager(InstanceManager):
 
         self._logger.debug(
             f"Initialized GCP Compute Engine: project '{self._project_id}', "
-            f"region '{self._region}', zone '{self._zone}'"
+            f"region '{self._region}', zone(s) '{', '.join(self._zones) or None}'"
         )
 
     def _get_compute_client(self):
@@ -355,6 +373,57 @@ class GCPComputeInstanceManager(InstanceManager):
                 except OSError:
                     pass
 
+    # What the account running the job has to be allowed to do, and why. Listed in the
+    # warning about credentials that won't last a job, since the answer to that warning is
+    # to create a service account, and the next question is always what to grant it.
+    # Choosing an instance type reads prices from the Cloud Billing Catalog API, which
+    # needs no role of any kind: that data is public, and the API only has to be enabled.
+    _REQUIRED_ROLES = (
+        ("roles/compute.instanceAdmin.v1", "create, list and terminate instances"),
+        (
+            "roles/iam.serviceAccountUser",
+            "on the workers' service account, to attach it to instances",
+        ),
+        ("roles/pubsub.editor", "create and use the task and event queues"),
+        ("roles/monitoring.viewer", "read the task queue depth"),
+    )
+
+    def local_credential_warning(self) -> str | None:
+        """Warn when this process is running on a person's own Google credentials.
+
+        Returns:
+            A warning if the credentials came from "gcloud auth application-default login",
+            which expire while a long job is still running; None for a service account,
+            which does not.
+        """
+        if not self._credentials_are_personal:
+            return None
+        whose = (
+            f'the service account "{self._runner_service_account}" it impersonates'
+            if self._runner_service_account
+            else "a service account"
+        )
+        roles = "\n".join(f"    {role:<32}{purpose}" for role, purpose in self._REQUIRED_ROLES)
+        return (
+            "This job is running on your personal Google credentials from "
+            f'"gcloud auth application-default login", and refreshes the token for {whose} '
+            "with them.\n"
+            "Those credentials expire, in many organizations within 16 hours or less. "
+            "When they do, this run can no longer start, monitor or TERMINATE its "
+            "instances, and instances left running keep costing money until someone "
+            "shuts them down by hand.\n"
+            "To run unattended, put a service account key in the GCP configuration's "
+            '"credentials_file", or start the job from a machine that has one. Naming a '
+            '"runner_service_account" to impersonate is not enough on its own, because the '
+            "impersonated token is refreshed with the credentials underneath it.\n"
+            f"The account this ends up running as needs these roles in project "
+            f'"{self._project_id}":\n'
+            f"{roles}\n"
+            "Instance prices are read from the Cloud Billing Catalog API, which needs no "
+            "role because that data is public, but the Cloud Billing API does have to be "
+            "enabled on the project."
+        )
+
     async def get_available_instance_types(
         self, constraints: dict[str, Any] | None = None
     ) -> dict[str, dict[str, Any]]:
@@ -416,7 +485,9 @@ class GCPComputeInstanceManager(InstanceManager):
         if constraints is None:
             constraints = {}
 
-        # GCP instance types are per-zone
+        # GCP instance types are per-zone, so this is the catalogue of one zone: the first
+        # one configured, or the region's default if none is. A type that a later zone in
+        # the list doesn't offer simply fails to be created there and the creation moves on.
         zone = await self._get_default_zone()
 
         self._logger.debug(f"Listing available Compute Engine instance types in zone {zone}")
@@ -427,6 +498,13 @@ class GCPComputeInstanceManager(InstanceManager):
         machine_types = self._machine_type_client.list(request=request)
 
         instance_types = {}
+        # Machine families this version has no information for are reported once each,
+        # after the loop. A family holds dozens of instance types, and a line per type
+        # buries everything else the run has to say
+        families_without_processor: dict[str, int] = {}
+        families_without_disk_types: dict[str, int] = {}
+        unranked_processors: set[str] = set()
+
         for machine_type in machine_types:
             if constraints.get("instance_types") is not None:
                 match_ok = False
@@ -455,15 +533,10 @@ class GCPComputeInstanceManager(InstanceManager):
                         processor_family
                     ]
                 else:
-                    self._logger.warning(
-                        f"Processor family '{processor_family}' is not in the processor type "
-                        "ranking; ranking will be 0"
-                    )
+                    unranked_processors.add(processor_family)
             else:
-                self._logger.warning(
-                    f"Instance type {machine_type.name} with family "
-                    f"'{machine_type_family}' is not in the processor family mapping; "
-                    "skipping this type"
+                families_without_processor[machine_type_family] = (
+                    families_without_processor.get(machine_type_family, 0) + 1
                 )
                 continue
 
@@ -478,10 +551,8 @@ class GCPComputeInstanceManager(InstanceManager):
                     machine_type_family
                 ]
             else:
-                self._logger.warning(
-                    f"Instance type {machine_type.name} with family "
-                    f"'{machine_type_family}' is not in the machine type family mapping; "
-                    "skipping this instance type"
+                families_without_disk_types[machine_type_family] = (
+                    families_without_disk_types.get(machine_type_family, 0) + 1
                 )
                 continue
             boot_disk_types = constraints.get("boot_disk_types")
@@ -523,7 +594,53 @@ class GCPComputeInstanceManager(InstanceManager):
             if self._instance_matches_constraints(instance_info, constraints):
                 instance_types[machine_type.name] = instance_info
 
+        self._log_skipped_machine_families(
+            families_without_processor, families_without_disk_types, unranked_processors
+        )
+
         return instance_types
+
+    def _log_skipped_machine_families(
+        self,
+        families_without_processor: dict[str, int],
+        families_without_disk_types: dict[str, int],
+        unranked_processors: set[str],
+    ) -> None:
+        """Report the machine families that were passed over, a line for each reason.
+
+        Google adds machine families faster than this table is updated, and each new one
+        arrives with dozens of instance types. Naming the families, with how many instance
+        types each cost, says the same thing in one line as a line per instance type did.
+
+        Parameters:
+            families_without_processor: Machine family to the number of instance types
+                skipped because the family has no entry in the processor table
+            families_without_disk_types: Machine family to the number of instance types
+                skipped because the family has no entry in the boot disk table
+            unranked_processors: Processor families with no performance ranking
+        """
+
+        def describe(families: dict[str, int]) -> str:
+            """Render the families and their instance type counts for a log line."""
+            return ", ".join(f"{family} ({count})" for family, count in sorted(families.items()))
+
+        if families_without_processor:
+            self._logger.warning(
+                f"Skipped {sum(families_without_processor.values())} instance type(s) in "
+                "machine families this version has no processor information for: "
+                f"{describe(families_without_processor)}"
+            )
+        if families_without_disk_types:
+            self._logger.warning(
+                f"Skipped {sum(families_without_disk_types.values())} instance type(s) in "
+                "machine families this version has no boot disk information for: "
+                f"{describe(families_without_disk_types)}"
+            )
+        for processor_family in sorted(unranked_processors):
+            self._logger.warning(
+                f"Processor family '{processor_family}' is not in the processor type "
+                "ranking; ranking will be 0"
+            )
 
     async def _get_billing_compute_skus(self) -> list[billing.Sku]:
         """Get and cache the billing compute SKUs."""
@@ -1314,7 +1431,8 @@ class GCPComputeInstanceManager(InstanceManager):
             constraints = {}
 
         self._logger.debug(
-            f"Getting optimal instance type in region {self._region} and zone {self._zone}"
+            f"Getting optimal instance type in region {self._region} and zone(s) "
+            f"{', '.join(self._zones) or None}"
         )
         self._logger.debug(f"Constraints: {constraints}")
 
@@ -1327,10 +1445,11 @@ class GCPComputeInstanceManager(InstanceManager):
         avail_instance_types = await self.get_available_instance_types(constraints)
         self._logger.debug(
             f"Found {len(avail_instance_types)} available instance types in region "
-            f"{self._region} and zone {self._zone}"
+            f"{self._region} and zone(s) {', '.join(self._zones) or None}"
         )
 
         if not avail_instance_types:
+            await self._report_no_instance_types(constraints)
             raise ValueError("No instance type meets requirements")
 
         use_spot = constraints.get("use_spot")
@@ -1382,28 +1501,35 @@ class GCPComputeInstanceManager(InstanceManager):
             (machine_type, zone, boot_disk_type, price_info)
             for (machine_type, zone, boot_disk_type), price_info in zone_pricing_data.items()
         ]
-        # Sort by price per vCPU, then by decreasing vCPU (this gives us the cheapest
-        # instance type with the most vCPUs). Instead of using the price_per_vcpu field,
-        # we use the total_price field and divide by the number of vCPUs. This gives us a
-        # more accurate comparison of the cost of the instance including memory and disk.
-        # We round the price to 4 decimal places so that small differences in price don't
-        # make us choose an instance with fewer vCPUs that would otherwise cost the same.
+        # Sort by what it costs to run one task, then by the most tasks and the most vCPUs
+        # (this gives us the cheapest instance type that gets the most done per instance).
+        # The price of a vCPU is not the price of the work: when a task can't use a whole
+        # vCPU's worth of memory, or cpus_per_task doesn't divide the vCPU count, some of
+        # the vCPUs are paid for and left idle, and the type with the cheapest vCPUs is the
+        # one that wastes the most of them. We use total_price rather than the per-vCPU
+        # field so the comparison includes memory and disk. We round the price to 4 decimal
+        # places so that small differences in price don't make us choose an instance that
+        # runs fewer tasks and would otherwise cost the same.
         priced_instances.sort(
             key=lambda x: (
-                round(cast(float, x[3]["total_price"]) / cast(int, x[3]["vcpu"]), 4),
+                round(self.price_per_task(x[3], constraints), 4),
+                -self.tasks_per_instance(x[3], constraints),
                 -cast(int, x[3]["vcpu"]),
             )
         )
 
-        self._logger.debug("Instance types sorted by price (cheapest and most vCPUs first):")
+        self._logger.debug("Instance types sorted by price (cheapest and most tasks first):")
         for i, (machine_type, zone, boot_disk_type, price_info) in enumerate(priced_instances):
             total_p = cast(float, price_info["total_price"])
             vcpu = cast(int, price_info["vcpu"])
+            num_tasks = self.tasks_per_instance(price_info, constraints)
             self._logger.debug(
                 f"  [{i + 1:3d}] {machine_type:20s} ({boot_disk_type:12s}) "
                 f"in {zone:15s}: "
                 f"${total_p:10.6f}/hour = "
-                f"${total_p / vcpu:10.6f}/vCPU/hour"
+                f"${total_p / vcpu:10.6f}/vCPU/hour = "
+                f"${self.price_per_task(price_info, constraints):10.6f}/task/hour "
+                f"({num_tasks} task(s))"
             )
 
         selected_type, selected_zone, selected_boot_disk_type, selected_price_info = (
@@ -1413,6 +1539,7 @@ class GCPComputeInstanceManager(InstanceManager):
         self._logger.debug(
             f"Selected {selected_type} ({selected_boot_disk_type:12s}) in "
             f"{selected_zone} at ${total_price:.6f} per hour "
+            f"(${self.price_per_task(selected_price_info, constraints):.6f} per task per hour) "
             f"{' (spot)' if use_spot else '(on demand)'}"
         )
 
@@ -1431,9 +1558,15 @@ class GCPComputeInstanceManager(InstanceManager):
         boot_disk_iops: int | None = None,
         boot_disk_throughput: int | None = None,  # MB/s
         zone: str | None = None,
+        exclude_zones: Iterable[str] | None = None,
     ) -> tuple[str, str]:
         """
         Start a new GCP Compute Engine instance.
+
+        Every permitted zone is tried in turn until one of them creates the instance. A
+        creation failure is nearly always a zone running out of the machine type asked for,
+        which says nothing about the zone next door, so moving on is the difference between
+        a job that stalls and one that keeps running.
 
         Args:
             instance_type: GCP instance type (e.g., 'n1-standard-1')
@@ -1447,30 +1580,26 @@ class GCPComputeInstanceManager(InstanceManager):
                 `hd-balanced`
             provisioned_throughput: Amount of provisioned throughput (MB/s); must be specified for
                 `hd-balanced`
-            zone: Zone to use for the instance; if not specified use the default zone,
-                or if none choose a random zone
+            zone: Preferred zone for the instance; if not specified use the configured
+                zones, or if none choose from the zones of the region
+            exclude_zones: Zones not to create the instance in, whatever the configuration
+                permits
 
         Returns:
             A tuple containing the ID of the started instance and the zone it was started
             in
+
+        Raises:
+            ValueError: If the boot disk type is not valid, or every zone is excluded
+            Exception: The failure from the last zone tried, if no zone would create the
+                instance
         """
         self._logger.debug(f"Starting new instance with type: {instance_type}, spot: {use_spot}")
 
         # Get thread-local compute client
         compute_client = self._get_compute_client()
 
-        # Generate a unique name for the instance
-        instance_id = f"{self._JOB_ID_TAG_PREFIX}{job_id}-{str(shortuuid.uuid())}"
-
-        if zone is not None and self._zone is not None and zone != self._zone:
-            self._logger.debug(f"Overriding default zone {self._zone} with {zone}")
-        if zone is None or (zone is not None and zone[-2:] == "-*"):
-            random_zone = await self._get_random_zone()
-            self._logger.debug(
-                f"Zone {zone} for optimal instance type is a wildcard zone, using "
-                f"random zone {random_zone}"
-            )
-            zone = random_zone
+        candidate_zones = await self._zones_for_new_instance(zone, exclude_zones)
 
         # Encode the startup script as metadata
         # https://cloud.google.com/python/docs/reference/compute/latest/google.cloud.compute_v1.types.Metadata
@@ -1492,27 +1621,13 @@ class GCPComputeInstanceManager(InstanceManager):
 
         gcp_disk_type = disk_type_map[boot_disk_type]
 
-        disk_config: dict[str, Any] = {
-            "boot": True,
-            "auto_delete": True,
-            "initialize_params": {
-                "source_image": image_uri,
-                "disk_size_gb": boot_disk_size,
-                "disk_type": f"zones/{zone}/diskTypes/{gcp_disk_type}",
-            },
-        }
-
         # Add IOPS for pd-extreme and hd-balanced
-        if boot_disk_type in ["pd-extreme", "hd-balanced"]:
-            if boot_disk_iops is None:
-                raise ValueError("boot_disk_iops must be specified for pd-extreme and hd-balanced")
-            disk_config["initialize_params"]["provisioned_iops"] = boot_disk_iops
+        if boot_disk_type in ["pd-extreme", "hd-balanced"] and boot_disk_iops is None:
+            raise ValueError("boot_disk_iops must be specified for pd-extreme and hd-balanced")
 
         # Add throughput for hd-balanced
-        if boot_disk_type == "hd-balanced":
-            if boot_disk_throughput is None:
-                raise ValueError("boot_disk_throughput must be specified for hd-balanced")
-            disk_config["initialize_params"]["provisioned_throughput"] = boot_disk_throughput
+        if boot_disk_type == "hd-balanced" and boot_disk_throughput is None:
+            raise ValueError("boot_disk_throughput must be specified for hd-balanced")
 
         # Prepare the network interface configuration
         # https://cloud.google.com/python/docs/reference/compute/latest/google.cloud.compute_v1.types.NetworkInterface
@@ -1532,10 +1647,10 @@ class GCPComputeInstanceManager(InstanceManager):
             }
 
         service_accounts = []
-        if self._service_account:
+        if self._worker_service_account:
             service_accounts.append(
                 {
-                    "email": self._service_account,
+                    "email": self._worker_service_account,
                     # Using the cloud-platform scope allows the instance to access
                     # all GCP services that are available to the service account
                     "scopes": ["https://www.googleapis.com/auth/cloud-platform"],
@@ -1552,44 +1667,125 @@ class GCPComputeInstanceManager(InstanceManager):
             "items": [self._job_id_to_tag(job_id)],
         }
 
-        # Prepare the instance configuration
-        inst_config = compute_v1.Instance(
-            name=instance_id,
-            machine_type=f"zones/{zone}/machineTypes/{instance_type}",
-            disks=[disk_config],
-            network_interfaces=[network_interface],
-            metadata=metadata,
-            scheduling=scheduling,
-            service_accounts=service_accounts,
-            tags=tags,
-        )
+        pricing_model = "spot" if use_spot else "on-demand"
+        last_error: Exception | None = None
+        for zone_num, candidate_zone in enumerate(candidate_zones):
+            # A new name each time so that a creation that failed halfway through can't
+            # collide with the retry
+            instance_id = f"{self._JOB_ID_TAG_PREFIX}{job_id}-{str(shortuuid.uuid())}"
 
-        self._logger.debug(
-            f"Creating {'spot' if use_spot else 'on-demand'} instance "
-            f"{instance_id} ({instance_type})"
-        )
+            disk_config: dict[str, Any] = {
+                "boot": True,
+                "auto_delete": True,
+                "initialize_params": {
+                    "source_image": image_uri,
+                    "disk_size_gb": boot_disk_size,
+                    "disk_type": f"zones/{candidate_zone}/diskTypes/{gcp_disk_type}",
+                },
+            }
+            if boot_disk_type in ["pd-extreme", "hd-balanced"]:
+                disk_config["initialize_params"]["provisioned_iops"] = boot_disk_iops
+            if boot_disk_type == "hd-balanced":
+                disk_config["initialize_params"]["provisioned_throughput"] = boot_disk_throughput
 
-        # Create the instance
+            # Prepare the instance configuration
+            inst_config = compute_v1.Instance(
+                name=instance_id,
+                machine_type=f"zones/{candidate_zone}/machineTypes/{instance_type}",
+                disks=[disk_config],
+                network_interfaces=[network_interface],
+                metadata=metadata,
+                scheduling=scheduling,
+                service_accounts=service_accounts,
+                tags=tags,
+            )
+
+            self._logger.debug(
+                f"Creating {pricing_model} instance {instance_id} ({instance_type}) in zone "
+                f"{candidate_zone}"
+            )
+
+            # Create the instance
+            try:
+                operation = await asyncio.to_thread(
+                    compute_client.insert,
+                    project=self._project_id,
+                    zone=candidate_zone,
+                    instance_resource=inst_config,
+                )
+
+                # Wait for the create operation to complete
+                await self._wait_for_operation(operation, f"Creation of instance {instance_id}")
+            except Exception as e:
+                last_error = e
+                self.record_zone_failure(candidate_zone)
+                remaining = len(candidate_zones) - zone_num - 1
+                if remaining:
+                    # The last failure is reported below, once there is nothing left to try
+                    self._logger.warning(
+                        f"Failed to create {pricing_model} instance ({instance_type}) in zone "
+                        f"{candidate_zone}: {e}; trying {remaining} other zone(s)"
+                    )
+                continue
+
+            self.record_zone_success(candidate_zone)
+            self._logger.debug(
+                f"Instance {instance_id} created successfully ({instance_type} in zone "
+                f"{candidate_zone})"
+            )
+            return instance_id, candidate_zone
+
+        assert last_error is not None  # candidate_zones is never empty
+        where = (
+            f"zone {candidate_zones[0]}"
+            if len(candidate_zones) == 1
+            else f"any of {', '.join(candidate_zones)}"
+        )
+        self._logger.error(
+            f"Failed to create {pricing_model} instance ({instance_type}) in {where}: {last_error}",
+            exc_info=last_error,
+        )
+        raise last_error
+
+    async def restart_instance(self, instance_id: str, zone: str | None = None) -> None:
+        """
+        Start a Compute Engine instance that exists but is stopped.
+
+        A spot instance that GCP reclaims is left in the TERMINATED state rather than
+        deleted, so it can be started again with its disk and its name intact.
+
+        Args:
+            instance_id: Instance name
+            zone: The zone the instance is in; if not specified use the default zone
+
+        Raises:
+            ValueError: If no zone is given and none is configured
+            Exception: If the instance cannot be started, which for a reclaimed spot
+                instance usually means the zone still has no capacity for it
+        """
+        if zone is None:
+            zone = self._zones[0] if self._zones else None
+
+        if zone is None:
+            raise ValueError("Zone is required")
+
+        self._logger.debug(f"Restarting instance {instance_id} in zone {zone}")
+
+        # Get thread-local compute client
+        compute_client = self._get_compute_client()
+
         try:
             operation = await asyncio.to_thread(
-                compute_client.insert,
-                project=self._project_id,
-                zone=zone,
-                instance_resource=inst_config,
+                compute_client.start, project=self._project_id, zone=zone, instance=instance_id
             )
 
-            # Wait for the create operation to complete
-            await self._wait_for_operation(operation, f"Creation of instance {instance_id}")
-            self._logger.debug(
-                f"Instance {instance_id} created successfully ({instance_type} in zone {zone})"
-            )
-            return instance_id, zone
+            # Wait for the operation to complete asynchronously
+            await self._wait_for_operation(operation, f"Restart of instance {instance_id}")
         except Exception as e:
-            self._logger.error(
-                f"Failed to create {'spot' if use_spot else 'on-demand'} instance: {e}",
-                exc_info=True,
-            )
+            self._logger.warning(f"Failed to restart instance {instance_id} in zone {zone}: {e}")
             raise
+
+        self._logger.debug(f"Instance {instance_id} restarted successfully")
 
     async def terminate_instance(self, instance_id: str, zone: str | None = None) -> None:
         """
@@ -1600,7 +1796,7 @@ class GCPComputeInstanceManager(InstanceManager):
             zone: The zone the instance is in; if not specified use the default zone
         """
         if zone is None:
-            zone = self._zone
+            zone = self._zones[0] if self._zones else None
 
         if zone is None:
             raise ValueError("Zone is required")
@@ -1652,22 +1848,23 @@ class GCPComputeInstanceManager(InstanceManager):
 
         instances = []
 
-        # If zone is specified, only query that zone
-        if self._zone:
-            # List instances in the specified zone
-            self._logger.debug(f"Listing instances in zone {self._zone}")
-            request = compute_v1.ListInstancesRequest(project=self._project_id, zone=self._zone)
+        # If zones are specified, only query those zones
+        if self._zones:
+            for zone_name in self._zones:
+                # List instances in the specified zone
+                self._logger.debug(f"Listing instances in zone {zone_name}")
+                request = compute_v1.ListInstancesRequest(project=self._project_id, zone=zone_name)
 
-            try:
-                instances_list = self._get_compute_client().list(request=request)
-                instances.extend(
-                    self._standardize_instance_data(instances_list, job_id, include_non_job)
-                )
-            except Exception as e:
-                self._logger.error(
-                    f"Error listing instances in zone {self._zone}: {e}", exc_info=True
-                )
-                raise
+                try:
+                    instances_list = self._get_compute_client().list(request=request)
+                    instances.extend(
+                        self._standardize_instance_data(instances_list, job_id, include_non_job)
+                    )
+                except Exception as e:
+                    self._logger.error(
+                        f"Error listing instances in zone {zone_name}: {e}", exc_info=True
+                    )
+                    raise
         else:
             self._logger.debug(f"Listing instances in all zones of region {self._region}")
 
@@ -1751,13 +1948,25 @@ class GCPComputeInstanceManager(InstanceManager):
         # The URL structure implies: projects/PROJECT_ID/zones/ZONE/disks/DISK_NAME
         disk_zone = disk_url_parts[-3]
 
-        # Get full disk details
+        # Get full disk details. A boot disk can be gone by the time it is asked
+        # about: an instance deleted between the listing and this call takes its
+        # disk with it, and the 404 that follows is about one row of a table. The
+        # size and type are descriptive, the caller already renders them as unknown
+        # when they are missing, and losing the whole listing over them is what let
+        # a routine deletion race stop the orchestrator from seeing its own pool.
         disk_request = compute_v1.GetDiskRequest(
             project=self._project_id,
             zone=disk_zone,
             disk=disk_name,
         )
-        full_disk_details = self._disks_client.get(request=disk_request)
+        try:
+            full_disk_details = self._disks_client.get(request=disk_request)
+        except NotFound:
+            self._logger.warning(
+                f"Boot disk '{disk_name}' of instance '{instance.name}' no longer exists; "
+                "reporting its disk details as unknown"
+            )
+            return None, None, None, None
 
         # Extract human-readable disk type from the URL
         disk_type = full_disk_details.type.split("/")[-1]
@@ -2049,12 +2258,23 @@ class GCPComputeInstanceManager(InstanceManager):
         """
         Wait for a Compute Engine operation to complete.
 
-        Args:
-            operation_name: Name of the operation
+        Parameters:
+            operation: The Compute Engine operation to wait for
+            verbose_name: What the operation is doing, for the log messages
+
+        Returns:
+            Any: The operation's result.
+
+        Raises:
+            Exception: The operation's own error if it failed.
         """
         self._logger.debug(f"Waiting for operation {operation.name} to complete")
 
-        result = operation.result(timeout=self._DEFAULT_OPERATION_TIMEOUT)
+        # In a thread, because operation.result() blocks until Compute Engine is done. Called
+        # directly it would hold the event loop for the whole operation, which is seconds per
+        # instance: creating or terminating a pool of instances is gathered so it happens at
+        # once, and a blocking wait here turns all of that back into one instance at a time.
+        result = await asyncio.to_thread(operation.result, timeout=self._DEFAULT_OPERATION_TIMEOUT)
 
         if operation.error_code:
             self._logger.error(
@@ -2117,6 +2337,39 @@ class GCPComputeInstanceManager(InstanceManager):
         )
         return region_dict
 
+    async def _list_region_zones(self, region: str | None = None) -> list[str]:
+        """
+        List every zone in a region.
+
+        Args:
+            region: Region to list the zones of; if not specified use the default region
+
+        Returns:
+            The names of the zones in the region
+
+        Raises:
+            RuntimeError: If no region is given and none is configured
+            ValueError: If the region has no zones
+        """
+        if region is None:
+            region = self._region
+
+        if region is None:
+            raise RuntimeError("Region or zone must be specified")
+
+        self._logger.debug(f"Getting zones for region {region}")
+
+        # Create the request to list zones
+        request = compute_v1.ListZonesRequest(
+            project=self._project_id, filter=f"name eq {region}-.*"
+        )
+        zones = [zone.name for zone in self._zones_client.list(request=request)]
+
+        if len(zones) == 0:
+            raise ValueError(f"No zones found for region {region}")
+
+        return zones
+
     async def _get_default_zone(self, region: str | None = None) -> str:
         """
         Get the default zone for the region.
@@ -2127,30 +2380,15 @@ class GCPComputeInstanceManager(InstanceManager):
         Returns:
             The default zone for the region
         """
-        if self._zone:
-            self._logger.debug(f"Using specified zone {self._zone}")
-            return self._zone
+        if self._zones:
+            self._logger.debug(f"Using specified zone {self._zones[0]}")
+            return self._zones[0]
 
-        if region is None:
-            region = self._region
-
-        if region is None:
-            raise RuntimeError("Region or zone must be specified")
-
-        self._logger.debug(f"Getting default zone for region {region}")
-
-        # Create the request to list zones
-        request = compute_v1.ListZonesRequest(
-            project=self._project_id, filter=f"name eq {region}-.*"
-        )
-        zones = list(self._zones_client.list(request=request))
-
-        if len(zones) == 0:
-            raise ValueError(f"No zones found for region {region}")
+        zones = await self._list_region_zones(region)
 
         # Get the first zone in the list
-        self._logger.debug(f"Default zone is {zones[0].name}")
-        return zones[0].name
+        self._logger.debug(f"Default zone is {zones[0]}")
+        return zones[0]
 
     async def _get_random_zone(self, region: str | None = None) -> str:
         """
@@ -2162,24 +2400,64 @@ class GCPComputeInstanceManager(InstanceManager):
         Returns:
             A random zone for the region
         """
-        if self._zone:
-            self._logger.debug(f"Using specified zone {self._zone}")
-            return self._zone
+        if self._zones:
+            zone = random.choice(self._zones)
+            self._logger.debug(f"Using specified zone {zone}")
+            return zone
 
-        if region is None:
-            region = self._region
+        zones = await self._list_region_zones(region)
 
-        self._logger.debug(f"Getting default zone for region {region}")
+        return zones[random.randint(0, len(zones) - 1)]
 
-        # Create the request to list zones
-        request = compute_v1.ListZonesRequest(
-            project=self._project_id, filter=f"name eq {region}-.*"
-        )
-        zones = list(self._zones_client.list(request=request))
+    async def _zones_for_new_instance(
+        self, zone: str | None = None, exclude_zones: Iterable[str] | None = None
+    ) -> list[str]:
+        """Work out which zones to try creating an instance in, most preferred first.
 
-        if len(zones) == 0:
-            raise ValueError(f"No zones found for region {region}")
+        Args:
+            zone: The caller's preferred zone. A wildcard like ``us-central1-*`` means the
+                pricing data is per-region and any zone of that region will do.
+            exclude_zones: Zones the caller has ruled out
 
-        # Get the first zone in the list
-        self._logger.debug(f"Default zone is {zones[0].name}")
-        return zones[random.randint(0, len(zones) - 1)].name
+        Returns:
+            The zones to try, in order. Zones that have recently failed to create an
+            instance come last, or not at all if some zone has not been tried yet.
+
+        Raises:
+            ValueError: If nothing is left to try once the exclusions are applied
+        """
+        region = self._region
+        if zone is not None and zone.endswith("-*"):
+            # Pricing is per region, so the "zone" of an instance type may name the region
+            # and leave the choice of zone to us
+            region = zone[: -len("-*")]
+            zone = None
+
+        permitted = list(self._zones)
+        if not permitted:
+            # No zone was configured, so anywhere in the region will do. The order is
+            # random so that concurrent runs don't all pile into the same zone.
+            permitted = await self._list_region_zones(region)
+            random.shuffle(permitted)
+        if zone is not None:
+            if not self._zones:
+                # Prefer the requested zone, but fall back to the rest of the region
+                permitted = [zone] + [z for z in permitted if z != zone]
+            elif zone in permitted:
+                permitted = [zone] + [z for z in permitted if z != zone]
+            else:
+                self._logger.warning(
+                    f"Zone {zone} was requested for a new instance but the configuration "
+                    f"only permits {', '.join(permitted)}; ignoring the request"
+                )
+
+        excluded = set(exclude_zones or ())
+        candidates = [z for z in permitted if z not in excluded]
+        if not candidates:
+            raise ValueError(
+                f"No zone is available to create an instance in: {', '.join(permitted)} "
+                f"{'is' if len(permitted) == 1 else 'are'} permitted but "
+                f"{'it has' if len(permitted) == 1 else 'they have'} been excluded"
+            )
+
+        return self.zones_to_try(candidates)

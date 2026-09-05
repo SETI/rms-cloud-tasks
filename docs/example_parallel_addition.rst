@@ -216,7 +216,8 @@ user-specific. The configuration file and tasks list are available in the
 
 For Google Cloud, the permissions granted to compute instances are determined by a
 :ref:`service account <gcp_service_account>`. This account can be specified in the configuration
-file (``service_account:``) or on the command line using ``--service-account``.
+file (``worker_service_account:``) or on the command line using
+``--worker-service-account``.
 
 The location of the output bucket needs to be specified in the startup script in
 the configuration file, since that is user-specific. Change this line in the file
@@ -233,7 +234,7 @@ the specified region with exactly 8 CPUs and at least 2 GB memory per CPU and cr
 
 .. code-block:: bash
 
-    cloud_tasks run --config examples/parallel_addition/config.yml --task-file examples/parallel_addition/addition_tasks.json --provider gcp --project-id <PROJECT_ID> --service-account <SERVICE_ACCOUNT> --region us-central1 --min-cpu 8 --max-cpu 8 --min-memory-per-cpu 2 --max-instances 5
+    cloud_tasks run --config examples/parallel_addition/config.yml --task-file examples/parallel_addition/addition_tasks.json --provider gcp --project-id <PROJECT_ID> --worker-service-account <SERVICE_ACCOUNT> --region us-central1 --min-cpu 8 --max-cpu 8 --min-memory-per-cpu 2 --max-instances 5
 
 You should replace the ``<PROJECT_ID>`` with a project defined for your account and
 ``<SERVICE_ACCOUNT>`` with the email address of the :ref:`service account <gcp_service_account>`

@@ -56,15 +56,28 @@ Options to select a compute instance type
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Generally speaking, within the constraints provided, the system will attempt to use the
-instance type with the lowest cost per vCPU with the maximum number of vCPUs per instance.
-This results in needing the fewest instances to get the job done, since each instance can
-do maximal work; this may or may not be an appropriate choice for your workload (for
-example, having a large number of vCPUs, and thus simultaneosly running tasks, may result
-in the tasks being throttled by the network or disk bandwidth). With no constraints, the
+instance type with the lowest cost *per task*, and among equals the one that runs the most
+tasks per instance. This results in needing the fewest instances to get the job done, since
+each instance can do maximal work; this may or may not be an appropriate choice for your
+workload (for example, having a large number of simultaneously running tasks may result in
+the tasks being throttled by the network or disk bandwidth). With no constraints, the
 system will tend to choose the cheapest (and probably worst-performing) instance type with
 the least memory, the least disk space, and the slowest disk type. *Thus, while no
 constraints are required, it is recommended to specify at least some minimal constraints
 to avoid selecting the worst possible instance type.*
+
+The cost of a task, rather than the cost of a vCPU, is what decides this, because a vCPU
+that can't be put to work is still paid for. The two are the same whenever every vCPU on
+the instance runs a task, and they part company when some can't:
+
+- ``min_memory_per_task`` with ``allow_cpu_wasting`` means a task takes as many vCPUs as it
+  needs to get its memory. The cheapest vCPUs are sold on the instance types with the least
+  memory per vCPU, which are exactly the types where the most vCPUs then sit idle, so
+  ranking by the price of a vCPU reliably picks the worst machine for the job. An
+  ``n2-highcpu-32`` (32 GB) and an ``n2-highmem-32`` (256 GB) both have 32 vCPUs, but with
+  ``min_memory_per_task: 16`` the first runs 2 tasks and the second runs 16.
+- ``max_tasks_per_instance`` caps how many tasks run whatever the vCPU count allows.
+- ``cpus_per_task`` need not divide the vCPU count evenly, and the remainder runs nothing.
 
 If you need specific performance, specify the instance types you are willing to accept as
 a regular expression. For example, to allow all GCP "N2" instances, specify
@@ -131,6 +144,15 @@ Memory
   * ``cpus_per_task``: The number of vCPUs per task (defaults to 1)
   * ``min_memory_per_task``: The minimum amount of memory in GB per task
   * ``max_memory_per_task``: The maximum amount of memory in GB per task
+
+* ``allow_cpu_wasting``: If True, give each task more vCPUs than ``cpus_per_task`` asks for
+  when that is the only way to satisfy ``min_memory_per_task``, leaving the surplus vCPUs
+  idle (defaults to False). An instance type is sold in fixed combinations of vCPUs and
+  memory, so on a machine with little memory per vCPU the only way to give one task more
+  memory is to run fewer tasks and leave some vCPUs unused. Without this, such an instance
+  type is rejected instead, and a job whose tasks need more memory per task than any
+  available instance type provides per vCPU has no instance type to run on at all. The
+  number of tasks per instance is reduced to match, and is reported when the job starts.
 
 SSD Storage
 +++++++++++
@@ -217,11 +239,20 @@ and the resulting costs. By default, the maximum number of instances is set to 1
 excessive instance pool sizes, and the maximum price is set to $10 per hour to avoid
 runaway costs, but these can be overridden by specifying different values.
 
+Each of these defaults is a limit the job did not ask for, and a pool that stops growing
+because of one looks exactly like a pool that has run out of quota. So every constraining
+default that has to be supplied -- ``max_instances``, ``max_total_price_per_hour``,
+``max_runtime``, ``architecture`` and ``total_boot_disk_size`` -- is reported as a warning
+when the configuration and the command line have both left it unset, saying what the value
+is, what it does, and which option overrides it. Specifying the value, at any of the three
+levels, silences the warning for it. Defaults that are the absence of a constraint, such as
+a minimum of zero, are applied without comment.
+
 Note that depending on the provider and your account setup, you may have quotas for the
 creation of specific instance types, and Cloud Tasks may attempt to violate these quotas
 if you do not give it sufficient constraints.
 
-* ``min_instances``: The minimum number of instances to use (defaults to 1)
+* ``min_instances``: The minimum number of instances to use (defaults to 0)
 * ``max_instances``: The maximum number of instances to use (defaults to 10)
 * ``min_total_cpus``: The minimum total number of vCPUs to use
 * ``max_total_cpus``: The maximum total number of vCPUs to use
@@ -242,7 +273,11 @@ Options to specify the type of VM
 
 * ``use_spot``: Use spot instances instead of on-demand instances; spot instances
   are cheaper but may be terminated by the cloud provider with little notice and should only
-  be used for fault-tolerant jobs
+  be used for fault-tolerant jobs. An instance reclaimed this way leaves the pool short, and
+  the scaling loop starts a replacement for it on its next cycle, for as long as there are
+  tasks left to run and the configured maximums allow it. Tasks that were running on the
+  reclaimed instance return to the queue when their visibility timeout expires and are
+  picked up by another worker.
 
 .. _config_boot_options:
 
@@ -271,7 +306,7 @@ Options to specify the worker process and run process
 * ``instance_termination_delay``: The delay in seconds to wait before terminating instances
   once the task queue is empty (defaults to 60); this should be set to a value much greater
   than ``max_runtime`` to avoid terminating instances that are still working on tasks.
-* ``max_runtime``: The maximum runtime for a task in seconds (defaults to 60); this is used
+* ``max_runtime``: The maximum runtime for a task in seconds (defaults to 3600); this is used
   to set the retry timeout in the task queue such that any task that takes longer than this
   is assumed to have had an internal error and should be set to a value
   significantly greater than the longest runtime expected for a task
@@ -321,7 +356,12 @@ The available provider-specific options are:
     only use this in special circumstances
   * ``region``: The region to use, required for most operations; will be derived from the
     zone if not specified
-  * ``zone``: The zone to use; if not specified, all zones in the region will be used
+  * ``zone``: The zone to use, or a list of zones; if not specified, all zones in the region
+    will be used. When more than one zone is available, creating an instance moves on to the
+    next zone if the one it tried has no capacity for the instance type, and remembers which
+    zones refused so that the next instance doesn't start with them; once every zone has
+    refused, the record is cleared and they are all tried again. See
+    :ref:`config_zones` for how this interacts with restarting stopped instances.
   * ``exactly_once_queue``: If True, task messages and events are guaranteed to be delivered
     exactly once to any recipient. If False (the default), messages will be delivered at least
     once, but could be delivered multiple times. The specific implications of this flag are
@@ -337,11 +377,68 @@ The available provider-specific options are:
   * ``project_id``: The ID of the project to use; required for most operations
   * ``credentials_file``: The path to a file containing the credentials to use; if not
     specified, the default credentials will be used
-  * ``service_account``: The service account to use; required for worker processes
+  * ``worker_service_account``: The service account the worker instances run as, which
+    decides what the tasks themselves are allowed to reach; required for worker processes
+  * ``runner_service_account``: The service account this command runs as. The local
+    credentials impersonate it, so what the command may do is decided by that account
+    rather than by whoever is logged in. Impersonating an account requires the role
+    ``roles/iam.serviceAccountTokenCreator`` on it. Note that this does not make a personal
+    login last longer: the impersonated token is refreshed with the credentials underneath
+    it, so a login that expires takes the impersonation with it
     on cloud-based instances to have access to system resources
 
 In addition, all run options can be specified in a provider-specific section, in which
 case they will override the global run options, if any.
+
+.. _config_zones:
+
+Zones and Replacing Lost Instances
+----------------------------------
+
+``zone`` accepts one zone or a list of them:
+
+.. code-block:: yaml
+
+    gcp:
+      zone:
+        - us-central1-a
+        - us-central1-b
+        - us-central1-c
+
+or on the command line::
+
+    --zone us-central1-a us-central1-b us-central1-c
+
+All the zones must be in the same region, which is derived from them if ``region`` is not
+given. If no zone is given at all, every zone in the region is available.
+
+Giving more than one zone matters because the usual reason an instance can't be created is
+that one zone has run out of the machine type being asked for, which says nothing about the
+zone next door. When that happens:
+
+- Creation moves on to the next permitted zone, one at a time, until one of them works.
+
+- The zones that refused are remembered, so the next instance doesn't begin by asking them
+  again. Once every permitted zone has refused, there is nothing left to prefer: the record
+  is cleared and they all become available again, since capacity that was gone a while ago
+  may have come back. A zone that successfully creates an instance is forgiven immediately.
+
+Instances are also not always gone when they stop running. A spot instance that the provider
+reclaims is stopped rather than deleted: its boot disk and its name survive, and starting it
+again is faster and cheaper than building a replacement - and it can work in a zone that no
+longer has the capacity to create anything new. So when the pool is short of instances:
+
+- Stopped instances are started again first, and only whatever is still missing after that
+  is created.
+
+- No new instance is created of the same type, in the same zone, as a stopped instance that
+  is still there. Either that instance is about to come back, or the zone has just refused
+  to give it back - in which case it has no capacity for a new one of the same type either,
+  and the creation goes to another zone instead.
+
+Stopped instances are kept only for as long as the job might want them back. When the job
+ends and its instances are terminated, they are deleted along with the running ones, since
+a stopped instance goes on being charged for its boot disk until something deletes it.
 
 Command Line Overrides
 ----------------------
@@ -481,7 +578,7 @@ total number of instances that will be started.
     provider: gcp
     gcp:
       job_id: my-processing-job
-      project_id: rfrench
+      project_id: my-project-id
       region: us-central1
       instance_types: ["^n2-.*", "^n3-.*", "^n4-.*"]
       min_cpu: 8

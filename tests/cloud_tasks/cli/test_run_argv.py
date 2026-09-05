@@ -8,13 +8,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from cloud_tasks.cli import (
+    _read_reply,
     build_parser,
     dump_tasks_by_status,
     log_task_stats,
     print_final_report,
     run_argv,
 )
-from cloud_tasks.common.config import Config, GCPConfig
+from cloud_tasks.common.config import Config, GCPConfig, RunConfig
 from cloud_tasks.common.task_db import TaskDatabase
 
 
@@ -1091,3 +1092,105 @@ def test_use_spot_is_not_set_unless_asked_for() -> None:
     config = Config(provider="GCP", gcp=GCPConfig(use_spot=False))
     config.overload_from_cli(vars(args))
     assert config.gcp.use_spot is True
+
+
+def test_allow_cpu_wasting_is_not_set_unless_asked_for() -> None:
+    """Leaving --allow-cpu-wasting off must leave the configured value alone.
+
+    argparse's store_true supplies False for an option that isn't given, and
+    overload_from_cli takes any value that isn't None as one the user asked for, so
+    without default=None every run that didn't name the flag would turn the setting off.
+
+    Returns:
+        None. Asserts the configured value survives a command line that doesn't mention
+        the flag, and that the flag still turns it on.
+    """
+    parser = build_parser()
+
+    args = parser.parse_args(["run", "--config", "/nonexistent", "--provider", "gcp"])
+    assert args.allow_cpu_wasting is None
+
+    config = Config(provider="GCP", run=RunConfig(allow_cpu_wasting=True))
+    config.overload_from_cli(vars(args))
+    assert config.run.allow_cpu_wasting is True
+
+    args = parser.parse_args(
+        ["run", "--config", "/nonexistent", "--provider", "gcp", "--allow-cpu-wasting"]
+    )
+    assert args.allow_cpu_wasting is True
+
+    config = Config(provider="GCP", run=RunConfig(allow_cpu_wasting=False))
+    config.overload_from_cli(vars(args))
+    assert config.run.allow_cpu_wasting is True
+
+
+def test_zone_accepts_more_than_one_zone() -> None:
+    """--zone takes a list, so a run can be told where else to go when a zone is full.
+
+    Returns:
+        None. Asserts one zone and several both reach the provider config as a list.
+    """
+    parser = build_parser()
+
+    args = parser.parse_args(
+        ["run", "--config", "/nonexistent", "--provider", "gcp", "--zone", "us-central1-a"]
+    )
+    assert args.zone == ["us-central1-a"]
+
+    config = Config(provider="GCP", gcp=GCPConfig())
+    config.overload_from_cli(vars(args))
+    assert config.gcp.zone == ["us-central1-a"]
+
+    args = parser.parse_args(
+        [
+            "run",
+            "--config",
+            "/nonexistent",
+            "--provider",
+            "gcp",
+            "--zone",
+            "us-central1-a",
+            "us-central1-b",
+        ]
+    )
+    assert args.zone == ["us-central1-a", "us-central1-b"]
+
+    config = Config(provider="GCP", gcp=GCPConfig(zone="us-central1-f"))
+    config.overload_from_cli(vars(args))
+    assert config.gcp.zone == ["us-central1-a", "us-central1-b"]
+
+
+# --- Reading an answer from a terminal that may not answer ---
+
+
+def test_read_reply_returns_the_answer() -> None:
+    """An answered prompt is the answer, with surrounding space removed."""
+    with patch("builtins.input", return_value="  T  "):
+        assert _read_reply("choice: ") == "T"
+
+
+def test_read_reply_survives_end_of_input() -> None:
+    """A prompt nobody can answer returns None instead of raising.
+
+    Unhandled, the EOFError propagated out of the shutdown handler that offers
+    the prompt, which left every instance of a running pool up and billing with
+    nothing said about it.
+    """
+    with patch("builtins.input", side_effect=EOFError):
+        assert _read_reply("choice: ") is None
+
+
+def test_read_reply_survives_an_interrupt() -> None:
+    """A second interrupt at the prompt is an unanswered prompt, not a crash."""
+    with patch("builtins.input", side_effect=KeyboardInterrupt):
+        assert _read_reply("choice: ") is None
+
+
+def test_read_reply_accepts_a_piped_answer() -> None:
+    """Whether stdin is a terminal is not this function's question to ask.
+
+    A caller that must refuse a piped answer -- the confirmation before a fresh
+    run deletes a database -- asks it for itself, and says what it is refusing.
+    """
+    with patch("sys.stdin.isatty", return_value=False), patch("builtins.input", return_value="yes"):
+        assert _read_reply("confirm: ") == "yes"

@@ -32,6 +32,39 @@ from .queue_manager import QueueManager, create_queue
 configure_logging(level=logging.WARNING)
 logger = logging.getLogger(__name__)
 
+
+def _read_reply(prompt: str) -> str | None:
+    """Read one answer from the terminal, or None when no answer is coming.
+
+    An unanswerable prompt is not an error, and it is emphatically not a crash.
+    `input()` raises EOFError at end of input -- a redirected stdin, a closed
+    terminal, a Ctrl-D -- and left unhandled that propagates out of whatever the
+    caller was in the middle of. The prompt this was written for is the one
+    offered after an interrupt, while a pool of instances is up and billing, so
+    an EOFError there abandoned the pool and said nothing about it.
+
+    Whether stdin is a terminal at all is deliberately not asked here. A piped
+    answer is a real answer, and the one caller that must not accept one -- the
+    confirmation before a fresh run deletes a database -- says so itself, in
+    terms naming what it was about to delete.
+
+    Parameters:
+        prompt: What to show before reading.
+
+    Returns:
+        The answer with surrounding space removed, or None when no answer is
+        coming: the read hit end of input, or the user interrupted. Both mean
+        the same thing to a caller, which is that it must decide for itself;
+        and a caller deciding for itself chooses the safe way, which for a
+        destructive prompt is not to act, and for this job's shutdown is to
+        leave the instances running for `--continue`.
+    """
+    try:
+        return input(prompt).strip()
+    except (EOFError, KeyboardInterrupt):
+        return None
+
+
 # Serializes SQLite writes from concurrent enqueue_task coroutines to avoid "database is locked".
 db_write_lock: asyncio.Lock = asyncio.Lock()
 
@@ -224,7 +257,7 @@ async def purge_queue_cmd(args: argparse.Namespace, config: Config) -> None:
 
         # Confirm with the user if not using --force
         if not args.force:
-            confirm = input(
+            confirm = _read_reply(
                 f"\nWARNING: This will permanently delete all {queue_depth}+ messages from queue "
                 f"'{task_queue_name}' on '{provider}'."
                 f"\nType 'EMPTY {task_queue_name}' to confirm: "
@@ -246,7 +279,7 @@ async def purge_queue_cmd(args: argparse.Namespace, config: Config) -> None:
 
         # Confirm with the user if not using --force
         if not args.force:
-            confirm = input(
+            confirm = _read_reply(
                 f"\nWARNING: This will permanently delete all {queue_depth}+ messages from queue "
                 f"'{event_queue_name}' on '{provider}'."
                 f"\nType 'EMPTY {event_queue_name}' to confirm: "
@@ -279,7 +312,7 @@ async def delete_queue_cmd(args: argparse.Namespace, config: Config) -> None:
     if not args.event_queue_only:
         # Confirm with the user if not using --force
         if not args.force:
-            confirm = input(
+            confirm = _read_reply(
                 f"\nWARNING: This will permanently delete the queue '{task_queue_name}' from {provider}.\n"
                 f"This operation cannot be undone and will remove all infrastructure.\n"
                 f"Type 'DELETE {task_queue_name}' to confirm: "
@@ -299,7 +332,7 @@ async def delete_queue_cmd(args: argparse.Namespace, config: Config) -> None:
     if not args.task_queue_only:
         # Confirm with the user if not using --force
         if not args.force:
-            confirm = input(
+            confirm = _read_reply(
                 f"\nWARNING: This will permanently delete the queue '{event_queue_name}' from {provider}.\n"
                 f"This operation cannot be undone and will remove all infrastructure.\n"
                 f"Type 'DELETE {event_queue_name}' to confirm: "
@@ -492,6 +525,7 @@ class EventMonitor:
         print_events: bool = True,
         print_summary: bool = True,
         keepalive_callback: Callable[[str, str | None], None] | None = None,
+        spot_termination_callback: Callable[[str], None] | None = None,
         backfill_output_file: bool = False,
     ) -> None:
         """
@@ -506,6 +540,10 @@ class EventMonitor:
             keepalive_callback: Optional callback invoked with (instance_id, timestamp)
                 for each keep-alive event; keep-alive events are intercepted and never
                 printed, written to the output file, or stored in the database
+            spot_termination_callback: Optional callback invoked with the instance_id of
+                each spot termination event, so the orchestrator can stop expecting
+                keep-alives from an instance the provider is taking away and replace it.
+                Unlike keep-alives, these events are also printed and stored
             backfill_output_file: Whether to seed a newly created output file with the
                 events already recorded in the database. Used when attaching to a job
                 that is already under way so the file is a complete log of the job
@@ -519,6 +557,7 @@ class EventMonitor:
         self.print_events = print_events
         self.print_summary = print_summary
         self.keepalive_callback = keepalive_callback
+        self.spot_termination_callback = spot_termination_callback
         self.backfill_output_file = backfill_output_file
         self.output_file = None
         self.something_changed = True
@@ -650,6 +689,11 @@ class EventMonitor:
                             if instance_id and self.keepalive_callback:
                                 self.keepalive_callback(instance_id, data.get("timestamp"))
                             continue
+
+                        if data.get("event_type") == "spot_termination":
+                            instance_id = data.get("instance_id") or data.get("hostname")
+                            if instance_id and self.spot_termination_callback:
+                                self.spot_termination_callback(instance_id)
 
                         self.something_changed = True
 
@@ -879,12 +923,6 @@ async def load_queue_common(
     queue_name = provider_config.queue_name
     event_queue_name = f"{queue_name}-events"
 
-    # Delete existing database
-    db_path = Path(db_file)
-    if db_path.exists():
-        logger.info(f"Deleting existing database '{db_file}'...")
-        os.remove(db_file)
-
     # These are the queue objects used for the rest of this function: the ones that delete the
     # queues below are the ones that create them again afterwards. A queue object constructed
     # after the deletion would have to ask the provider whether the queues exist, and the
@@ -901,15 +939,44 @@ async def load_queue_common(
         logger.debug(f"Could not check queue depth (queue may not exist): {e}")
         queue_depth = None
 
-    if queue_depth is not None and queue_depth > 0 and not force:
-        logger.info(
-            f"WARNING: Task queue '{queue_name}' currently has at least {queue_depth} message(s)."
+    # Everything a fresh run is about to destroy, worked out before any of it is destroyed.
+    # Forgetting --continue is easy, and the database is the record of what has already run,
+    # so deleting it before asking made the confirmation pointless: by the time the question
+    # arrived the answer could no longer save anything.
+    db_path = Path(db_file)
+    doomed = []
+    if db_path.exists():
+        doomed.append(
+            f"the task database '{db_file}', which is this job's record of what has already run"
         )
-        logger.info("Starting a fresh run will DELETE the existing queue and all its messages.")
-        confirm = input("Type 'YES' to confirm deletion: ")
+    if queue_depth:
+        doomed.append(
+            f"the task queue '{queue_name}', which still holds at least {queue_depth} message(s)"
+        )
+
+    if doomed and not force:
+        logger.info("WARNING: starting a fresh run will DELETE:")
+        for item in doomed:
+            logger.info(f"  - {item}")
+        logger.info(
+            "Use --continue to resume the existing job instead, or --force to skip this check."
+        )
+        if not sys.stdin.isatty():
+            logger.error(
+                "Not running interactively, so there is nobody to confirm this; refusing to "
+                "delete anything. Pass --continue to resume the job, or --force to start a "
+                "fresh one."
+            )
+            sys.exit(1)
+        confirm = _read_reply("Type 'YES' to confirm deletion: ")
         if confirm != "YES":
             logger.info("Operation cancelled.")
             sys.exit(0)
+
+    # Nothing above this line destroys anything
+    if db_path.exists():
+        logger.info(f"Deleting existing database '{db_file}'...")
+        os.remove(db_file)
 
     # Delete existing queues
     logger.info("Deleting existing queues if they exist...")
@@ -1238,6 +1305,7 @@ async def run_cmd(args: argparse.Namespace, config: Config) -> None:
             print_events=False,  # Don't print individual events
             print_summary=True,
             keepalive_callback=orchestrator.record_keepalive,
+            spot_termination_callback=orchestrator.record_spot_termination,
             # A fresh run starts with an empty database, so there is nothing to seed
             backfill_output_file=args.continue_run,
         )
@@ -1311,19 +1379,23 @@ async def run_cmd(args: argparse.Namespace, config: Config) -> None:
 
             # Prompt user for action (force valid input)
             choice = None
-            while choice not in ("T", "L", "C"):
+            while choice not in ("T", "Q", "L", "C"):
                 print("\n\nChoose action:")
                 print("  [T] Terminate all instances and delete queues")
+                print("  [Q] Terminate all instances but keep the queues")
                 print("  [L] Leave instances running (can resume with --continue)")
                 print("  [C] Cancel and continue running")
-                try:
-                    choice = input("\nEnter choice (T/L/C): ").strip().upper()
-                except KeyboardInterrupt:
+                reply = _read_reply("\nEnter choice (T/Q/L/C): ")
+                if reply is None:
+                    # Nobody is there to choose. Leaving the instances up is the
+                    # one answer of the four that destroys nothing and can still
+                    # be turned into any of the others by a later run.
                     choice = "L"
-                    print("Defaulting to [L] Leave instances running")
+                    print("\nNo answer available; defaulting to [L] Leave instances running")
                     break
-                if choice not in ("T", "L", "C"):
-                    print(f"Invalid choice '{choice}'. Please enter T, L, or C.")
+                choice = reply.upper()
+                if choice not in ("T", "Q", "L", "C"):
+                    print(f"Invalid choice '{choice}'. Please enter T, Q, L, or C.")
 
             if choice == "T":
                 logger.info("Terminating all instances and deleting queues...")
@@ -1331,6 +1403,18 @@ async def run_cmd(args: argparse.Namespace, config: Config) -> None:
                 await task_queue.delete_queue()
                 await events_queue.delete_queue()
                 logger.info("Job terminated")
+            elif choice == "Q":
+                # The instances are what costs money; the queues cost nothing to leave
+                # standing and hold the tasks that have not been handed out yet, so keeping
+                # them is what makes the job resumable without enqueueing it all again.
+                logger.info("Terminating all instances, keeping the queues...")
+                await orchestrator.stop(terminate_instances=True)
+                logger.info(
+                    f"Queues '{queue_name}' and '{event_queue_name}' left in place with their "
+                    "remaining tasks"
+                )
+                logger.info(f"Database saved to: {db_file}")
+                logger.info("Use --continue to resume the job on new instances")
             elif choice == "L":
                 logger.info("Leaving instances running. Use --continue to resume.")
                 await orchestrator.stop(terminate_instances=False)
@@ -1359,12 +1443,12 @@ async def run_cmd(args: argparse.Namespace, config: Config) -> None:
                 while dump_choice not in ("y", "yes", "n", "no"):
                     print("\n\nDump task files by status? Each file contains full task definitions")
                     print("loadable with --task-file (e.g. for retrying failed or pending tasks).")
-                    try:
-                        dump_choice = input("Dump? (Y/N): ").strip().lower()
-                    except KeyboardInterrupt:
+                    dump_reply = _read_reply("Dump? (Y/N): ")
+                    if dump_reply is None:
                         dump_choice = "n"
-                        print("Skipping dump.")
+                        print("\nNo answer available; skipping dump.")
                         break
+                    dump_choice = dump_reply.lower()
                     if dump_choice not in ("y", "yes", "n", "no"):
                         print("Please enter y or n.")
                 if dump_choice in ("y", "yes"):
@@ -2312,7 +2396,12 @@ def add_common_args(
             "--region", help="Specific region to use (derived from zone if not provided)"
         )
     if include_zone:
-        parser.add_argument("--zone", help="Specific zone to use")
+        parser.add_argument(
+            "--zone",
+            nargs="+",
+            help="Specific zone(s) to use; if more than one is given, instance creation "
+            "moves on to the next zone when one has no capacity",
+        )
     parser.add_argument(
         "--exactly-once-queue",
         action="store_true",
@@ -2339,8 +2428,14 @@ def add_common_args(
         help="GCP only: Path to credentials file",
     )
     parser.add_argument(
-        "--service-account",
-        help="GCP only: The service account to use for the worker",
+        "--worker-service-account",
+        help="The service account the worker instances run as, which decides what the tasks "
+        "themselves are allowed to reach",
+    )
+    parser.add_argument(
+        "--runner-service-account",
+        help="The service account this command runs as; the local credentials impersonate it, "
+        "so that what this command is allowed to do is decided by that account",
     )
 
     # TODO Add Azure-specific arguments here
@@ -2376,6 +2471,15 @@ def add_instance_pool_args(parser: argparse.ArgumentParser) -> None:
         help="Filter instance types by maximum total number of vCPUs",
     )
     parser.add_argument("--cpus-per-task", type=int, help="Number of vCPUs per task")
+    parser.add_argument(
+        "--allow-cpu-wasting",
+        action="store_true",
+        # Absent must mean "not specified" so that it doesn't override the configuration
+        # file on every run
+        default=None,
+        help="Give each task more vCPUs than --cpus-per-task, leaving the surplus idle, "
+        "when that is the only way to satisfy --min-memory-per-task",
+    )
     parser.add_argument(
         "--min-tasks-per-instance", type=int, help="Minimum number of tasks per instance"
     )

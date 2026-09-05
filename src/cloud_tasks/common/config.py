@@ -22,6 +22,55 @@ from pydantic import (
 LOGGER = logging.getLogger(__name__)
 
 
+# Defaults that constrain a job rather than leave it unconstrained. Each of these caps the
+# pool, bounds a task, or excludes instance types from selection, so a run naming none of
+# them is held to numbers it never chose -- and a pool that stops growing at ten instances
+# looks exactly like one that has hit a provider quota. Each is announced as it is applied,
+# so whatever bound the job is in the log beside the job it bound. Every other default is
+# either the absence of a constraint (a minimum of zero, a base size of zero) or a cadence
+# that does not change what runs, and is applied silently.
+#
+# Each entry is the attribute name, the value supplied, how to write that value in a
+# sentence, what the value does, and the command line option that overrides it.
+_ANNOUNCED_DEFAULTS: tuple[tuple[str, Any, str, str, str], ...] = (
+    (
+        "max_instances",
+        10,
+        "10 instances",
+        "caps the pool at 10 instances however many tasks are queued",
+        "--max-instances",
+    ),
+    (
+        "max_total_price_per_hour",
+        10,
+        "$10.00 per hour",
+        "caps the pool at what $10.00 an hour buys, however many tasks are queued",
+        "--max-total-price-per-hour",
+    ),
+    (
+        "max_runtime",
+        3600,
+        "3600 seconds",
+        "kills any task still running after an hour",
+        "--max-runtime",
+    ),
+    (
+        "architecture",
+        "X86_64",
+        "X86_64",
+        "excludes every ARM64 instance type from selection",
+        "--architecture",
+    ),
+    (
+        "total_boot_disk_size",
+        10,
+        "10 GB",
+        "gives each instance a 10 GB boot disk, unless a per-CPU or per-task size asks for more",
+        "--total-boot-disk-size",
+    ),
+)
+
+
 class RunConfig(BaseModel, validate_assignment=True):
     """Config options for selecting instances and running tasks"""
 
@@ -52,6 +101,11 @@ class RunConfig(BaseModel, validate_assignment=True):
         return self
 
     cpus_per_task: NonNegativeFloat | None = None
+    # When the memory a task needs can't be had at cpus_per_task vCPUs per task, give each
+    # task more vCPUs than it asked for and leave the surplus idle, rather than rejecting
+    # the instance type. An instance type is sized in vCPUs, so on a machine with little
+    # memory per vCPU this is the only way to give a task the memory it needs.
+    allow_cpu_wasting: bool | None = None
     min_tasks_per_instance: PositiveInt | None = None
     max_tasks_per_instance: PositiveInt | None = None
 
@@ -259,7 +313,12 @@ class ProviderConfig(RunConfig, validate_assignment=True):
         Annotated[str, Field(min_length=1, max_length=24, pattern=r"^[a-z][-a-z0-9]{0,23}$")] | None
     ) = None
     region: Annotated[str, Field(min_length=1)] | None = None
-    zone: Annotated[str, Field(min_length=1)] | None = None
+    # One zone, or the zones an instance may be created in. Instance creation walks the
+    # list when a zone turns out to have no capacity, so giving more than one is the
+    # difference between a job that stalls and one that moves to where the capacity is.
+    zone: list[Annotated[str, Field(min_length=1)]] | Annotated[str, Field(min_length=1)] | None = (
+        None
+    )
     exactly_once_queue: bool | None = None
 
 
@@ -279,7 +338,13 @@ class GCPConfig(ProviderConfig, validate_assignment=True):
 
     project_id: Annotated[str, Field(min_length=1)] | None = None
     credentials_file: Annotated[str, Field(min_length=1)] | None = None
-    service_account: Annotated[str, Field(min_length=1)] | None = None
+    # The service account the worker instances run as, which decides what the tasks
+    # themselves are allowed to reach
+    worker_service_account: Annotated[str, Field(min_length=1)] | None = None
+    # The service account this command runs as. The local credentials impersonate it, so
+    # that what the runner is allowed to do is decided by this account rather than by
+    # whoever happens to be logged in
+    runner_service_account: Annotated[str, Field(min_length=1)] | None = None
 
 
 class AzureConfig(ProviderConfig, validate_assignment=True):
@@ -455,26 +520,29 @@ class Config(BaseModel, validate_assignment=True):
         # Set defaults for missing values
         if self.run.cpus_per_task is None:
             self.run.cpus_per_task = 1
+        if self.run.allow_cpu_wasting is None:
+            self.run.allow_cpu_wasting = False
         if self.run.min_instances is None:
             self.run.min_instances = 0
-        if self.run.max_instances is None:
-            self.run.max_instances = 10
-        if self.run.max_total_price_per_hour is None:
-            self.run.max_total_price_per_hour = 10
         if self.run.scaling_check_interval is None:
             self.run.scaling_check_interval = 60
         if self.run.instance_termination_delay is None:
             self.run.instance_termination_delay = 60
-        if self.run.max_runtime is None:
-            self.run.max_runtime = 3600
-        if self.run.architecture is None:
-            self.run.architecture = "X86_64"
         if self.run.local_ssd_base_size is None:
             self.run.local_ssd_base_size = 0
-        if self.run.total_boot_disk_size is None:
-            self.run.total_boot_disk_size = 10
         if self.run.boot_disk_base_size is None:
             self.run.boot_disk_base_size = 0
+
+        # This runs after the provider section and the command line have both had their
+        # say, so an attribute still unset here is one nothing asked for
+        for attr_name, value, written, consequence, option in _ANNOUNCED_DEFAULTS:
+            if getattr(self.run, attr_name) is None:
+                setattr(self.run, attr_name, value)
+                LOGGER.warning(
+                    f"No {attr_name} in the configuration or on the command line; "
+                    f"defaulting to {written}, which {consequence}. Set {attr_name} in "
+                    f"the configuration, or pass {option}, to override it."
+                )
 
         # Set default database file based on job_id
         if self.run.db_file is None:
@@ -611,6 +679,14 @@ def load_config(config_file: str | None = None) -> Config:
         config.gcp.instance_types = [config.gcp.instance_types]
     if config.azure.instance_types is not None and isinstance(config.azure.instance_types, str):
         config.azure.instance_types = [config.azure.instance_types]
+
+    # Update the zone to always be a list
+    if config.aws.zone is not None and isinstance(config.aws.zone, str):
+        config.aws.zone = [config.aws.zone]
+    if config.gcp.zone is not None and isinstance(config.gcp.zone, str):
+        config.gcp.zone = [config.gcp.zone]
+    if config.azure.zone is not None and isinstance(config.azure.zone, str):
+        config.azure.zone = [config.azure.zone]
 
     # Update the boot_disk_type to always be a list
     if config.aws.boot_disk_types is not None and isinstance(config.aws.boot_disk_types, str):
