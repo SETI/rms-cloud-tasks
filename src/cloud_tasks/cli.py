@@ -32,6 +32,39 @@ from .queue_manager import QueueManager, create_queue
 configure_logging(level=logging.WARNING)
 logger = logging.getLogger(__name__)
 
+
+def _read_reply(prompt: str) -> str | None:
+    """Read one answer from the terminal, or None when no answer is coming.
+
+    An unanswerable prompt is not an error, and it is emphatically not a crash.
+    `input()` raises EOFError at end of input -- a redirected stdin, a closed
+    terminal, a Ctrl-D -- and left unhandled that propagates out of whatever the
+    caller was in the middle of. The prompt this was written for is the one
+    offered after an interrupt, while a pool of instances is up and billing, so
+    an EOFError there abandoned the pool and said nothing about it.
+
+    Whether stdin is a terminal at all is deliberately not asked here. A piped
+    answer is a real answer, and the one caller that must not accept one -- the
+    confirmation before a fresh run deletes a database -- says so itself, in
+    terms naming what it was about to delete.
+
+    Parameters:
+        prompt: What to show before reading.
+
+    Returns:
+        The answer with surrounding space removed, or None when no answer is
+        coming: the read hit end of input, or the user interrupted. Both mean
+        the same thing to a caller, which is that it must decide for itself;
+        and a caller deciding for itself chooses the safe way, which for a
+        destructive prompt is not to act, and for this job's shutdown is to
+        leave the instances running for `--continue`.
+    """
+    try:
+        return input(prompt).strip()
+    except (EOFError, KeyboardInterrupt):
+        return None
+
+
 # Serializes SQLite writes from concurrent enqueue_task coroutines to avoid "database is locked".
 db_write_lock: asyncio.Lock = asyncio.Lock()
 
@@ -224,7 +257,7 @@ async def purge_queue_cmd(args: argparse.Namespace, config: Config) -> None:
 
         # Confirm with the user if not using --force
         if not args.force:
-            confirm = input(
+            confirm = _read_reply(
                 f"\nWARNING: This will permanently delete all {queue_depth}+ messages from queue "
                 f"'{task_queue_name}' on '{provider}'."
                 f"\nType 'EMPTY {task_queue_name}' to confirm: "
@@ -246,7 +279,7 @@ async def purge_queue_cmd(args: argparse.Namespace, config: Config) -> None:
 
         # Confirm with the user if not using --force
         if not args.force:
-            confirm = input(
+            confirm = _read_reply(
                 f"\nWARNING: This will permanently delete all {queue_depth}+ messages from queue "
                 f"'{event_queue_name}' on '{provider}'."
                 f"\nType 'EMPTY {event_queue_name}' to confirm: "
@@ -279,7 +312,7 @@ async def delete_queue_cmd(args: argparse.Namespace, config: Config) -> None:
     if not args.event_queue_only:
         # Confirm with the user if not using --force
         if not args.force:
-            confirm = input(
+            confirm = _read_reply(
                 f"\nWARNING: This will permanently delete the queue '{task_queue_name}' from {provider}.\n"
                 f"This operation cannot be undone and will remove all infrastructure.\n"
                 f"Type 'DELETE {task_queue_name}' to confirm: "
@@ -299,7 +332,7 @@ async def delete_queue_cmd(args: argparse.Namespace, config: Config) -> None:
     if not args.task_queue_only:
         # Confirm with the user if not using --force
         if not args.force:
-            confirm = input(
+            confirm = _read_reply(
                 f"\nWARNING: This will permanently delete the queue '{event_queue_name}' from {provider}.\n"
                 f"This operation cannot be undone and will remove all infrastructure.\n"
                 f"Type 'DELETE {event_queue_name}' to confirm: "
@@ -935,7 +968,7 @@ async def load_queue_common(
                 "fresh one."
             )
             sys.exit(1)
-        confirm = input("Type 'YES' to confirm deletion: ")
+        confirm = _read_reply("Type 'YES' to confirm deletion: ")
         if confirm != "YES":
             logger.info("Operation cancelled.")
             sys.exit(0)
@@ -1352,12 +1385,15 @@ async def run_cmd(args: argparse.Namespace, config: Config) -> None:
                 print("  [Q] Terminate all instances but keep the queues")
                 print("  [L] Leave instances running (can resume with --continue)")
                 print("  [C] Cancel and continue running")
-                try:
-                    choice = input("\nEnter choice (T/Q/L/C): ").strip().upper()
-                except KeyboardInterrupt:
+                reply = _read_reply("\nEnter choice (T/Q/L/C): ")
+                if reply is None:
+                    # Nobody is there to choose. Leaving the instances up is the
+                    # one answer of the four that destroys nothing and can still
+                    # be turned into any of the others by a later run.
                     choice = "L"
-                    print("Defaulting to [L] Leave instances running")
+                    print("\nNo answer available; defaulting to [L] Leave instances running")
                     break
+                choice = reply.upper()
                 if choice not in ("T", "Q", "L", "C"):
                     print(f"Invalid choice '{choice}'. Please enter T, Q, L, or C.")
 
@@ -1407,12 +1443,12 @@ async def run_cmd(args: argparse.Namespace, config: Config) -> None:
                 while dump_choice not in ("y", "yes", "n", "no"):
                     print("\n\nDump task files by status? Each file contains full task definitions")
                     print("loadable with --task-file (e.g. for retrying failed or pending tasks).")
-                    try:
-                        dump_choice = input("Dump? (Y/N): ").strip().lower()
-                    except KeyboardInterrupt:
+                    dump_reply = _read_reply("Dump? (Y/N): ")
+                    if dump_reply is None:
                         dump_choice = "n"
-                        print("Skipping dump.")
+                        print("\nNo answer available; skipping dump.")
                         break
+                    dump_choice = dump_reply.lower()
                     if dump_choice not in ("y", "yes", "n", "no"):
                         print("Please enter y or n.")
                 if dump_choice in ("y", "yes"):

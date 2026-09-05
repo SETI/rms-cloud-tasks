@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from cloud_tasks.cli import (
+    _read_reply,
     build_parser,
     dump_tasks_by_status,
     log_task_stats,
@@ -1157,3 +1158,39 @@ def test_zone_accepts_more_than_one_zone() -> None:
     config = Config(provider="GCP", gcp=GCPConfig(zone="us-central1-f"))
     config.overload_from_cli(vars(args))
     assert config.gcp.zone == ["us-central1-a", "us-central1-b"]
+
+
+# --- Reading an answer from a terminal that may not answer ---
+
+
+def test_read_reply_returns_the_answer() -> None:
+    """An answered prompt is the answer, with surrounding space removed."""
+    with patch("builtins.input", return_value="  T  "):
+        assert _read_reply("choice: ") == "T"
+
+
+def test_read_reply_survives_end_of_input() -> None:
+    """A prompt nobody can answer returns None instead of raising.
+
+    Unhandled, the EOFError propagated out of the shutdown handler that offers
+    the prompt, which left every instance of a running pool up and billing with
+    nothing said about it.
+    """
+    with patch("builtins.input", side_effect=EOFError):
+        assert _read_reply("choice: ") is None
+
+
+def test_read_reply_survives_an_interrupt() -> None:
+    """A second interrupt at the prompt is an unanswered prompt, not a crash."""
+    with patch("builtins.input", side_effect=KeyboardInterrupt):
+        assert _read_reply("choice: ") is None
+
+
+def test_read_reply_accepts_a_piped_answer() -> None:
+    """Whether stdin is a terminal is not this function's question to ask.
+
+    A caller that must refuse a piped answer -- the confirmation before a fresh
+    run deletes a database -- asks it for itself, and says what it is refusing.
+    """
+    with patch("sys.stdin.isatty", return_value=False), patch("builtins.input", return_value="yes"):
+        assert _read_reply("confirm: ") == "yes"
