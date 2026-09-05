@@ -1653,26 +1653,35 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
         """
         self._logger.info("Terminating all instances")
 
-        async with self._instance_creation_lock:
-            # Create a semaphore to limit concurrent terminations
-            semaphore = asyncio.Semaphore(self._start_instance_max_threads)
+        instance_manager = self._instance_manager
+        if instance_manager is None:
+            raise RuntimeError("Instance manager not initialized. Call start() first.")
 
-            # Define the synchronous function to terminate a single instance
-            async def terminate_single_instance(instance):
-                async with semaphore:
-                    try:
-                        self._logger.info(f"Terminating instance: {instance['id']}")
-                        await self._instance_manager.terminate_instance(
-                            instance["id"], instance["zone"]
-                        )
-                        self._logger.info(f"Terminated instance: {instance['id']}")
-                        self._terminated_instances.add(instance["id"])
-                        return True
-                    except Exception as e:
-                        self._logger.error(
-                            f"Failed to terminate instance {instance['id']}: {e}", exc_info=True
-                        )
-                        return False
+        async with self._instance_creation_lock:
+            # Every instance goes at once, with no concurrency limit. Terminating is what a
+            # user waits through at the end of a job, and each one takes the provider the
+            # better part of a minute; in batches that is minutes of paying for instances
+            # that are already finished with.
+            async def terminate_single_instance(instance: dict[str, Any]) -> bool:
+                """Terminate one instance.
+
+                Parameters:
+                    instance: Instance dictionary from list_job_instances
+
+                Returns:
+                    bool: True if the instance was terminated.
+                """
+                try:
+                    self._logger.info(f"Terminating instance: {instance['id']}")
+                    await instance_manager.terminate_instance(instance["id"], instance["zone"])
+                    self._logger.info(f"Terminated instance: {instance['id']}")
+                    self._terminated_instances.add(instance["id"])
+                    return True
+                except Exception as e:
+                    self._logger.error(
+                        f"Failed to terminate instance {instance['id']}: {e}", exc_info=True
+                    )
+                    return False
 
             # Everything the provider still lists for this job, whatever state it is in.
             # Stopped instances cost money for as long as they exist, and an instance that

@@ -1346,19 +1346,20 @@ async def run_cmd(args: argparse.Namespace, config: Config) -> None:
 
             # Prompt user for action (force valid input)
             choice = None
-            while choice not in ("T", "L", "C"):
+            while choice not in ("T", "Q", "L", "C"):
                 print("\n\nChoose action:")
                 print("  [T] Terminate all instances and delete queues")
+                print("  [Q] Terminate all instances but keep the queues")
                 print("  [L] Leave instances running (can resume with --continue)")
                 print("  [C] Cancel and continue running")
                 try:
-                    choice = input("\nEnter choice (T/L/C): ").strip().upper()
+                    choice = input("\nEnter choice (T/Q/L/C): ").strip().upper()
                 except KeyboardInterrupt:
                     choice = "L"
                     print("Defaulting to [L] Leave instances running")
                     break
-                if choice not in ("T", "L", "C"):
-                    print(f"Invalid choice '{choice}'. Please enter T, L, or C.")
+                if choice not in ("T", "Q", "L", "C"):
+                    print(f"Invalid choice '{choice}'. Please enter T, Q, L, or C.")
 
             if choice == "T":
                 logger.info("Terminating all instances and deleting queues...")
@@ -1366,6 +1367,18 @@ async def run_cmd(args: argparse.Namespace, config: Config) -> None:
                 await task_queue.delete_queue()
                 await events_queue.delete_queue()
                 logger.info("Job terminated")
+            elif choice == "Q":
+                # The instances are what costs money; the queues cost nothing to leave
+                # standing and hold the tasks that have not been handed out yet, so keeping
+                # them is what makes the job resumable without enqueueing it all again.
+                logger.info("Terminating all instances, keeping the queues...")
+                await orchestrator.stop(terminate_instances=True)
+                logger.info(
+                    f"Queues '{queue_name}' and '{event_queue_name}' left in place with their "
+                    "remaining tasks"
+                )
+                logger.info(f"Database saved to: {db_file}")
+                logger.info("Use --continue to resume the job on new instances")
             elif choice == "L":
                 logger.info("Leaving instances running. Use --continue to resume.")
                 await orchestrator.stop(terminate_instances=False)

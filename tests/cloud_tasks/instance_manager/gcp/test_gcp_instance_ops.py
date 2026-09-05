@@ -2,6 +2,7 @@
 
 import asyncio
 import copy
+import time
 import uuid as _uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1315,3 +1316,47 @@ async def test_list_running_instances_covers_every_configured_zone(
 
     listed = [call[1]["request"].zone for call in compute_client.list.call_args_list]
     assert listed == ["us-central1-a", "us-central1-b"]
+
+
+@pytest.mark.asyncio
+async def test_wait_for_operation_leaves_the_event_loop_free(
+    gcp_instance_manager_n1_n2: GCPComputeInstanceManager,
+) -> None:
+    """Waiting on Compute Engine must not hold the event loop for the whole operation.
+
+    Creating and terminating a pool of instances gathers the calls so they happen at once.
+    Each one ends in a wait on an operation that takes the provider seconds to finish, so a
+    wait that blocks turns all of that concurrency back into one instance at a time.
+    """
+    manager = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
+
+    other_work_ran = False
+    other_work_ran_first = False
+
+    def blocking_result(timeout=None):
+        """Stand in for the provider taking its time, without holding the loop itself."""
+        nonlocal other_work_ran_first
+        deadline = time.time() + 5.0
+        while not other_work_ran and time.time() < deadline:
+            time.sleep(0.01)
+        other_work_ran_first = other_work_ran
+        return "operation result"
+
+    operation = MagicMock()
+    operation.name = "mock-operation-name"
+    operation.error_code = None
+    operation.warnings = None
+    operation.result = blocking_result
+
+    async def other_work() -> None:
+        """Something else the run needs to get on with while the operation completes."""
+        nonlocal other_work_ran
+        await asyncio.sleep(0.05)
+        other_work_ran = True
+
+    result, _ = await asyncio.gather(
+        manager._wait_for_operation(operation, "Test operation"), other_work()
+    )
+
+    assert other_work_ran_first, "the event loop was blocked until the operation finished"
+    assert result == "operation result"

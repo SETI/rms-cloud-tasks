@@ -2246,12 +2246,23 @@ class GCPComputeInstanceManager(InstanceManager):
         """
         Wait for a Compute Engine operation to complete.
 
-        Args:
-            operation_name: Name of the operation
+        Parameters:
+            operation: The Compute Engine operation to wait for
+            verbose_name: What the operation is doing, for the log messages
+
+        Returns:
+            Any: The operation's result.
+
+        Raises:
+            Exception: The operation's own error if it failed.
         """
         self._logger.debug(f"Waiting for operation {operation.name} to complete")
 
-        result = operation.result(timeout=self._DEFAULT_OPERATION_TIMEOUT)
+        # In a thread, because operation.result() blocks until Compute Engine is done. Called
+        # directly it would hold the event loop for the whole operation, which is seconds per
+        # instance: creating or terminating a pool of instances is gathered so it happens at
+        # once, and a blocking wait here turns all of that back into one instance at a time.
+        result = await asyncio.to_thread(operation.result, timeout=self._DEFAULT_OPERATION_TIMEOUT)
 
         if operation.error_code:
             self._logger.error(

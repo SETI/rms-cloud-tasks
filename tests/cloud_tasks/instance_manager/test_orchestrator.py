@@ -1234,3 +1234,32 @@ async def test_terminate_all_instances_survives_one_that_will_not_go(orchestrato
     # The ones that did go are off the books; the one that didn't is not
     assert "running-1" in orchestrator._terminated_instances
     assert "stuck" not in orchestrator._terminated_instances
+
+
+@pytest.mark.asyncio
+async def test_terminate_all_instances_goes_at_every_instance_at_once(orchestrator):
+    """Terminating is what a user waits through at the end of a job, so it isn't batched.
+
+    Each termination takes the provider the better part of a minute, so a concurrency limit
+    turns the wait into that many minutes of paying for instances already finished with.
+    """
+    count = 25  # Comfortably more than any per-batch limit that used to apply
+    orchestrator.list_job_instances = AsyncMock(
+        return_value=[_make_instance(f"instance-{n}") for n in range(count)]
+    )
+
+    in_flight = 0
+    most_at_once = 0
+
+    async def terminate(instance_id, zone=None):
+        nonlocal in_flight, most_at_once
+        in_flight += 1
+        most_at_once = max(most_at_once, in_flight)
+        await asyncio.sleep(0.01)
+        in_flight -= 1
+
+    orchestrator._instance_manager.terminate_instance = AsyncMock(side_effect=terminate)
+
+    await orchestrator.terminate_all_instances()
+
+    assert most_at_once == count

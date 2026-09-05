@@ -560,10 +560,16 @@ Keep-alive events are not stored in the database and never appear in the log.
 
    Choose action:
      [T] Terminate all instances and delete queues
+     [Q] Terminate all instances but keep the queues
      [L] Leave instances running (can resume with --continue)
      [C] Cancel and continue running
 
-   Enter choice (T/L/C):
+   Enter choice (T/Q/L/C):
+
+``[Q]`` stops paying for the instances without throwing away the work that has not been
+handed out yet: the queues cost nothing to leave standing and still hold the remaining
+tasks, so ``--continue`` can pick the job up later on new instances. ``[T]`` deletes the
+queues as well, which discards those tasks.
 
 **Final Report**: Upon completion, a comprehensive report is printed with:
 
