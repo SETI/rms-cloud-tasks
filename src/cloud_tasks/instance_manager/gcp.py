@@ -390,6 +390,12 @@ class GCPComputeInstanceManager(InstanceManager):
                     "boot_disk_base_size": Base amount of boot disk storage in GB
                     "boot_disk_per_cpu": Amount of boot disk storage per vCPU
                     "boot_disk_per_task": Amount of boot disk storage per task
+                    "boot_disk_iops": Absolute number of provisioned boot disk IOPS
+                    "boot_disk_iops_per_cpu": Provisioned boot disk IOPS per vCPU
+                    "boot_disk_iops_per_task": Provisioned boot disk IOPS per task
+                    "boot_disk_throughput": Absolute provisioned boot disk throughput in MB/s
+                    "boot_disk_throughput_per_cpu": Provisioned boot disk throughput per vCPU
+                    "boot_disk_throughput_per_task": Provisioned boot disk throughput per task
                     "use_spot": Whether to filter for spot-capable instance types
 
         Returns:
@@ -467,12 +473,6 @@ class GCPComputeInstanceManager(InstanceManager):
                 )
                 continue
 
-            boot_disk_iops = constraints.get("boot_disk_iops")
-            if boot_disk_iops is None:
-                boot_disk_iops = self._DEFAULT_BOOT_DISK_IOPS
-            boot_disk_throughput = constraints.get("boot_disk_throughput")
-            if boot_disk_throughput is None:
-                boot_disk_throughput = self._DEFAULT_BOOT_DISK_THROUGHPUT
             if machine_type_family in self._MACHINE_TYPE_FAMILY_TO_DISK_TYPES:
                 supported_boot_disk_types = self._MACHINE_TYPE_FAMILY_TO_DISK_TYPES[
                     machine_type_family
@@ -508,8 +508,8 @@ class GCPComputeInstanceManager(InstanceManager):
                 "boot_disk_gb": 0,  # Will fill in later
                 "supported_boot_disk_types": supported_boot_disk_types,
                 "available_boot_disk_types": available_boot_disk_types,
-                "boot_disk_iops": boot_disk_iops,
-                "boot_disk_throughput": boot_disk_throughput,
+                "boot_disk_iops": 0,  # Will fill in later
+                "boot_disk_throughput": 0,  # Will fill in later
                 "supports_spot": True,  # There is no other informationa available
                 "description": machine_type.description,
                 # https://www.googleapis.com/compute/v1/projects/[project]/zones/
@@ -519,6 +519,23 @@ class GCPComputeInstanceManager(InstanceManager):
 
             boot_disk_gb = self._get_boot_disk_size(instance_info, constraints)
             instance_info["boot_disk_gb"] = boot_disk_gb
+
+            instance_info["boot_disk_iops"] = self._get_boot_disk_provisioned_amount(
+                instance_info,
+                constraints,
+                absolute_key="boot_disk_iops",
+                per_cpu_key="boot_disk_iops_per_cpu",
+                per_task_key="boot_disk_iops_per_task",
+                default=self._DEFAULT_BOOT_DISK_IOPS,
+            )
+            instance_info["boot_disk_throughput"] = self._get_boot_disk_provisioned_amount(
+                instance_info,
+                constraints,
+                absolute_key="boot_disk_throughput",
+                per_cpu_key="boot_disk_throughput_per_cpu",
+                per_task_key="boot_disk_throughput_per_task",
+                default=self._DEFAULT_BOOT_DISK_THROUGHPUT,
+            )
 
             if self._instance_matches_constraints(instance_info, constraints):
                 instance_types[machine_type.name] = instance_info
@@ -1305,6 +1322,12 @@ class GCPComputeInstanceManager(InstanceManager):
                     "boot_disk_base_size": Base amount of boot disk storage in GB
                     "boot_disk_per_cpu": Amount of boot disk storage per vCPU
                     "boot_disk_per_task": Amount of boot disk storage per task
+                    "boot_disk_iops": Absolute number of provisioned boot disk IOPS
+                    "boot_disk_iops_per_cpu": Provisioned boot disk IOPS per vCPU
+                    "boot_disk_iops_per_task": Provisioned boot disk IOPS per task
+                    "boot_disk_throughput": Absolute provisioned boot disk throughput in MB/s
+                    "boot_disk_throughput_per_cpu": Provisioned boot disk throughput per vCPU
+                    "boot_disk_throughput_per_task": Provisioned boot disk throughput per task
                     "use_spot": Whether to filter for spot-capable instance types
 
         Returns:

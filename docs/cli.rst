@@ -129,7 +129,11 @@ in the configuration file (see :ref:`config_compute_instance_options`).
 --boot-disk-per-task N        The amount of boot disk per task
 --boot-disk-types TYPES       The types of boot disks to use
 --boot-disk-iops N            The number of provisioned IOPS for the boot disk, if applicable
+--boot-disk-iops-per-cpu N    The number of provisioned IOPS for the boot disk per vCPU
+--boot-disk-iops-per-task N   The number of provisioned IOPS for the boot disk per task
 --boot-disk-throughput N      The number of provisioned throughput in MB/s for the boot disk, if applicable
+--boot-disk-throughput-per-cpu N   The provisioned throughput in MB/s for the boot disk per vCPU
+--boot-disk-throughput-per-task N  The provisioned throughput in MB/s for the boot disk per task
 
 
 .. _cli_number_of_instances_options:
