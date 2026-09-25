@@ -10,7 +10,11 @@ from typing import TypedDict
 
 import pytest
 
-from cloud_tasks.common.logging_config import MicrosecondFormatter, configure_logging
+from cloud_tasks.common.logging_config import (
+    MicrosecondFormatter,
+    configure_logging,
+    wrap_log_text,
+)
 
 
 class LoggingState(TypedDict):
@@ -189,3 +193,31 @@ def test_configure_logging_custom_levels(preserve_logging_state: None) -> None:
     # Test library logger levels
     lib_logger = logging.getLogger("boto3")
     assert lib_logger.level == logging.WARNING
+
+
+def test_wrap_log_text_wraps_prose() -> None:
+    """Long paragraphs become lines short enough to log one at a time."""
+    text = "word " * 60
+    lines = wrap_log_text(text.strip(), width=40)
+    assert len(lines) > 1
+    assert all(len(line) <= 40 for line in lines)
+    assert " ".join(lines).split() == text.split()
+
+
+def test_wrap_log_text_indents_continuations() -> None:
+    """Continuation lines are indented so they read as continuations."""
+    lines = wrap_log_text("word " * 20, width=30, indent="  ")
+    assert not lines[0].startswith(" ")
+    assert all(line.startswith("  ") for line in lines[1:])
+
+
+def test_wrap_log_text_leaves_laid_out_lines_alone() -> None:
+    """A line that is already laid out, like a table row, is passed through untouched."""
+    row = "    roles/compute.instanceAdmin.v1  create, list and terminate instances, and more"
+    lines = wrap_log_text(f"a paragraph\n{row}", width=40)
+    assert row in lines
+
+
+def test_wrap_log_text_keeps_blank_paragraphs() -> None:
+    """An empty paragraph stays a line, so deliberate spacing survives."""
+    assert wrap_log_text("one\n\ntwo", width=40) == ["one", "", "two"]

@@ -543,7 +543,7 @@ def gcp_config() -> GCPConfig:
         zone="us-central1-a",
         credentials_file=None,
         instance_types=None,
-        service_account=None,
+        worker_service_account=None,
     )
 
 
@@ -557,7 +557,7 @@ async def gcp_instance_manager_n1_n2(
     start = time.time()
     with (
         patch(
-            "cloud_tasks.instance_manager.gcp.get_default_credentials",
+            "cloud_tasks.common.gcp_credentials.get_default_credentials",
             return_value=mock_default_credentials,
         ),
         patch("google.cloud.compute_v1.InstancesClient", return_value=MagicMock()),
@@ -596,7 +596,7 @@ async def gcp_instance_manager_n1_2_4(
     start = time.time()
     with (
         patch(
-            "cloud_tasks.instance_manager.gcp.get_default_credentials",
+            "cloud_tasks.common.gcp_credentials.get_default_credentials",
             return_value=mock_default_credentials,
         ),
         patch("google.cloud.compute_v1.InstancesClient", return_value=MagicMock()),

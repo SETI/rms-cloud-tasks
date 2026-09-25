@@ -979,8 +979,19 @@ class Worker:
         )
 
     async def _log_spot_termination(self) -> None:
-        """Log a spot termination event."""
-        await self._log_event({"event_type": self._EVENT_TYPE_SPOT_TERMINATION})
+        """Log a spot termination event.
+
+        The instance ID is included so the orchestrator can tell which instance is going
+        away and start a replacement for it; the hostname is not always the name the
+        provider knows the instance by.
+        """
+        instance_id = await asyncio.to_thread(self._get_instance_identity)
+        await self._log_event(
+            {
+                "event_type": self._EVENT_TYPE_SPOT_TERMINATION,
+                "instance_id": instance_id,
+            }
+        )
 
     async def _log_keep_alive(self) -> None:
         """Log a keep-alive event to the cloud-based event queue only."""

@@ -18,7 +18,7 @@ def _make_manager_with_cache_helpers(gcp_config: GCPConfig) -> GCPComputeInstanc
     """Create GCPComputeInstanceManager with mocked clients; cache helpers are real."""
     with (
         patch(
-            "cloud_tasks.instance_manager.gcp.get_default_credentials",
+            "cloud_tasks.common.gcp_credentials.get_default_credentials",
             return_value=(MagicMock(), gcp_config.project_id or "test-project"),
         ),
         patch("google.cloud.compute_v1.InstancesClient", return_value=MagicMock()),
@@ -47,7 +47,7 @@ def test_get_pricing_cache_path_contains_project_and_region(tmp_path: Path) -> N
         zone=None,
         credentials_file=None,
         instance_types=None,
-        service_account=None,
+        worker_service_account=None,
     )
     manager = _make_manager_with_cache_helpers(config)
     with patch("tempfile.gettempdir", return_value=str(tmp_path)):
@@ -81,7 +81,7 @@ def test_save_pricing_cache_to_file_writes_json(tmp_path: Path) -> None:
         zone=None,
         credentials_file=None,
         instance_types=None,
-        service_account=None,
+        worker_service_account=None,
     )
     manager = _make_manager_with_cache_helpers(config)
     manager._instance_pricing_cache[("n1-standard", False)] = {
@@ -114,7 +114,7 @@ def test_load_pricing_cache_from_file_loads_valid_cache(tmp_path: Path) -> None:
         zone=None,
         credentials_file=None,
         instance_types=None,
-        service_account=None,
+        worker_service_account=None,
     )
     manager = _make_manager_with_cache_helpers(config)
     cache_path = os.path.join(
@@ -146,7 +146,7 @@ def test_load_pricing_cache_from_file_skips_when_file_missing(tmp_path: Path) ->
         zone=None,
         credentials_file=None,
         instance_types=None,
-        service_account=None,
+        worker_service_account=None,
     )
     manager = _make_manager_with_cache_helpers(config)
     with patch("tempfile.gettempdir", return_value=str(tmp_path)):
@@ -170,7 +170,7 @@ def test_load_pricing_cache_from_file_skips_when_already_loaded(tmp_path: Path) 
         zone=None,
         credentials_file=None,
         instance_types=None,
-        service_account=None,
+        worker_service_account=None,
     )
     manager = _make_manager_with_cache_helpers(config)
     manager._pricing_cache_file_loaded = True
@@ -201,7 +201,7 @@ def test_load_pricing_cache_from_file_skips_old_file(tmp_path: Path) -> None:
         zone=None,
         credentials_file=None,
         instance_types=None,
-        service_account=None,
+        worker_service_account=None,
     )
     manager = _make_manager_with_cache_helpers(config)
     cache_path = os.path.join(str(tmp_path), "cloud_tasks_gcp_pricing_p_r.json")
@@ -231,7 +231,7 @@ def test_load_pricing_cache_from_file_skips_invalid_key_format(tmp_path: Path) -
         zone=None,
         credentials_file=None,
         instance_types=None,
-        service_account=None,
+        worker_service_account=None,
     )
     manager = _make_manager_with_cache_helpers(config)
     cache_path = os.path.join(str(tmp_path), "cloud_tasks_gcp_pricing_p_r.json")
@@ -266,7 +266,7 @@ def test_save_and_load_pricing_cache_roundtrip(tmp_path: Path) -> None:
         zone=None,
         credentials_file=None,
         instance_types=None,
-        service_account=None,
+        worker_service_account=None,
     )
     manager = _make_manager_with_cache_helpers(config)
     manager._instance_pricing_cache[("n1", False)] = {"r": {"z": {"cpu": 1.0}}}

@@ -4,6 +4,7 @@ Custom logging configuration with proper microsecond support.
 
 import datetime
 import logging
+import textwrap
 
 try:
     from typing import override
@@ -112,3 +113,34 @@ def configure_logging(
     root_logger.addHandler(console_handler)
 
     return root_logger
+
+
+#: Width to wrap logged prose to. Log lines already carry a timestamp and a level, so this
+#: leaves the whole line inside a wide terminal without making short messages look ragged.
+LOG_TEXT_WIDTH = 88
+
+
+def wrap_log_text(text: str, width: int = LOG_TEXT_WIDTH, indent: str = "") -> list[str]:
+    """Wrap a block of text into lines short enough to log one at a time.
+
+    Paragraphs are separated by newlines. A paragraph that is already laid out - one that
+    starts with whitespace, such as a table or a list of options - is passed through
+    untouched, since re-wrapping it would take it apart.
+
+    Parameters:
+        text: The text to wrap; newlines separate paragraphs
+        width: Maximum length of a returned line, before `indent` is added
+        indent: Prefix for every line of a wrapped paragraph after the first, so that
+            continuations are visibly continuations
+
+    Returns:
+        list[str]: The lines to log, in order. Never empty for non-empty input.
+    """
+    lines: list[str] = []
+    for paragraph in text.split("\n"):
+        if paragraph[:1].isspace():
+            lines.append(paragraph)
+            continue
+        wrapped = textwrap.wrap(paragraph, width=width, subsequent_indent=indent)
+        lines.extend(wrapped or [""])
+    return lines

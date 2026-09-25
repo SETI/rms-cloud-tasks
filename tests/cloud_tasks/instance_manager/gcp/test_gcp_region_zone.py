@@ -104,7 +104,7 @@ async def test_get_default_zone_specified(
 ) -> None:
     """Test _get_default_zone when zone is already specified."""
     gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
-    gcp_instance_manager_n1_n2._zone = "us-central1-a"
+    gcp_instance_manager_n1_n2._zones = ["us-central1-a"]
 
     zone = await gcp_instance_manager_n1_n2._get_default_zone()
 
@@ -119,7 +119,7 @@ async def test_get_default_zone_from_region(
 ) -> None:
     """Test _get_default_zone when getting first zone in region."""
     gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
-    gcp_instance_manager_n1_n2._zone = None
+    gcp_instance_manager_n1_n2._zones = []
     gcp_instance_manager_n1_n2._region = "us-central1"
 
     # Mock the zones response
@@ -145,7 +145,7 @@ async def test_get_default_zone_no_zones(
 ) -> None:
     """Test _get_default_zone when no zones are found in region."""
     gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
-    gcp_instance_manager_n1_n2._zone = None
+    gcp_instance_manager_n1_n2._zones = []
     gcp_instance_manager_n1_n2._region = "us-central1"
 
     gcp_instance_manager_n1_n2._zones_client.list.return_value = []
@@ -160,7 +160,7 @@ async def test_get_default_zone_no_region(
 ) -> None:
     """Test _get_default_zone when neither zone nor region is specified."""
     gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
-    gcp_instance_manager_n1_n2._zone = None
+    gcp_instance_manager_n1_n2._zones = []
     gcp_instance_manager_n1_n2._region = None
 
     with pytest.raises(RuntimeError, match="Region or zone must be specified"):
@@ -173,7 +173,7 @@ async def test_get_random_zone_specified(
 ) -> None:
     """Test _get_random_zone when zone is already specified."""
     gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
-    gcp_instance_manager_n1_n2._zone = "us-central1-a"
+    gcp_instance_manager_n1_n2._zones = ["us-central1-a"]
 
     zone = await gcp_instance_manager_n1_n2._get_random_zone()
 
@@ -188,7 +188,7 @@ async def test_get_random_zone_from_region(
 ) -> None:
     """Test _get_random_zone when selecting random zone in region."""
     gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
-    gcp_instance_manager_n1_n2._zone = None
+    gcp_instance_manager_n1_n2._zones = []
     gcp_instance_manager_n1_n2._region = "us-central1"
 
     # Mock the zones response
@@ -223,7 +223,7 @@ async def test_get_random_zone_no_zones(
 ) -> None:
     """Test _get_random_zone when no zones are found in region."""
     gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
-    gcp_instance_manager_n1_n2._zone = None
+    gcp_instance_manager_n1_n2._zones = []
     gcp_instance_manager_n1_n2._region = "us-central1"
 
     gcp_instance_manager_n1_n2._zones_client.list.return_value = []
@@ -238,7 +238,7 @@ async def test_get_random_zone_different_region(
 ) -> None:
     """Test _get_random_zone when specifying a different region."""
     gcp_instance_manager_n1_n2 = deepcopy_gcp_instance_manager(gcp_instance_manager_n1_n2)
-    gcp_instance_manager_n1_n2._zone = None
+    gcp_instance_manager_n1_n2._zones = []
     gcp_instance_manager_n1_n2._region = "us-central1"
 
     # Mock the zones response
