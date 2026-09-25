@@ -74,6 +74,8 @@ class InstanceOrchestrator:
     # context for why the pool is the size it is. States a provider reports that aren't
     # listed here sort last, in name order.
     _INSTANCE_STATE_ORDER = ("running", "starting", "stopping", "stopped", "terminated")
+    # How much of an instance ID the instance table shows; see _short_instance_id
+    _SHORT_INSTANCE_ID_CHARS = 5
 
     def __init__(
         self,
@@ -188,6 +190,10 @@ class InstanceOrchestrator:
         # How many reclamations have happened over the whole job, which is what explains a
         # pool that keeps shrinking; the set above only holds the ones outstanding now.
         self._spot_termination_count = 0
+        # Tasks the pool could be running at once as of the last time its instances were
+        # listed, or None before the first listing. Read by whoever is estimating how long
+        # the remaining tasks will take, which needs to know how many of them run at once.
+        self._running_task_slots: int | None = None
 
         # Initialize lock for instance creation
         self._instance_creation_lock = asyncio.Lock()
@@ -328,6 +334,17 @@ class InstanceOrchestrator:
     @property
     def queue_name(self) -> str:
         return self._queue_name
+
+    @property
+    def running_task_slots(self) -> int | None:
+        """Tasks the running pool can run at once, or None before its first listing.
+
+        This is the Tasks total of the instance table, recorded as it is built so that an
+        estimate of how much longer the job will take can be made without listing the
+        instances a second time. It is a snapshot: it describes the pool as of the last
+        scaling cycle, not as of now.
+        """
+        return self._running_task_slots
 
     @property
     def keepalive_abort_reason(self) -> str | None:
@@ -884,8 +901,15 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
             and (self._keepalive_startup_timeout > 0 or self._keepalive_timeout > 0)
         )
 
-    def _keepalive_status(self, instance: dict[str, Any], now: float) -> tuple[str, str]:
+    def _keepalive_status(self, instance: dict[str, Any], now: float) -> str:
         """Describe an instance's keep-alive state for the instance table.
+
+        One column rather than two: how long an instance has been silent and what the
+        monitor is waiting for are the same fact, so printing "8s ago" beside "keep-alive
+        wait (8s of 300s)" spent forty characters saying it twice. The form is
+        elapsed/limit, prefixed with "never" when no keep-alive has arrived at all - which
+        is what says the limit being applied is the startup one rather than the interval
+        one - and suffixed with OVERDUE once the limit has been passed.
 
         Parameters:
             instance: Instance dictionary from list_job_instances
@@ -893,52 +917,33 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
                 described relative to the same instant
 
         Returns:
-            tuple[str, str]: (last keep-alive column, mode column). The mode says what the
-            keep-alive monitor is doing about this instance right now: waiting for its first
-            keep-alive, waiting for the next one, or treating it as timed out, in each case
-            with the seconds elapsed and the limit being applied.
+            str: The keep-alive column for this instance.
         """
         if instance["state"] not in ("running", "starting"):
-            return "-", "not active"
+            return "-"
         if not self._keepalive_monitoring_active():
-            return "-", "not monitored"
+            return "not monitored"
 
         instance_id = instance["id"]
         last_heard = self._keepalive_last_heard.get(instance_id)
 
         if last_heard is not None:
             silent_for = now - last_heard
-            last_str = f"{silent_for:.0f}s ago"
             if self._keepalive_timeout <= 0:
-                return last_str, "keep-alive wait (no timeout)"
-            if silent_for > self._keepalive_timeout:
-                return last_str, (
-                    f"keep-alive timed out (overdue by "
-                    f"{silent_for - self._keepalive_timeout:.0f}s of "
-                    f"{self._keepalive_timeout:.0f}s)"
-                )
-            return last_str, (
-                f"keep-alive wait ({silent_for:.0f}s of {self._keepalive_timeout:.0f}s)"
-            )
+                return f"{silent_for:.0f}s"
+            status = f"{silent_for:.0f}s/{self._keepalive_timeout:.0f}s"
+            return f"{status} OVERDUE" if silent_for > self._keepalive_timeout else status
 
         first_seen = self._keepalive_first_seen.get(instance_id)
         if first_seen is None:
             # The keep-alive monitor hasn't seen this instance yet; it will start its
             # startup clock on its next pass
-            return "never", "waiting for first keep-alive (not yet timed)"
+            return "never"
         waiting_for = now - first_seen
         if self._keepalive_startup_timeout <= 0:
-            return "never", f"waiting for first keep-alive ({waiting_for:.0f}s, no timeout)"
-        if waiting_for > self._keepalive_startup_timeout:
-            return "never", (
-                f"keep-alive timed out (first keep-alive overdue by "
-                f"{waiting_for - self._keepalive_startup_timeout:.0f}s of "
-                f"{self._keepalive_startup_timeout:.0f}s)"
-            )
-        return "never", (
-            f"waiting for first keep-alive ({waiting_for:.0f}s of "
-            f"{self._keepalive_startup_timeout:.0f}s)"
-        )
+            return f"never {waiting_for:.0f}s"
+        status = f"never {waiting_for:.0f}s/{self._keepalive_startup_timeout:.0f}s"
+        return f"{status} OVERDUE" if waiting_for > self._keepalive_startup_timeout else status
 
     def _instance_price(self, instance: dict[str, Any], boot_disk_type: str) -> float | None:
         """Return the hourly price of one instance, or None if it isn't known.
@@ -974,6 +979,26 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
         return None
 
     @classmethod
+    def _short_instance_id(cls, instance_id: Any) -> str:
+        """Shorten an instance ID to its last few characters for the instance table.
+
+        Every instance in a job shares the job's name as a prefix and differs only in the
+        random suffix the provider's ID ends with, so the prefix is a column of identical
+        text as wide as the job name while the part that identifies the row is the tail.
+        Five characters of a 36-character alphabet is 60 million possibilities, which is
+        not close for a pool of tens of instances, and a suffix still matches the full ID
+        in a provider console or a worker log.
+
+        Parameters:
+            instance_id: The instance ID as reported by the instance manager
+
+        Returns:
+            str: The last _SHORT_INSTANCE_ID_CHARS characters, or the whole ID if it is
+            shorter than that.
+        """
+        return str(instance_id)[-cls._SHORT_INSTANCE_ID_CHARS :]
+
+    @classmethod
     def _instance_sort_key(cls, instance: dict[str, Any]) -> tuple[int, str, str]:
         """Order instances by what they are doing, then by name.
 
@@ -1000,6 +1025,13 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
         each one is, what it costs, and what the keep-alive monitor makes of it are one row
         rather than two tables to read against each other.
 
+        The table has to fit in a terminal to be read at all, so it says each thing once
+        and in the fewest characters that still say it: instances are identified by the tail
+        of their ID (see _short_instance_id) rather than by the job name repeated down the
+        page, and the keep-alive column carries both the silence and the limit being applied
+        to it (see _keepalive_status). The running totals go under the columns they total,
+        with the count of instances in the caption underneath.
+
         Parameters:
             instances: Instance dictionaries from list_job_instances
 
@@ -1010,7 +1042,7 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
         now = time.time()
         table = PrettyTable()
         table.field_names = [
-            "Instance ID",
+            "ID",
             "Type",
             "Boot Disk",
             "vCPUs",
@@ -1019,7 +1051,6 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
             "Zone",
             "Created",
             "Keep-Alive",
-            "Mode",
             "Price/Hour",
         ]
         table.align = "l"
@@ -1044,7 +1075,7 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
             # Azure instances don't report a zone, creation time, or boot disk type
             created = str(instance.get("creation_time") or "-")[:19]
             zone = str(instance.get("zone") or instance.get("location") or "-")
-            last_keepalive, mode = self._keepalive_status(instance, now)
+            keepalive = self._keepalive_status(instance, now)
 
             if instance["state"] in ("running", "starting"):
                 num_running += 1
@@ -1058,7 +1089,7 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
 
             table.add_row(
                 [
-                    str(instance["id"]),
+                    self._short_instance_id(instance["id"]),
                     str(instance["type"]),
                     boot_disk_type,
                     cpus or "-",
@@ -1066,8 +1097,7 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
                     str(instance["state"]),
                     zone,
                     created,
-                    last_keepalive,
-                    mode,
+                    keepalive,
                     price_str,
                 ]
             )
@@ -1075,12 +1105,11 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
         table.add_divider()
         table.add_row(
             [
-                f"{num_running} running/starting",
+                "TOTAL",
                 "",
                 "",
                 running_cpus,
                 running_tasks,
-                "",
                 "",
                 "",
                 "",
@@ -1102,6 +1131,7 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
                 f" (cpus_per_task is {configured:g}, raised to give each task the "
                 f"{self._run_config.min_memory_per_task} GB it requires)"
             )
+        self._running_task_slots = running_tasks
         return f"{table.get_string()}\n{caption}", num_running, running_cpus, running_price
 
     async def get_job_instances(self) -> tuple[int, int, float, str]:
@@ -1132,6 +1162,7 @@ export RMS_CLOUD_TASKS_RETRY_ON_EXCEPTION={self._run_config.retry_on_exception}
             raise
 
         if not running_instances:
+            self._running_task_slots = 0
             return 0, 0, 0.0, "No running instances found"
 
         table, num_running, running_cpus, running_price = self._build_instance_table(

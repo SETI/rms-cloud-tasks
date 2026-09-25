@@ -734,21 +734,28 @@ class InstanceManager(ABC):
 
         Missing constraint keys boot_disk_base_size, boot_disk_per_cpu, and
         boot_disk_per_task are treated as 0. total_boot_disk_size (minimum
-        floor) defaults to 10 GB if missing. cpus_per_task defaults to 1.
-        Formula: boot_disk_from_cpus = boot_disk_base_size + boot_disk_per_cpu
-        * num_cpus; boot_disk_from_tasks = boot_disk_base_size +
-        boot_disk_per_task * tasks_per_instance. The returned size is
+        floor) defaults to 10 GB if missing. Formula: boot_disk_from_cpus =
+        boot_disk_base_size + boot_disk_per_cpu * num_cpus;
+        boot_disk_from_tasks = boot_disk_base_size + boot_disk_per_task *
+        tasks_per_instance. The returned size is
         max(total_boot_disk_size, boot_disk_from_cpus, boot_disk_from_tasks),
         so the effective minimum is 10 GB. No exception is raised for missing
         keys.
 
+        The per-task term is multiplied by the tasks the instance type will actually run,
+        which is not always vcpu // cpus_per_task: a task given extra vCPUs to get the
+        memory it needs, or a max_tasks_per_instance cap, means fewer tasks on the instance
+        and so less disk for them. Sizing the disk for tasks that will not run buys disk
+        that will not be used, and the disk is part of what the instance type costs, so it
+        also makes the instance types that waste vCPUs look more expensive than they are.
+
         Parameters:
-            instance_info: dict[str, Any] – instance attributes; "vcpu" is
+            instance_info: dict[str, Any] – instance attributes; "vcpu" and "mem_gb" are
                 used for per-cpu/per-task sizing.
             boot_disk_constraints: dict[str, Any] – keys read: boot_disk_base_size
                 (numeric, default 0), boot_disk_per_cpu (numeric, default 0),
                 boot_disk_per_task (numeric, default 0), total_boot_disk_size
-                (numeric, default 10), cpus_per_task (int, default 1).
+                (numeric, default 10), plus whatever tasks_per_instance reads.
 
         Returns:
             float: Computed boot disk size in gigabytes (minimum 10 GB). No
@@ -764,10 +771,7 @@ class InstanceManager(ABC):
         if boot_disk_per_task is None:
             boot_disk_per_task = 0
         num_cpus = instance_info["vcpu"]
-        cpus_per_task = boot_disk_constraints.get("cpus_per_task")
-        if cpus_per_task is None:
-            cpus_per_task = 1
-        tasks_per_instance = num_cpus // cpus_per_task
+        tasks_per_instance = self.tasks_per_instance(instance_info, boot_disk_constraints)
 
         boot_disk = boot_disk_constraints.get("total_boot_disk_size")
         if boot_disk is None:

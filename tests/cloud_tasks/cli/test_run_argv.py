@@ -1,5 +1,6 @@
 """Tests for cloud_tasks.cli: run_argv, build_parser, dump_tasks_by_status, log_task_stats, print_final_report."""
 
+import datetime
 import logging
 import re
 from pathlib import Path
@@ -11,12 +12,15 @@ from cloud_tasks.cli import (
     _read_reply,
     build_parser,
     dump_tasks_by_status,
+    estimate_time_remaining,
+    format_duration,
     log_task_stats,
     print_final_report,
     run_argv,
 )
 from cloud_tasks.common.config import Config, GCPConfig, RunConfig
 from cloud_tasks.common.task_db import TaskDatabase
+from cloud_tasks.common.time_utils import utc_now
 
 
 def test_build_parser_returns_parser() -> None:
@@ -1049,6 +1053,194 @@ def test_log_task_stats_smoke(tmp_path: Path, caplog: pytest.LogCaptureFixture) 
     assert "Test summary:" in caplog.text
     assert "t1" in caplog.text
     assert len(caplog.records) >= 1
+
+
+@pytest.mark.parametrize(
+    "seconds, expected",
+    [
+        (0, "0s"),
+        (9.4, "9s"),
+        (9.6, "10s"),
+        (90, "1m 30s"),
+        (3600, "1h 0m 0s"),
+        (7509, "2h 5m 9s"),
+    ],
+)
+def test_format_duration(seconds: float, expected: str) -> None:
+    """A duration reads in the largest units it needs and no larger."""
+    assert format_duration(seconds) == expected
+
+
+def test_estimate_time_remaining_divides_the_work_over_the_pool() -> None:
+    """The tasks left take their mean time each, several at a time."""
+    estimate = estimate_time_remaining(100, 60.0, task_slots=10)
+
+    assert estimate is not None
+    seconds, concurrency = estimate
+    assert seconds == pytest.approx(600.0)
+    assert concurrency == "10 task slot(s)"
+
+
+def test_estimate_time_remaining_falls_back_to_what_the_job_has_managed() -> None:
+    """Without a slot count, the concurrency reached so far stands in for it.
+
+    Fifty tasks of a minute each inside ten minutes of wall clock is five at a time, so
+    fifty more of them is another ten minutes.
+    """
+    estimate = estimate_time_remaining(50, 60.0, completed_tasks=50, elapsed_wall_time=600.0)
+
+    assert estimate is not None
+    seconds, concurrency = estimate
+    assert seconds == pytest.approx(600.0)
+    assert concurrency == "the 5.0 task(s) at a time it has managed so far"
+
+
+def test_estimate_time_remaining_never_claims_less_than_one_task_at_a_time() -> None:
+    """A job slower than one task at a time is still at least one task at a time.
+
+    Wall-clock time a job spent not running tasks - booting its instances, waiting for a
+    queue - would otherwise divide the estimate by a fraction and inflate it.
+    """
+    estimate = estimate_time_remaining(10, 60.0, completed_tasks=1, elapsed_wall_time=6000.0)
+
+    assert estimate is not None
+    assert estimate[0] == pytest.approx(600.0)
+
+
+def test_estimate_time_remaining_prefers_the_slots_to_the_history() -> None:
+    """A pool that has just been enlarged will finish faster than it has been going."""
+    estimate = estimate_time_remaining(
+        100, 60.0, task_slots=100, completed_tasks=10, elapsed_wall_time=600.0
+    )
+
+    assert estimate is not None
+    assert estimate[0] == pytest.approx(60.0)
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        pytest.param({"remaining_tasks": 0, "mean_task_time": 60.0}, id="nothing left to do"),
+        pytest.param({"remaining_tasks": 10, "mean_task_time": None}, id="no task has finished"),
+        pytest.param({"remaining_tasks": 10, "mean_task_time": 0.0}, id="no time per task"),
+        pytest.param({"remaining_tasks": 10, "mean_task_time": 60.0}, id="no concurrency known"),
+    ],
+)
+def test_estimate_time_remaining_declines_to_guess(kwargs: dict) -> None:
+    """Nothing to estimate from means no estimate, rather than a made-up one."""
+    assert estimate_time_remaining(**kwargs) is None
+
+
+def test_estimate_time_remaining_says_nothing_about_a_pool_running_nothing() -> None:
+    """A known-empty pool is a fact about the pool, not a gap in what is known.
+
+    Zero slots is not "how many tasks run at once isn't known": it is a pool that cannot run
+    the next task at all, and no arithmetic on how the job used to go says how long it will
+    be down for.
+    """
+    assert (
+        estimate_time_remaining(10, 60.0, task_slots=0, completed_tasks=50, elapsed_wall_time=600.0)
+        is None
+    )
+
+
+def test_estimate_time_remaining_is_at_least_one_task_long() -> None:
+    """Idle slots cannot divide the last task into a fraction of a task.
+
+    One task left with 32 slots free is still a task: 31 of them have nothing to do, and the
+    job waits the length of the one that is running.
+    """
+    estimate = estimate_time_remaining(1, 60.0, task_slots=32)
+
+    assert estimate is not None
+    assert estimate[0] == pytest.approx(60.0)
+
+    # Two tasks over one slot is still two tasks' worth of waiting
+    two_over_one = estimate_time_remaining(2, 60.0, task_slots=1)
+    assert two_over_one is not None
+    assert two_over_one[0] == pytest.approx(120.0)
+
+
+def _db_with_one_finished_task(tmp_path: Path) -> TaskDatabase:
+    """A database with one task done in 60 seconds and two still to run.
+
+    Parameters:
+        tmp_path: Directory to put the database in
+
+    Returns:
+        TaskDatabase: The open database.
+    """
+    task_db = TaskDatabase(str(tmp_path / "test.db"))
+    for task_id in ("t1", "t2", "t3"):
+        task_db.insert_task(task_id, {"x": 1})
+        task_db.update_task_enqueued(task_id)
+    # The task was enqueued just now, so it has to finish after that for the job to have
+    # spent any wall-clock time at all
+    task_db.update_task_from_event(
+        {
+            "event_type": "task_completed",
+            "task_id": "t1",
+            "elapsed_time": 60.0,
+            "timestamp": (utc_now() + datetime.timedelta(seconds=60)).isoformat(),
+        }
+    )
+    return task_db
+
+
+def test_log_task_stats_estimates_the_time_remaining(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The summary says how much longer the tasks that haven't reported back will take."""
+    task_db = _db_with_one_finished_task(tmp_path)
+    caplog.set_level(logging.INFO)
+    caplog.clear()
+
+    log_task_stats(task_db, task_slots=2)
+    task_db.close()
+
+    # Two tasks left at 60s each, two at a time, is one more minute
+    assert "Est. time remaining: 1m 0s" in caplog.text
+    assert "2 task(s) left at 60.0s each over 2 task slot(s)" in caplog.text
+
+
+def test_log_task_stats_has_no_estimate_before_a_task_finishes(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """With nothing finished there is no time per task to estimate from."""
+    task_db = TaskDatabase(str(tmp_path / "test.db"))
+    task_db.insert_task("t1", {"x": 1})
+    task_db.update_task_enqueued("t1")
+    caplog.set_level(logging.INFO)
+    caplog.clear()
+
+    log_task_stats(task_db, task_slots=2)
+    task_db.close()
+
+    assert "Est. time remaining" not in caplog.text
+
+
+def test_print_final_report_has_no_estimate_of_what_is_left(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A job with every task accounted for has no remaining time to estimate."""
+    task_db = TaskDatabase(str(tmp_path / "test.db"))
+    task_db.insert_task("t1", {"x": 1})
+    task_db.update_task_enqueued("t1")
+    task_db.update_task_from_event(
+        {
+            "event_type": "task_completed",
+            "task_id": "t1",
+            "elapsed_time": 60.0,
+            "timestamp": "2026-01-01T00:01:00+00:00",
+        }
+    )
+    caplog.set_level(logging.INFO)
+    caplog.clear()
+
+    print_final_report(task_db)
+    task_db.close()
+
+    assert "Est. time remaining" not in caplog.text
 
 
 def test_print_final_report_smoke(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:

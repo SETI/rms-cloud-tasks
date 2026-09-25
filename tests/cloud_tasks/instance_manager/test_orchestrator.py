@@ -546,22 +546,34 @@ def _instance_table(orchestrator, instances) -> list[str]:
     return table.split("\n")
 
 
+def _short_id(instance_id: str) -> str:
+    """The instance ID as the table abbreviates it: its last five characters.
+
+    Parameters:
+        instance_id: The full instance ID
+
+    Returns:
+        str: What the table's ID column holds for that instance.
+    """
+    return instance_id[-5:]
+
+
 def _instance_rows(lines: list[str]) -> dict[str, str]:
-    """Map each instance ID to its rendered row of the table.
+    """Map each instance's abbreviated ID to its rendered row of the table.
 
     Parameters:
         lines: Lines of the rendered table
 
     Returns:
-        dict[str, str]: Instance ID to the whole line describing it, with the border, the
-        header and the totals row left out.
+        dict[str, str]: Abbreviated instance ID (see _short_id) to the whole line
+        describing it, with the border, the header and the totals row left out.
     """
     rows = {}
     for line in lines:
         if "\u2502" not in line:
             continue
         cells = [cell.strip() for cell in line.strip().strip("\u2502").split("\u2502")]
-        if not cells[0] or cells[0] == "Instance ID" or "running/starting" in cells[0]:
+        if not cells[0] or cells[0] in ("ID", "TOTAL"):
             continue
         rows[cells[0]] = line
     return rows
@@ -587,11 +599,11 @@ async def test_instance_table_is_the_summary_logged_by_a_run(
     num_running, running_cpus, running_price, summary = await orchestrator.get_job_instances()
 
     assert (num_running, running_cpus, running_price) == (1, 2, 1.0)
-    assert "instance-1" in summary
+    assert _short_id("instance-1") in summary
     assert "$1.00" in summary
-    assert "1 running/starting" in summary
+    assert "1 running or starting instance(s)" in summary
     # Every column of the old summary is in this one table
-    for column in ("Boot Disk", "vCPUs", "Price/Hour", "Mode"):
+    for column in ("Boot Disk", "vCPUs", "Price/Hour", "Keep-Alive"):
         assert column in summary
 
 
@@ -614,9 +626,9 @@ async def test_instance_table_totals_only_what_is_running(
 
     assert (num_running, running_cpus, running_price) == (2, 4, 2.0)
     rows = _instance_rows(table.split("\n"))
-    assert rows["gone"].endswith("- \u2502")
-    assert "$1.00" in rows["alive"]
-    assert "2 running/starting" in table
+    assert rows[_short_id("gone")].endswith("- \u2502")
+    assert "$1.00" in rows[_short_id("alive")]
+    assert "2 running or starting instance(s)" in table
 
 
 @pytest.mark.asyncio
@@ -644,19 +656,22 @@ def test_instance_table_rows_sorted_with_details(orchestrator: Any) -> None:
 
     lines = _instance_table(orchestrator, instances)
 
-    header = next(line for line in lines if "Instance ID" in line)
-    for column in ("Type", "State", "Zone", "Created", "Keep-Alive", "Mode"):
+    header = next(line for line in lines if "Keep-Alive" in line)
+    for column in ("ID", "Type", "State", "Zone", "Created", "Price/Hour"):
         assert column in header
 
     rows = _instance_rows(lines)
-    assert list(rows) == ["instance-1", "instance-2"]
-    cells = [cell.strip() for cell in rows["instance-2"].strip().strip("\u2502").split("\u2502")]
-    assert cells[0] == "instance-2"
+    assert list(rows) == [_short_id("instance-1"), _short_id("instance-2")]
+    cells = [
+        cell.strip()
+        for cell in rows[_short_id("instance-2")].strip().strip("\u2502").split("\u2502")
+    ]
+    assert cells[0] == _short_id("instance-2")
     assert cells[1] == "n1-standard-2"
     assert cells[5] == "starting"
     assert cells[6] == "us-central1-a"
     assert cells[7] == "2026-01-01T00:00:00"
-    assert cells[9].startswith("waiting for first keep-alive")
+    assert cells[8] == "never"
 
 
 def test_instance_table_orders_by_what_instances_are_doing(
@@ -678,18 +693,50 @@ def test_instance_table_orders_by_what_instances_are_doing(
 
 
 def test_instance_table_columns_size_to_content(orchestrator: Any) -> None:
-    """Columns widen to fit their contents so long GCP instance names stay aligned."""
+    """Columns widen to fit their contents so long instance type names stay aligned."""
     orchestrator._running = True
-    long_id = "rmscr-parallel-addition-job-1riovtucuu1o1dx9lotafw5pb"
-    instances = [_make_instance(long_id), _make_instance("short")]
+    instances = [
+        _make_instance("one", instance_type="n2d-highmem-96-lssd"),
+        _make_instance("two", instance_type="e2-small"),
+    ]
 
     lines = _instance_table(orchestrator, instances)
 
-    assert long_id in "".join(lines)
+    assert "n2d-highmem-96-lssd" in "".join(lines)
     # Every line of the table proper is the same width, so the columns line up whatever is
     # in them; the caption underneath is prose and is not part of the table
     table_lines = [line for line in lines if line[:1] in "\u250c\u2502\u251c\u2514"]
     assert len(set(len(line) for line in table_lines)) == 1
+
+
+def test_instance_table_abbreviates_instance_ids(orchestrator: Any) -> None:
+    """Instances are identified by the tail of their ID, not the job name they all share.
+
+    A full GCP instance name is the job name plus a random suffix, so spelling it out on
+    every row spends the widest column in the table restating the job name.
+    """
+    orchestrator._running = True
+    instances = [
+        _make_instance("rmscr-parallel-addition-job-1riovtucuu1o1dx9lotafw5pb"),
+        _make_instance("rmscr-parallel-addition-job-9kw2mzqf4c7hs3x8ybdn6tlv1"),
+    ]
+
+    lines = _instance_table(orchestrator, instances)
+
+    assert "rmscr-parallel-addition-job" not in "".join(lines)
+    rows = _instance_rows(lines)
+    assert sorted(rows) == ["6tlv1", "fw5pb"]
+
+
+def test_instance_table_keeps_a_whole_id_shorter_than_the_abbreviation(
+    orchestrator: Any,
+) -> None:
+    """An ID with fewer characters than the abbreviation is shown as it is."""
+    orchestrator._running = True
+
+    rows = _instance_rows(_instance_table(orchestrator, [_make_instance("i-7")]))
+
+    assert list(rows) == ["i-7"]
 
 
 def test_instance_table_keepalive_states(orchestrator: Any) -> None:
@@ -717,22 +764,23 @@ def test_instance_table_keepalive_states(orchestrator: Any) -> None:
 
     rows = _instance_rows(_instance_table(orchestrator, instances))
 
-    assert "60s ago" in rows["healthy"]
-    assert "keep-alive wait (60s of 300s)" in rows["healthy"]
+    # The silence and the limit it is measured against are one column, not two
+    assert "60s/300s" in rows[_short_id("healthy")]
+    assert "OVERDUE" not in rows[_short_id("healthy")]
 
-    assert "400s ago" in rows["silent"]
-    assert "keep-alive timed out (overdue by 100s of 300s)" in rows["silent"]
+    assert "400s/300s OVERDUE" in rows[_short_id("silent")]
 
-    assert "never" in rows["young"]
-    assert "waiting for first keep-alive (120s of 600s)" in rows["young"]
+    # "never" is what says the startup timeout is the one being applied
+    assert "never 120s/600s" in rows[_short_id("young")]
+    assert "OVERDUE" not in rows[_short_id("young")]
 
-    assert "never" in rows["never-started"]
-    assert (
-        "keep-alive timed out (first keep-alive overdue by 300s of 600s)" in rows["never-started"]
-    )
+    assert "never 900s/600s OVERDUE" in rows[_short_id("never-started")]
 
     # Terminated instances aren't monitored, so they get no keep-alive verdict
-    assert "not active" in rows["gone"]
+    gone_cells = [
+        cell.strip() for cell in rows[_short_id("gone")].strip().strip("\u2502").split("\u2502")
+    ]
+    assert gone_cells[8] == "-"
 
 
 def test_instance_table_not_monitored_when_not_running(orchestrator: Any) -> None:
@@ -746,11 +794,11 @@ def test_instance_table_not_monitored_when_not_running(orchestrator: Any) -> Non
     orchestrator._keepalive_timeout = 300.0
 
     row = _instance_rows(_instance_table(orchestrator, [_make_instance("instance-1")]))[
-        "instance-1"
+        _short_id("instance-1")
     ]
 
     assert "not monitored" in row
-    assert "timed out" not in row
+    assert "OVERDUE" not in row
 
 
 def test_instance_table_not_monitored_when_timeouts_disabled(
@@ -762,7 +810,7 @@ def test_instance_table_not_monitored_when_timeouts_disabled(
     orchestrator._keepalive_timeout = 0.0
 
     row = _instance_rows(_instance_table(orchestrator, [_make_instance("instance-1")]))[
-        "instance-1"
+        _short_id("instance-1")
     ]
 
     assert "not monitored" in row
@@ -778,9 +826,54 @@ def test_instance_table_azure_missing_fields(orchestrator: Any) -> None:
         "location": "eastus",
     }
 
-    row = _instance_rows(_instance_table(orchestrator, [instance]))["azure-vm-1"]
+    row = _instance_rows(_instance_table(orchestrator, [instance]))[_short_id("azure-vm-1")]
 
     assert "eastus" in row
+
+
+def test_running_task_slots_records_what_the_table_counted(orchestrator: Any) -> None:
+    """The pool's task capacity is recorded as the table is built, not listed again for it.
+
+    Whoever is estimating how much longer the job has to run needs to know how many tasks
+    run at a time, and the scaling loop has just worked that out for the table.
+    """
+    _configure_run(orchestrator, cpus_per_task=4)
+    orchestrator._all_instance_info = {"n1-standard-2": {"vcpu": 32, "mem_gb": 128}}
+    assert orchestrator.running_task_slots is None
+
+    orchestrator._build_instance_table([_make_instance("one"), _make_instance("two")])
+
+    assert orchestrator.running_task_slots == 16
+
+
+@pytest.mark.asyncio
+async def test_running_task_slots_is_zero_when_nothing_is_running(orchestrator: Any) -> None:
+    """An empty pool runs no tasks at a time, which is not the same as not knowing."""
+    orchestrator.list_job_instances = AsyncMock(return_value=[])
+    orchestrator._initialize_pricing_info = AsyncMock()
+
+    await orchestrator.get_job_instances()
+
+    assert orchestrator.running_task_slots == 0
+
+
+@pytest.mark.asyncio
+async def test_running_task_slots_is_left_alone_when_the_pool_cant_be_seen(
+    orchestrator: Any,
+) -> None:
+    """A listing that failed says nothing about the pool, so it must not report zero.
+
+    Zero task slots reads downstream as a job that will never finish, when all that
+    happened is that one listing failed.
+    """
+    orchestrator._running_task_slots = 16
+    orchestrator.list_job_instances = AsyncMock(side_effect=RuntimeError("API is down"))
+    orchestrator._initialize_pricing_info = AsyncMock()
+
+    with pytest.raises(RuntimeError, match="API is down"):
+        await orchestrator.get_job_instances()
+
+    assert orchestrator.running_task_slots == 16
 
 
 def test_keepalive_from_terminated_instance_is_ignored(orchestrator: Any) -> None:
@@ -1070,8 +1163,9 @@ def test_instance_table_counts_the_tasks_the_instances_can_run(
 
     rows = _instance_rows(table.split("\n"))
     # 32 vCPUs at 4 per task is 8 tasks on each of the two instances
-    assert [cell.strip() for cell in rows["one"].strip().strip("│").split("│")][4] == "8"
-    totals = next(line for line in table.split("\n") if "running/starting" in line)
+    one = [cell.strip() for cell in rows[_short_id("one")].strip().strip("│").split("│")]
+    assert one[4] == "8"
+    totals = next(line for line in table.split("\n") if "TOTAL" in line)
     assert "16" in totals
     assert "16 task(s) can run at once" in table
     assert "at 4 vCPU(s) per task" in table
