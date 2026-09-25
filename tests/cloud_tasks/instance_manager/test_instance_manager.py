@@ -883,7 +883,9 @@ class TestPricePerTask:
         assert instance_manager.price_per_task(highcpu, constraints) == pytest.approx(0.345)
         assert instance_manager.price_per_task(highmem, constraints) == pytest.approx(0.096875)
 
-    def test_doubling_the_vcpus_a_task_needs_doubles_what_it_costs(self, instance_manager):
+    def test_doubling_the_vcpus_a_task_needs_doubles_what_it_costs(
+        self, instance_manager: InstanceManager
+    ) -> None:
         """Two machines at the same price, one of which has to spend two vCPUs on a task.
 
         Both cost the same and have the same vCPUs, so the old per-vCPU ranking called them

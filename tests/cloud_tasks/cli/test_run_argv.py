@@ -1,5 +1,6 @@
 """Tests for cloud_tasks.cli: run_argv, build_parser, dump_tasks_by_status, log_task_stats, print_final_report."""
 
+import datetime
 import logging
 import re
 from pathlib import Path
@@ -19,6 +20,7 @@ from cloud_tasks.cli import (
 )
 from cloud_tasks.common.config import Config, GCPConfig, RunConfig
 from cloud_tasks.common.task_db import TaskDatabase
+from cloud_tasks.common.time_utils import utc_now
 
 
 def test_build_parser_returns_parser() -> None:
@@ -1122,18 +1124,41 @@ def test_estimate_time_remaining_prefers_the_slots_to_the_history() -> None:
         pytest.param({"remaining_tasks": 10, "mean_task_time": None}, id="no task has finished"),
         pytest.param({"remaining_tasks": 10, "mean_task_time": 0.0}, id="no time per task"),
         pytest.param({"remaining_tasks": 10, "mean_task_time": 60.0}, id="no concurrency known"),
-        pytest.param(
-            {"remaining_tasks": 10, "mean_task_time": 60.0, "task_slots": 0},
-            id="no slots to run in",
-        ),
     ],
 )
 def test_estimate_time_remaining_declines_to_guess(kwargs: dict) -> None:
     """Nothing to estimate from means no estimate, rather than a made-up one."""
-    remaining_tasks = kwargs.pop("remaining_tasks")
-    mean_task_time = kwargs.pop("mean_task_time")
+    assert estimate_time_remaining(**kwargs) is None
 
-    assert estimate_time_remaining(remaining_tasks, mean_task_time, **kwargs) is None
+
+def test_estimate_time_remaining_says_nothing_about_a_pool_running_nothing() -> None:
+    """A known-empty pool is a fact about the pool, not a gap in what is known.
+
+    Zero slots is not "how many tasks run at once isn't known": it is a pool that cannot run
+    the next task at all, and no arithmetic on how the job used to go says how long it will
+    be down for.
+    """
+    assert (
+        estimate_time_remaining(10, 60.0, task_slots=0, completed_tasks=50, elapsed_wall_time=600.0)
+        is None
+    )
+
+
+def test_estimate_time_remaining_is_at_least_one_task_long() -> None:
+    """Idle slots cannot divide the last task into a fraction of a task.
+
+    One task left with 32 slots free is still a task: 31 of them have nothing to do, and the
+    job waits the length of the one that is running.
+    """
+    estimate = estimate_time_remaining(1, 60.0, task_slots=32)
+
+    assert estimate is not None
+    assert estimate[0] == pytest.approx(60.0)
+
+    # Two tasks over one slot is still two tasks' worth of waiting
+    two_over_one = estimate_time_remaining(2, 60.0, task_slots=1)
+    assert two_over_one is not None
+    assert two_over_one[0] == pytest.approx(120.0)
 
 
 def _db_with_one_finished_task(tmp_path: Path) -> TaskDatabase:
@@ -1149,12 +1174,14 @@ def _db_with_one_finished_task(tmp_path: Path) -> TaskDatabase:
     for task_id in ("t1", "t2", "t3"):
         task_db.insert_task(task_id, {"x": 1})
         task_db.update_task_enqueued(task_id)
+    # The task was enqueued just now, so it has to finish after that for the job to have
+    # spent any wall-clock time at all
     task_db.update_task_from_event(
         {
             "event_type": "task_completed",
             "task_id": "t1",
             "elapsed_time": 60.0,
-            "timestamp": "2026-01-01T00:01:00+00:00",
+            "timestamp": (utc_now() + datetime.timedelta(seconds=60)).isoformat(),
         }
     )
     return task_db

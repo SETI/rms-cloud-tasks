@@ -580,7 +580,7 @@ queues as well, which discards those tasks.
 **Estimated Time Remaining**: While the job runs, the periodic task summary says how much
 longer the tasks that have not reported back are expected to take::
 
-  Est. time remaining: 42m 10s (51 task(s) left at 49.6s each over 32 task slot(s))
+  Est. time remaining: 42m 10s (2040 task(s) left at 49.6s each over 40 task slot(s))
 
 Each task left is assumed to take as long as the mean of the tasks that have finished, which
 is the only evidence there is about how long this job's tasks take. That much task time is
@@ -588,8 +588,11 @@ not how long the job has left, though, because the tasks run several at a time: 
 is the remaining task time divided over the number of tasks the pool can run at once. Where
 the pool is not managed by the same process - the :ref:`cli_monitor_event_queue` command,
 whose workers run elsewhere - the concurrency the job has actually achieved so far stands in
-for the slot count, and the line says so. No estimate is given until at least one task has
-finished, because until then there is no time per task to estimate from.
+for the slot count, and the line says so. The wait is at least one task long however many
+slots are idle, since spare capacity cannot divide a single remaining task into a fraction of
+itself. No estimate is given until at least one task has finished, because until then there is
+no time per task to estimate from, nor while the pool is running nothing at all, since how the
+job used to go says nothing about how long it will be down for.
 
 **Instance Detail Table**: Every time the periodic scaling check looks at the pool it logs a
 table with one row per instance, giving the instance's ID, type, boot disk, vCPUs, how many

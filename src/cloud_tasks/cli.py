@@ -1605,10 +1605,15 @@ def estimate_time_remaining(
     their mean time each, and however much of the wall clock that fills is the number that
     were running at a time.
 
+    Either way the wait is at least one task long, however many slots are standing idle: a
+    job with one task left has one task's worth of waiting to do, and spare capacity can't
+    divide that into a fraction of a task.
+
     Parameters:
         remaining_tasks: How many tasks have still to run
         mean_task_time: Mean seconds a finished task took, or None if none have finished
-        task_slots: Tasks the pool can run at once, if known
+        task_slots: Tasks the pool can run at once, if known; 0 is a pool that is known to
+            be running nothing, which is not the same as not knowing
         completed_tasks: How many tasks have finished, for the fallback concurrency
         elapsed_wall_time: Seconds the job has been running, for the fallback concurrency
 
@@ -1621,15 +1626,21 @@ def estimate_time_remaining(
     if remaining_tasks <= 0 or not mean_task_time or mean_task_time <= 0:
         return None
 
-    if task_slots is not None and task_slots > 0:
-        return remaining_tasks * mean_task_time / task_slots, f"{task_slots} task slot(s)"
+    if task_slots is not None:
+        if task_slots <= 0:
+            # A pool running nothing is a fact about the pool, and no arithmetic on how the
+            # job used to go says anything about how long it will be down for
+            return None
+        rounds = max(remaining_tasks / task_slots, 1.0)
+        return rounds * mean_task_time, f"{task_slots} task slot(s)"
 
     if completed_tasks > 0 and elapsed_wall_time and elapsed_wall_time > 0:
         # What the job has managed so far, which is less than the slots it was given: an
         # instance spends its first minutes booting, and a task that failed still took time
         concurrency = max(completed_tasks * mean_task_time / elapsed_wall_time, 1.0)
+        rounds = max(remaining_tasks / concurrency, 1.0)
         return (
-            remaining_tasks * mean_task_time / concurrency,
+            rounds * mean_task_time,
             f"the {concurrency:.1f} task(s) at a time it has managed so far",
         )
 
