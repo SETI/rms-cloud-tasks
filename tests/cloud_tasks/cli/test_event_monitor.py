@@ -162,6 +162,57 @@ async def test_event_monitor_print_status_summary(
     assert "Total tasks" in caplog.text
 
 
+def test_event_monitor_summary_uses_the_pools_task_slots(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The estimate of what is left needs the pool's capacity, which the monitor asks for.
+
+    The monitor watches the events; the orchestrator runs the instances. The slot count is
+    read at the moment the summary is printed so a pool that has just grown is reflected in
+    the next estimate rather than the one after it.
+    """
+    task_db = TaskDatabase(str(tmp_path / "events.db"))
+    for task_id in ("t1", "t2", "t3"):
+        task_db.insert_task(task_id, {})
+        task_db.update_task_enqueued(task_id)
+    task_db.update_task_from_event(
+        {
+            "event_type": "task_completed",
+            "task_id": "t1",
+            "elapsed_time": 60.0,
+            "timestamp": "2026-01-01T00:01:00+00:00",
+        }
+    )
+    monitor = EventMonitor(
+        AsyncMock(),
+        task_db,
+        print_events=False,
+        print_summary=True,
+        get_task_slots=lambda: 2,
+    )
+
+    with caplog.at_level(logging.INFO):
+        monitor.print_status_summary(force=True)
+    task_db.close()
+
+    assert "2 task slot(s)" in caplog.text
+
+
+def test_event_monitor_summary_without_a_pool_to_ask(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Monitoring a job whose workers are run elsewhere has no slot count to offer."""
+    task_db = TaskDatabase(str(tmp_path / "events.db"))
+    task_db.insert_task("t1", {})
+    monitor = EventMonitor(AsyncMock(), task_db, print_events=False, print_summary=True)
+
+    with caplog.at_level(logging.INFO):
+        monitor.print_status_summary(force=True)
+    task_db.close()
+
+    assert "task slot(s)" not in caplog.text
+
+
 @pytest.mark.asyncio
 async def test_event_monitor_start_open_file_raises(tmp_path: Path) -> None:
     """EventMonitor.start calls sys.exit(1) when opening output file raises.

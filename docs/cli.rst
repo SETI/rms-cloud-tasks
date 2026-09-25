@@ -577,34 +577,59 @@ queues as well, which discards those tasks.
 - Exception summaries with counts
 - Spot termination tracking
 
+**Estimated Time Remaining**: While the job runs, the periodic task summary says how much
+longer the tasks that have not reported back are expected to take::
+
+  Est. time remaining: 42m 10s (51 task(s) left at 49.6s each over 32 task slot(s))
+
+Each task left is assumed to take as long as the mean of the tasks that have finished, which
+is the only evidence there is about how long this job's tasks take. That much task time is
+not how long the job has left, though, because the tasks run several at a time: the estimate
+is the remaining task time divided over the number of tasks the pool can run at once. Where
+the pool is not managed by the same process - the :ref:`cli_monitor_event_queue` command,
+whose workers run elsewhere - the concurrency the job has actually achieved so far stands in
+for the slot count, and the line says so. No estimate is given until at least one task has
+finished, because until then there is no time per task to estimate from.
+
 **Instance Detail Table**: Every time the periodic scaling check looks at the pool it logs a
 table with one row per instance, giving the instance's ID, type, boot disk, vCPUs, how many
-tasks it can run at once, state, zone, creation time, how long ago its last keep-alive event
-arrived, what the keep-alive monitor is doing about it, and what it costs per hour. Rows are
-ordered by what the instance is doing - running first, then starting, stopping, stopped and
-terminated - so the instances doing the work are at the top and the ones on their way out
-explain why the pool is the size it is. The last row totals what is running:
+tasks it can run at once, state, zone, creation time, how its keep-alive events are doing,
+and what it costs per hour. Rows are ordered by what the instance is doing - running first,
+then starting, stopping, stopped and terminated - so the instances doing the work are at the
+top and the ones on their way out explain why the pool is the size it is. The last row
+totals what is running:
 
 .. code-block:: none
 
-   ┌─────────────────────────┬────────────────┬─────────────┬───────┬───────┬────────────┬───────────────┬─────────────────────┬────────────┬─────────────────────────────────────────────────────────────────┬────────────┐
-   │ Instance ID             │ Type           │ Boot Disk   │ vCPUs │ Tasks │ State      │ Zone          │ Created             │ Keep-Alive │ Mode                                                            │ Price/Hour │
-   ├─────────────────────────┼────────────────┼─────────────┼───────┼───────┼────────────┼───────────────┼─────────────────────┼────────────┼─────────────────────────────────────────────────────────────────┼────────────┤
-   │ my-job-1riovtucuu1o1dx9 │ n2-highcpu-4   │ pd-balanced │     4 │     2 │ running    │ us-central1-f │ 2026-08-18T13:47:46 │ 45s ago    │ keep-alive wait (45s of 300s)                                   │      $0.05 │
-   │ my-job-8ad4013f9c22e7a5 │ n2-standard-16 │ pd-balanced │    16 │     8 │ running    │ us-central1-b │ 2026-08-18T13:58:00 │ never      │ keep-alive timed out (first keep-alive overdue by 600s of 600s) │      $0.23 │
-   │ my-job-c1902e77bb410fa6 │ n2-highcpu-4   │ pd-balanced │     4 │     2 │ running    │ us-central1-f │ 2026-08-18T13:28:00 │ 900s ago   │ keep-alive timed out (overdue by 600s of 300s)                  │      $0.05 │
-   │ my-job-2b77c9e4a1f0d3b8 │ n2-highcpu-4   │ pd-balanced │     4 │     2 │ starting   │ us-central1-f │ 2026-08-18T14:18:00 │ never      │ waiting for first keep-alive (120s of 600s)                     │      $0.05 │
-   │ my-job-4f0b21c8ae93d517 │ n2-highcpu-4   │ pd-balanced │     4 │     2 │ terminated │ us-central1-b │ 2026-08-18T12:04:11 │ -          │ not active                                                      │          - │
-   ├─────────────────────────┼────────────────┼─────────────┼───────┼───────┼────────────┼───────────────┼─────────────────────┼────────────┼─────────────────────────────────────────────────────────────────┼────────────┤
-   │ 4 running/starting      │                │             │    28 │    14 │            │               │                     │            │                                                                 │      $0.38 │
-   └─────────────────────────┴────────────────┴─────────────┴───────┴───────┴────────────┴───────────────┴─────────────────────┴────────────┴─────────────────────────────────────────────────────────────────┴────────────┘
+   ┌───────┬────────────────┬─────────────┬───────┬───────┬────────────┬───────────────┬─────────────────────┬──────────────────────────┬────────────┐
+   │ ID    │ Type           │ Boot Disk   │ vCPUs │ Tasks │ State      │ Zone          │ Created             │ Keep-Alive               │ Price/Hour │
+   ├───────┼────────────────┼─────────────┼───────┼───────┼────────────┼───────────────┼─────────────────────┼──────────────────────────┼────────────┤
+   │ o1dx9 │ n2-highcpu-4   │ pd-balanced │     4 │     2 │ running    │ us-central1-f │ 2026-08-18T13:47:46 │ 45s/300s                 │      $0.05 │
+   │ 2e7a5 │ n2-standard-16 │ pd-balanced │    16 │     8 │ running    │ us-central1-b │ 2026-08-18T13:58:00 │ never 1200s/600s OVERDUE │      $0.23 │
+   │ 10fa6 │ n2-highcpu-4   │ pd-balanced │     4 │     2 │ running    │ us-central1-f │ 2026-08-18T13:28:00 │ 900s/300s OVERDUE        │      $0.05 │
+   │ 0d3b8 │ n2-highcpu-4   │ pd-balanced │     4 │     2 │ starting   │ us-central1-f │ 2026-08-18T14:18:00 │ never 120s/600s          │      $0.05 │
+   │ 3d517 │ n2-highcpu-4   │ pd-balanced │     4 │     2 │ terminated │ us-central1-b │ 2026-08-18T12:04:11 │ -                        │          - │
+   ├───────┼────────────────┼─────────────┼───────┼───────┼────────────┼───────────────┼─────────────────────┼──────────────────────────┼────────────┤
+   │ TOTAL │                │             │    28 │    14 │            │               │                     │                          │      $0.38 │
+   └───────┴────────────────┴─────────────┴───────┴───────┴────────────┴───────────────┴─────────────────────┴──────────────────────────┴────────────┘
    14 task(s) can run at once on the 4 running or starting instance(s), at 2 vCPU(s) per task
 
-The Keep-Alive and Mode columns read ``not monitored`` when keep-alive monitoring isn't
-running, which is the case when both keep-alive timeouts are disabled, during a
-``--dry-run``, and for the :ref:`cli_status_cmd` command (which only queries instances and so
-never receives keep-alive events). They read ``not active`` for an instance that is not
-running or starting.
+Instances are identified by the last five characters of their ID. Every instance in a job
+shares the job's name as a prefix and differs only in the random suffix the provider's name
+ends with, so the prefix would be a column of identical text as wide as the job name while
+the part that tells the rows apart is the tail. The short form still matches the full ID in
+a provider console or a worker log.
+
+The Keep-Alive column says how long it has been since the instance's last keep-alive event
+and what limit that is being measured against, as ``elapsed/limit``. A ``never`` prefix means
+no keep-alive has arrived at all, so the limit being applied is
+:ref:`keepalive_startup_timeout <config_worker_and_manage_pool_options>` rather than
+``keepalive_timeout``, and an
+``OVERDUE`` suffix means the limit has been passed and the instance is about to be replaced.
+The column reads ``not monitored`` when keep-alive monitoring isn't running, which is the
+case when both keep-alive timeouts are disabled, during a ``--dry-run``, and for the
+:ref:`cli_status_cmd` command (which only queries instances and so never receives keep-alive
+events). It reads ``-`` for an instance that is not running or starting.
 
 An instance in the table that is ``stopped`` or ``terminated`` has not necessarily gone for
 good: a spot instance the provider reclaims is stopped rather than deleted, and the next
@@ -771,15 +796,19 @@ Examples:
 
          $ cloud_tasks status --provider gcp --project-id my-project --job-id my-job --region us-central1
          Checking job status for job 'my-job'
-         Running instance summary:
-         State       Instance Type             vCPUs  Zone             Count  Total Price
-         --------------------------------------------------------------------------------
-         running     e2-micro                      2  us-central1-a        1        $0.05
-         running     e2-micro                      2  us-central1-b        1        $0.05
-         running     e2-micro                      2  us-central1-c        1        $0.05
-         running     e2-micro                      2  us-central1-f        2        $0.09
-         --------------------------------------------------------------------------------
-         Total running/starting:                  10 (weighted)            5        $0.23
+         Instances:
+         ┌───────┬──────────┬─────────────┬───────┬───────┬─────────┬───────────────┬─────────────────────┬───────────────┬────────────┐
+         │ ID    │ Type     │ Boot Disk   │ vCPUs │ Tasks │ State   │ Zone          │ Created             │ Keep-Alive    │ Price/Hour │
+         ├───────┼──────────┼─────────────┼───────┼───────┼─────────┼───────────────┼─────────────────────┼───────────────┼────────────┤
+         │ 7xhb9 │ e2-micro │ pd-balanced │     2 │     1 │ running │ us-central1-b │ 2026-08-18T13:47:46 │ not monitored │      $0.05 │
+         │ dz83r │ e2-micro │ pd-balanced │     2 │     1 │ running │ us-central1-f │ 2026-08-18T13:47:46 │ not monitored │      $0.05 │
+         │ k0p5w │ e2-micro │ pd-balanced │     2 │     1 │ running │ us-central1-c │ 2026-08-18T13:47:46 │ not monitored │      $0.05 │
+         │ n61vs │ e2-micro │ pd-balanced │     2 │     1 │ running │ us-central1-f │ 2026-08-18T13:47:46 │ not monitored │      $0.05 │
+         │ q4m2t │ e2-micro │ pd-balanced │     2 │     1 │ running │ us-central1-a │ 2026-08-18T13:47:46 │ not monitored │      $0.05 │
+         ├───────┼──────────┼─────────────┼───────┼───────┼─────────┼───────────────┼─────────────────────┼───────────────┼────────────┤
+         │ TOTAL │          │             │    10 │     5 │         │               │                     │               │      $0.23 │
+         └───────┴──────────┴─────────────┴───────┴───────┴─────────┴───────────────┴─────────────────────┴───────────────┴────────────┘
+         5 task(s) can run at once on the 5 running or starting instance(s), at 2 vCPU(s) per task
 
          Current queue depth: 10
 

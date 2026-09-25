@@ -1091,12 +1091,14 @@ class AWSEC2InstanceManager(InstanceManager):
         # The price of a vCPU is not the price of the work: when a task can't use a whole
         # vCPU's worth of memory, or cpus_per_task doesn't divide the vCPU count, some of
         # the vCPUs are paid for and left idle, and the type with the cheapest vCPUs is the
-        # one that wastes the most of them. We round the price to 2 decimal places so that
+        # one that wastes the most of them. We round the price to 4 decimal places so that
         # small differences in price don't make us choose an instance that runs fewer tasks
-        # and would otherwise cost the same.
+        # and would otherwise cost the same. Two decimal places, which this used to round
+        # to, is a whole cent an hour: it called almost every instance type in a region the
+        # same price as every other and left the tie-breaks below to do the choosing.
         priced_instances.sort(
             key=lambda x: (
-                round(self.price_per_task(x[3], constraints), 2),
+                round(self.price_per_task(x[3], constraints), 4),
                 -self.tasks_per_instance(x[3], constraints),
                 -cast(int, x[3]["vcpu"]),
             )

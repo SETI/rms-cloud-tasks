@@ -526,6 +526,7 @@ class EventMonitor:
         print_summary: bool = True,
         keepalive_callback: Callable[[str, str | None], None] | None = None,
         spot_termination_callback: Callable[[str], None] | None = None,
+        get_task_slots: Callable[[], int | None] | None = None,
         backfill_output_file: bool = False,
     ) -> None:
         """
@@ -544,6 +545,10 @@ class EventMonitor:
                 each spot termination event, so the orchestrator can stop expecting
                 keep-alives from an instance the provider is taking away and replace it.
                 Unlike keep-alives, these events are also printed and stored
+            get_task_slots: Optional callable returning how many tasks the instance pool
+                can run at once, or None if that isn't known yet. Used to estimate how
+                much longer the remaining tasks will take, which depends on how many of
+                them run at a time. Left unset when nothing here manages the workers
             backfill_output_file: Whether to seed a newly created output file with the
                 events already recorded in the database. Used when attaching to a job
                 that is already under way so the file is a complete log of the job
@@ -558,6 +563,7 @@ class EventMonitor:
         self.print_summary = print_summary
         self.keepalive_callback = keepalive_callback
         self.spot_termination_callback = spot_termination_callback
+        self.get_task_slots = get_task_slots
         self.backfill_output_file = backfill_output_file
         self.output_file = None
         self.something_changed = True
@@ -748,7 +754,12 @@ class EventMonitor:
             return
 
         logger.info("")
-        log_task_stats(self.task_db, header="Summary:", include_remaining_ids=True)
+        log_task_stats(
+            self.task_db,
+            header="Summary:",
+            include_remaining_ids=True,
+            task_slots=self.get_task_slots() if self.get_task_slots is not None else None,
+        )
         self.something_changed = False
 
     def close(self) -> None:
@@ -1312,6 +1323,7 @@ async def run_cmd(args: argparse.Namespace, config: Config) -> None:
             print_summary=True,
             keepalive_callback=orchestrator.record_keepalive,
             spot_termination_callback=orchestrator.record_spot_termination,
+            get_task_slots=lambda: orchestrator.running_task_slots,
             # A fresh run starts with an empty database, so there is nothing to seed
             backfill_output_file=args.continue_run,
         )
@@ -1549,11 +1561,87 @@ def dump_tasks_by_status(task_db: TaskDatabase, output_base_path: str) -> None:
         logger.info("  No task files written.")
 
 
+def format_duration(seconds: float) -> str:
+    """Render a number of seconds as hours, minutes and seconds.
+
+    The larger units are left off when they are zero, so a job with minutes left to run
+    doesn't report them behind a "0h".
+
+    Parameters:
+        seconds: The duration to render; rounded to the nearest second
+
+    Returns:
+        str: The duration, e.g. "2h 5m 9s", "5m 9s" or "9s".
+    """
+    total = int(round(seconds))
+    hours, remainder = divmod(total, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours}h {minutes}m {secs}s"
+    if minutes:
+        return f"{minutes}m {secs}s"
+    return f"{secs}s"
+
+
+def estimate_time_remaining(
+    remaining_tasks: int,
+    mean_task_time: float | None,
+    *,
+    task_slots: int | None = None,
+    completed_tasks: int = 0,
+    elapsed_wall_time: float | None = None,
+) -> tuple[float, str] | None:
+    """Estimate how much longer the tasks that haven't reported back will take.
+
+    A task not heard from is assumed to take as long as the mean of the ones that have
+    finished, which is the only evidence there is about how long this job's tasks take. That
+    much task time is not how long the job has left, though, because the tasks run several
+    at a time: the wait is the remaining task time divided over the number that run at once.
+
+    The pool's current task slots are the best count of those, since they are what will be
+    running the remaining tasks. When they aren't known - a job whose workers aren't managed
+    from here, or one whose instances haven't been listed yet - the concurrency the job has
+    actually achieved so far stands in for them: the tasks that have finished account for
+    their mean time each, and however much of the wall clock that fills is the number that
+    were running at a time.
+
+    Parameters:
+        remaining_tasks: How many tasks have still to run
+        mean_task_time: Mean seconds a finished task took, or None if none have finished
+        task_slots: Tasks the pool can run at once, if known
+        completed_tasks: How many tasks have finished, for the fallback concurrency
+        elapsed_wall_time: Seconds the job has been running, for the fallback concurrency
+
+    Returns:
+        tuple[float, str] | None: The seconds remaining and a description of the
+        concurrency it was divided by, or None when there is nothing to estimate from -
+        no tasks left, no finished task to take a mean time from, or no way to tell how
+        many tasks run at once.
+    """
+    if remaining_tasks <= 0 or not mean_task_time or mean_task_time <= 0:
+        return None
+
+    if task_slots is not None and task_slots > 0:
+        return remaining_tasks * mean_task_time / task_slots, f"{task_slots} task slot(s)"
+
+    if completed_tasks > 0 and elapsed_wall_time and elapsed_wall_time > 0:
+        # What the job has managed so far, which is less than the slots it was given: an
+        # instance spends its first minutes booting, and a task that failed still took time
+        concurrency = max(completed_tasks * mean_task_time / elapsed_wall_time, 1.0)
+        return (
+            remaining_tasks * mean_task_time / concurrency,
+            f"the {concurrency:.1f} task(s) at a time it has managed so far",
+        )
+
+    return None
+
+
 def log_task_stats(
     task_db: TaskDatabase,
     *,
     header: str = "Summary:",
     include_remaining_ids: bool = True,
+    task_slots: int | None = None,
 ) -> None:
     """
     Log task statistics (counts, exceptions, elapsed time stats).
@@ -1563,6 +1651,8 @@ def log_task_stats(
         task_db: TaskDatabase instance
         header: Section header (e.g. "Summary:" or "Final:")
         include_remaining_ids: Whether to list remaining task IDs if < 50
+        task_slots: How many tasks the instance pool can run at once, if known, used to
+            estimate how much longer the remaining tasks will take
     """
     counts = task_db.get_task_counts()
     total_tasks = task_db.get_total_tasks()
@@ -1610,6 +1700,7 @@ def log_task_stats(
     time_range = stats.get("time_range") or {}
     start_time = time_range.get("start_time")
     end_time = time_range.get("end_time")
+    total_elapsed: float | None = None
     if start_time:
         start = parse_utc(start_time)
         end = parse_utc(end_time) if end_time else utc_now()
@@ -1623,6 +1714,22 @@ def log_task_stats(
             if completed_count > 0 and total_elapsed > 0:
                 tasks_per_hour = completed_count / (total_elapsed / 3600)
                 logger.info(f"  Tasks/hour: {tasks_per_hour:.1f}")
+
+    # How much longer the tasks that haven't reported back are going to take
+    estimate = estimate_time_remaining(
+        len(remaining_task_ids),
+        stats["time_stats"]["avg_time"],
+        task_slots=task_slots,
+        completed_tasks=counts.get("completed", 0),
+        elapsed_wall_time=total_elapsed,
+    )
+    if estimate is not None:
+        remaining_seconds, concurrency = estimate
+        logger.info(
+            f"  Est. time remaining: {format_duration(remaining_seconds)} "
+            f"({len(remaining_task_ids)} task(s) left at "
+            f"{stats['time_stats']['avg_time']:.1f}s each over {concurrency})"
+        )
 
     if stats.get("spot_terminations"):
         logger.info(f"  Spot terminations: {len(stats['spot_terminations'])} hosts")

@@ -883,6 +883,24 @@ class TestPricePerTask:
         assert instance_manager.price_per_task(highcpu, constraints) == pytest.approx(0.345)
         assert instance_manager.price_per_task(highmem, constraints) == pytest.approx(0.096875)
 
+    def test_doubling_the_vcpus_a_task_needs_doubles_what_it_costs(self, instance_manager):
+        """Two machines at the same price, one of which has to spend two vCPUs on a task.
+
+        Both cost the same and have the same vCPUs, so the old per-vCPU ranking called them
+        equal. One has 2 GB per vCPU and so needs two of them to give a 4 GB task its
+        memory; the other has 4 GB per vCPU and needs one. Half as many tasks for the same
+        money is twice the price for each of them.
+        """
+        constraints = {"cpus_per_task": 1, "min_memory_per_task": 4, "allow_cpu_wasting": True}
+        lean = {"vcpu": 8, "mem_gb": 16, "total_price": 0.80}
+        ample = {"vcpu": 8, "mem_gb": 32, "total_price": 0.80}
+
+        assert instance_manager.effective_cpus_per_task(lean, constraints) == 2
+        assert instance_manager.effective_cpus_per_task(ample, constraints) == 1
+        assert instance_manager.price_per_task(lean, constraints) == pytest.approx(
+            2 * instance_manager.price_per_task(ample, constraints)
+        )
+
     def test_ranking_is_unchanged_when_no_vcpus_are_wasted(self, instance_manager):
         """Where cpus_per_task divides the vCPUs evenly, this ranks exactly as before."""
         constraints = {"cpus_per_task": 2}
@@ -980,3 +998,78 @@ class TestTasksPerInstanceConstraints:
 
         assert any("min_tasks_per_instance" in line for line in lines)
         assert not any("vCPUs needed" in line for line in lines)
+
+
+class TestBootDiskSizePerTask:
+    """Validates that per-task boot disk is sized for the tasks that will actually run."""
+
+    @pytest.fixture
+    def instance_manager(self) -> InstanceManager:
+        """Create a concrete instance manager for testing.
+
+        Returns:
+            InstanceManager: A manager whose provider calls do nothing.
+        """
+        return _concrete_instance_manager()
+
+    def test_disk_follows_the_tasks_the_instance_will_run(
+        self, instance_manager: InstanceManager
+    ) -> None:
+        """A task given extra vCPUs for its memory means fewer tasks, and so less disk.
+
+        At 2 GB per vCPU a 4 GB task takes 2 vCPUs, so 8 vCPUs run 4 tasks and not 8. Disk
+        bought for the 4 tasks that will not run is disk that will never be written to, and
+        because the disk is part of what the instance costs it also makes the instance types
+        that waste vCPUs look more expensive than they are.
+        """
+        instance_info = {"vcpu": 8, "mem_gb": 16}
+        constraints = {
+            "cpus_per_task": 1,
+            "min_memory_per_task": 4,
+            "allow_cpu_wasting": True,
+            "boot_disk_per_task": 10,
+        }
+
+        assert instance_manager._get_boot_disk_size(instance_info, constraints) == 40
+
+    def test_disk_is_sized_for_every_task_when_none_are_wasted(
+        self, instance_manager: InstanceManager
+    ) -> None:
+        """An instance with the memory to run a task per vCPU gets the disk for them."""
+        instance_info = {"vcpu": 8, "mem_gb": 64}
+        constraints = {
+            "cpus_per_task": 1,
+            "min_memory_per_task": 4,
+            "allow_cpu_wasting": True,
+            "boot_disk_per_task": 10,
+        }
+
+        assert instance_manager._get_boot_disk_size(instance_info, constraints) == 80
+
+    def test_a_task_limit_also_limits_the_disk(self, instance_manager: InstanceManager) -> None:
+        """Tasks above max_tasks_per_instance don't run, so they don't need disk either."""
+        instance_info = {"vcpu": 8, "mem_gb": 32}
+        constraints = {
+            "cpus_per_task": 1,
+            "max_tasks_per_instance": 2,
+            "boot_disk_per_task": 10,
+        }
+
+        assert instance_manager._get_boot_disk_size(instance_info, constraints) == 20
+
+    def test_per_cpu_and_total_sizing_are_unaffected(
+        self, instance_manager: InstanceManager
+    ) -> None:
+        """The per-vCPU and floor terms are about the instance, not about its tasks."""
+        instance_info = {"vcpu": 8, "mem_gb": 16}
+        constraints = {
+            "cpus_per_task": 1,
+            "min_memory_per_task": 4,
+            "allow_cpu_wasting": True,
+            "boot_disk_per_cpu": 10,
+            "boot_disk_per_task": 10,
+        }
+
+        # 8 vCPUs at 10 GB each is more than the 4 tasks at 10 GB each
+        assert instance_manager._get_boot_disk_size(instance_info, constraints) == 80
+        assert instance_manager._get_boot_disk_size(instance_info, {}) == 10
