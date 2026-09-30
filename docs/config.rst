@@ -207,6 +207,11 @@ or a per-task value:
   space per task (defaults to 0)
 * ``boot_disk_per_task``: The amount of boot disk in GB per task (defaults to 0)
 
+The per-task size is multiplied by the number of tasks the instance type will actually run,
+which is not always its vCPUs divided by ``cpus_per_task``: a task given extra vCPUs to get
+the memory it needs, or a ``max_tasks_per_instance`` cap, means fewer tasks on the instance
+and so less disk for them. See :ref:`config_compute_instance_options`.
+
 If more than one size is specified, the maximum of the values will be used. If no values are
 specified, a default appropriate to the provider will be used.
 

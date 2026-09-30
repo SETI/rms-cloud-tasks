@@ -8,6 +8,7 @@ caplog (pytest.LogCaptureFixture): Captured log records.
 """
 
 import asyncio
+import datetime
 import json
 import logging
 from pathlib import Path
@@ -18,6 +19,7 @@ import pytest
 
 from cloud_tasks.cli import EventMonitor, run_event_monitoring_loop
 from cloud_tasks.common.task_db import TaskDatabase
+from cloud_tasks.common.time_utils import utc_now
 
 
 @pytest.mark.asyncio
@@ -160,6 +162,76 @@ async def test_event_monitor_print_status_summary(
     task_db.close()
     assert "Summary" in caplog.text
     assert "Total tasks" in caplog.text
+
+
+def _db_with_one_finished_task(tmp_path: Path) -> TaskDatabase:
+    """A database with three tasks, one of them done in 60 seconds.
+
+    Parameters:
+        tmp_path: Directory to put the database in
+
+    Returns:
+        TaskDatabase: The open database.
+    """
+    task_db = TaskDatabase(str(tmp_path / "events.db"))
+    for task_id in ("t1", "t2", "t3"):
+        task_db.insert_task(task_id, {})
+        task_db.update_task_enqueued(task_id)
+    # The task was enqueued just now, so it has to finish after that for the job to have
+    # spent any wall-clock time at all
+    task_db.update_task_from_event(
+        {
+            "event_type": "task_completed",
+            "task_id": "t1",
+            "elapsed_time": 60.0,
+            "timestamp": (utc_now() + datetime.timedelta(seconds=60)).isoformat(),
+        }
+    )
+    return task_db
+
+
+def test_event_monitor_summary_uses_the_pools_task_slots(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The estimate of what is left needs the pool's capacity, which the monitor asks for.
+
+    The monitor watches the events; the orchestrator runs the instances. The slot count is
+    read at the moment the summary is printed so a pool that has just grown is reflected in
+    the next estimate rather than the one after it.
+    """
+    task_db = _db_with_one_finished_task(tmp_path)
+    monitor = EventMonitor(
+        AsyncMock(),
+        task_db,
+        print_events=False,
+        print_summary=True,
+        get_task_slots=lambda: 2,
+    )
+
+    with caplog.at_level(logging.INFO):
+        monitor.print_status_summary(force=True)
+    task_db.close()
+
+    assert "2 task slot(s)" in caplog.text
+
+
+def test_event_monitor_summary_without_a_pool_to_ask(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Monitoring a job whose workers are run elsewhere has no slot count to offer.
+
+    There is still an estimate to make: what the job has managed so far stands in for the
+    capacity it was given, and the line says which of the two figures it used.
+    """
+    task_db = _db_with_one_finished_task(tmp_path)
+    monitor = EventMonitor(AsyncMock(), task_db, print_events=False, print_summary=True)
+
+    with caplog.at_level(logging.INFO):
+        monitor.print_status_summary(force=True)
+    task_db.close()
+
+    assert "task slot(s)" not in caplog.text
+    assert "at a time it has managed so far" in caplog.text
 
 
 @pytest.mark.asyncio
